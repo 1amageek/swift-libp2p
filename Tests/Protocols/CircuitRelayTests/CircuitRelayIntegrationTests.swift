@@ -612,3 +612,532 @@ struct CircuitRelayIntegrationTests {
         #expect(statusDecoded.status == .ok)
     }
 }
+
+// MARK: - RelayListener Tests
+
+@Suite("RelayListener Tests", .serialized)
+struct RelayListenerTests {
+
+    @Test("RelayListener accepts incoming connections")
+    func testRelayListenerAccept() async throws {
+        let targetKey = KeyPair.generateEd25519()
+        let sourceKey = KeyPair.generateEd25519()
+        let relayKey = KeyPair.generateEd25519()
+
+        let client = RelayClient()
+        let server = RelayServer()
+
+        // Register client's Stop handler (critical for receiving connections)
+        let clientRegistry = MockHandlerRegistry()
+        await client.registerHandler(registry: clientRegistry)
+
+        // Register server's Hop handler
+        let serverRegistry = MockHandlerRegistry()
+        let serverOpener = MockStreamOpener()
+        await server.registerHandler(
+            registry: serverRegistry,
+            opener: serverOpener,
+            localPeer: relayKey.peerID,
+            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+        )
+
+        // Step 1: Target makes reservation on relay
+        let (resClientStream, resServerStream) = MockMuxedStream.createPair(
+            protocolID: CircuitRelayProtocol.hopProtocolID
+        )
+
+        let resOpener = MockStreamOpener()
+        resOpener.setStream(resClientStream, for: CircuitRelayProtocol.hopProtocolID)
+
+        let resServerTask = Task {
+            if let handler = serverRegistry.getHandler(for: CircuitRelayProtocol.hopProtocolID) {
+                let context = createMockContext(
+                    stream: resServerStream,
+                    remotePeer: targetKey.peerID,
+                    localPeer: relayKey.peerID
+                )
+                await handler(context)
+            }
+        }
+
+        let reservation = try await client.reserve(on: relayKey.peerID, using: resOpener)
+        await resServerTask.value
+
+        // Step 2: Create RelayListener
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Step 3: Simulate incoming STOP message (as if relay is notifying us of incoming connection)
+        let (stopClientStream, stopServerStream) = MockMuxedStream.createPair(
+            protocolID: CircuitRelayProtocol.stopProtocolID
+        )
+
+        // Send STOP CONNECT message to client's handler
+        let incomingTask = Task {
+            // Give listener time to start waiting
+            try? await Task.sleep(for: .milliseconds(50))
+
+            // Simulate relay sending STOP CONNECT
+            if let handler = clientRegistry.getHandler(for: CircuitRelayProtocol.stopProtocolID) {
+                let context = createMockContext(
+                    stream: stopServerStream,
+                    remotePeer: relayKey.peerID,  // STOP comes from relay
+                    localPeer: targetKey.peerID
+                )
+
+                // Write CONNECT message to the stream (simulating relay's message)
+                let connectMsg = StopMessage.connect(from: sourceKey.peerID, limit: .default)
+                let connectData = CircuitRelayProtobuf.encode(connectMsg)
+                try await stopClientStream.writeLengthPrefixedMessage(connectData)
+
+                await handler(context)
+            }
+        }
+
+        // Step 4: Accept connection on listener
+        let acceptTask = Task<(any RawConnection)?, Never> {
+            do {
+                return try await listener.accept()
+            } catch {
+                return nil
+            }
+        }
+
+        // Wait for incoming connection simulation
+        try await incomingTask.value
+
+        // Wait briefly for accept to complete
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Step 5: Verify connection was accepted
+        let connection = await acceptTask.value
+        #expect(connection != nil)
+
+        // Cleanup
+        try await listener.close()
+    }
+
+    @Test("RelayListener close unblocks accept")
+    func testRelayListenerCloseUnblocksAccept() async throws {
+        let relayKey = KeyPair.generateEd25519()
+
+        let client = RelayClient()
+
+        // Create a mock reservation
+        let reservation = Reservation(
+            relay: relayKey.peerID,
+            expiration: .now + .seconds(3600),
+            addresses: [],
+            voucher: nil
+        )
+
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Start accept in background
+        let acceptTask = Task<Bool, Never> {
+            do {
+                _ = try await listener.accept()
+                return false  // Should not succeed
+            } catch {
+                return true  // Expected to throw
+            }
+        }
+
+        // Give accept time to start waiting
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Close listener
+        try await listener.close()
+
+        // accept should complete with error
+        let didThrow = await acceptTask.value
+        #expect(didThrow == true)
+    }
+
+    @Test("RelayListener enqueue delivers to waiting accept")
+    func testRelayListenerEnqueueDeliversToWaiter() async throws {
+        let relayKey = KeyPair.generateEd25519()
+        let sourceKey = KeyPair.generateEd25519()
+
+        let client = RelayClient()
+
+        let reservation = Reservation(
+            relay: relayKey.peerID,
+            expiration: .now + .seconds(3600),
+            addresses: [],
+            voucher: nil
+        )
+
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Start accept in background
+        let acceptTask = Task<PeerID?, Never> {
+            do {
+                let conn = try await listener.accept()
+                // Extract remote peer from the address (the p2p after p2p-circuit)
+                // remoteAddress format: /p2p/{relay}/p2p-circuit/p2p/{remotePeer}
+                var foundCircuit = false
+                for proto in conn.remoteAddress.protocols {
+                    switch proto {
+                    case .p2pCircuit:
+                        foundCircuit = true
+                    case .p2p(let peerID):
+                        if foundCircuit {
+                            return peerID
+                        }
+                    default:
+                        break
+                    }
+                }
+                return nil
+            } catch {
+                return nil
+            }
+        }
+
+        // Give accept time to start waiting
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Create and enqueue a connection directly
+        let (stream, _) = MockMuxedStream.createPair()
+        let relayedConnection = RelayedConnection(
+            stream: stream,
+            relay: relayKey.peerID,
+            remotePeer: sourceKey.peerID,
+            limit: .default
+        )
+        listener.enqueue(relayedConnection)
+
+        // accept should return the connection
+        let remotePeer = await acceptTask.value
+        #expect(remotePeer == sourceKey.peerID)
+
+        try await listener.close()
+    }
+
+    @Test("RelayListener queues connections when no waiter")
+    func testRelayListenerQueuesConnections() async throws {
+        let relayKey = KeyPair.generateEd25519()
+        let sourceKey = KeyPair.generateEd25519()
+
+        let client = RelayClient()
+
+        let reservation = Reservation(
+            relay: relayKey.peerID,
+            expiration: .now + .seconds(3600),
+            addresses: [],
+            voucher: nil
+        )
+
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Enqueue connection before anyone calls accept
+        let (stream, _) = MockMuxedStream.createPair()
+        let relayedConnection = RelayedConnection(
+            stream: stream,
+            relay: relayKey.peerID,
+            remotePeer: sourceKey.peerID,
+            limit: .default
+        )
+        listener.enqueue(relayedConnection)
+
+        // Now call accept - should return immediately
+        let conn = try await listener.accept()
+        #expect(conn.remoteAddress.description.contains(sourceKey.peerID.description))
+
+        try await listener.close()
+    }
+
+    @Test("RelayListener close cancels acceptConnection immediately", .timeLimit(.minutes(1)))
+    func testRelayListenerCloseCancelsImmediately() async throws {
+        let relayKey = KeyPair.generateEd25519()
+
+        // Use a client with a long timeout to prove cancellation is immediate
+        let clientConfig = RelayClientConfiguration(connectTimeout: .seconds(30))
+        let client = RelayClient(configuration: clientConfig)
+
+        let reservation = Reservation(
+            relay: relayKey.peerID,
+            expiration: .now + .seconds(3600),
+            addresses: [],
+            voucher: nil
+        )
+
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Start accept in background - this will call acceptConnection with 30s timeout
+        let acceptTask = Task<Bool, Never> {
+            do {
+                _ = try await listener.accept()
+                return false  // Should not succeed
+            } catch {
+                // Expected: either CancellationError or listenerClosed
+                return true
+            }
+        }
+
+        // Give accept time to start waiting
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Close listener - should cancel acceptConnection immediately
+        let startTime = ContinuousClock.now
+        try await listener.close()
+
+        // Wait for accept to complete
+        let didThrow = await acceptTask.value
+        let elapsed = ContinuousClock.now - startTime
+
+        // Verify it completed quickly (not 30 seconds)
+        #expect(didThrow == true)
+        #expect(elapsed < .seconds(1), "Cancellation took too long: \(elapsed)")
+    }
+
+    @Test("RelayListener enforces queue size limit")
+    func testRelayListenerQueueLimit() async throws {
+        let relayKey = KeyPair.generateEd25519()
+
+        let client = RelayClient()
+
+        let reservation = Reservation(
+            relay: relayKey.peerID,
+            expiration: .now + .seconds(3600),
+            addresses: [],
+            voucher: nil
+        )
+
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Enqueue more than the limit (64) connections without calling accept()
+        for _ in 0..<70 {
+            let sourceKey = KeyPair.generateEd25519()
+            let (stream, _) = MockMuxedStream.createPair()
+            let relayedConnection = RelayedConnection(
+                stream: stream,
+                relay: relayKey.peerID,
+                remotePeer: sourceKey.peerID,
+                limit: .default
+            )
+            listener.enqueue(relayedConnection)
+        }
+
+        // Small delay to allow async close tasks to run
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Accept 64 connections (the limit) - these should all succeed immediately
+        for i in 0..<64 {
+            let acceptTask = Task {
+                try await listener.accept()
+            }
+
+            // Give it time to complete
+            try await Task.sleep(for: .milliseconds(5))
+
+            // Should complete without blocking
+            let conn = try await acceptTask.value
+            #expect(conn.remoteAddress.description.contains("p2p-circuit"), "Connection \(i) should be a circuit address")
+        }
+
+        // The 65th accept should block (no more queued connections)
+        // We verify by starting accept and then closing the listener
+        let acceptTask = Task<Bool, Never> {
+            do {
+                _ = try await listener.accept()
+                return true  // Got a connection (unexpected)
+            } catch {
+                return false  // Threw error (expected after close)
+            }
+        }
+
+        // Give accept time to start waiting
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Close listener - this should unblock the waiting accept
+        try await listener.close()
+
+        // Accept should have failed (no 65th connection)
+        let gotConnection = await acceptTask.value
+        #expect(gotConnection == false, "Should not have received a 65th connection")
+    }
+
+    @Test("RelayListener.accept() cancellation cleans up continuation", .timeLimit(.minutes(1)))
+    func testAcceptCancellationCleansUpContinuation() async throws {
+        let relayKey = KeyPair.generateEd25519()
+
+        let client = RelayClient()
+
+        let reservation = Reservation(
+            relay: relayKey.peerID,
+            expiration: .now + .seconds(3600),
+            addresses: [],
+            voucher: nil
+        )
+
+        let listenAddress = try Multiaddr("/p2p/\(relayKey.peerID)/p2p-circuit")
+        let listener = RelayListener(
+            relay: relayKey.peerID,
+            client: client,
+            localAddress: listenAddress,
+            reservation: reservation
+        )
+
+        // Step 1: Start accept in background
+        let acceptTask = Task<String, Never> {
+            do {
+                _ = try await listener.accept()
+                return "success"
+            } catch is CancellationError {
+                return "cancelled"
+            } catch {
+                return "other error: \(error)"
+            }
+        }
+
+        // Give accept time to start waiting
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Step 2: Cancel the accept task
+        acceptTask.cancel()
+
+        // Step 3: Verify cancellation was handled
+        let result = await acceptTask.value
+        #expect(result == "cancelled", "Expected CancellationError but got: \(result)")
+
+        // Step 4: Verify new accept works (continuation was cleaned up properly)
+        // First enqueue a connection
+        let sourceKey = KeyPair.generateEd25519()
+        let (stream, _) = MockMuxedStream.createPair()
+        let relayedConnection = RelayedConnection(
+            stream: stream,
+            relay: relayKey.peerID,
+            remotePeer: sourceKey.peerID,
+            limit: .default
+        )
+        listener.enqueue(relayedConnection)
+
+        // New accept should succeed (not be blocked by old continuation)
+        let newAcceptTask = Task<String, Never> {
+            do {
+                let conn = try await listener.accept()
+                return conn.remoteAddress.description.contains(sourceKey.peerID.description) ? "success" : "wrong peer"
+            } catch {
+                return "error: \(error)"
+            }
+        }
+
+        let newResult = await newAcceptTask.value
+        #expect(newResult == "success", "New accept should succeed, got: \(newResult)")
+
+        try await listener.close()
+    }
+}
+
+// MARK: - RelayClient Cancellation Tests
+
+@Suite("RelayClient Cancellation Tests", .serialized)
+struct RelayClientCancellationTests {
+
+    @Test("RelayClient.acceptConnection() handles immediate cancellation", .timeLimit(.minutes(1)))
+    func testAcceptConnectionImmediateCancellation() async throws {
+        // Use a client with long timeout to prove cancellation is immediate
+        let clientConfig = RelayClientConfiguration(connectTimeout: .seconds(30))
+        let client = RelayClient(configuration: clientConfig)
+
+        // Start acceptConnection and immediately cancel (induces race)
+        let acceptTask = Task<String, Never> {
+            do {
+                _ = try await client.acceptConnection()
+                return "success"
+            } catch is CancellationError {
+                return "cancelled"
+            } catch is CircuitRelayError {
+                return "relay error"
+            } catch {
+                return "other: \(type(of: error))"
+            }
+        }
+
+        // Immediately cancel - this induces the race condition
+        acceptTask.cancel()
+
+        // Should complete quickly (not wait 30s timeout)
+        let startTime = ContinuousClock.now
+        let result = await acceptTask.value
+        let elapsed = ContinuousClock.now - startTime
+
+        // Either cancelled or some quick failure is acceptable
+        #expect(result == "cancelled" || result == "relay error",
+                "Expected cancellation or quick failure, got: \(result)")
+        #expect(elapsed < .seconds(5), "Should complete quickly, took: \(elapsed)")
+
+        client.shutdown()
+    }
+
+    @Test("RelayClient.acceptConnection() cancellation after delay", .timeLimit(.minutes(1)))
+    func testAcceptConnectionCancellationAfterDelay() async throws {
+        let clientConfig = RelayClientConfiguration(connectTimeout: .seconds(30))
+        let client = RelayClient(configuration: clientConfig)
+
+        let acceptTask = Task<String, Never> {
+            do {
+                _ = try await client.acceptConnection()
+                return "success"
+            } catch is CancellationError {
+                return "cancelled"
+            } catch is CircuitRelayError {
+                return "relay error"
+            } catch {
+                return "other: \(type(of: error))"
+            }
+        }
+
+        // Wait a bit to ensure the waiter is registered
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Now cancel
+        let startTime = ContinuousClock.now
+        acceptTask.cancel()
+
+        let result = await acceptTask.value
+        let elapsed = ContinuousClock.now - startTime
+
+        #expect(result == "cancelled", "Expected CancellationError, got: \(result)")
+        #expect(elapsed < .seconds(1), "Cancellation should be immediate, took: \(elapsed)")
+
+        client.shutdown()
+    }
+}

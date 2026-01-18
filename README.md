@@ -11,7 +11,8 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 - **Identity**: Ed25519/Secp256k1 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
 - **Discovery**: SWIM-based membership protocol
-- **Standard Protocols**: Identify, Ping
+- **NAT Traversal**: Circuit Relay v2 for peers behind NATs
+- **Standard Protocols**: Identify, Ping, GossipSub, Kademlia DHT
 
 ## Requirements
 
@@ -89,7 +90,7 @@ try await stream.write(Data("Hello!".utf8))
 ```
 +-----------------------------------------------------------+
 |  Application Layer                                         |
-|  (Your protocols, SWIM Discovery)                         |
+|  (Your protocols, GossipSub, Kademlia DHT, SWIM Discovery)|
 +-----------------------------------------------------------+
 |  Protocol Negotiation (multistream-select)                |
 +-----------------------------------------------------------+
@@ -97,7 +98,9 @@ try await stream.write(Data("Hello!".utf8))
 +-----------------------------------------------------------+
 |  Security Layer (Noise XX)                                |
 +-----------------------------------------------------------+
-|  Transport Layer (TCP, Memory)                            |
+|  Transport Layer (TCP, Memory, Circuit Relay)             |
++-----------------------------------------------------------+
+|  NAT Traversal (Circuit Relay v2, AutoNAT, DCUtR)         |
 +-----------------------------------------------------------+
 |  Core Types (PeerID, Multiaddr, KeyPair)                  |
 +-----------------------------------------------------------+
@@ -121,6 +124,11 @@ try await stream.write(Data("Hello!".utf8))
 | `P2PDiscoverySWIM` | SWIM membership protocol |
 | `P2P` | Integration layer (Node, ConnectionPool) |
 | `P2PProtocols` | Standard protocols (Identify, Ping) |
+| `P2PCircuitRelay` | Circuit Relay v2 for NAT traversal |
+| `P2PGossipSub` | GossipSub pubsub protocol |
+| `P2PKademlia` | Kademlia DHT implementation |
+| `P2PAutoNAT` | AutoNAT protocol for NAT detection |
+| `P2PDCUtR` | Direct Connection Upgrade through Relay |
 
 ## Wire Protocol Compatibility
 
@@ -133,6 +141,11 @@ This implementation follows the official libp2p specifications for wire-protocol
 | Yamux | `/yamux/1.0.0` | [spec](https://github.com/hashicorp/yamux/blob/master/spec.md) |
 | Identify | `/ipfs/id/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/identify/README.md) |
 | Ping | `/ipfs/ping/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/ping/README.md) |
+| Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop`, `/libp2p/circuit/relay/0.2.0/stop` | [spec](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md) |
+| GossipSub | `/meshsub/1.1.0` | [spec](https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md) |
+| Kademlia DHT | `/ipfs/kad/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/kad-dht/README.md) |
+| AutoNAT | `/libp2p/autonat/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/autonat/README.md) |
+| DCUtR | `/libp2p/dcutr` | [spec](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) |
 
 ## Design Principles
 
@@ -214,6 +227,69 @@ for await event in await node.events {
         print("Connection error: \(error)")
     }
 }
+```
+
+## NAT Traversal with Circuit Relay
+
+Circuit Relay v2 enables peers behind NATs to communicate through public relay nodes.
+
+### Making a Reservation
+
+A peer behind NAT makes a reservation on a public relay to receive incoming connections:
+
+```swift
+import P2PCircuitRelay
+
+let client = RelayClient()
+await client.registerHandler(registry: node)
+
+// Reserve a slot on the relay
+let reservation = try await client.reserve(on: relayPeerID, using: node)
+print("Reserved until: \(reservation.expiration)")
+print("Relay addresses: \(reservation.addresses)")
+```
+
+### Connecting Through a Relay
+
+Another peer can connect to the NAT'd peer through the relay:
+
+```swift
+// Connect to target through relay
+let connection = try await client.connectThrough(
+    relay: relayPeerID,
+    to: targetPeerID,
+    using: node
+)
+
+// Use the relayed connection
+try await connection.write(Data("Hello through relay!".utf8))
+```
+
+### Running a Relay Server
+
+To run a public relay node:
+
+```swift
+let server = RelayServer(configuration: .init(
+    maxReservations: 128,
+    maxCircuitsPerPeer: 16,
+    reservationDuration: .seconds(3600)
+))
+
+await server.registerHandler(
+    registry: node,
+    opener: node,
+    localPeer: node.peerID,
+    getLocalAddresses: { node.listenAddresses }
+)
+```
+
+### Relayed Addresses
+
+Relayed addresses use the `p2p-circuit` protocol:
+
+```
+/ip4/1.2.3.4/tcp/4001/p2p/{relay-peer-id}/p2p-circuit/p2p/{target-peer-id}
 ```
 
 ## Testing

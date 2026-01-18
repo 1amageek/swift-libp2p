@@ -306,41 +306,71 @@ public final class RelayClient: ProtocolService, Sendable {
             return conn
         }
 
+        // Check for cancellation before waiting
+        try Task.checkCancellation()
+
         // No queued connection, wait for one
         let timeout = configuration.connectTimeout
-        return try await withCheckedThrowingContinuation { continuation in
-            // First create the waiter key
-            let waiterKey = state.withLock { s -> WaiterKey in
-                let key = WaiterKey(id: s.nextWaiterID)
-                s.nextWaiterID += 1
-                return key
-            }
 
-            // Create timeout task with the key
-            let timeoutTask = Task { [weak self, waiterKey] in
-                try? await Task.sleep(for: timeout)
-                guard !Task.isCancelled else { return }
+        // First create the waiter key outside the continuation
+        let waiterKey = state.withLock { s -> WaiterKey in
+            let key = WaiterKey(id: s.nextWaiterID)
+            s.nextWaiterID += 1
+            return key
+        }
 
-                // Check if waiter is still pending
-                if let self = self {
-                    let waiter: ConnectionWaiter? = self.state.withLock { s in
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Create timeout task with the key
+                let timeoutTask = Task { [weak self, waiterKey] in
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+
+                    // Check if waiter is still pending
+                    if let self = self {
+                        let waiter: ConnectionWaiter? = self.state.withLock { s in
+                            s.connectionWaiters.removeValue(forKey: waiterKey)
+                        }
+                        if let waiter = waiter {
+                            waiter.continuation.resume(throwing: CircuitRelayError.timeout)
+                        }
+                    }
+                }
+
+                // Register waiter and check for cancellation atomically
+                let alreadyCancelled = state.withLock { s -> Bool in
+                    let waiter = ConnectionWaiter(
+                        relay: relay,
+                        remote: remote,
+                        continuation: continuation,
+                        timeoutTask: timeoutTask
+                    )
+                    s.connectionWaiters[waiterKey] = waiter
+
+                    // Check if cancelled AFTER registration (race window closed)
+                    return Task.isCancelled
+                }
+
+                // If we were cancelled during registration, clean up immediately
+                if alreadyCancelled {
+                    let waiter: ConnectionWaiter? = state.withLock { s in
                         s.connectionWaiters.removeValue(forKey: waiterKey)
                     }
                     if let waiter = waiter {
-                        waiter.continuation.resume(throwing: CircuitRelayError.timeout)
+                        waiter.timeoutTask.cancel()
+                        waiter.continuation.resume(throwing: CancellationError())
                     }
                 }
             }
-
-            // Now store the waiter with the timeout task
-            state.withLock { s in
-                let waiter = ConnectionWaiter(
-                    relay: relay,
-                    remote: remote,
-                    continuation: continuation,
-                    timeoutTask: timeoutTask
-                )
-                s.connectionWaiters[waiterKey] = waiter
+        } onCancel: { [weak self, waiterKey] in
+            // Immediately cancel the waiter when task is cancelled
+            guard let self = self else { return }
+            let waiter: ConnectionWaiter? = self.state.withLock { s in
+                s.connectionWaiters.removeValue(forKey: waiterKey)
+            }
+            if let waiter = waiter {
+                waiter.timeoutTask.cancel()
+                waiter.continuation.resume(throwing: CancellationError())
             }
         }
     }
