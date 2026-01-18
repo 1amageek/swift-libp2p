@@ -1,0 +1,66 @@
+warning: 'swift-swim': Conflicting identity for swift-nio-udp: dependency 'github.com/1amageek/swift-nio-udp' and dependency '/users/1amageek/desktop/swift-nio-udp' both point to the same package identity 'swift-nio-udp'. The dependencies are introduced through the following chains: (A) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-swim->github.com/1amageek/swift-nio-udp (B) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-nio-udp. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'swift-mdns': Conflicting identity for swift-nio-udp: dependency 'github.com/1amageek/swift-nio-udp' and dependency '/users/1amageek/desktop/swift-nio-udp' both point to the same package identity 'swift-nio-udp'. The dependencies are introduced through the following chains: (A) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-swim->github.com/1amageek/swift-nio-udp (B) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-nio-udp. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Core/P2PCore/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Transport/TCP/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Transport/Memory/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Transport/Relay/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Security/Noise/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Security/Plaintext/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Mux/Yamux/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Negotiation/P2PNegotiation/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/Identify/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/Ping/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/GossipSub/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/CircuitRelay/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/DCUtR/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/AutoNAT/CONTEXT.md
+warning: 'swift-libp2p': found 1 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Protocols/Kademlia/CONTEXT.md
+warning: 'swift-libp2p': found 2 file(s) which are unhandled; explicitly declare them as resources or exclude from the target
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Integration/P2P/Connection/CONTEXT.md
+    /Users/1amageek/Desktop/swift-libp2p/Sources/Integration/P2P/CONTEXT.md
+[0/1] Planning build
+Building for debugging...
+[0/5] Write sources
+[2/6] Write swift-version-30E878B94F53390B.txt
+[4/22] Emitting module P2PDiscoverySWIM
+[5/22] Compiling P2PDiscoverySWIM SWIMTransportAdapter.swift
+[6/22] Compiling P2PDiscoverySWIM SWIMMembership.swift
+/Users/1amageek/Desktop/swift-libp2p/Sources/Discovery/SWIM/SWIMMembership.swift:89:29: warning: no 'async' operations occur within 'await' expression
+ 87 | 
+ 88 |         // Create and start transport
+ 89 |         let transport = try await SWIMTransportAdapter(
+    |                             `- warning: no 'async' operations occur within 'await' expression
+ 90 |             port: configuration.port,
+ 91 |             host: configuration.host
+
+/Users/1amageek/Desktop/swift-libp2p/Sources/Discovery/SWIM/SWIMMembership.swift:89:25: warning: no calls to throwing functions occur within 'try' expression
+ 87 | 
+ 88 |         // Create and start transport
+ 89 |         let transport = try await SWIMTransportAdapter(
+    |                         `- warning: no calls to throwing functions occur within 'try' expression
+ 90 |             port: configuration.port,
+ 91 |             host: configuration.host
+
+/Users/1amageek/Desktop/swift-libp2p/Sources/Discovery/SWIM/SWIMMembership.swift:243:33: error: actor-isolated property 'events' cannot be accessed from outside of the actor
+241 |         guard let swim = swim else { return }
+242 | 
+243 |         for await event in swim.events {
+    |                                 `- error: actor-isolated property 'events' cannot be accessed from outside of the actor
+244 |             sequenceNumber += 1
+245 | 
+[7/22] Emitting module PingPongDemo
