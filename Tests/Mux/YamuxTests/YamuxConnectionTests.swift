@@ -319,6 +319,64 @@ struct YamuxConnectionTests {
         }
     }
 
+    @Test("GoAway received notifies all streams")
+    func goAwayNotifiesAllStreams() async throws {
+        let (connection, mock) = createTestConnection()
+        connection.start()
+
+        // Create some streams
+        let stream1 = try await connection.newStream()
+        let stream2 = try await connection.newStream()
+
+        // Start reads on streams
+        let readTask1 = Task { try await stream1.read() }
+        let readTask2 = Task { try await stream2.read() }
+
+        // Give tasks time to start
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Inject GoAway frame
+        let goAwayFrame = YamuxFrame.goAway(reason: .normal)
+        mock.injectInbound(goAwayFrame.encode())
+
+        // Wait for processing
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Reads should throw (streams should be notified)
+        await #expect(throws: YamuxError.self) {
+            _ = try await readTask1.value
+        }
+        await #expect(throws: YamuxError.self) {
+            _ = try await readTask2.value
+        }
+    }
+
+    @Test("GoAway received resumes pending accepts")
+    func goAwayResumesPendingAccepts() async throws {
+        let (connection, mock) = createTestConnection()
+        connection.start()
+
+        // Start an accept that will block
+        let acceptTask = Task {
+            try await connection.acceptStream()
+        }
+
+        // Give task time to start
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Inject GoAway frame
+        let goAwayFrame = YamuxFrame.goAway(reason: .protocolError)
+        mock.injectInbound(goAwayFrame.encode())
+
+        // Wait for processing
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Accept should throw
+        await #expect(throws: YamuxError.self) {
+            _ = try await acceptTask.value
+        }
+    }
+
     // MARK: - Ping Tests
 
     @Test("Ping request receives pong response")

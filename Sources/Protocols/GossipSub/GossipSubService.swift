@@ -63,18 +63,53 @@ public final class GossipSubService: ProtocolService, Sendable {
 
     // MARK: - Initialization
 
-    /// Creates a new GossipSub service.
+    /// Creates a new GossipSub service with message signing support.
+    ///
+    /// This is the recommended initializer for production use.
+    /// Messages will be signed using the provided key pair when `signMessages` is enabled.
+    ///
+    /// - Parameters:
+    ///   - keyPair: The local key pair (provides both PeerID and signing key)
+    ///   - configuration: Configuration parameters
+    public init(
+        keyPair: KeyPair,
+        configuration: GossipSubConfiguration = .init()
+    ) {
+        self.localPeerID = keyPair.peerID
+        self.configuration = configuration
+        let signingKey = configuration.signMessages ? keyPair.privateKey : nil
+        self.router = GossipSubRouter(
+            localPeerID: keyPair.peerID,
+            signingKey: signingKey,
+            configuration: configuration
+        )
+        self.heartbeat = Mutex(nil)
+        self.serviceState = Mutex(ServiceState())
+    }
+
+    /// Creates a new GossipSub service without signing support.
+    ///
+    /// Use this initializer only for testing or when message signing is disabled.
     ///
     /// - Parameters:
     ///   - localPeerID: The local peer ID
-    ///   - configuration: Configuration parameters
+    ///   - configuration: Configuration parameters (must have `signMessages = false`)
+    /// - Precondition: `configuration.signMessages` must be `false`
     public init(
         localPeerID: PeerID,
-        configuration: GossipSubConfiguration = .init()
+        configuration: GossipSubConfiguration = .testing
     ) {
+        precondition(
+            !configuration.signMessages,
+            "signMessages requires KeyPair. Use init(keyPair:configuration:) instead."
+        )
         self.localPeerID = localPeerID
         self.configuration = configuration
-        self.router = GossipSubRouter(localPeerID: localPeerID, configuration: configuration)
+        self.router = GossipSubRouter(
+            localPeerID: localPeerID,
+            signingKey: nil,
+            configuration: configuration
+        )
         self.heartbeat = Mutex(nil)
         self.serviceState = Mutex(ServiceState())
     }

@@ -3,7 +3,7 @@ import Foundation
 import P2PCore
 
 /// Errors that can occur in the GossipSub protocol.
-public enum GossipSubError: Error, Sendable {
+public enum GossipSubError: Error, Sendable, Equatable {
     /// Invalid protobuf encoding/decoding.
     case invalidProtobuf(String)
 
@@ -57,6 +57,12 @@ public enum GossipSubError: Error, Sendable {
 
     /// Internal error.
     case internalError(String)
+
+    /// Signing requires source peer ID to be set.
+    case signingRequiresSource
+
+    /// Signing key required but not provided.
+    case signingKeyRequired
 }
 
 // MARK: - LocalizedError
@@ -100,6 +106,10 @@ extension GossipSubError: LocalizedError {
             return "Malformed message: \(message)"
         case .internalError(let message):
             return "Internal error: \(message)"
+        case .signingRequiresSource:
+            return "Signing requires source peer ID to be set"
+        case .signingKeyRequired:
+            return "Signing key required but not provided. Use init(keyPair:...) to enable signing."
         }
     }
 }

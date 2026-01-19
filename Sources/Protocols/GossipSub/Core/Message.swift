@@ -91,6 +91,8 @@ extension GossipSubMessage {
         private var topic: Topic
         private var source: PeerID?
         private var sequenceNumber: Data?
+        private var signature: Data?
+        private var key: Data?
 
         /// Creates a new message builder.
         ///
@@ -128,25 +130,92 @@ extension GossipSubMessage {
             return copy
         }
 
+        /// Signs the message with the given private key.
+        ///
+        /// Must be called after `source()` has been set.
+        /// This generates the sequence number if not already set.
+        ///
+        /// - Parameter privateKey: The private key to sign with
+        /// - Returns: A new builder with signature and key set
+        /// - Throws: `GossipSubError.signingRequiresSource` if source is not set
+        public func sign(with privateKey: PrivateKey) throws -> Builder {
+            guard let source = source else {
+                throw GossipSubError.signingRequiresSource
+            }
+
+            // Generate sequence number if not set
+            let seqno = sequenceNumber ?? Self.generateSequenceNumber()
+
+            // Build signing data
+            let signingData = Self.buildSigningData(
+                source: source,
+                data: data,
+                seqno: seqno,
+                topic: topic
+            )
+
+            var copy = self
+            copy.sequenceNumber = seqno
+            copy.signature = try privateKey.sign(signingData)
+            copy.key = privateKey.publicKey.protobufEncoded
+            return copy
+        }
+
+        /// Generates an 8-byte random sequence number.
+        private static func generateSequenceNumber() -> Data {
+            var seqno = Data(count: 8)
+            for i in 0..<8 {
+                seqno[i] = UInt8.random(in: 0...255)
+            }
+            return seqno
+        }
+
+        /// Builds the signing data per libp2p pubsub spec.
+        ///
+        /// Format: "libp2p-pubsub:" + protobuf(from, data, seqno, topic)
+        private static func buildSigningData(source: PeerID, data: Data, seqno: Data, topic: Topic) -> Data {
+            let prefix = Data("libp2p-pubsub:".utf8)
+            var messageBytes = Data()
+
+            // Field 1: from (source peer ID bytes)
+            let fromBytes = source.bytes
+            messageBytes.append(0x0a) // tag 1, wire type 2 (length-delimited)
+            messageBytes.append(contentsOf: Varint.encode(UInt64(fromBytes.count)))
+            messageBytes.append(fromBytes)
+
+            // Field 2: data
+            messageBytes.append(0x12) // tag 2, wire type 2
+            messageBytes.append(contentsOf: Varint.encode(UInt64(data.count)))
+            messageBytes.append(data)
+
+            // Field 3: seqno
+            messageBytes.append(0x1a) // tag 3, wire type 2
+            messageBytes.append(contentsOf: Varint.encode(UInt64(seqno.count)))
+            messageBytes.append(seqno)
+
+            // Field 4: topic
+            let topicBytes = Data(topic.value.utf8)
+            messageBytes.append(0x22) // tag 4, wire type 2
+            messageBytes.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
+            messageBytes.append(topicBytes)
+
+            return prefix + messageBytes
+        }
+
         /// Builds the message.
         ///
         /// - Returns: The constructed message
         /// - Throws: If required fields are missing
         public func build() throws -> GossipSubMessage {
-            let seqno = sequenceNumber ?? {
-                // Auto-generate if not set
-                var data = Data(count: 8)
-                for i in 0..<8 {
-                    data[i] = UInt8.random(in: 0...255)
-                }
-                return data
-            }()
+            let seqno = sequenceNumber ?? Self.generateSequenceNumber()
 
             return GossipSubMessage(
                 source: source,
                 data: data,
                 sequenceNumber: seqno,
-                topic: topic
+                topic: topic,
+                signature: signature,
+                key: key
             )
         }
     }

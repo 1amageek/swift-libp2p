@@ -161,6 +161,52 @@ struct MultiaddrTests {
         let addr = Multiaddr(uncheckedProtocols: components)
         #expect(addr.protocols.count == multiaddrMaxComponents + 5)
     }
+
+    @Test("SocketAddress init rejects oversized input")
+    func socketAddressRejectsOversizedInput() {
+        // Create a socket address string larger than multiaddrMaxInputSize
+        let oversizedHost = String(repeating: "x", count: multiaddrMaxInputSize + 100)
+        let oversizedSocketAddr = "\(oversizedHost):4001"
+
+        let result = Multiaddr(socketAddress: oversizedSocketAddr)
+        #expect(result == nil)
+    }
+
+    @Test("SocketAddress init accepts valid input")
+    func socketAddressAcceptsValidInput() {
+        // Valid IPv4 socket address
+        let addr1 = Multiaddr(socketAddress: "192.168.1.100:4001")
+        #expect(addr1 != nil)
+        #expect(addr1?.ipAddress == "192.168.1.100")
+        #expect(addr1?.tcpPort == 4001)
+
+        // Valid IPv6 socket address
+        let addr2 = Multiaddr(socketAddress: "[::1]:5353", transport: .udp)
+        #expect(addr2 != nil)
+        #expect(addr2?.ipAddress == "0:0:0:0:0:0:0:1")
+        #expect(addr2?.udpPort == 5353)
+    }
+
+    @Test("IPv6 address rejects oversized input")
+    func ipv6RejectsOversizedInput() {
+        // Create an oversized IPv6-like string (longer than 45 chars)
+        let oversizedIPv6 = String(repeating: "1234:", count: 20) + "1234"  // ~100 chars
+
+        // This should fail to parse as IPv6
+        let addr = Multiaddr(socketAddress: "[\(oversizedIPv6)]:4001")
+        #expect(addr == nil)
+    }
+
+    @Test("IPv6 address accepts valid long addresses")
+    func ipv6AcceptsValidLongAddresses() throws {
+        // Fully expanded IPv6 address (39 chars): 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+        let fullIPv6 = try Multiaddr("/ip6/2001:db8:85a3:0:0:8a2e:370:7334/tcp/4001")
+        #expect(fullIPv6.protocols.count == 2)
+
+        // Compressed IPv6
+        let compressed = try Multiaddr("/ip6/::1/tcp/4001")
+        #expect(compressed.ipAddress == "0:0:0:0:0:0:0:1")
+    }
 }
 
 @Suite("Varint Tests")

@@ -185,6 +185,9 @@ struct YamuxFrame: Sendable {
     }
 }
 
+/// Maximum read buffer size (32MB - allows 2x max frame size for reassembly)
+let yamuxMaxReadBufferSize = 32 * 1024 * 1024
+
 /// Yamux-specific errors.
 enum YamuxError: Error, Sendable {
     case invalidVersion(UInt8)
@@ -197,6 +200,10 @@ enum YamuxError: Error, Sendable {
     case maxStreamsExceeded(current: Int, max: Int)
     case streamIDReused(UInt32)
     case keepAliveTimeout
+    /// Read buffer exceeded maximum size (DoS protection)
+    case readBufferOverflow
+    /// Stream ID space exhausted (connection too long-lived)
+    case streamIDExhausted
 }
 
 // MARK: - Configuration

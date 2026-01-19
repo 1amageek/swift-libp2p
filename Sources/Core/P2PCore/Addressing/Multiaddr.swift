@@ -367,6 +367,11 @@ extension Multiaddr {
     /// // → /ip6/::1/udp/5353
     /// ```
     public init?(socketAddress: String, transport: Transport = .tcp) {
+        // Size limit check for DoS protection
+        guard socketAddress.utf8.count <= multiaddrMaxInputSize else {
+            return nil
+        }
+
         guard let (host, port, isIPv6) = Self.parseSocketAddress(socketAddress) else {
             return nil
         }

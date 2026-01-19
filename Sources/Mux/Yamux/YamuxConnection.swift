@@ -7,6 +7,22 @@ import Synchronization
 /// Threshold for compacting the read buffer (64KB)
 private let readBufferCompactThreshold = 64 * 1024
 
+/// Actor for serializing frame writes to the underlying connection.
+///
+/// This ensures that concurrent writes from multiple streams don't interleave
+/// and corrupt the frame boundary on the wire.
+private actor FrameWriter {
+    private let connection: any SecuredConnection
+
+    init(connection: any SecuredConnection) {
+        self.connection = connection
+    }
+
+    func write(_ data: Data) async throws {
+        try await connection.write(data)
+    }
+}
+
 /// Internal state for YamuxConnection.
 private struct YamuxConnectionState: Sendable {
     var streams: [UInt64: YamuxStream] = [:]
@@ -14,6 +30,8 @@ private struct YamuxConnectionState: Sendable {
     var pendingAccepts: [CheckedContinuation<MuxedStream, Error>] = []
     var isClosed = false
     var isStarted = false
+    /// GoAway received - reject new streams but allow existing to continue
+    var isGoAwayReceived = false
     var readBuffer = Data()
     /// Offset into readBuffer for the next unprocessed byte (avoids O(n) copy on each frame)
     var readBufferOffset = 0
@@ -62,6 +80,8 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     private let isInitiator: Bool
     private let configuration: YamuxConfiguration
     private let state: Mutex<YamuxConnectionState>
+    /// Serializes frame writes to prevent interleaving
+    private let frameWriter: FrameWriter
 
     public let inboundStreams: AsyncStream<MuxedStream>
 
@@ -80,6 +100,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         self.remotePeer = remotePeer
         self.isInitiator = isInitiator
         self.configuration = configuration
+        self.frameWriter = FrameWriter(connection: underlying)
 
         var initialState = YamuxConnectionState(isInitiator: isInitiator)
 
@@ -124,17 +145,42 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     }
 
     public func newStream() async throws -> MuxedStream {
-        let streamID: UInt32 = state.withLock { state in
-            if state.isClosed {
-                return 0
-            }
-            let id = state.nextStreamID
-            state.nextStreamID += 2
-            return id
+        // Result type to capture both value and potential error from lock
+        enum StreamIDResult {
+            case success(UInt32)
+            case closed
+            case goAwayReceived
+            case exhausted
         }
 
-        if streamID == 0 {
+        let result: StreamIDResult = state.withLock { state in
+            if state.isClosed {
+                return .closed
+            }
+            if state.isGoAwayReceived {
+                return .goAwayReceived
+            }
+
+            let id = state.nextStreamID
+
+            // Check for stream ID exhaustion with overflow detection
+            let (newID, overflow) = id.addingReportingOverflow(2)
+            if overflow {
+                return .exhausted
+            }
+
+            state.nextStreamID = newID
+            return .success(id)
+        }
+
+        let streamID: UInt32
+        switch result {
+        case .success(let id):
+            streamID = id
+        case .closed, .goAwayReceived:
             throw YamuxError.connectionClosed
+        case .exhausted:
+            throw YamuxError.streamIDExhausted
         }
 
         let stream = YamuxStream(id: UInt64(streamID), connection: self, initialWindowSize: configuration.initialWindowSize)
@@ -176,34 +222,24 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     }
 
     public func close() async throws {
-        // Capture continuations to resume outside of lock
-        let (inboundContinuation, pendingAccepts) = state.withLock { state -> (AsyncStream<MuxedStream>.Continuation?, [CheckedContinuation<MuxedStream, Error>]) in
-            state.isClosed = true
-            let inbound = state.inboundContinuation
-            state.inboundContinuation = nil
-            let pending = state.pendingAccepts
-            state.pendingAccepts.removeAll()
-            return (inbound, pending)
+        // Atomically capture state - returns nil if already closed
+        guard let capture = captureForShutdown() else {
+            return
         }
 
-        // Resume continuations outside of lock to avoid deadlock
-        inboundContinuation?.finish()
-        for continuation in pendingAccepts {
-            continuation.resume(throwing: YamuxError.connectionClosed)
-        }
-
+        // Cancel background tasks
         readTask.withLock { $0?.cancel() }
         keepAliveTask.withLock { $0?.cancel() }
 
-        // Send GoAway
+        // Notify continuations
+        capture.notifyContinuations(error: YamuxError.connectionClosed)
+
+        // Send GoAway (best effort)
         let frame = YamuxFrame.goAway(reason: .normal)
         try? await sendFrame(frame)
 
-        // Close all streams
-        let allStreams = state.withLock { state in Array(state.streams.values) }
-        for stream in allStreams {
-            try? await stream.close()
-        }
+        // Close all streams gracefully (sends FIN frames)
+        await capture.closeAllStreamsGracefully()
 
         try await underlying.close()
     }
@@ -215,7 +251,8 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         if isClosed && frame.type != .goAway {
             throw YamuxError.connectionClosed
         }
-        try await underlying.write(frame.encode())
+        // Use frameWriter actor to serialize all writes and prevent interleaving
+        try await frameWriter.write(frame.encode())
     }
 
     func removeStream(_ id: UInt64) {
@@ -236,8 +273,14 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                     throw YamuxError.connectionClosed
                 }
 
-                state.withLock { state in
+                // Append data and check buffer size limit (DoS protection)
+                let bufferOverflow = state.withLock { state -> Bool in
                     state.readBuffer.append(data)
+                    return state.readBuffer.count > yamuxMaxReadBufferSize
+                }
+
+                if bufferOverflow {
+                    throw YamuxError.readBufferOverflow
                 }
 
                 // Process all complete frames
@@ -253,28 +296,9 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                 }
             }
         } catch {
-            // Connection closed or error - capture continuations and streams to notify outside of lock
-            let (inboundContinuation, pendingAccepts, allStreams) = state.withLock { state -> (AsyncStream<MuxedStream>.Continuation?, [CheckedContinuation<MuxedStream, Error>], [YamuxStream]) in
-                state.isClosed = true
-                let inbound = state.inboundContinuation
-                state.inboundContinuation = nil
-                let pending = state.pendingAccepts
-                state.pendingAccepts.removeAll()
-                let streams = Array(state.streams.values)
-                state.streams.removeAll()
-                return (inbound, pending, streams)
-            }
-
-            // Resume continuations outside of lock to avoid deadlock
-            inboundContinuation?.finish()
-            for continuation in pendingAccepts {
-                continuation.resume(throwing: error)
-            }
-
-            // Notify all streams that the connection is dead
-            for stream in allStreams {
-                stream.remoteReset()
-            }
+            // Connection closed or error - abrupt shutdown
+            let yamuxError = (error as? YamuxError) ?? .connectionClosed
+            abruptShutdown(error: yamuxError)
         }
     }
 
@@ -328,9 +352,15 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                 case accept(YamuxStream)
                 case rejectReuse
                 case rejectLimit
+                case rejectGoAway
             }
 
             let result: SynResult = state.withLock { state -> SynResult in
+                // Reject new streams after GoAway received
+                if state.isGoAwayReceived {
+                    return .rejectGoAway
+                }
+
                 // Check if stream ID already exists (reuse attack)
                 if state.streams[streamID] != nil {
                     return .rejectReuse
@@ -350,6 +380,18 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             // Handle rejection cases
             let stream: YamuxStream
             switch result {
+            case .rejectGoAway:
+                // GoAway received - reject new streams
+                let rstFrame = YamuxFrame(
+                    type: .data,
+                    flags: .rst,
+                    streamID: frame.streamID,
+                    length: 0,
+                    data: nil
+                )
+                try? await sendFrame(rstFrame)
+                return
+
             case .rejectReuse:
                 // Protocol violation: stream ID reuse
                 let rstFrame = YamuxFrame(
@@ -395,7 +437,8 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
             switch deliveryResult {
             case .directDelivery(let cont, let deliveredStream):
-                // Direct delivery to waiting accepter - always succeeds
+                // Direct delivery to waiting accepter
+                // ACK must be sent first - if it fails, resume continuation with error
                 let ackFrame = YamuxFrame(
                     type: .data,
                     flags: .ack,
@@ -403,8 +446,15 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                     length: 0,
                     data: nil
                 )
-                try await sendFrame(ackFrame)
-                cont.resume(returning: deliveredStream)
+                do {
+                    try await sendFrame(ackFrame)
+                    // ACK succeeded - deliver stream to waiting accepter
+                    cont.resume(returning: deliveredStream)
+                } catch {
+                    // ACK failed - clean up stream and resume with error
+                    state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
+                    cont.resume(throwing: error)
+                }
 
             case .bufferDelivery(let continuation, let deliveredStream):
                 guard let continuation = continuation else {
@@ -540,21 +590,99 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     }
 
     private func handleGoAway(_ frame: YamuxFrame) {
-        // Capture continuations to resume outside of lock
-        let (inboundContinuation, pendingAccepts) = state.withLock { state -> (AsyncStream<MuxedStream>.Continuation?, [CheckedContinuation<MuxedStream, Error>]) in
-            state.isClosed = true
-            let inbound = state.inboundContinuation
-            state.inboundContinuation = nil
-            let pending = state.pendingAccepts
-            state.pendingAccepts.removeAll()
-            return (inbound, pending)
+        // Per Yamux spec: GoAway signals graceful shutdown intent
+        // - Reject new streams (both inbound SYN and outbound newStream)
+        // - Allow existing streams to complete naturally
+        // - Do NOT reset existing streams
+
+        // Step 1: Set flag to reject new streams
+        state.withLock { state in
+            state.isGoAwayReceived = true
         }
 
-        // Resume continuations outside of lock to avoid deadlock
-        inboundContinuation?.finish()
-        for continuation in pendingAccepts {
-            continuation.resume(throwing: YamuxError.connectionClosed)
+        // Step 2: Resume pending accepts with error (no new streams coming)
+        let pendingAccepts = state.withLock { state -> [CheckedContinuation<MuxedStream, Error>] in
+            let pending = state.pendingAccepts
+            state.pendingAccepts.removeAll()
+            return pending
         }
+        for cont in pendingAccepts {
+            cont.resume(throwing: YamuxError.connectionClosed)
+        }
+
+        // Step 3: Finish inbound stream (no more new streams)
+        state.withLock { state in
+            state.inboundContinuation?.finish()
+            state.inboundContinuation = nil
+        }
+
+        // Step 4: Existing streams continue operating - do NOT reset them
+    }
+
+    // MARK: - Shutdown Infrastructure
+
+    /// Captured state during shutdown, processed outside the lock.
+    private struct ShutdownCapture {
+        let streams: [YamuxStream]
+        let inboundContinuation: AsyncStream<MuxedStream>.Continuation?
+        let pendingAccepts: [CheckedContinuation<MuxedStream, Error>]
+
+        /// Finishes the inbound stream and resumes pending accepts with error.
+        func notifyContinuations(error: Error) {
+            inboundContinuation?.finish()
+            for continuation in pendingAccepts {
+                continuation.resume(throwing: error)
+            }
+        }
+
+        /// Resets all streams (for abrupt/error shutdown).
+        func resetAllStreams() {
+            for stream in streams {
+                stream.remoteReset()
+            }
+        }
+
+        /// Closes all streams gracefully (for user-initiated close).
+        func closeAllStreamsGracefully() async {
+            for stream in streams {
+                try? await stream.close()
+            }
+        }
+    }
+
+    /// Atomically captures and clears shutdown-related state.
+    ///
+    /// Returns `nil` if already closed (idempotent).
+    /// Call this once, then process the captured state outside the lock.
+    private func captureForShutdown() -> ShutdownCapture? {
+        state.withLock { state in
+            guard !state.isClosed else { return nil }
+
+            state.isClosed = true
+
+            let capture = ShutdownCapture(
+                streams: Array(state.streams.values),
+                inboundContinuation: state.inboundContinuation,
+                pendingAccepts: state.pendingAccepts
+            )
+
+            state.streams.removeAll()
+            state.inboundContinuation = nil
+            state.pendingAccepts.removeAll()
+            state.pendingPings.removeAll()
+
+            return capture
+        }
+    }
+
+    /// Abrupt shutdown for error conditions (GoAway, read error, timeout).
+    ///
+    /// Resets all streams immediately without sending FIN.
+    private func abruptShutdown(error: YamuxError) {
+        guard let capture = captureForShutdown() else { return }
+
+        capture.notifyContinuations(error: error)
+        capture.resetAllStreams()
     }
 
     // MARK: - Keep-Alive
@@ -612,29 +740,8 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     }
 
     private func handleKeepAliveTimeout() async {
-        // Capture state for cleanup outside of lock
-        let (inboundContinuation, pendingAccepts, allStreams) = state.withLock { state -> (AsyncStream<MuxedStream>.Continuation?, [CheckedContinuation<MuxedStream, Error>], [YamuxStream]) in
-            state.isClosed = true
-            let inbound = state.inboundContinuation
-            state.inboundContinuation = nil
-            let pending = state.pendingAccepts
-            state.pendingAccepts.removeAll()
-            let streams = Array(state.streams.values)
-            state.streams.removeAll()
-            state.pendingPings.removeAll()
-            return (inbound, pending, streams)
-        }
-
-        // Resume continuations with timeout error
-        inboundContinuation?.finish()
-        for continuation in pendingAccepts {
-            continuation.resume(throwing: YamuxError.keepAliveTimeout)
-        }
-
-        // Notify all streams
-        for stream in allStreams {
-            stream.remoteReset()
-        }
+        // Abrupt shutdown with timeout error
+        abruptShutdown(error: .keepAliveTimeout)
 
         // Close underlying connection
         try? await underlying.close()

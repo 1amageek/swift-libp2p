@@ -41,6 +41,10 @@ public final class GossipSubRouter: Sendable {
     /// Local peer ID.
     public let localPeerID: PeerID
 
+    /// Signing key for message authentication.
+    /// If nil, messages will not be signed.
+    private let signingKey: PrivateKey?
+
     /// Mesh state.
     let meshState: MeshState
 
@@ -70,9 +74,15 @@ public final class GossipSubRouter: Sendable {
     ///
     /// - Parameters:
     ///   - localPeerID: The local peer ID
+    ///   - signingKey: Private key for signing messages (nil = no signing)
     ///   - configuration: Configuration parameters
-    public init(localPeerID: PeerID, configuration: GossipSubConfiguration = .init()) {
+    public init(
+        localPeerID: PeerID,
+        signingKey: PrivateKey? = nil,
+        configuration: GossipSubConfiguration = .init()
+    ) {
         self.localPeerID = localPeerID
+        self.signingKey = signingKey
         self.configuration = configuration
         self.meshState = MeshState()
         self.peerState = PeerStateManager()
@@ -486,12 +496,23 @@ public final class GossipSubRouter: Sendable {
     ///   - data: The message data
     ///   - topic: The topic to publish to
     /// - Returns: The published message
+    /// - Throws: `GossipSubError.signingKeyRequired` if signing is enabled but no key provided
     public func publish(_ data: Data, to topic: Topic) throws -> GossipSubMessage {
         // Build message
-        let message = try GossipSubMessage.Builder(data: data, topic: topic)
+        var builder = GossipSubMessage.Builder(data: data, topic: topic)
             .source(localPeerID)
-            .autoSequenceNumber()
-            .build()
+
+        // Sign the message if signing is enabled
+        if configuration.signMessages {
+            guard let key = signingKey else {
+                throw GossipSubError.signingKeyRequired
+            }
+            builder = try builder.sign(with: key)
+        } else {
+            builder = builder.autoSequenceNumber()
+        }
+
+        let message = try builder.build()
 
         // Mark as seen
         seenCache.add(message.id)

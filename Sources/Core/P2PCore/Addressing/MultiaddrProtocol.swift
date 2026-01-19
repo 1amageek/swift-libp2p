@@ -157,6 +157,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
 
     /// Normalizes an IPv6 address to expanded form (e.g., "::1" → "0:0:0:0:0:0:0:1").
     private static func normalizeIPv6(_ address: String) -> String? {
+        // Max IPv6 address length is 45 chars (39 expanded + some slack for edge cases)
+        guard address.count <= 45 else { return nil }
         guard let bytes = encodeIPv6(address) else { return nil }
         var parts: [String] = []
         for i in 0..<8 {
