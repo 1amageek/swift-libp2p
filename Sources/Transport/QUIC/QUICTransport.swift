@@ -38,13 +38,10 @@ public final class QUICTransport: SecuredTransport, Sendable {
 
     /// TLS provider mode for QUIC connections.
     public enum TLSProviderMode: Sendable {
-        /// Use BoringSSL-based TLS provider for real TLS 1.3 handshakes.
-        /// This is required for interoperability with rust-libp2p and go-libp2p.
-        case boringSSL
-
-        /// Use mock TLS provider for testing.
-        /// This should only be used for internal testing.
-        case mock
+        /// Use swift-quic's pure Swift TLS 1.3 implementation.
+        /// This is the only mode - provides real TLS 1.3 without external dependencies.
+        /// Compatible with rust-libp2p and go-libp2p.
+        case swiftQUIC
     }
 
     /// QUIC configuration
@@ -66,10 +63,10 @@ public final class QUICTransport: SecuredTransport, Sendable {
     ///
     /// - Parameters:
     ///   - configuration: QUIC configuration (defaults to libp2p preset)
-    ///   - tlsProviderMode: TLS provider mode (defaults to BoringSSL for real TLS)
+    ///   - tlsProviderMode: TLS provider mode (defaults to swiftQUIC for pure Swift TLS)
     public init(
         configuration: QUICConfiguration = .libp2p(),
-        tlsProviderMode: TLSProviderMode = .boringSSL
+        tlsProviderMode: TLSProviderMode = .swiftQUIC
     ) {
         self.configuration = configuration
         self.tlsProviderMode = tlsProviderMode
@@ -147,18 +144,12 @@ public final class QUICTransport: SecuredTransport, Sendable {
             throw TransportError.unsupportedAddress(address)
         }
 
-        // Create configuration with appropriate TLS provider factory
+        // Create configuration with libp2p TLS provider factory
         var config = configuration
-        config.tlsProviderFactory = { [localKeyPair, tlsProviderMode] isClient in
+        config.tlsProviderFactory = { [localKeyPair] isClient in
             do {
-                switch tlsProviderMode {
-                case .boringSSL:
-                    // Use BoringSSL for real TLS 1.3 (interop with rust/go-libp2p)
-                    return try BoringSSLTLSProvider(localKeyPair: localKeyPair)
-                case .mock:
-                    // Use mock for testing
-                    return try TLSProvider(localKeyPair: localKeyPair)
-                }
+                // Use swift-quic's pure Swift TLS 1.3 implementation
+                return try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
             } catch {
                 // Return a failing provider instead of crashing
                 // The error will be reported during handshake
@@ -206,18 +197,12 @@ public final class QUICTransport: SecuredTransport, Sendable {
             throw TransportError.unsupportedAddress(address)
         }
 
-        // Create configuration with appropriate TLS provider factory
+        // Create configuration with libp2p TLS provider factory
         var config = configuration
-        config.tlsProviderFactory = { [localKeyPair, tlsProviderMode] isClient in
+        config.tlsProviderFactory = { [localKeyPair] isClient in
             do {
-                switch tlsProviderMode {
-                case .boringSSL:
-                    // Use BoringSSL for real TLS 1.3 (interop with rust/go-libp2p)
-                    return try BoringSSLTLSProvider(localKeyPair: localKeyPair)
-                case .mock:
-                    // Use mock for testing
-                    return try TLSProvider(localKeyPair: localKeyPair)
-                }
+                // Use swift-quic's pure Swift TLS 1.3 implementation
+                return try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
             } catch {
                 // Return a failing provider instead of crashing
                 // The error will be reported during handshake
@@ -254,16 +239,9 @@ public final class QUICTransport: SecuredTransport, Sendable {
         if let managedConnection = connection as? ManagedConnection {
             let tlsProvider = managedConnection.underlyingTLSProvider
 
-            // Try BoringSSL provider first (production)
-            if let boringProvider = tlsProvider as? BoringSSLTLSProvider {
-                if let remotePeerID = boringProvider.remotePeerID {
-                    return remotePeerID
-                }
-            }
-
-            // Try mock TLS provider (testing)
-            if let mockProvider = tlsProvider as? TLSProvider {
-                if let remotePeerID = mockProvider.remotePeerID {
+            // Extract PeerID from SwiftQUIC TLS provider
+            if let swiftQUICProvider = tlsProvider as? SwiftQUICTLSProvider {
+                if let remotePeerID = swiftQUICProvider.remotePeerID {
                     return remotePeerID
                 }
             }

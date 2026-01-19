@@ -216,16 +216,9 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
         if let managedConnection = connection as? ManagedConnection {
             let tlsProvider = managedConnection.underlyingTLSProvider
 
-            // Try BoringSSL provider first (production)
-            if let boringProvider = tlsProvider as? BoringSSLTLSProvider {
-                if let remotePeerID = boringProvider.remotePeerID {
-                    return remotePeerID
-                }
-            }
-
-            // Try mock TLS provider (testing)
-            if let mockProvider = tlsProvider as? TLSProvider {
-                if let remotePeerID = mockProvider.remotePeerID {
+            // Extract PeerID from SwiftQUIC TLS provider
+            if let swiftQUICProvider = tlsProvider as? SwiftQUICTLSProvider {
+                if let remotePeerID = swiftQUICProvider.remotePeerID {
                     return remotePeerID
                 }
             }

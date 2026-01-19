@@ -56,11 +56,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.91.0"),
-        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.36.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
@@ -104,9 +101,6 @@ let package = Package(
                 "P2PCore",
                 "P2PMux",
                 .product(name: "QUIC", package: "swift-quic"),
-                .product(name: "NIOSSL", package: "swift-nio-ssl"),
-                .product(name: "X509", package: "swift-certificates"),
-                .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
             path: "Sources/Transport/QUIC"
         ),

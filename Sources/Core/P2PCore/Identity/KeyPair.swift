@@ -19,9 +19,17 @@ public struct KeyPair: Sendable {
         privateKey.keyType
     }
 
+    // MARK: - Key Generation
+
     /// Creates a new random Ed25519 key pair.
     public static func generateEd25519() -> KeyPair {
         let privateKey = PrivateKey.generateEd25519()
+        return KeyPair(privateKey: privateKey)
+    }
+
+    /// Creates a new random ECDSA P-256 key pair.
+    public static func generateECDSA() -> KeyPair {
+        let privateKey = PrivateKey.generateECDSA()
         return KeyPair(privateKey: privateKey)
     }
 

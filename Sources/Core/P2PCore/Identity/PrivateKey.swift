@@ -15,6 +15,8 @@ public struct PrivateKey: Sendable {
     /// The corresponding public key.
     public let publicKey: PublicKey
 
+    // MARK: - Ed25519
+
     /// Creates a new random Ed25519 private key.
     public static func generateEd25519() -> PrivateKey {
         let key = Curve25519.Signing.PrivateKey()
@@ -29,6 +31,25 @@ public struct PrivateKey: Sendable {
         self.rawBytes = Data(key.rawRepresentation)
         self.publicKey = PublicKey(ed25519: key.publicKey)
     }
+
+    // MARK: - ECDSA P-256
+
+    /// Creates a new random ECDSA P-256 private key.
+    public static func generateECDSA() -> PrivateKey {
+        let key = P256.Signing.PrivateKey()
+        return PrivateKey(ecdsa: key)
+    }
+
+    /// Creates a private key from a P256 signing key.
+    ///
+    /// - Parameter key: The ECDSA P-256 private key
+    public init(ecdsa key: P256.Signing.PrivateKey) {
+        self.keyType = .ecdsa
+        self.rawBytes = Data(key.rawRepresentation)
+        self.publicKey = PublicKey(ecdsa: key.publicKey)
+    }
+
+    // MARK: - Raw Bytes Initialization
 
     /// Creates a private key from raw bytes.
     ///
@@ -48,10 +69,20 @@ public struct PrivateKey: Sendable {
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: rawBytes)
             self.publicKey = PublicKey(ed25519: key.publicKey)
 
-        case .secp256k1, .ecdsa, .rsa:
+        case .ecdsa:
+            // P-256 private key is 32 bytes
+            guard rawBytes.count == 32 else {
+                throw PrivateKeyError.invalidKeySize(expected: 32, actual: rawBytes.count)
+            }
+            let key = try P256.Signing.PrivateKey(rawRepresentation: rawBytes)
+            self.publicKey = PublicKey(ecdsa: key.publicKey)
+
+        case .secp256k1, .rsa:
             throw PrivateKeyError.unsupportedKeyType(keyType)
         }
     }
+
+    // MARK: - Key Accessors
 
     /// Returns this key as a Curve25519 signing private key, if applicable.
     ///
@@ -62,6 +93,18 @@ public struct PrivateKey: Sendable {
         }
         return try Curve25519.Signing.PrivateKey(rawRepresentation: rawBytes)
     }
+
+    /// Returns this key as a P256 signing private key, if applicable.
+    ///
+    /// - Throws: `PrivateKeyError.keyTypeMismatch` if this is not an ECDSA key
+    public func ecdsaKey() throws -> P256.Signing.PrivateKey {
+        guard keyType == .ecdsa else {
+            throw PrivateKeyError.keyTypeMismatch(expected: .ecdsa, actual: keyType)
+        }
+        return try P256.Signing.PrivateKey(rawRepresentation: rawBytes)
+    }
+
+    // MARK: - Signing
 
     /// Signs data with this private key.
     ///
@@ -74,7 +117,14 @@ public struct PrivateKey: Sendable {
             let key = try ed25519Key()
             let signature = try key.signature(for: data)
             return Data(signature)
-        case .secp256k1, .ecdsa, .rsa:
+
+        case .ecdsa:
+            let key = try ecdsaKey()
+            let signature = try key.signature(for: data)
+            // Use DER representation for libp2p compatibility
+            return Data(signature.derRepresentation)
+
+        case .secp256k1, .rsa:
             throw PrivateKeyError.unsupportedOperation
         }
     }

@@ -598,6 +598,55 @@ for await event in swim.events {
 
 **用途**: P2PDiscoverySWIM で利用（分散システムのメンバーシップ管理）
 
+### swift-quic
+
+**場所**: `/Users/1amageek/Desktop/swift-quic`
+
+Pure Swift実装のQUICプロトコル（RFC 9000/9001/9002準拠）。
+
+```swift
+// クライアント接続
+let client = QUICClient(configuration: config)
+let connection = try await client.connect(to: address)
+let stream = try await connection.openStream()
+try await stream.write(data)
+let response = try await stream.read()
+
+// サーバーリスナー
+let listener = try await QUICListener.bind(to: address, configuration: config)
+for await connection in listener.connections {
+    for await stream in connection.incomingStreams {
+        // ストリーム処理
+    }
+}
+```
+
+**主要な型:**
+- `QUICClient` - クライアント接続管理
+- `QUICListener` - サーバーリスナー
+- `QUICConnection` - マルチプレックス接続（ストリーム多重化）
+- `QUICStream` - 個別ストリーム（双方向/単方向）
+- `QUICConfiguration` - 接続設定
+
+**モジュール構成:**
+| モジュール | 用途 |
+|-----------|------|
+| `QUIC` | パブリックAPI（QUICClient, QUICListener） |
+| `QUICCore` | コア型（Frame, Packet, Varint）- I/O依存なし |
+| `QUICCrypto` | TLS 1.3実装、AEAD、ヘッダー保護 |
+| `QUICConnection` | 接続状態管理 |
+| `QUICStream` | ストリーム管理、フロー制御 |
+| `QUICRecovery` | 損失検出、輻輳制御 |
+| `QUICTransport` | UDPトランスポート統合 |
+
+**TLS 1.3実装:**
+- 完全なTLS 1.3ステートマシン（ClientHello → Finished）
+- X.509証明書検証（EKU, SAN, Name Constraints対応）
+- AES-128-GCM / ChaCha20-Poly1305 AEAD
+- クロスプラットフォームヘッダー保護（Apple/Linux）
+
+**用途**: P2PTransportQUIC で利用（QUICトランスポート）
+
 ### パッケージ間の依存関係
 
 ```
@@ -607,9 +656,13 @@ swift-nio-udp (UDP transport layer)
     │       │
     │       └──▶ swift-libp2p/P2PDiscoveryMDNS
     │
-    └──▶ swift-SWIM (uses UDPTransport)
+    ├──▶ swift-SWIM (uses UDPTransport)
+    │       │
+    │       └──▶ swift-libp2p/P2PDiscoverySWIM
+    │
+    └──▶ swift-quic (uses NIOUDPTransport)
             │
-            └──▶ swift-libp2p/P2PDiscoverySWIM
+            └──▶ swift-libp2p/P2PTransportQUIC
 ```
 
 **Package.swift での path 指定例:**

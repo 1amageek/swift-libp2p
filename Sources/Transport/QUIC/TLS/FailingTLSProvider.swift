@@ -71,4 +71,16 @@ public final class FailingTLSProvider: TLS13Provider, @unchecked Sendable {
     public func exportKeyingMaterial(label: String, context: Data?, length: Int) throws -> Data {
         throw TLSError.internalError("TLS provider creation failed: \(creationError)")
     }
+
+    public func configureResumption(ticket: SessionTicketData, attemptEarlyData: Bool) throws {
+        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+    }
+
+    public var is0RTTAccepted: Bool {
+        false
+    }
+
+    public var is0RTTAttempted: Bool {
+        false
+    }
 }

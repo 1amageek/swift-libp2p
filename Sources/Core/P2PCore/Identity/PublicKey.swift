@@ -13,6 +13,8 @@ public struct PublicKey: Sendable, Hashable {
     /// The raw public key bytes.
     public let rawBytes: Data
 
+    // MARK: - Raw Bytes Initialization
+
     /// Creates a public key from raw bytes.
     ///
     /// - Parameters:
@@ -34,8 +36,9 @@ public struct PublicKey: Sendable, Hashable {
                 throw PublicKeyError.invalidKeySize(expected: 33, actual: rawBytes.count)
             }
         case .ecdsa:
+            // P-256 public key: 65 bytes uncompressed or 33 bytes compressed
             guard rawBytes.count == 33 || rawBytes.count == 65 else {
-                throw PublicKeyError.invalidKeySize(expected: 33, actual: rawBytes.count)
+                throw PublicKeyError.invalidKeySize(expected: 65, actual: rawBytes.count)
             }
         case .rsa:
             // RSA keys are variable length
@@ -44,6 +47,8 @@ public struct PublicKey: Sendable, Hashable {
             }
         }
     }
+
+    // MARK: - Ed25519
 
     /// Creates an Ed25519 public key from a Curve25519 signing key.
     ///
@@ -63,6 +68,34 @@ public struct PublicKey: Sendable, Hashable {
         return try Curve25519.Signing.PublicKey(rawRepresentation: rawBytes)
     }
 
+    // MARK: - ECDSA P-256
+
+    /// Creates an ECDSA P-256 public key from a P256 signing key.
+    ///
+    /// - Parameter key: The ECDSA P-256 public key
+    public init(ecdsa key: P256.Signing.PublicKey) {
+        self.keyType = .ecdsa
+        // Use uncompressed representation (65 bytes) for compatibility
+        self.rawBytes = Data(key.x963Representation)
+    }
+
+    /// Returns this key as a P256 signing public key, if applicable.
+    ///
+    /// - Throws: `PublicKeyError.keyTypeMismatch` if this is not an ECDSA key
+    public func ecdsaKey() throws -> P256.Signing.PublicKey {
+        guard keyType == .ecdsa else {
+            throw PublicKeyError.keyTypeMismatch(expected: .ecdsa, actual: keyType)
+        }
+        // Handle both compressed (33 bytes) and uncompressed (65 bytes) formats
+        if rawBytes.count == 65 {
+            return try P256.Signing.PublicKey(x963Representation: rawBytes)
+        } else {
+            return try P256.Signing.PublicKey(compressedRepresentation: rawBytes)
+        }
+    }
+
+    // MARK: - Verification
+
     /// Verifies a signature against this public key.
     ///
     /// - Parameters:
@@ -75,7 +108,14 @@ public struct PublicKey: Sendable, Hashable {
         case .ed25519:
             let key = try ed25519Key()
             return key.isValidSignature(signature, for: data)
-        case .secp256k1, .ecdsa, .rsa:
+
+        case .ecdsa:
+            let key = try ecdsaKey()
+            // Signature is DER encoded
+            let ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signature)
+            return key.isValidSignature(ecdsaSignature, for: data)
+
+        case .secp256k1, .rsa:
             throw PublicKeyError.unsupportedOperation
         }
     }
