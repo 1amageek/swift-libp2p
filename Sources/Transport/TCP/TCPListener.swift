@@ -14,7 +14,8 @@ public final class TCPListener: Listener, @unchecked Sendable {
 
     private let lock = OSAllocatedUnfairLock()
     private var pendingConnections: [TCPConnection] = []
-    private var acceptContinuation: CheckedContinuation<any RawConnection, Error>?
+    /// Queue of waiters for concurrent accept support.
+    private var acceptWaiters: [CheckedContinuation<any RawConnection, Error>] = []
     private var isClosed = false
 
     public var localAddress: Multiaddr { _localAddress }
@@ -76,7 +77,8 @@ public final class TCPListener: Listener, @unchecked Sendable {
                     let connection = pendingConnections.removeFirst()
                     return .connection(connection)
                 } else {
-                    acceptContinuation = continuation
+                    // Queue the waiter for FIFO delivery
+                    acceptWaiters.append(continuation)
                     return .waiting
                 }
             }
@@ -94,30 +96,42 @@ public final class TCPListener: Listener, @unchecked Sendable {
     }
 
     public func close() async throws {
-        // Extract continuation within lock, resume outside to avoid deadlock
-        let continuation = lock.withLock { () -> CheckedContinuation<any RawConnection, Error>? in
+        // Extract waiters and pending connections within lock
+        let (waiters, pending) = lock.withLock { () -> ([CheckedContinuation<any RawConnection, Error>], [TCPConnection]) in
             isClosed = true
-            let cont = acceptContinuation
-            acceptContinuation = nil
-            return cont
+            let w = acceptWaiters
+            let p = pendingConnections
+            acceptWaiters.removeAll()
+            pendingConnections.removeAll()
+            return (w, p)
         }
-        continuation?.resume(throwing: TransportError.listenerClosed)
+
+        // Resume all waiters with error
+        for waiter in waiters {
+            waiter.resume(throwing: TransportError.listenerClosed)
+        }
+
+        // Close pending connections to prevent resource leaks
+        for conn in pending {
+            try? await conn.close()
+        }
+
         try await serverChannel.close()
     }
 
     // Called by TCPAcceptHandler when a new connection is accepted
     fileprivate func connectionAccepted(_ connection: TCPConnection) {
-        // Extract continuation within lock, resume outside to avoid deadlock
-        let continuation = lock.withLock { () -> CheckedContinuation<any RawConnection, Error>? in
-            if let cont = acceptContinuation {
-                acceptContinuation = nil
-                return cont
+        // Extract waiter within lock, resume outside to avoid deadlock
+        let waiter = lock.withLock { () -> CheckedContinuation<any RawConnection, Error>? in
+            // FIFO: dequeue the first waiter if any
+            if !acceptWaiters.isEmpty {
+                return acceptWaiters.removeFirst()
             } else {
                 pendingConnections.append(connection)
                 return nil
             }
         }
-        continuation?.resume(returning: connection)
+        waiter?.resume(returning: connection)
     }
 }
 

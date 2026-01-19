@@ -65,9 +65,12 @@ public final class RelayListener: Listener, Sendable {
         self.state = Mutex(ListenerState())
         self.processingTask = Mutex(nil)
 
-        // Start listening for incoming connections from the client
+        // Register with the client for direct connection routing
+        client.registerListener(self, for: relay)
+
+        // Start background task for reservation expiration monitoring
         let task = Task { [weak self] in
-            await self?.processIncomingConnections()
+            await self?.monitorReservationExpiration()
         }
         self.processingTask.withLock { $0 = task }
     }
@@ -120,7 +123,10 @@ public final class RelayListener: Listener, Sendable {
     }
 
     public func close() async throws {
-        // Cancel the processing task first
+        // Unregister from the client
+        client.unregisterListener(for: relay)
+
+        // Cancel the processing task
         let task = processingTask.withLock { t -> Task<Void?, Never>? in
             let existing = t
             t = nil
@@ -169,30 +175,26 @@ public final class RelayListener: Listener, Sendable {
 
     // MARK: - Private
 
-    /// Processes incoming connections from the relay client.
-    private func processIncomingConnections() async {
-        while !Task.isCancelled {
-            let isClosed = state.withLock { $0.isClosed }
-            if isClosed { break }
+    /// Monitors reservation expiration and closes the listener when expired.
+    ///
+    /// With the Listener Registry pattern, connections are routed directly
+    /// via `enqueue()` from the RelayClient, so we only need to monitor
+    /// expiration rather than actively polling for connections.
+    private func monitorReservationExpiration() async {
+        // Wait until reservation expires
+        let expirationTime = reservation.expiration
+        let now = ContinuousClock.now
 
-            // Check if reservation has expired
-            if reservation.expiration <= .now {
-                try? await close()
-                break
-            }
-
-            do {
-                // Wait for an incoming connection from the relay
-                let connection = try await client.acceptConnection(relay: relay)
-                enqueue(connection)
-            } catch {
-                // Connection accept failed - check if we should stop
-                if Task.isCancelled { break }
-                let isClosed = state.withLock { $0.isClosed }
-                if isClosed { break }
-                // Backoff before retry to avoid busy loop on repeated failures
-                try? await Task.sleep(for: .seconds(1))
-            }
+        if expirationTime > now {
+            try? await Task.sleep(until: expirationTime, clock: .continuous)
         }
+
+        // Check if we're already closed or cancelled
+        if Task.isCancelled { return }
+        let isClosed = state.withLock { $0.isClosed }
+        if isClosed { return }
+
+        // Close the listener on expiration
+        try? await close()
     }
 }

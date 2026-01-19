@@ -351,7 +351,10 @@ public final class DCUtRService: ProtocolService, Sendable {
     }
 
     private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
-        try await stream.writeLengthPrefixedMessage(data)
+        // Apply timeout to prevent indefinite blocking
+        try await withTimeout(configuration.timeout) {
+            try await stream.writeLengthPrefixedMessage(data)
+        }
     }
 
     // MARK: - Parallel Dialing
@@ -366,11 +369,24 @@ public final class DCUtRService: ProtocolService, Sendable {
         addresses: [Multiaddr],
         dialer: @escaping @Sendable (Multiaddr) async throws -> Void
     ) async -> Multiaddr? {
-        await withTaskGroup(of: Multiaddr?.self) { group in
+        let timeout = configuration.timeout
+
+        return await withTaskGroup(of: Multiaddr?.self) { group in
             for address in addresses {
                 group.addTask {
                     do {
-                        try await dialer(address)
+                        // Apply timeout to each dial attempt to prevent stalling
+                        try await withThrowingTaskGroup(of: Void.self) { innerGroup in
+                            innerGroup.addTask {
+                                try await dialer(address)
+                            }
+                            innerGroup.addTask {
+                                try await Task.sleep(for: timeout)
+                                throw DCUtRError.timeout
+                            }
+                            _ = try await innerGroup.next()!
+                            innerGroup.cancelAll()
+                        }
                         return address
                     } catch {
                         return nil

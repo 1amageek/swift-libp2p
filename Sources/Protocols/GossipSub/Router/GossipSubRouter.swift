@@ -60,6 +60,9 @@ public final class GossipSubRouter: Sendable {
     /// Local subscriptions delivering to user.
     let subscriptions: SubscriptionSet
 
+    /// Peer scorer for tracking peer behavior.
+    let peerScorer: PeerScorer
+
     /// Event state.
     private let eventState: Mutex<EventState>
 
@@ -76,10 +79,12 @@ public final class GossipSubRouter: Sendable {
     ///   - localPeerID: The local peer ID
     ///   - signingKey: Private key for signing messages (nil = no signing)
     ///   - configuration: Configuration parameters
+    ///   - peerScorerConfig: Peer scoring configuration (uses defaults if nil)
     public init(
         localPeerID: PeerID,
         signingKey: PrivateKey? = nil,
-        configuration: GossipSubConfiguration = .init()
+        configuration: GossipSubConfiguration = .init(),
+        peerScorerConfig: PeerScorerConfig = .default
     ) {
         self.localPeerID = localPeerID
         self.signingKey = signingKey
@@ -95,6 +100,7 @@ public final class GossipSubRouter: Sendable {
             ttl: configuration.seenTTL
         )
         self.subscriptions = SubscriptionSet()
+        self.peerScorer = PeerScorer(config: peerScorerConfig)
         self.eventState = Mutex(EventState())
     }
 
@@ -192,6 +198,9 @@ public final class GossipSubRouter: Sendable {
         // Remove peer state
         peerState.removePeer(peerID)
 
+        // Clean up scorer entry
+        peerScorer.removePeer(peerID)
+
         emit(.peerDisconnected(peer: peerID))
     }
 
@@ -269,12 +278,15 @@ public final class GossipSubRouter: Sendable {
     ) -> [(peer: PeerID, rpc: GossipSubRPC)] {
         // Check if already seen
         guard seenCache.add(message.id) else {
-            // Duplicate - don't forward
+            // Duplicate - record penalty and don't forward
+            peerScorer.recordDuplicateMessage(from: peerID)
             return []
         }
 
         // Validate message structure
         guard message.validateStructure() else {
+            // Invalid message structure - record penalty
+            peerScorer.recordInvalidMessage(from: peerID)
             emit(.messageValidated(messageID: message.id, result: .reject))
             return []
         }
@@ -293,6 +305,8 @@ public final class GossipSubRouter: Sendable {
             // Verify signature if present
             if message.signature != nil {
                 guard message.verifySignature() else {
+                    // Invalid signature - record penalty
+                    peerScorer.recordInvalidMessage(from: peerID)
                     emit(.messageValidated(messageID: message.id, result: .reject))
                     return []
                 }
@@ -428,12 +442,14 @@ public final class GossipSubRouter: Sendable {
 
             // Check if peer is in backoff period (we previously PRUNEd them)
             if let state = peerState.getPeer(peerID), state.isBackedOff(for: topic) {
-                // Peer violated backoff - send PRUNE again with backoff
+                // Peer violated backoff - record penalty and send PRUNE again
+                peerScorer.recordGraftDuringBackoff(from: peerID)
+                let currentScore = peerScorer.score(for: peerID)
                 prunes.append(ControlMessage.Prune(
                     topic: topic,
                     backoff: UInt64(configuration.pruneBackoff.components.seconds)
                 ))
-                emit(.peerPenalized(peer: peerID, reason: .protocolViolation("GRAFT during backoff"), score: 0))
+                emit(.peerPenalized(peer: peerID, reason: .protocolViolation("GRAFT during backoff"), score: currentScore))
                 // Backoff already set, no need to update
                 continue
             }
@@ -574,11 +590,15 @@ public final class GossipSubRouter: Sendable {
             // Need more peers?
             if meshCount < D_low {
                 let needed = D - meshCount
-                let candidates = peerState.peersNotBackedOff(for: topic)
+                let rawCandidates = peerState.peersNotBackedOff(for: topic)
+
+                // Use scorer to filter graylisted peers and sort by score
+                let scoredCandidates = peerScorer.selectBestPeers(from: rawCandidates, count: rawCandidates.count)
+
                 let toGraft = meshState.selectPeersForGraft(
                     topic: topic,
                     count: needed,
-                    candidates: candidates
+                    candidates: scoredCandidates
                 )
 
                 for peer in toGraft {
@@ -676,6 +696,14 @@ public final class GossipSubRouter: Sendable {
         peerState.clearExpiredBackoffs()
     }
 
+    /// Applies decay to all peer scores.
+    ///
+    /// Called periodically (e.g., by heartbeat) to allow peers to recover
+    /// from penalties over time.
+    public func decayPeerScores() {
+        peerScorer.applyDecayToAll()
+    }
+
     // MARK: - Event Emission
 
     private func emit(_ event: GossipSubEvent) {
@@ -693,6 +721,7 @@ public final class GossipSubRouter: Sendable {
         meshState.clear()
         messageCache.clear()
         seenCache.clear()
+        peerScorer.clear()
 
         eventState.withLock { state in
             state.continuation?.finish()

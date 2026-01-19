@@ -396,52 +396,38 @@ public final class AutoNATService: ProtocolService, Sendable {
     /// - `::1` → `0000:0000:0000:0000:0000:0000:0000:0001`
     /// - `2001:db8::1` → `2001:0db8:0000:0000:0000:0000:0000:0001`
     /// - `::` → `0000:0000:0000:0000:0000:0000:0000:0000`
+    ///
+    /// Returns empty string if the address is invalid.
     private func normalizeIPv6(_ ip: String) -> String {
-        // Handle :: expansion by splitting into parts
-        let parts = ip.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard !ip.isEmpty else { return "" }
 
-        // Check if there's a :: (which produces consecutive empty strings)
-        var expandedParts: [String] = []
+        // Parse into 8 groups, expanding :: if present
+        let parts: [String]
+        if ip.contains("::") {
+            // Split by :: (produces at most 2 halves)
+            let halves = ip.split(separator: "::", omittingEmptySubsequences: false)
+            let left = halves.first.map { $0.split(separator: ":").map(String.init) } ?? []
+            let right = halves.count > 1 ? halves[1].split(separator: ":").map(String.init) : []
 
-        // Track if we've found and expanded ::
-        var foundDoubleColon = false
+            // Calculate zeros needed to reach 8 groups
+            let missingGroups = 8 - left.count - right.count
+            guard missingGroups >= 0 else { return "" }  // Invalid: too many groups
 
-        for part in parts {
-            if part.isEmpty {
-                // Empty string indicates part of ::
-                // Check if this is the start of :: (next part is also empty or this is at boundary)
-                if !foundDoubleColon {
-                    // This is the :: - calculate how many zeros to insert
-                    // Count non-empty parts
-                    let nonEmptyCount = parts.filter { !$0.isEmpty }.count
-                    let zerosNeeded = 8 - nonEmptyCount
-
-                    // Insert zeros
-                    for _ in 0..<max(0, zerosNeeded) {
-                        expandedParts.append("0")
-                    }
-                    foundDoubleColon = true
-
-                    // Skip any subsequent empty parts (they're part of the same ::)
-                }
-                // If we already found ::, skip additional empty parts
-            } else {
-                expandedParts.append(part)
-            }
+            parts = left + Array(repeating: "0", count: missingGroups) + right
+        } else {
+            parts = ip.split(separator: ":").map(String.init)
         }
 
-        // If no :: was found but we have fewer than 8 parts, something is wrong
-        // but handle gracefully
-        while expandedParts.count < 8 {
-            expandedParts.append("0")
+        // Must have exactly 8 groups
+        guard parts.count == 8 else { return "" }
+
+        // Normalize each group to 4-digit lowercase hex
+        let normalized = parts.compactMap { part -> String? in
+            guard let value = UInt16(part, radix: 16) else { return nil }
+            return String(format: "%04x", value)
         }
 
-        // Pad each part to 4 hex digits and lowercase, take first 8
-        let normalized = expandedParts.prefix(8).map { part in
-            let padded = String(repeating: "0", count: max(0, 4 - part.count)) + part.lowercased()
-            return padded
-        }
-
+        guard normalized.count == 8 else { return "" }
         return normalized.joined(separator: ":")
     }
 

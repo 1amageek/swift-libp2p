@@ -71,6 +71,9 @@ public final class RelayClient: ProtocolService, Sendable {
 
     private let state: Mutex<ClientState>
 
+    /// Registered listeners per relay peer for direct connection routing.
+    private let listeners: Mutex<[PeerID: WeakListenerRef]>
+
     private struct ClientState: Sendable {
         var reservations: [PeerID: Reservation] = [:]
         var incomingConnections: [RelayedConnection] = []
@@ -78,6 +81,14 @@ public final class RelayClient: ProtocolService, Sendable {
         var nextWaiterID: UInt64 = 0
         var eventContinuation: AsyncStream<CircuitRelayEvent>.Continuation?
         var eventStream: AsyncStream<CircuitRelayEvent>?
+    }
+
+    /// Weak reference to listener for routing without retain cycles.
+    private final class WeakListenerRef: @unchecked Sendable {
+        weak var listener: RelayListener?
+        init(_ listener: RelayListener) {
+            self.listener = listener
+        }
     }
 
     private struct WaiterKey: Hashable, Sendable {
@@ -121,6 +132,28 @@ public final class RelayClient: ProtocolService, Sendable {
     public init(configuration: RelayClientConfiguration = .init()) {
         self.configuration = configuration
         self.state = Mutex(ClientState())
+        self.listeners = Mutex([:])
+    }
+
+    // MARK: - Listener Registration
+
+    /// Registers a listener for a specific relay.
+    ///
+    /// When connections arrive from this relay, they will be routed
+    /// directly to the registered listener.
+    ///
+    /// - Parameters:
+    ///   - listener: The listener to register.
+    ///   - relay: The relay peer ID.
+    func registerListener(_ listener: RelayListener, for relay: PeerID) {
+        listeners.withLock { $0[relay] = WeakListenerRef(listener) }
+    }
+
+    /// Unregisters a listener for a specific relay.
+    ///
+    /// - Parameter relay: The relay peer ID.
+    func unregisterListener(for relay: PeerID) {
+        listeners.withLock { $0.removeValue(forKey: relay) }
     }
 
     // MARK: - Handler Registration
@@ -407,23 +440,33 @@ public final class RelayClient: ProtocolService, Sendable {
                 limit: connect.limit ?? .default
             )
 
-            // Deliver to pending waiter or queue
-            let matchedWaiter: ConnectionWaiter? = state.withLock { s in
-                // Find a waiter that matches this connection
-                for (key, waiter) in s.connectionWaiters {
-                    if waiter.matches(connection) {
-                        s.connectionWaiters.removeValue(forKey: key)
-                        return waiter
-                    }
-                }
-                // No matching waiter, queue the connection
-                s.incomingConnections.append(connection)
-                return nil
+            // Route to registered listener if exists (Listener Registry pattern)
+            let registeredListener: RelayListener? = listeners.withLock { l in
+                l[connection.relay]?.listener
             }
 
-            if let waiter = matchedWaiter {
-                waiter.cancel()  // Cancel the timeout task
-                waiter.continuation.resume(returning: connection)
+            if let listener = registeredListener {
+                // Direct routing to registered listener
+                listener.enqueue(connection)
+            } else {
+                // Fallback: Deliver to pending waiter or shared queue
+                let matchedWaiter: ConnectionWaiter? = state.withLock { s in
+                    // Find a waiter that matches this connection
+                    for (key, waiter) in s.connectionWaiters {
+                        if waiter.matches(connection) {
+                            s.connectionWaiters.removeValue(forKey: key)
+                            return waiter
+                        }
+                    }
+                    // No matching waiter, queue the connection
+                    s.incomingConnections.append(connection)
+                    return nil
+                }
+
+                if let waiter = matchedWaiter {
+                    waiter.cancel()  // Cancel the timeout task
+                    waiter.continuation.resume(returning: connection)
+                }
             }
 
             emit(.circuitEstablished(relay: context.remotePeer, remote: peerInfo.id))

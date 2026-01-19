@@ -155,6 +155,9 @@ public final class HeartbeatManager: Sendable {
 
         // 6. Cleanup expired backoffs
         router.cleanupBackoffs()
+
+        // 7. Decay peer scores
+        router.decayPeerScores()
     }
 }
 

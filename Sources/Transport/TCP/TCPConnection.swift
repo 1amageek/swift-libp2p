@@ -5,10 +5,14 @@ import P2PTransport
 import NIOCore
 import Synchronization
 
+/// Maximum buffer size (1MB) for DoS protection.
+private let tcpMaxReadBufferSize = 1024 * 1024
+
 /// Internal state for TCPConnection.
 private struct TCPConnectionState: Sendable {
     var readBuffer: [UInt8] = []
-    var readContinuation: CheckedContinuation<Data, Error>?
+    /// Queue of waiters for concurrent read support.
+    var readWaiters: [CheckedContinuation<Data, Error>] = []
     var isClosed = false
 }
 
@@ -37,18 +41,21 @@ public final class TCPConnection: RawConnection, Sendable {
     public func read() async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { state in
+                // Check buffer first (avoid data loss on close)
+                if !state.readBuffer.isEmpty {
+                    let data = Data(state.readBuffer)
+                    state.readBuffer.removeAll()
+                    continuation.resume(returning: data)
+                    return
+                }
+
                 if state.isClosed {
                     continuation.resume(throwing: TransportError.connectionClosed)
                     return
                 }
 
-                if !state.readBuffer.isEmpty {
-                    let data = Data(state.readBuffer)
-                    state.readBuffer.removeAll()
-                    continuation.resume(returning: data)
-                } else {
-                    state.readContinuation = continuation
-                }
+                // Queue the waiter for FIFO delivery
+                state.readWaiters.append(continuation)
             }
         }
     }
@@ -60,42 +67,51 @@ public final class TCPConnection: RawConnection, Sendable {
     }
 
     public func close() async throws {
-        let continuation = state.withLock { state -> CheckedContinuation<Data, Error>? in
+        let waiters = state.withLock { state -> [CheckedContinuation<Data, Error>] in
             state.isClosed = true
-            let cont = state.readContinuation
-            state.readContinuation = nil
-            return cont
+            let w = state.readWaiters
+            state.readWaiters.removeAll()
+            return w
         }
-        // Resume continuation outside of lock to avoid deadlock
-        continuation?.resume(throwing: TransportError.connectionClosed)
+        // Resume all waiters outside of lock to avoid deadlock
+        for waiter in waiters {
+            waiter.resume(throwing: TransportError.connectionClosed)
+        }
         try await channel.close()
     }
 
     // Called by TCPReadHandler when data is received
     fileprivate func dataReceived(_ data: [UInt8]) {
-        let continuation = state.withLock { state -> CheckedContinuation<Data, Error>? in
-            if let cont = state.readContinuation {
-                state.readContinuation = nil
-                return cont
+        let waiter = state.withLock { state -> CheckedContinuation<Data, Error>? in
+            // FIFO: dequeue the first waiter if any
+            if !state.readWaiters.isEmpty {
+                return state.readWaiters.removeFirst()
             } else {
+                // Buffer size limit for DoS protection
+                if state.readBuffer.count + data.count > tcpMaxReadBufferSize {
+                    // Drop data if buffer is full (backpressure)
+                    return nil
+                }
                 state.readBuffer.append(contentsOf: data)
                 return nil
             }
         }
-        // Resume continuation outside of lock to avoid deadlock
-        continuation?.resume(returning: Data(data))
+        // Resume waiter outside of lock to avoid deadlock
+        waiter?.resume(returning: Data(data))
     }
 
     // Called by TCPReadHandler when channel becomes inactive
     fileprivate func channelInactive() {
-        let continuation = state.withLock { state -> CheckedContinuation<Data, Error>? in
+        let waiters = state.withLock { state -> [CheckedContinuation<Data, Error>] in
             state.isClosed = true
-            let cont = state.readContinuation
-            state.readContinuation = nil
-            return cont
+            let w = state.readWaiters
+            state.readWaiters.removeAll()
+            return w
         }
-        // Resume continuation outside of lock to avoid deadlock
-        continuation?.resume(throwing: TransportError.connectionClosed)
+        // Resume all waiters outside of lock to avoid deadlock
+        for waiter in waiters {
+            waiter.resume(throwing: TransportError.connectionClosed)
+        }
     }
 }
 

@@ -250,23 +250,31 @@ public final class KademliaService: ProtocolService, Sendable {
         addPeer(context.remotePeer, addresses: [context.remoteAddress])
 
         do {
-            // Read length-prefixed message
-            let data = try await readLengthPrefixed(from: context.stream)
+            // Apply timeout to server-side processing to prevent DoS
+            let stream = context.stream
+            let maxMessageSize = configuration.maxMessageSize
 
-            guard data.count <= configuration.maxMessageSize else {
-                try? await context.stream.close()
+            // Read with timeout
+            let data = try await withQueryTimeout {
+                try await stream.readLengthPrefixedMessage(maxSize: UInt64(maxMessageSize))
+            }
+
+            guard data.count <= maxMessageSize else {
+                try? await stream.close()
                 return
             }
 
             let message = try KademliaProtobuf.decode(data)
             let response = try await handleMessage(message, from: context.remotePeer)
 
-            // Write response
+            // Write response with timeout
             let responseData = KademliaProtobuf.encode(response)
-            try await writeLengthPrefixed(responseData, to: context.stream)
+            try await withQueryTimeout {
+                try await stream.writeLengthPrefixedMessage(responseData)
+            }
 
         } catch {
-            // Log error but don't crash
+            // Timeout or error - close stream silently
         }
 
         try? await context.stream.close()
@@ -720,19 +728,45 @@ public final class KademliaService: ProtocolService, Sendable {
         to peer: PeerID,
         opener: any StreamOpener
     ) async throws -> KademliaMessage {
-        let stream = try await opener.newStream(to: peer, protocol: KademliaProtocol.protocolID)
+        // Apply per-peer timeout to prevent malicious peers from stalling
+        try await withQueryTimeout { [configuration] in
+            let stream = try await opener.newStream(to: peer, protocol: KademliaProtocol.protocolID)
 
-        do {
-            let data = KademliaProtobuf.encode(message)
-            try await stream.writeLengthPrefixedMessage(data)
+            do {
+                let data = KademliaProtobuf.encode(message)
+                try await stream.writeLengthPrefixedMessage(data)
 
-            let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
-            let response = try KademliaProtobuf.decode(responseData)
-            try? await stream.close()
-            return response
-        } catch {
-            try? await stream.close()
-            throw error
+                let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
+                let response = try KademliaProtobuf.decode(responseData)
+                try? await stream.close()
+                return response
+            } catch {
+                try? await stream.close()
+                throw error
+            }
+        }
+    }
+
+    // MARK: - Timeout Helper
+
+    /// Wraps an operation with a timeout.
+    ///
+    /// This prevents malicious peers from stalling operations indefinitely.
+    private func withQueryTimeout<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(for: self.configuration.queryTimeout)
+                throw KademliaError.timeout
+            }
+
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
     }
 
