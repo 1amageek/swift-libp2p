@@ -14,7 +14,6 @@ import QUICCore
 import QUICCrypto
 
 /// TLS 1.3 provider for libp2p using swift-quic's pure Swift implementation
-@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
 
     // MARK: - Properties
@@ -59,9 +58,79 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
         config.verifyPeer = false  // We do our own verification via libp2p extension
         config.allowSelfSigned = true
 
+        // Enable mutual TLS - libp2p requires both peers to authenticate
+        // RFC: https://github.com/libp2p/specs/blob/master/tls/tls.md
+        config.requireClientCertificate = true
+
+        // Set up libp2p-specific certificate validator
+        // This is called by swift-quic's TLS layer after TLS signature verification
+        let expectedPeerID = expectedRemotePeerID
+        config.certificateValidator = { certChain in
+            try Self.validateLibP2PCertificate(
+                certChain: certChain,
+                expectedPeerID: expectedPeerID
+            )
+        }
+
         // Create the underlying TLS handler
         self.tlsHandler = TLS13Handler(configuration: config)
         self.state = Mutex(ProviderState(expectedRemotePeerID: expectedRemotePeerID))
+    }
+
+    // MARK: - libp2p Certificate Validation
+
+    /// Validates a libp2p certificate chain and extracts the PeerID
+    ///
+    /// This function:
+    /// 1. Extracts the libp2p extension (OID 1.3.6.1.4.1.53594.1.1)
+    /// 2. Parses the protobuf-encoded public key
+    /// 3. Verifies the signature over the TLS public key
+    /// 4. Derives and returns the PeerID
+    ///
+    /// - Parameters:
+    ///   - certChain: The peer's certificate chain (DER encoded)
+    ///   - expectedPeerID: If set, validation fails if PeerID doesn't match
+    /// - Returns: The validated PeerID
+    /// - Throws: `TLSCertificateError` on validation failure
+    private static func validateLibP2PCertificate(
+        certChain: [Data],
+        expectedPeerID: PeerID?
+    ) throws -> PeerID {
+        guard let leafCertDER = certChain.first else {
+            throw TLSCertificateError.missingLibp2pExtension
+        }
+
+        // Extract libp2p public key from certificate extension
+        let (publicKeyBytes, signature) = try LibP2PCertificateHelper.extractLibP2PPublicKey(
+            from: leafCertDER
+        )
+
+        // Parse the protobuf-encoded public key
+        let libp2pPublicKey = try P2PCore.PublicKey(protobufEncoded: publicKeyBytes)
+
+        // Parse the certificate to get SPKI for signature verification
+        let peerCert = try X509Certificate.parse(from: leafCertDER)
+
+        // Verify the signature
+        // Message = "libp2p-tls-handshake:" + DER(SubjectPublicKeyInfo)
+        let spkiDER = peerCert.subjectPublicKeyInfoDER
+        let message = Data("libp2p-tls-handshake:".utf8) + spkiDER
+
+        guard try libp2pPublicKey.verify(signature: signature, for: message) else {
+            throw TLSCertificateError.invalidExtensionSignature
+        }
+
+        // Derive PeerID
+        let peerID = libp2pPublicKey.peerID
+
+        // Verify against expected PeerID if set
+        if let expected = expectedPeerID {
+            guard expected == peerID else {
+                throw TLSCertificateError.peerIDMismatch(expected: expected, actual: peerID)
+            }
+        }
+
+        return peerID
     }
 
     // MARK: - Public Accessors
@@ -72,8 +141,18 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
     }
 
     /// The remote PeerID (available after handshake completes)
+    ///
+    /// This is extracted from the peer's certificate during the TLS handshake
+    /// via the certificateValidator callback. For the server, this is the client's
+    /// PeerID. For the client, this is the server's PeerID.
     public var remotePeerID: PeerID? {
-        state.withLock { $0.remotePeerID }
+        // First check if we have a validated PeerID from the certificate validator
+        if let validatedInfo = tlsHandler.validatedPeerInfo,
+           let peerID = validatedInfo as? PeerID {
+            return peerID
+        }
+        // Fall back to manually extracted PeerID (for backwards compatibility)
+        return state.withLock { $0.remotePeerID }
     }
 
     // MARK: - TLS13Provider Protocol
@@ -162,12 +241,13 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
         // Parse the protobuf-encoded public key
         let libp2pPublicKey = try P2PCore.PublicKey(protobufEncoded: publicKeyBytes)
 
+        // Parse the certificate to get SPKI for signature verification
+        // Note: We parse manually because tlsHandler.peerCertificate may be nil
+        // when verifyPeer = false (libp2p does its own verification)
+        let peerCert = try X509Certificate.parse(from: leafCertDER)
+
         // Verify the signature
         // Message = "libp2p-tls-handshake:" + DER(SubjectPublicKeyInfo)
-        guard let peerCert = tlsHandler.peerCertificate else {
-            throw TLSCertificateError.certificateParsingFailed(reason: "Could not parse peer certificate")
-        }
-
         let spkiDER = peerCert.subjectPublicKeyInfoDER
         let message = Data("libp2p-tls-handshake:".utf8) + spkiDER
 

@@ -12,7 +12,6 @@ import QUICCore
 import QUICCrypto
 
 /// Helper for libp2p certificate operations using swift-quic's crypto primitives
-@available(macOS 15.0, iOS 18.0, watchOS 11.0, tvOS 18.0, visionOS 2.0, *)
 public enum LibP2PCertificateHelper {
 
     /// The libp2p TLS signature prefix

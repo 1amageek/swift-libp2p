@@ -133,6 +133,21 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                 }
 
                 for await quicConnection in await self.endpoint.incomingConnections {
+                    // Wait for handshake to complete before extracting PeerID
+                    // The connection is yielded before handshake is done
+                    var timeoutCount = 0
+                    while !quicConnection.isEstablished {
+                        timeoutCount += 1
+                        if timeoutCount > 3000 {  // 30 seconds (10ms * 3000)
+                            #if DEBUG
+                            print("Rejecting connection: handshake timeout")
+                            #endif
+                            try? await quicConnection.close(error: 0x100)
+                            continue
+                        }
+                        try? await Task.sleep(for: .milliseconds(10))
+                    }
+
                     // Extract remote PeerID from TLS certificate
                     // Reject connections that fail PeerID extraction (security requirement)
                     let remotePeer: PeerID

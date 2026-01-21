@@ -242,12 +242,28 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PIdentifyTests",
-            dependencies: ["P2PIdentify", "P2PCore", "P2PMux", "P2PProtocols"],
+            dependencies: [
+                "P2PIdentify",
+                "P2PCore",
+                "P2PMux",
+                "P2PProtocols",
+                "P2PTransportQUIC",
+                "P2PTransport",
+                .product(name: "QUIC", package: "swift-quic"),
+            ],
             path: "Tests/Protocols/IdentifyTests"
         ),
         .testTarget(
             name: "P2PPingTests",
-            dependencies: ["P2PPing", "P2PCore", "P2PProtocols"],
+            dependencies: [
+                "P2PPing",
+                "P2PCore",
+                "P2PProtocols",
+                "P2PTransportQUIC",
+                "P2PTransport",
+                "P2PMux",
+                .product(name: "QUIC", package: "swift-quic"),
+            ],
             path: "Tests/Protocols/PingTests"
         ),
         .target(
@@ -326,6 +342,22 @@ let package = Package(
                 "P2PPing",
             ],
             path: "Tests/Integration/P2PTests"
+        ),
+
+        // MARK: - Interop Tests
+        .testTarget(
+            name: "GoInteropTests",
+            dependencies: [
+                "P2PIdentify",
+                "P2PPing",
+                "P2PCore",
+                "P2PMux",
+                "P2PProtocols",
+                "P2PTransportQUIC",
+                "P2PTransport",
+                .product(name: "QUIC", package: "swift-quic"),
+            ],
+            path: "Tests/Interop"
         ),
 
         // MARK: - Examples

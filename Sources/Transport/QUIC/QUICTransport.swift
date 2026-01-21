@@ -6,6 +6,7 @@ import P2PTransport
 import P2PMux
 import QUIC
 import QUICCrypto
+import NIOUDPTransport
 
 // MARK: - QUIC Transport
 
@@ -160,8 +161,8 @@ public final class QUICTransport: SecuredTransport, Sendable {
         // Create client endpoint with libp2p TLS
         let endpoint = QUICEndpoint(configuration: config)
 
-        // Connect to server
-        let quicConnection = try await endpoint.connect(to: socketAddress)
+        // Dial server and wait for handshake completion
+        let quicConnection = try await endpoint.dial(address: socketAddress)
 
         // Extract PeerID from TLS certificate
         let remotePeer = try extractPeerID(from: quicConnection, localKeyPair: localKeyPair)
@@ -210,14 +211,30 @@ public final class QUICTransport: SecuredTransport, Sendable {
             }
         }
 
-        let endpoint = try await QUICEndpoint.listen(
-            address: socketAddress,
+        // Create server socket bound to the specific address (will be started by serve())
+        let udpConfig = UDPConfiguration(
+            bindAddress: .specific(host: socketAddress.ipAddress, port: Int(socketAddress.port)),
+            reuseAddress: true
+        )
+        let socket = NIOQUICSocket(configuration: udpConfig)
+
+        // Create server endpoint - this starts the socket and runs the I/O loop
+        let (endpoint, _) = try await QUICEndpoint.serve(
+            socket: socket,
             configuration: config
         )
 
+        // Get actual bound address (important when port 0 was used)
+        let actualAddress: Multiaddr
+        if let localAddr = await endpoint.localAddress {
+            actualAddress = localAddr.toQUICMultiaddr() ?? address
+        } else {
+            actualAddress = address
+        }
+
         return QUICSecuredListener(
             endpoint: endpoint,
-            localAddress: address,
+            localAddress: actualAddress,
             localKeyPair: localKeyPair
         )
     }
