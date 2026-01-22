@@ -36,10 +36,12 @@ and return `MuxedConnection` directly.
 | File | Purpose |
 |------|---------|
 | `QUICTransport.swift` | Transport protocol implementation |
-| `QUICMuxedConnection.swift` | MuxedConnection wrapper for QUIC |
+| `QUICMuxedConnection.swift` | MuxedConnection wrapper with StreamChannel |
 | `QUICMuxedStream.swift` | MuxedStream wrapper for QUIC streams |
 | `QUICListener.swift` | Listener implementations (standard and secured) |
 | `MultiaddrConversion.swift` | Multiaddr ↔ SocketAddress conversion |
+| `TLS/SwiftQUICTLSProvider.swift` | libp2p TLS 1.3 provider |
+| `TLS/LibP2PCertificateHelper.swift` | X.509 certificate generation |
 
 ## Usage
 
@@ -76,6 +78,54 @@ for await connection in listener.connections {
 }
 ```
 
+### Stream Close Behavior
+
+QUIC streams have distinct close operations:
+
+| Method | Behavior | Use Case |
+|--------|----------|----------|
+| `closeWrite()` | Send FIN frame | Done writing, allow peer to finish |
+| `closeRead()` | Send STOP_SENDING | Abort reading (data may be lost) |
+| `close()` | Send FIN only | Graceful close (recommended) |
+| `reset()` | Send RESET_STREAM | Abort immediately (data lost) |
+
+**Important**: `close()` only sends FIN, not STOP_SENDING. This ensures pending
+data is delivered before the stream closes. Use `reset()` for abrupt termination.
+
+## Internal Architecture
+
+### StreamChannel Pattern
+
+`QUICMuxedConnection` uses a `StreamChannel` to buffer and distribute streams:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  QUICMuxedConnection                                     │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  quicConnection.incomingStreams                         │
+│         │                                                │
+│         ▼                                                │
+│  ┌─────────────────┐                                    │
+│  │ startForwarding │ ◄── wraps streams as QUICMuxedStream│
+│  └────────┬────────┘                                    │
+│           │                                              │
+│           ▼                                              │
+│  ┌─────────────────┐                                    │
+│  │  StreamChannel  │ ◄── thread-safe buffer + waiters   │
+│  └────────┬────────┘                                    │
+│           │                                              │
+│     ┌─────┴─────┐                                       │
+│     ▼           ▼                                       │
+│  inboundStreams  acceptStream()                         │
+│  (AsyncStream)   (single stream)                        │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+Both `inboundStreams` and `acceptStream()` consume from the same `StreamChannel`.
+Use ONE pattern per connection, not both.
+
 ## Multiaddr Format
 
 QUIC addresses use UDP as the underlying transport:
@@ -87,69 +137,69 @@ QUIC addresses use UDP as the underlying transport:
 libp2p-QUIC uses TLS 1.3 with a custom X.509 certificate extension
 (OID 1.3.6.1.4.1.53594.1.1) that contains the peer's public key.
 
-## swift-quic Implementation Status
+The extension format (SignedKey):
+```
+SignedKey {
+  public_key: PublicKey (protobuf-encoded)
+  signature: bytes (signed over "libp2p-tls-handshake:" + certificate)
+}
+```
 
-swift-quic provides full QUIC protocol implementation:
+## swift-quic API
+
+swift-quic provides `QUICConnectionProtocol` with:
+
+```swift
+public protocol QUICConnectionProtocol: Sendable {
+    var localAddress: SocketAddress? { get }
+    var remoteAddress: SocketAddress { get }
+    var isEstablished: Bool { get }
+
+    func openStream() async throws -> any QUICStreamProtocol
+    func openUniStream() async throws -> any QUICStreamProtocol
+
+    /// Stream of incoming streams (single-consumer)
+    var incomingStreams: AsyncStream<any QUICStreamProtocol> { get }
+
+    func close(error: UInt64?) async
+}
+```
+
+**Note**: There is no `acceptStream()` method. Use `incomingStreams` to receive
+streams initiated by the remote peer.
+
+## Implementation Status
 
 ### Completed Features
 
-| Module | Feature | Status |
-|--------|---------|--------|
-| **QUICCore** | Varint encoding/decoding | ✅ |
-| | ConnectionID | ✅ |
-| | PacketHeader (Long/Short) | ✅ |
-| | All Frame types (19 types) | ✅ |
-| | Packet number encoding | ✅ |
-| **QUICCrypto** | HKDF key derivation | ✅ |
-| | Initial secrets | ✅ |
-| | AES-128-GCM AEAD | ✅ |
-| | ChaCha20-Poly1305 AEAD | ✅ |
-| | Header protection (AES/ChaCha20) | ✅ |
-| | Cross-platform support (Apple/Linux) | ✅ |
-| **TLS 1.3** | Full handshake state machine | ✅ |
-| | X.509 certificate validation | ✅ |
-| | EKU/SAN/Name Constraints | ✅ |
-| | Session resumption (PSK) | ✅ |
-| | 0-RTT early data | ✅ |
-| **QUICConnection** | Connection state machine | ✅ |
-| | Packet number space management | ✅ |
-| | Connection ID management | ✅ |
-| **QUICStream** | DataStream (send/receive) | ✅ |
-| | StreamManager (multiplexing) | ✅ |
-| | FlowController | ✅ |
-| | STOP_SENDING/RESET_STREAM | ✅ |
-| **QUICRecovery** | RTT estimation | ✅ |
-| | Loss detection | ✅ |
-| | ACK management | ✅ |
+| Component | Feature | Status |
+|-----------|---------|--------|
+| **QUICTransport** | dialSecured() | ✅ |
+| | listenSecured() | ✅ |
+| | canDial()/canListen() | ✅ |
+| **QUICMuxedConnection** | StreamChannel buffering | ✅ |
+| | newStream() | ✅ |
+| | acceptStream() | ✅ |
+| | inboundStreams | ✅ |
+| | Multiple streams per connection | ✅ |
+| **QUICMuxedStream** | read()/write() | ✅ |
+| | closeWrite()/closeRead() | ✅ |
+| | close()/reset() | ✅ |
+| **QUICListener** | connections stream | ✅ |
+| | startAccepting() | ✅ |
+| **TLS** | SwiftQUICTLSProvider | ✅ |
+| | libp2p certificate extension | ✅ |
+| | PeerID verification | ✅ |
+| | Ed25519/ECDSA support | ✅ |
 
 ### Pending Features
 
 | Feature | Status |
 |---------|--------|
-| libp2p TLS certificate extension | ⏳ Phase 3 |
-| Congestion control (CUBIC/NewReno) | ⏳ |
-| Priority scheduling | ⏳ |
-| Public API integration (QUICClient, QUICListener) | ⏳ Phase 7 |
-| rust-libp2p/go-libp2p interop testing | ⏳ Phase 4 |
-
-## P2PTransportQUIC Implementation Status
-
-- [x] Phase 1: Basic structure with MockTLS
-  - [x] QUICTransport
-  - [x] QUICMuxedConnection
-  - [x] QUICMuxedStream
-  - [x] QUICListener
-  - [x] MultiaddrConversion
-- [ ] Phase 2: Node integration
-  - [ ] P2P.swift QUIC bypass logic
-  - [ ] acceptLoop() QUIC handling
-- [ ] Phase 3: libp2p TLS
-  - [ ] Libp2pTLSProvider (swift-quic TLS integration)
-  - [ ] X.509 certificate extension (OID 1.3.6.1.4.1.53594.1.1)
-  - [ ] PeerID verification
-- [ ] Phase 4: Interoperability
-  - [ ] rust-libp2p testing
-  - [ ] go-libp2p testing
+| 0-RTT connection establishment | ⏳ |
+| Connection migration | ⏳ |
+| rust-libp2p interop testing | ⏳ |
+| go-libp2p interop testing | ⏳ |
 
 ## Dependencies
 
