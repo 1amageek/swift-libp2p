@@ -135,9 +135,8 @@ enum KademliaProtobuf {
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("CloserPeers field truncated")
                 }
-                if let peer = try? decodePeer(Data(data[offset..<fieldEnd])) {
-                    closerPeers.append(peer)
-                }
+                let peer = try decodePeer(Data(data[offset..<fieldEnd]))
+                closerPeers.append(peer)
                 offset = fieldEnd
 
             case (9, wireTypeLengthDelimited): // providerPeers
@@ -147,9 +146,8 @@ enum KademliaProtobuf {
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("ProviderPeers field truncated")
                 }
-                if let peer = try? decodePeer(Data(data[offset..<fieldEnd])) {
-                    providerPeers.append(peer)
-                }
+                let peer = try decodePeer(Data(data[offset..<fieldEnd]))
+                providerPeers.append(peer)
                 offset = fieldEnd
 
             default:
@@ -259,9 +257,8 @@ enum KademliaProtobuf {
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("Address truncated")
                 }
-                if let addr = try? Multiaddr(bytes: Data(data[offset..<fieldEnd])) {
-                    addresses.append(addr)
-                }
+                let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                addresses.append(addr)
                 offset = fieldEnd
 
             case (3, wireTypeVarint): // connection

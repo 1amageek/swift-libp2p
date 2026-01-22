@@ -5,6 +5,9 @@ import P2PMux
 import P2PProtocols
 import Synchronization
 
+/// Logger for PingService operations.
+private let logger = Logger(label: "p2p.ping")
+
 /// Ping payload size (must be 32 bytes per libp2p spec).
 private let pingPayloadSize = 32
 
@@ -160,7 +163,13 @@ public final class PingService: ProtocolService, Sendable {
         }
 
         defer {
-            Task { try? await stream.close() }
+            Task {
+                do {
+                    try await stream.close()
+                } catch {
+                    logger.debug("Failed to close ping stream: \(error)")
+                }
+            }
         }
 
         do {
@@ -289,12 +298,30 @@ public final class PingService: ProtocolService, Sendable {
             // Stream closed or error - normal termination
         }
 
-        try? await stream.close()
+        do {
+            try await stream.close()
+        } catch {
+            logger.debug("Failed to close ping handler stream: \(error)")
+        }
     }
 
     private func emit(_ event: PingEvent) {
         eventState.withLock { state in
             state.continuation?.yield(event)
+        }
+    }
+
+    // MARK: - Shutdown
+
+    /// Shuts down the service and finishes the event stream.
+    ///
+    /// Call this method when the service is no longer needed to properly
+    /// terminate any consumers waiting on the `events` stream.
+    public func shutdown() {
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 }

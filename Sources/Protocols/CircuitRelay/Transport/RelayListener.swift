@@ -5,6 +5,9 @@ import Synchronization
 import P2PCore
 import P2PTransport
 
+/// Logger for RelayListener operations.
+private let logger = Logger(label: "p2p.circuit-relay.listener")
+
 /// Listener for incoming relayed connections.
 ///
 /// This listener wraps a reservation on a relay and accepts incoming
@@ -169,7 +172,13 @@ public final class RelayListener: Listener, Sendable {
 
         // Close dropped connection asynchronously (outside lock)
         if let dropped = dropped {
-            Task { try? await dropped.close() }
+            Task {
+                do {
+                    try await dropped.close()
+                } catch {
+                    logger.debug("Failed to close dropped connection: \(error)")
+                }
+            }
         }
     }
 
@@ -195,6 +204,10 @@ public final class RelayListener: Listener, Sendable {
         if isClosed { return }
 
         // Close the listener on expiration
-        try? await close()
+        do {
+            try await close()
+        } catch {
+            logger.debug("Failed to close listener on expiration: \(error)")
+        }
     }
 }

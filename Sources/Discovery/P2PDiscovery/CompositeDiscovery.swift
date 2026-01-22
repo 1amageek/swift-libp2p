@@ -18,6 +18,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
         var sequenceNumber: UInt64 = 0
         var forwardingTasks: [Task<Void, Never>] = []
         var isRunning: Bool = false
+        var isShutdown: Bool = false
     }
 
     private let eventContinuation: AsyncStream<Observation>.Continuation
@@ -53,14 +54,19 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     }
 
     deinit {
-        // Cancel any remaining tasks and finish continuation
-        state.withLock { state in
+        // Cancel any remaining tasks and finish continuation (only if not already shutdown)
+        let shouldFinish = state.withLock { state -> Bool in
+            guard !state.isShutdown else { return false }
+            state.isShutdown = true
             for task in state.forwardingTasks {
                 task.cancel()
             }
             state.forwardingTasks.removeAll()
+            return true
         }
-        eventContinuation.finish()
+        if shouldFinish {
+            eventContinuation.finish()
+        }
     }
 
     // MARK: - Lifecycle
@@ -87,14 +93,20 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
 
     /// Stops forwarding events and cancels all tasks.
     public func stop() {
-        state.withLock { state in
+        let shouldFinish = state.withLock { state -> Bool in
+            guard !state.isShutdown else { return false }  // 二重呼び出し防止
+            state.isShutdown = true
+
             for task in state.forwardingTasks {
                 task.cancel()
             }
             state.forwardingTasks.removeAll()
             state.isRunning = false
+            return true
         }
-        eventContinuation.finish()
+        if shouldFinish {
+            eventContinuation.finish()
+        }
     }
 
     // MARK: - DiscoveryService Protocol

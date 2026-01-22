@@ -136,6 +136,25 @@ public enum SWIMBridge {
                 sequenceNumber: sequenceNumber
             )
 
+        case .memberRemoved(let memberID):
+            guard let peerID = toPeerID(memberID: memberID) else {
+                return nil
+            }
+
+            var hints: [Multiaddr] = []
+            if let addr = toMultiaddr(memberID: memberID) {
+                hints.append(addr)
+            }
+
+            return Observation(
+                subject: peerID,
+                observer: observer,
+                kind: .unreachable,
+                hints: hints,
+                timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
+                sequenceNumber: sequenceNumber
+            )
+
         case .incarnationIncremented:
             // Internal event, not relevant for observations
             return nil

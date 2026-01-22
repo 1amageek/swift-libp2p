@@ -364,7 +364,7 @@ extension Multiaddr {
     /// // → /ip4/192.168.1.1/tcp/4001
     ///
     /// let addr6 = Multiaddr(socketAddress: "[::1]:5353", transport: .udp)
-    /// // → /ip6/::1/udp/5353
+    /// // → /ip6/0:0:0:0:0:0:0:1/udp/5353 (IPv6 is normalized)
     /// ```
     public init?(socketAddress: String, transport: Transport = .tcp) {
         // Size limit check for DoS protection
@@ -376,7 +376,17 @@ extension Multiaddr {
             return nil
         }
 
-        let ipProtocol: MultiaddrProtocol = isIPv6 ? .ip6(host) : .ip4(host)
+        let ipProtocol: MultiaddrProtocol
+        if isIPv6 {
+            // Apply IPv6 normalization (includes length validation)
+            guard let normalized = MultiaddrProtocol.normalizeIPv6(host) else {
+                return nil
+            }
+            ipProtocol = .ip6(normalized)
+        } else {
+            ipProtocol = .ip4(host)
+        }
+
         let transportProtocol: MultiaddrProtocol = transport == .tcp ? .tcp(port) : .udp(port)
         // Use unchecked since socket addresses are always small (2 components)
         self.init(uncheckedProtocols: [ipProtocol, transportProtocol])

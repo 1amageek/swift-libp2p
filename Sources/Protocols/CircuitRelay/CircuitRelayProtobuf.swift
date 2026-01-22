@@ -320,9 +320,8 @@ enum CircuitRelayProtobuf {
             case 1: // id
                 id = try PeerID(bytes: fieldData)
             case 2: // addrs
-                if let addr = try? Multiaddr(bytes: fieldData) {
-                    addresses.append(addr)
-                }
+                let addr = try Multiaddr(bytes: fieldData)
+                addresses.append(addr)
             default:
                 break
             }
@@ -389,9 +388,8 @@ enum CircuitRelayProtobuf {
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Address field truncated")
                 }
-                if let addr = try? Multiaddr(bytes: Data(data[offset..<fieldEnd])) {
-                    addresses.append(addr)
-                }
+                let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                addresses.append(addr)
                 offset = fieldEnd
 
             case (3, wireTypeLengthDelimited): // voucher

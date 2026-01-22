@@ -32,7 +32,12 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     private struct ConnectionState: Sendable {
         var isClosed: Bool = false
         var inboundContinuation: AsyncStream<MuxedStream>.Continuation?
+        var forwardingTask: Task<Void, Never>?
     }
+
+    /// Incoming streams from the remote peer.
+    /// This stream is created once and should be consumed by a single consumer.
+    public let inboundStreams: AsyncStream<MuxedStream>
 
     /// The local peer ID.
     public var localPeer: PeerID { _localPeer }
@@ -66,7 +71,41 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         self._remotePeer = remotePeer
         self._localAddress = localAddress
         self._remoteAddress = remoteAddress
-        self.state = Mutex(ConnectionState())
+
+        // Create AsyncStream once in init
+        let (stream, continuation) = AsyncStream<MuxedStream>.makeStream()
+        self.inboundStreams = stream
+
+        var initialState = ConnectionState()
+        initialState.inboundContinuation = continuation
+        self.state = Mutex(initialState)
+    }
+
+    /// Starts forwarding incoming streams from the QUIC connection.
+    ///
+    /// This method must be called after initialization to begin
+    /// yielding streams to the `inboundStreams` AsyncStream.
+    public func startForwarding() {
+        let task = Task { [weak self] in
+            guard let self = self else { return }
+
+            for await quicStream in self.quicConnection.incomingStreams {
+                let muxedStream = QUICMuxedStream(stream: quicStream)
+                let shouldYield = self.state.withLock { s -> Bool in
+                    guard !s.isClosed else { return false }
+                    s.inboundContinuation?.yield(muxedStream)
+                    return true
+                }
+                if !shouldYield { break }
+            }
+
+            self.state.withLock { s in
+                s.inboundContinuation?.finish()
+                s.inboundContinuation = nil
+            }
+        }
+
+        state.withLock { $0.forwardingTask = task }
     }
 
     // MARK: - MuxedConnection
@@ -89,43 +128,21 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         return QUICMuxedStream(stream: quicStream)
     }
 
-    /// Returns an async stream of incoming streams.
-    ///
-    /// This stream yields MuxedStreams as they are opened by the remote peer.
-    /// The stream completes when the connection is closed.
-    public var inboundStreams: AsyncStream<MuxedStream> {
-        AsyncStream { continuation in
-            state.withLock { $0.inboundContinuation = continuation }
-
-            Task { [weak self] in
-                guard let self = self else {
-                    continuation.finish()
-                    return
-                }
-
-                for await quicStream in self.quicConnection.incomingStreams {
-                    let muxedStream = QUICMuxedStream(stream: quicStream)
-                    continuation.yield(muxedStream)
-                }
-
-                continuation.finish()
-                self.state.withLock { $0.inboundContinuation = nil }
-            }
-        }
-    }
-
     /// Closes all streams and the connection.
     public func close() async throws {
-        let alreadyClosed = state.withLock { s in
+        let (alreadyClosed, task) = state.withLock { s -> (Bool, Task<Void, Never>?) in
             let was = s.isClosed
             s.isClosed = true
             s.inboundContinuation?.finish()
             s.inboundContinuation = nil
-            return was
+            let t = s.forwardingTask
+            s.forwardingTask = nil
+            return (was, t)
         }
 
         guard !alreadyClosed else { return }
 
+        task?.cancel()
         await quicConnection.close(error: nil)
     }
 }

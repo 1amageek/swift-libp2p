@@ -103,6 +103,46 @@ struct IdentifyServiceTests {
         _ = service.events
     }
 
+    @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
+    func shutdownTerminatesEventStream() async {
+        let service = IdentifyService()
+
+        // Get the event stream
+        let events = service.events
+
+        // Start consuming events in a task
+        let consumeTask = Task {
+            var count = 0
+            for await _ in events {
+                count += 1
+            }
+            return count
+        }
+
+        // Give time for the consumer to start
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // Shutdown should terminate the stream
+        service.shutdown()
+
+        // Consumer should complete without timing out
+        let count = await consumeTask.value
+        #expect(count == 0)  // No events were emitted
+    }
+
+    @Test("Shutdown is idempotent")
+    func shutdownIsIdempotent() {
+        let service = IdentifyService()
+
+        // Multiple shutdowns should not crash
+        service.shutdown()
+        service.shutdown()
+        service.shutdown()
+
+        // Service should still be usable for cached data
+        #expect(service.allCachedInfo.isEmpty)
+    }
+
     // MARK: - IdentifyEvent Tests
 
     @Test("IdentifyEvent types")

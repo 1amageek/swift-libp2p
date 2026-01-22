@@ -49,6 +49,9 @@ public enum TLSCertificateError: Error, Sendable {
 
     /// TLS handshake failed.
     case handshakeFailed(reason: String, underlying: (any Error)? = nil)
+
+    /// Certificate signature creation failed.
+    case signatureCreationFailed(underlying: any Error)
 }
 
 extension TLSCertificateError: CustomStringConvertible {
@@ -85,6 +88,8 @@ extension TLSCertificateError: CustomStringConvertible {
                 return "TLS handshake failed: \(reason) (\(error))"
             }
             return "TLS handshake failed: \(reason)"
+        case .signatureCreationFailed(let error):
+            return "Certificate signature creation failed: \(error)"
         }
     }
 }

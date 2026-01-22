@@ -31,7 +31,7 @@ enum IdentifyProtobuf {
     // MARK: - Encoding
 
     /// Encodes IdentifyInfo to protobuf wire format.
-    static func encode(_ info: IdentifyInfo) -> Data {
+    static func encode(_ info: IdentifyInfo) throws -> Data {
         var result = Data()
 
         // Field 1: publicKey (optional bytes)
@@ -84,11 +84,10 @@ enum IdentifyProtobuf {
 
         // Field 8: signedPeerRecord (optional bytes)
         if let envelope = info.signedPeerRecord {
-            if let bytes = try? envelope.marshal() {
-                result.append(tagSignedPeerRecord)
-                result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
-                result.append(bytes)
-            }
+            let bytes = try envelope.marshal()
+            result.append(tagSignedPeerRecord)
+            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            result.append(bytes)
         }
 
         return result
@@ -149,12 +148,11 @@ enum IdentifyProtobuf {
 
             switch fieldNumber {
             case 1: // publicKey
-                publicKey = try? PublicKey(protobufEncoded: fieldData)
+                publicKey = try PublicKey(protobufEncoded: fieldData)
 
             case 2: // listenAddrs
-                if let addr = try? Multiaddr(bytes: fieldData) {
-                    listenAddresses.append(addr)
-                }
+                let addr = try Multiaddr(bytes: fieldData)
+                listenAddresses.append(addr)
 
             case 3: // protocols
                 if let proto = String(data: fieldData, encoding: .utf8) {
@@ -162,7 +160,7 @@ enum IdentifyProtobuf {
                 }
 
             case 4: // observedAddr
-                observedAddress = try? Multiaddr(bytes: fieldData)
+                observedAddress = try Multiaddr(bytes: fieldData)
 
             case 5: // protocolVersion
                 protocolVersion = String(data: fieldData, encoding: .utf8)
@@ -171,7 +169,7 @@ enum IdentifyProtobuf {
                 agentVersion = String(data: fieldData, encoding: .utf8)
 
             case 8: // signedPeerRecord
-                signedPeerRecord = try? Envelope.unmarshal(fieldData)
+                signedPeerRecord = try Envelope.unmarshal(fieldData)
 
             default:
                 // Skip unknown fields

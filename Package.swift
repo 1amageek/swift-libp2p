@@ -61,7 +61,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
-        .package(path: "../swift-quic"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.0.0"),
     ],
     targets: [
         // MARK: - Core

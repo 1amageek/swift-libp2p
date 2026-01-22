@@ -13,6 +13,9 @@ import Synchronization
 @_exported import P2PProtocols
 import P2PPing
 
+/// Logger for P2P operations.
+private let logger = Logger(label: "p2p.node")
+
 // MARK: - Configuration
 
 /// Configuration for peer discovery and auto-connection.
@@ -370,20 +373,32 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Close all listeners
         for listener in listeners {
-            try? await listener.close()
+            do {
+                try await listener.close()
+            } catch {
+                logger.debug("Failed to close listener: \(error)")
+            }
         }
         listeners.removeAll()
 
         // Close all secured listeners (QUIC, etc.)
         for listener in securedListeners {
-            try? await listener.close()
+            do {
+                try await listener.close()
+            } catch {
+                logger.debug("Failed to close secured listener: \(error)")
+            }
         }
         securedListeners.removeAll()
 
         // Close all connections
         for peer in pool.connectedPeers {
             if let connection = pool.connection(to: peer) {
-                try? await connection.close()
+                do {
+                    try await connection.close()
+                } catch {
+                    logger.debug("Failed to close connection to \(peer): \(error)")
+                }
             }
             _ = pool.remove(forPeer: peer)
             emit(.peerDisconnected(peer))

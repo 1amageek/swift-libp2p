@@ -5,6 +5,9 @@ import P2PMux
 import P2PProtocols
 import Synchronization
 
+/// Logger for IdentifyService operations.
+private let logger = Logger(label: "p2p.identify")
+
 /// Configuration for IdentifyService.
 public struct IdentifyConfiguration: Sendable {
     /// The protocol version to advertise.
@@ -147,14 +150,18 @@ public final class IdentifyService: ProtocolService, Sendable {
                 )
 
                 // Encode and send
-                let data = IdentifyProtobuf.encode(info)
+                let data = try IdentifyProtobuf.encode(info)
                 try await context.stream.write(data)
                 try await context.stream.close()
 
                 self.emit(.sent(peer: context.remotePeer))
-            } catch {
-                self.emit(.error(peer: context.remotePeer, .streamError(error.localizedDescription)))
-                try? await context.stream.close()
+            } catch let sendError {
+                self.emit(.error(peer: context.remotePeer, .streamError(sendError.localizedDescription)))
+                do {
+                    try await context.stream.close()
+                } catch {
+                    logger.debug("Failed to close identify stream: \(error)")
+                }
             }
         }
 
@@ -173,11 +180,15 @@ public final class IdentifyService: ProtocolService, Sendable {
                 }
 
                 self.emit(.pushReceived(peer: context.remotePeer, info: info))
-            } catch {
-                self.emit(.error(peer: context.remotePeer, .streamError(error.localizedDescription)))
+            } catch let pushError {
+                self.emit(.error(peer: context.remotePeer, .streamError(pushError.localizedDescription)))
             }
 
-            try? await context.stream.close()
+            do {
+                try await context.stream.close()
+            } catch {
+                logger.debug("Failed to close identify push stream: \(error)")
+            }
         }
     }
 
@@ -196,7 +207,13 @@ public final class IdentifyService: ProtocolService, Sendable {
         let stream = try await opener.newStream(to: peer, protocol: LibP2PProtocol.identify)
 
         defer {
-            Task { try? await stream.close() }
+            Task {
+                do {
+                    try await stream.close()
+                } catch {
+                    logger.debug("Failed to close identify stream: \(error)")
+                }
+            }
         }
 
         // Read the identify response with timeout
@@ -255,7 +272,13 @@ public final class IdentifyService: ProtocolService, Sendable {
         let stream = try await opener.newStream(to: peer, protocol: LibP2PProtocol.identifyPush)
 
         defer {
-            Task { try? await stream.close() }
+            Task {
+                do {
+                    try await stream.close()
+                } catch {
+                    logger.debug("Failed to close identify push stream: \(error)")
+                }
+            }
         }
 
         // Build and send our info
@@ -269,7 +292,7 @@ public final class IdentifyService: ProtocolService, Sendable {
             signedPeerRecord: nil
         )
 
-        let data = IdentifyProtobuf.encode(info)
+        let data = try IdentifyProtobuf.encode(info)
         try await stream.write(data)
 
         emit(.sent(peer: peer))
@@ -332,6 +355,20 @@ public final class IdentifyService: ProtocolService, Sendable {
     private func emit(_ event: IdentifyEvent) {
         eventState.withLock { state in
             state.continuation?.yield(event)
+        }
+    }
+
+    // MARK: - Shutdown
+
+    /// Shuts down the service and finishes the event stream.
+    ///
+    /// Call this method when the service is no longer needed to properly
+    /// terminate any consumers waiting on the `events` stream.
+    public func shutdown() {
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 }

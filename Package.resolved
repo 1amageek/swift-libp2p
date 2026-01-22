@@ -1,5 +1,5 @@
 {
-  "originHash" : "1ee278b422d1ec71e38084e30025cfbef596613ce6021c90bde15b52c4901482",
+  "originHash" : "54988a8213bfd0fc236405b8ec6fa15a828ee48cb457505cf531eda609791bfb",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -60,7 +60,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-mDNS.git",
       "state" : {
-        "revision" : "306660d1daabd255e6c6235fe07cc1d2fe4f646f",
+        "revision" : "f430de1f6dd5f185526abddf97b404f26c3a55ee",
         "version" : "1.0.0"
       }
     },
@@ -83,11 +83,20 @@
       }
     },
     {
+      "identity" : "swift-quic",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/swift-quic.git",
+      "state" : {
+        "revision" : "122100eb7fa21492ce9358cee99b177a0bd18e88",
+        "version" : "1.0.0"
+      }
+    },
+    {
       "identity" : "swift-swim",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-SWIM.git",
       "state" : {
-        "revision" : "1831f65894c06e795d7693565ed1ac113aeb080b",
+        "revision" : "56055d73dd847c42c810f745dae0120e4301b5f8",
         "version" : "1.0.0"
       }
     },

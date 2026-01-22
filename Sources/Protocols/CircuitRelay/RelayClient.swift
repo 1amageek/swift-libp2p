@@ -8,6 +8,9 @@ import P2PCore
 import P2PMux
 import P2PProtocols
 
+/// Logger for RelayClient operations.
+private let logger = Logger(label: "p2p.circuit-relay.client")
+
 /// Configuration for RelayClient.
 public struct RelayClientConfiguration: Sendable {
     /// Timeout for reservation requests.
@@ -233,7 +236,11 @@ public final class RelayClient: ProtocolService, Sendable {
             return reservation
 
         } catch {
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch let closeError {
+                logger.debug("Failed to close stream during reserve cleanup: \(closeError)")
+            }
             throw error
         }
     }
@@ -289,7 +296,11 @@ public final class RelayClient: ProtocolService, Sendable {
             return connection
 
         } catch {
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch let closeError {
+                logger.debug("Failed to close stream during connect cleanup: \(closeError)")
+            }
             throw error
         }
     }
@@ -471,12 +482,21 @@ public final class RelayClient: ProtocolService, Sendable {
 
             emit(.circuitEstablished(relay: context.remotePeer, remote: peerInfo.id))
 
-        } catch {
+        } catch let handleError {
+            logger.debug("Error handling STOP message: \(handleError)")
             // Send error status
             let response = StopMessage.statusResponse(.connectionFailed)
             let responseData = CircuitRelayProtobuf.encode(response)
-            try? await writeMessage(responseData, to: stream)
-            try? await stream.close()
+            do {
+                try await writeMessage(responseData, to: stream)
+            } catch let writeError {
+                logger.debug("Failed to send error response: \(writeError)")
+            }
+            do {
+                try await stream.close()
+            } catch let closeError {
+                logger.debug("Failed to close stream after STOP error: \(closeError)")
+            }
         }
     }
 

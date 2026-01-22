@@ -454,6 +454,55 @@ struct CompositeDiscoveryTests {
         #expect(results[1].score == 0.5)
         #expect(results[2].score == 0.3)
     }
+
+    @Test("Stop is idempotent (double stop does not crash)")
+    func stopIsIdempotent() async {
+        let service = MockDiscoveryService()
+        let composite = CompositeDiscovery(services: [service])
+
+        // Start to initialize state
+        await composite.start()
+
+        // Multiple stops should not crash
+        composite.stop()
+        composite.stop()
+        composite.stop()
+
+        // Service should still be usable for read operations
+        let peers = await composite.knownPeers()
+        #expect(peers.isEmpty)
+    }
+
+    @Test("Stop terminates observation stream", .timeLimit(.minutes(1)))
+    func stopTerminatesObservationStream() async {
+        let service = MockDiscoveryService()
+        let composite = CompositeDiscovery(services: [service])
+
+        // Start the composite
+        await composite.start()
+
+        // Get the observation stream
+        let observations = composite.observations
+
+        // Start consuming observations in a task
+        let consumeTask = Task {
+            var count = 0
+            for await _ in observations {
+                count += 1
+            }
+            return count
+        }
+
+        // Give time for the consumer to start
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // Stop should terminate the stream
+        composite.stop()
+
+        // Consumer should complete without timing out
+        let count = await consumeTask.value
+        #expect(count == 0)  // No observations were emitted
+    }
 }
 
 // MARK: - DiscoveryService Protocol Tests

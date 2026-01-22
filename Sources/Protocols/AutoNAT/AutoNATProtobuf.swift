@@ -243,11 +243,10 @@ enum AutoNATProtobuf {
 
             switch fieldNumber {
             case 1: // id
-                id = try? PeerID(bytes: fieldData)
+                id = try PeerID(bytes: fieldData)
             case 2: // addrs
-                if let addr = try? Multiaddr(bytes: fieldData) {
-                    addresses.append(addr)
-                }
+                let addr = try Multiaddr(bytes: fieldData)
+                addresses.append(addr)
             default:
                 break
             }
@@ -321,7 +320,7 @@ enum AutoNATProtobuf {
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATError.protocolViolation("Addr field truncated")
                 }
-                address = try? Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                address = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
                 offset = fieldEnd
 
             default:

@@ -161,12 +161,12 @@ public final class DCUtRService: ProtocolService, Sendable {
                     reason: error.localizedDescription
                 ))
 
-                // Don't retry on certain errors
+                // Fatal errors - rethrow immediately without wrapping
                 if case DCUtRError.noAddresses = error {
-                    break
+                    throw error
                 }
                 if case DCUtRError.protocolViolation = error {
-                    break
+                    throw error
                 }
 
                 // Wait before retry (exponential backoff)

@@ -8,6 +8,9 @@ import P2PCore
 import P2PMux
 import P2PProtocols
 
+/// Logger for AutoNAT operations.
+private let logger = Logger(label: "p2p.autonat")
+
 /// Configuration for AutoNATService.
 public struct AutoNATConfiguration: Sendable {
     /// Minimum number of probes to determine status.
@@ -212,7 +215,11 @@ public final class AutoNATService: ProtocolService, Sendable {
             )
 
             // Always close the stream
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch {
+                logger.debug("Failed to close AutoNAT stream: \(error)")
+            }
 
             return result
 
@@ -328,9 +335,13 @@ public final class AutoNATService: ProtocolService, Sendable {
                 try await sendResponse(stream: stream, response: .error(.dialError, text: "All dials failed"))
             }
 
-        } catch {
-            emit(.error(error.localizedDescription))
-            try? await sendResponse(stream: stream, response: .error(.internalError, text: error.localizedDescription))
+        } catch let handleError {
+            emit(.error(handleError.localizedDescription))
+            do {
+                try await sendResponse(stream: stream, response: .error(.internalError, text: handleError.localizedDescription))
+            } catch let sendError {
+                logger.debug("Failed to send AutoNAT error response: \(sendError)")
+            }
         }
     }
 

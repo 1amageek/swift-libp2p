@@ -10,7 +10,7 @@ struct IdentifyProtobufTests {
     @Test("Empty IdentifyInfo encodes and decodes correctly")
     func testEmptyInfo() throws {
         let info = IdentifyInfo()
-        let encoded = IdentifyProtobuf.encode(info)
+        let encoded = try IdentifyProtobuf.encode(info)
         let decoded = try IdentifyProtobuf.decode(encoded)
 
         #expect(decoded.publicKey == nil)
@@ -38,7 +38,7 @@ struct IdentifyProtobufTests {
             signedPeerRecord: nil
         )
 
-        let encoded = IdentifyProtobuf.encode(info)
+        let encoded = try IdentifyProtobuf.encode(info)
         let decoded = try IdentifyProtobuf.decode(encoded)
 
         #expect(decoded.publicKey != nil)
@@ -62,7 +62,7 @@ struct IdentifyProtobufTests {
             listenAddresses: [addr1, addr2, addr3]
         )
 
-        let encoded = IdentifyProtobuf.encode(info)
+        let encoded = try IdentifyProtobuf.encode(info)
         let decoded = try IdentifyProtobuf.decode(encoded)
 
         #expect(decoded.listenAddresses.count == 3)
@@ -83,7 +83,7 @@ struct IdentifyProtobufTests {
 
         let info = IdentifyInfo(protocols: protocols)
 
-        let encoded = IdentifyProtobuf.encode(info)
+        let encoded = try IdentifyProtobuf.encode(info)
         let decoded = try IdentifyProtobuf.decode(encoded)
 
         #expect(decoded.protocols.count == 4)
@@ -95,7 +95,7 @@ struct IdentifyProtobufTests {
     @Test("Decoding ignores unknown fields")
     func testUnknownFields() throws {
         let info = IdentifyInfo(agentVersion: "test/1.0.0")
-        var encoded = IdentifyProtobuf.encode(info)
+        var encoded = try IdentifyProtobuf.encode(info)
 
         // Add unknown field 9 (wire type 2)
         encoded.append(0x4A) // field 9, wire type 2

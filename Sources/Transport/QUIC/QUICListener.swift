@@ -95,7 +95,12 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
     private struct SecuredListenerState: Sendable {
         var isClosed: Bool = false
         var connectionsContinuation: AsyncStream<any MuxedConnection>.Continuation?
+        var forwardingTask: Task<Void, Never>?
     }
+
+    /// Stream of incoming secured connections.
+    /// This stream is created once and should be consumed by a single consumer.
+    public let connections: AsyncStream<any MuxedConnection>
 
     /// The local address this listener is bound to.
     public var localAddress: Multiaddr { _localAddress }
@@ -115,79 +120,92 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
         self.endpoint = endpoint
         self._localAddress = localAddress
         self.localKeyPair = localKeyPair
-        self.state = Mutex(SecuredListenerState())
+
+        // Create AsyncStream once in init
+        let (stream, continuation) = AsyncStream<any MuxedConnection>.makeStream()
+        self.connections = stream
+
+        var initialState = SecuredListenerState()
+        initialState.connectionsContinuation = continuation
+        self.state = Mutex(initialState)
     }
 
-    /// Stream of incoming secured connections.
+    /// Starts accepting incoming connections.
     ///
-    /// Each connection is already authenticated and ready for use.
-    /// Connections that fail PeerID extraction are rejected and closed.
-    public var connections: AsyncStream<any MuxedConnection> {
-        AsyncStream { continuation in
-            state.withLock { $0.connectionsContinuation = continuation }
+    /// This method must be called after initialization to begin
+    /// yielding connections to the `connections` AsyncStream.
+    public func startAccepting() {
+        let task = Task { [weak self] in
+            guard let self = self else { return }
 
-            Task { [weak self] in
-                guard let self = self else {
-                    continuation.finish()
-                    return
-                }
+            for await quicConnection in await self.endpoint.incomingConnections {
+                // Check if closed
+                let isClosed = self.state.withLock { $0.isClosed }
+                if isClosed { break }
 
-                for await quicConnection in await self.endpoint.incomingConnections {
-                    // Wait for handshake to complete before extracting PeerID
-                    // The connection is yielded before handshake is done
-                    var timeoutCount = 0
-                    while !quicConnection.isEstablished {
-                        timeoutCount += 1
-                        if timeoutCount > 3000 {  // 30 seconds (10ms * 3000)
-                            #if DEBUG
-                            print("Rejecting connection: handshake timeout")
-                            #endif
-                            try? await quicConnection.close(error: 0x100)
-                            continue
-                        }
-                        try? await Task.sleep(for: .milliseconds(10))
-                    }
-
-                    // Extract remote PeerID from TLS certificate
-                    // Reject connections that fail PeerID extraction (security requirement)
-                    let remotePeer: PeerID
-                    do {
-                        remotePeer = try self.extractPeerID(from: quicConnection)
-                    } catch {
+                // Wait for handshake to complete before extracting PeerID
+                var timeoutCount = 0
+                while !quicConnection.isEstablished {
+                    timeoutCount += 1
+                    if timeoutCount > 3000 {  // 30 seconds (10ms * 3000)
                         #if DEBUG
-                        print("Rejecting connection: failed to extract PeerID - \(error)")
+                        print("Rejecting connection: handshake timeout")
                         #endif
-                        // Close the connection with an application error code
                         try? await quicConnection.close(error: 0x100)
                         continue
                     }
-
-                    // Build remote address
-                    let remoteAddress = quicConnection.remoteAddress.toQUICMultiaddr()
-
-                    // Build local address if available
-                    let localAddr: Multiaddr?
-                    if let local = quicConnection.localAddress {
-                        localAddr = local.toQUICMultiaddr()
-                    } else {
-                        localAddr = self._localAddress
-                    }
-
-                    let muxedConnection = QUICMuxedConnection(
-                        quicConnection: quicConnection,
-                        localPeer: self.localKeyPair.peerID,
-                        remotePeer: remotePeer,
-                        localAddress: localAddr,
-                        remoteAddress: remoteAddress
-                    )
-
-                    continuation.yield(muxedConnection)
+                    try? await Task.sleep(for: .milliseconds(10))
                 }
 
-                continuation.finish()
-                self.state.withLock { $0.connectionsContinuation = nil }
+                // Extract remote PeerID from TLS certificate
+                let remotePeer: PeerID
+                do {
+                    remotePeer = try self.extractPeerID(from: quicConnection)
+                } catch {
+                    #if DEBUG
+                    print("Rejecting connection: failed to extract PeerID - \(error)")
+                    #endif
+                    try? await quicConnection.close(error: 0x100)
+                    continue
+                }
+
+                // Build remote address
+                let remoteAddress = quicConnection.remoteAddress.toQUICMultiaddr()
+
+                // Build local address if available
+                let localAddr: Multiaddr?
+                if let local = quicConnection.localAddress {
+                    localAddr = local.toQUICMultiaddr()
+                } else {
+                    localAddr = self._localAddress
+                }
+
+                let muxedConnection = QUICMuxedConnection(
+                    quicConnection: quicConnection,
+                    localPeer: self.localKeyPair.peerID,
+                    remotePeer: remotePeer,
+                    localAddress: localAddr,
+                    remoteAddress: remoteAddress
+                )
+
+                // Start forwarding incoming streams for this connection
+                muxedConnection.startForwarding()
+
+                let shouldYield = self.state.withLock { s -> Bool in
+                    guard !s.isClosed else { return false }
+                    s.connectionsContinuation?.yield(muxedConnection)
+                    return true
+                }
+                if !shouldYield { break }
+            }
+
+            self.state.withLock { s in
+                s.connectionsContinuation?.finish()
+                s.connectionsContinuation = nil
             }
         }
+
+        state.withLock { $0.forwardingTask = task }
     }
 
     /// Accepts the next incoming secured connection.
@@ -209,11 +227,16 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
 
     /// Closes the listener.
     public func close() async throws {
-        state.withLock { s in
+        let task = state.withLock { s -> Task<Void, Never>? in
             s.isClosed = true
             s.connectionsContinuation?.finish()
             s.connectionsContinuation = nil
+            let t = s.forwardingTask
+            s.forwardingTask = nil
+            return t
         }
+
+        task?.cancel()
     }
 
     // MARK: - Private Helpers

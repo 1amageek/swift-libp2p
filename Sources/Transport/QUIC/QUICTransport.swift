@@ -175,13 +175,18 @@ public final class QUICTransport: SecuredTransport, Sendable {
             localAddress = nil
         }
 
-        return QUICMuxedConnection(
+        let connection = QUICMuxedConnection(
             quicConnection: quicConnection,
             localPeer: localKeyPair.peerID,
             remotePeer: remotePeer,
             localAddress: localAddress,
             remoteAddress: address
         )
+
+        // Start forwarding incoming streams
+        connection.startForwarding()
+
+        return connection
     }
 
     /// Listens and returns a QUIC-specific listener.
@@ -232,11 +237,16 @@ public final class QUICTransport: SecuredTransport, Sendable {
             actualAddress = address
         }
 
-        return QUICSecuredListener(
+        let listener = QUICSecuredListener(
             endpoint: endpoint,
             localAddress: actualAddress,
             localKeyPair: localKeyPair
         )
+
+        // Start accepting incoming connections
+        listener.startAccepting()
+
+        return listener
     }
 
     // MARK: - Private Helpers

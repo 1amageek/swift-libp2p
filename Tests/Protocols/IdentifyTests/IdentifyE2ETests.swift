@@ -93,7 +93,7 @@ struct IdentifyE2ETests {
         )
 
         // Encode
-        let encoded = IdentifyProtobuf.encode(originalInfo)
+        let encoded = try IdentifyProtobuf.encode(originalInfo)
 
         // Decode
         let decoded = try IdentifyProtobuf.decode(encoded)
@@ -140,7 +140,7 @@ struct IdentifyE2ETests {
                 )
 
                 // Encode and send response
-                let data = IdentifyProtobuf.encode(serverInfo)
+                let data = try IdentifyProtobuf.encode(serverInfo)
                 try await stream.write(data)
                 try await stream.closeWrite()
 
@@ -208,7 +208,7 @@ struct IdentifyE2ETests {
                     agentVersion: nil,
                     signedPeerRecord: nil
                 )
-                try await stream.write(IdentifyProtobuf.encode(info))
+                try await stream.write(try IdentifyProtobuf.encode(info))
                 try await stream.closeWrite()
 
                 return serverConnection
@@ -277,7 +277,7 @@ struct IdentifyE2ETests {
                     agentVersion: "swift-libp2p/0.1.0",
                     signedPeerRecord: nil
                 )
-                try await stream.write(IdentifyProtobuf.encode(info))
+                try await stream.write(try IdentifyProtobuf.encode(info))
                 try await stream.closeWrite()
 
                 return serverConnection

@@ -102,14 +102,18 @@ public enum MultistreamSelect {
                 try await write(encode(requested))
                 return NegotiationResult(protocolID: requested)
             } else if requested == "ls" {
-                // List supported protocols
-                // Format: <outer-length><proto1>\n<proto2>\n...
-                // Note: No individual length prefix per protocol, just newline-separated
-                // This matches go-libp2p and rust-libp2p implementations
+                // List supported protocols per multistream-select spec:
+                // Format: <outer-length> <proto1-len>/proto1\n <proto2-len>/proto2\n ... \n
+                // Each protocol is an embedded multistream message with its own varint length
                 var inner = Data()
                 for proto in supported {
-                    inner.append(Data((proto + "\n").utf8))
+                    let protoMessage = Data((proto + "\n").utf8)
+                    inner.append(contentsOf: Varint.encode(UInt64(protoMessage.count)))
+                    inner.append(protoMessage)
                 }
+                // Final terminating newline
+                inner.append(UInt8(ascii: "\n"))
+
                 let outer = Varint.encode(UInt64(inner.count)) + inner
                 try await write(outer)
             } else {

@@ -8,6 +8,9 @@ import P2PCore
 import P2PMux
 import P2PProtocols
 
+/// Logger for RelayServer operations.
+private let logger = Logger(label: "p2p.circuit-relay.server")
+
 /// Configuration for RelayServer.
 public struct RelayServerConfiguration: Sendable {
     /// Maximum number of active reservations.
@@ -200,8 +203,13 @@ public final class RelayServer: ProtocolService, Sendable {
                 try await sendHopStatus(stream: stream, status: .unexpectedMessage)
             }
 
-        } catch {
-            try? await stream.close()
+        } catch let error {
+            logger.debug("Error handling HOP message: \(error)")
+            do {
+                try await stream.close()
+            } catch let closeError {
+                logger.debug("Failed to close stream after HOP error: \(closeError)")
+            }
         }
     }
 
@@ -220,9 +228,14 @@ public final class RelayServer: ProtocolService, Sendable {
             return (true, nil)
         }
 
-        guard canReserve else {
-            try? await sendHopStatus(stream: stream, status: reason!)
-            emit(.reservationDenied(from: requester, reason: reason!))
+        if !canReserve {
+            let denyReason = reason ?? .resourceLimitExceeded
+            do {
+                try await sendHopStatus(stream: stream, status: denyReason)
+            } catch let error {
+                logger.debug("Failed to send reservation denied status: \(error)")
+            }
+            emit(.reservationDenied(from: requester, reason: denyReason))
             return
         }
 
@@ -254,14 +267,19 @@ public final class RelayServer: ProtocolService, Sendable {
         do {
             try await writeMessage(responseData, to: stream)
             emit(.reservationAccepted(from: requester, expiration: expiration))
-        } catch {
+        } catch let writeError {
+            logger.debug("Failed to send reservation response: \(writeError)")
             // Failed to send response, remove reservation
-            _ = state.withLock { s in
+            state.withLock { s in
                 s.reservations.removeValue(forKey: requester)
             }
         }
 
-        try? await stream.close()
+        do {
+            try await stream.close()
+        } catch let closeError {
+            logger.debug("Failed to close stream after reserve: \(closeError)")
+        }
 
         // Schedule cleanup
         scheduleReservationCleanup(peer: requester, at: expiration)
@@ -280,7 +298,11 @@ public final class RelayServer: ProtocolService, Sendable {
         }
 
         guard hasReservation else {
-            try? await sendHopStatus(stream: stream, status: .noReservation)
+            do {
+                try await sendHopStatus(stream: stream, status: .noReservation)
+            } catch let error {
+                logger.debug("Failed to send noReservation status: \(error)")
+            }
             return
         }
 
@@ -298,14 +320,23 @@ public final class RelayServer: ProtocolService, Sendable {
             return (true, nil)
         }
 
-        guard canConnect else {
-            try? await sendHopStatus(stream: stream, status: reason!)
+        if !canConnect {
+            let denyReason = reason ?? .resourceLimitExceeded
+            do {
+                try await sendHopStatus(stream: stream, status: denyReason)
+            } catch let error {
+                logger.debug("Failed to send circuit limit exceeded status: \(error)")
+            }
             return
         }
 
         // Get opener
         guard let opener = openerRef.withLock({ $0 }) else {
-            try? await sendHopStatus(stream: stream, status: .connectionFailed)
+            do {
+                try await sendHopStatus(stream: stream, status: .connectionFailed)
+            } catch let error {
+                logger.debug("Failed to send connectionFailed status (no opener): \(error)")
+            }
             return
         }
 
@@ -326,8 +357,16 @@ public final class RelayServer: ProtocolService, Sendable {
             let stopResponse = try CircuitRelayProtobuf.decodeStop(stopResponseData)
 
             guard stopResponse.status == .ok else {
-                try? await targetStream.close()
-                try? await sendHopStatus(stream: stream, status: .connectionFailed)
+                do {
+                    try await targetStream.close()
+                } catch let closeError {
+                    logger.debug("Failed to close target stream after rejection: \(closeError)")
+                }
+                do {
+                    try await sendHopStatus(stream: stream, status: .connectionFailed)
+                } catch let sendError {
+                    logger.debug("Failed to send connectionFailed status: \(sendError)")
+                }
                 return
             }
 
@@ -353,8 +392,13 @@ public final class RelayServer: ProtocolService, Sendable {
             // Start relaying data between streams
             await relayData(from: stream, to: targetStream, circuitID: circuitID)
 
-        } catch {
-            try? await sendHopStatus(stream: stream, status: .connectionFailed)
+        } catch let connectError {
+            logger.debug("Error connecting to target peer: \(connectError)")
+            do {
+                try await sendHopStatus(stream: stream, status: .connectionFailed)
+            } catch let sendError {
+                logger.debug("Failed to send connectionFailed status: \(sendError)")
+            }
         }
     }
 
@@ -385,8 +429,16 @@ public final class RelayServer: ProtocolService, Sendable {
 
         emit(.circuitCompleted(source: circuitID.source, destination: circuitID.destination, bytesTransferred: bytesTransferred))
 
-        try? await sourceStream.close()
-        try? await targetStream.close()
+        do {
+            try await sourceStream.close()
+        } catch let error {
+            logger.debug("Failed to close source stream after relay: \(error)")
+        }
+        do {
+            try await targetStream.close()
+        } catch let error {
+            logger.debug("Failed to close target stream after relay: \(error)")
+        }
     }
 
     private func copyStream(from source: MuxedStream, to target: MuxedStream, circuitID: CircuitID) async {

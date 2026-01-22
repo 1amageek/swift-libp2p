@@ -311,17 +311,15 @@ public enum GossipSubProtobuf {
 
             switch fieldNumber {
             case 1: // subscriptions
-                if let sub = try? decodeSubOpts(fieldData) {
-                    subscriptions.append(sub)
-                }
+                let sub = try decodeSubOpts(fieldData)
+                subscriptions.append(sub)
 
             case 2: // publish
-                if let msg = try? decodeMessage(fieldData) {
-                    messages.append(msg)
-                }
+                let msg = try decodeMessage(fieldData)
+                messages.append(msg)
 
             case 3: // control
-                control = try? decodeControl(fieldData)
+                control = try decodeControl(fieldData)
 
             default:
                 break
@@ -413,7 +411,7 @@ public enum GossipSubProtobuf {
 
             switch fieldNumber {
             case 1: // from
-                source = try? PeerID(bytes: fieldData)
+                source = try PeerID(bytes: fieldData)
 
             case 2: // data
                 messageData = fieldData
@@ -476,24 +474,20 @@ public enum GossipSubProtobuf {
 
             switch fieldNumber {
             case 1: // ihave
-                if let ihave = try? decodeIHave(fieldData) {
-                    batch.ihaves.append(ihave)
-                }
+                let ihave = try decodeIHave(fieldData)
+                batch.ihaves.append(ihave)
 
             case 2: // iwant
-                if let iwant = try? decodeIWant(fieldData) {
-                    batch.iwants.append(iwant)
-                }
+                let iwant = try decodeIWant(fieldData)
+                batch.iwants.append(iwant)
 
             case 3: // graft
-                if let graft = try? decodeGraft(fieldData) {
-                    batch.grafts.append(graft)
-                }
+                let graft = try decodeGraft(fieldData)
+                batch.grafts.append(graft)
 
             case 4: // prune
-                if let prune = try? decodePrune(fieldData) {
-                    batch.prunes.append(prune)
-                }
+                let prune = try decodePrune(fieldData)
+                batch.prunes.append(prune)
 
             default:
                 break
@@ -652,9 +646,8 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                if let peerInfo = try? decodePeerInfo(Data(data[offset..<fieldEnd])) {
-                    peers.append(peerInfo)
-                }
+                let peerInfo = try decodePeerInfo(Data(data[offset..<fieldEnd]))
+                peers.append(peerInfo)
                 offset = fieldEnd
 
             case 3: // backoff (uint64)
@@ -704,7 +697,7 @@ public enum GossipSubProtobuf {
 
             switch fieldNumber {
             case 1: // peerID
-                peerID = try? PeerID(bytes: fieldData)
+                peerID = try PeerID(bytes: fieldData)
 
             case 2: // signedPeerRecord
                 signedPeerRecord = fieldData
