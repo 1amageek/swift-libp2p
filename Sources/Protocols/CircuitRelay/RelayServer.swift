@@ -57,7 +57,7 @@ public struct RelayServerConfiguration: Sendable {
 /// ))
 /// await server.registerHandler(registry: node, opener: node)
 /// ```
-public final class RelayServer: ProtocolService, Sendable {
+public final class RelayServer: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 
@@ -70,14 +70,21 @@ public final class RelayServer: ProtocolService, Sendable {
     /// Server configuration.
     public let configuration: RelayServerConfiguration
 
-    private let state: Mutex<ServerState>
+    /// Event state (dedicated).
+    private let eventState: Mutex<EventState>
+
+    private struct EventState: Sendable {
+        var stream: AsyncStream<CircuitRelayEvent>?
+        var continuation: AsyncStream<CircuitRelayEvent>.Continuation?
+    }
+
+    /// Server state (separated).
+    private let serverState: Mutex<ServerState>
 
     private struct ServerState: Sendable {
         var reservations: [PeerID: ServerReservation] = [:]
         var activeCircuits: [CircuitID: ActiveCircuit] = [:]
         var circuitsByPeer: [PeerID: Set<CircuitID>] = [:]
-        var eventContinuation: AsyncStream<CircuitRelayEvent>.Continuation?
-        var eventStream: AsyncStream<CircuitRelayEvent>?
     }
 
     private struct ServerReservation: Sendable {
@@ -111,11 +118,11 @@ public final class RelayServer: ProtocolService, Sendable {
 
     /// Stream of relay server events.
     public var events: AsyncStream<CircuitRelayEvent> {
-        state.withLock { s in
-            if let existing = s.eventStream { return existing }
+        eventState.withLock { state in
+            if let existing = state.stream { return existing }
             let (stream, continuation) = AsyncStream<CircuitRelayEvent>.makeStream()
-            s.eventStream = stream
-            s.eventContinuation = continuation
+            state.stream = stream
+            state.continuation = continuation
             return stream
         }
     }
@@ -127,7 +134,8 @@ public final class RelayServer: ProtocolService, Sendable {
     /// - Parameter configuration: Server configuration.
     public init(configuration: RelayServerConfiguration = .init()) {
         self.configuration = configuration
-        self.state = Mutex(ServerState())
+        self.eventState = Mutex(EventState())
+        self.serverState = Mutex(ServerState())
     }
 
     // MARK: - Handler Registration
@@ -158,17 +166,17 @@ public final class RelayServer: ProtocolService, Sendable {
 
     /// Returns the number of active reservations.
     public var reservationCount: Int {
-        state.withLock { $0.reservations.count }
+        serverState.withLock { $0.reservations.count }
     }
 
     /// Returns the number of active circuits.
     public var circuitCount: Int {
-        state.withLock { $0.activeCircuits.count }
+        serverState.withLock { $0.activeCircuits.count }
     }
 
     /// Returns all active reservations.
     public var reservations: [PeerID] {
-        state.withLock { Array($0.reservations.keys) }
+        serverState.withLock { Array($0.reservations.keys) }
     }
 
     // MARK: - Hop Protocol Handler
@@ -219,7 +227,7 @@ public final class RelayServer: ProtocolService, Sendable {
         context: StreamContext
     ) async {
         // Check limits
-        let (canReserve, reason) = state.withLock { s -> (Bool, HopStatus?) in
+        let (canReserve, reason) = serverState.withLock { s -> (Bool, HopStatus?) in
             // Check max reservations
             if s.reservations.count >= configuration.maxReservations {
                 return (false, .resourceLimitExceeded)
@@ -248,7 +256,7 @@ public final class RelayServer: ProtocolService, Sendable {
             addresses: addresses
         )
 
-        state.withLock { s in
+        serverState.withLock { s in
             s.reservations[requester] = reservation
         }
 
@@ -270,7 +278,7 @@ public final class RelayServer: ProtocolService, Sendable {
         } catch let writeError {
             logger.debug("Failed to send reservation response: \(writeError)")
             // Failed to send response, remove reservation
-            state.withLock { s in
+            serverState.withLock { s in
                 s.reservations.removeValue(forKey: requester)
             }
         }
@@ -292,7 +300,7 @@ public final class RelayServer: ProtocolService, Sendable {
         context: StreamContext
     ) async {
         // Check if target has reservation
-        let hasReservation: Bool = state.withLock { s in
+        let hasReservation: Bool = serverState.withLock { s in
             guard let res = s.reservations[target] else { return false }
             return res.expiration > ContinuousClock.now
         }
@@ -307,7 +315,7 @@ public final class RelayServer: ProtocolService, Sendable {
         }
 
         // Check circuit limits
-        let (canConnect, reason) = state.withLock { s -> (Bool, HopStatus?) in
+        let (canConnect, reason) = serverState.withLock { s -> (Bool, HopStatus?) in
             let sourceCircuits = s.circuitsByPeer[source]?.count ?? 0
             if sourceCircuits >= configuration.maxCircuitsPerPeer {
                 return (false, .resourceLimitExceeded)
@@ -377,7 +385,7 @@ public final class RelayServer: ProtocolService, Sendable {
 
             // Register circuit
             let circuitID = CircuitID(source: source, destination: target, id: UUID())
-            state.withLock { s in
+            serverState.withLock { s in
                 s.activeCircuits[circuitID] = ActiveCircuit(
                     id: circuitID,
                     startTime: .now,
@@ -419,7 +427,7 @@ public final class RelayServer: ProtocolService, Sendable {
         }
 
         // Clean up circuit
-        let bytesTransferred = state.withLock { s -> UInt64 in
+        let bytesTransferred = serverState.withLock { s -> UInt64 in
             let bytes = s.activeCircuits[circuitID]?.bytesTransferred ?? 0
             s.activeCircuits.removeValue(forKey: circuitID)
             s.circuitsByPeer[circuitID.source]?.remove(circuitID)
@@ -463,7 +471,7 @@ public final class RelayServer: ProtocolService, Sendable {
                 if let limit = dataLimit {
                     // Sync and check periodically
                     if localBytesTransferred >= batchSize {
-                        let totalBytes = state.withLock { s -> UInt64 in
+                        let totalBytes = serverState.withLock { s -> UInt64 in
                             s.activeCircuits[circuitID]?.bytesTransferred += localBytesTransferred
                             localBytesTransferred = 0
                             return s.activeCircuits[circuitID]?.bytesTransferred ?? 0
@@ -489,7 +497,7 @@ public final class RelayServer: ProtocolService, Sendable {
 
         // Final sync of bytes transferred
         if localBytesTransferred > 0 {
-            state.withLock { s in
+            serverState.withLock { s in
                 s.activeCircuits[circuitID]?.bytesTransferred += localBytesTransferred
             }
         }
@@ -550,8 +558,9 @@ public final class RelayServer: ProtocolService, Sendable {
     }
 
     private func emit(_ event: CircuitRelayEvent) {
-        let continuation = state.withLock { $0.eventContinuation }
-        continuation?.yield(event)
+        eventState.withLock { state in
+            state.continuation?.yield(event)
+        }
     }
 
     // MARK: - Shutdown
@@ -561,10 +570,10 @@ public final class RelayServer: ProtocolService, Sendable {
     /// Call this method when the server is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
-        state.withLock { s in
-            s.eventContinuation?.finish()
-            s.eventContinuation = nil
-            s.eventStream = nil
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 
@@ -576,7 +585,7 @@ public final class RelayServer: ProtocolService, Sendable {
     }
 
     private func cleanupExpiredReservation(peer: PeerID) {
-        state.withLock { s in
+        serverState.withLock { s in
             if let res = s.reservations[peer], res.expiration <= ContinuousClock.now {
                 s.reservations.removeValue(forKey: peer)
             }

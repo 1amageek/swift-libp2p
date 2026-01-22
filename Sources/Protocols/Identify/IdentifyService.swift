@@ -68,7 +68,7 @@ public enum IdentifyEvent: Sendable {
 /// let info = try await identifyService.identify(peer, using: node)
 /// print("Peer agent: \(info.agentVersion)")
 /// ```
-public final class IdentifyService: ProtocolService, Sendable {
+public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 

@@ -84,7 +84,7 @@ public struct PingConfiguration: Sendable {
 /// let result = try await pingService.ping(remotePeer, using: node)
 /// print("RTT: \(result.rtt)")
 /// ```
-public final class PingService: ProtocolService, Sendable {
+public final class PingService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 

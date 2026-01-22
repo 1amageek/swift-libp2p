@@ -4,14 +4,14 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 
 ## Features
 
-- **Transport Layer**: TCP (SwiftNIO-based), with Memory transport for testing
-- **Security Layer**: Noise Protocol (XX pattern), Plaintext for testing
-- **Multiplexing**: Yamux stream multiplexer
+- **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), Memory for testing
+- **Security Layer**: Noise Protocol (XX pattern), QUIC TLS 1.3, Plaintext for testing
+- **Multiplexing**: Yamux stream multiplexer, QUIC native multiplexing
 - **Protocol Negotiation**: multistream-select 1.0
-- **Identity**: Ed25519/Secp256k1 keys, PeerID derivation
+- **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
-- **Discovery**: SWIM-based membership protocol
-- **NAT Traversal**: Circuit Relay v2 for peers behind NATs
+- **Discovery**: SWIM membership, mDNS local discovery
+- **NAT Traversal**: Circuit Relay v2, AutoNAT, DCUtR hole punching
 - **Standard Protocols**: Identify, Ping, GossipSub, Kademlia DHT
 
 ## Requirements
@@ -110,9 +110,10 @@ try await stream.write(Data("Hello!".utf8))
 
 | Module | Description |
 |--------|-------------|
-| `P2PCore` | Core types: PeerID, Multiaddr, KeyPair, Connections |
+| `P2PCore` | Core types: PeerID, Multiaddr, KeyPair, EventEmitting |
 | `P2PTransport` | Transport protocol definition |
 | `P2PTransportTCP` | TCP transport implementation (SwiftNIO) |
+| `P2PTransportQUIC` | QUIC transport implementation (RFC 9000) |
 | `P2PTransportMemory` | In-memory transport for testing |
 | `P2PSecurity` | Security protocol definition |
 | `P2PSecurityNoise` | Noise Protocol implementation |
@@ -122,8 +123,11 @@ try await stream.write(Data("Hello!".utf8))
 | `P2PNegotiation` | multistream-select protocol |
 | `P2PDiscovery` | Discovery protocol definition |
 | `P2PDiscoverySWIM` | SWIM membership protocol |
+| `P2PDiscoveryMDNS` | mDNS local network discovery |
 | `P2P` | Integration layer (Node, ConnectionPool) |
-| `P2PProtocols` | Standard protocols (Identify, Ping) |
+| `P2PProtocols` | Protocol service definitions |
+| `P2PIdentify` | Identify protocol |
+| `P2PPing` | Ping protocol |
 | `P2PCircuitRelay` | Circuit Relay v2 for NAT traversal |
 | `P2PGossipSub` | GossipSub pubsub protocol |
 | `P2PKademlia` | Kademlia DHT implementation |
@@ -163,6 +167,28 @@ This implementation follows the official libp2p specifications for wire-protocol
 | User-facing APIs | `actor` |
 | High-frequency internal state | `class + Mutex<T>` |
 | Data containers | `struct` |
+
+### EventEmitting Pattern
+
+All services that expose `AsyncStream<Event>` conform to the `EventEmitting` protocol:
+
+```swift
+// Services implement EventEmitting protocol
+public final class MyService: EventEmitting, Sendable {
+    public var events: AsyncStream<MyEvent> { ... }
+    public func shutdown() { ... }  // Required: terminates event stream
+}
+
+// Safe usage with automatic cleanup
+try await withEventEmitter(myService) { service in
+    for await event in service.events {
+        // Handle events
+    }
+}
+// shutdown() called automatically
+```
+
+**Important**: Always call `shutdown()` when done with a service to prevent `for await` from hanging.
 
 ### Dependency Injection
 
@@ -214,7 +240,10 @@ let gater = ConnectionGater(
 
 ## Events
 
+All event-emitting services follow the `EventEmitting` protocol pattern:
+
 ```swift
+// Node events
 for await event in await node.events {
     switch event {
     case .peerConnected(let peer):
@@ -227,7 +256,53 @@ for await event in await node.events {
         print("Connection error: \(error)")
     }
 }
+
+// Service events (e.g., GossipSub)
+let gossipsub = GossipSubService(...)
+Task {
+    for await event in gossipsub.events {
+        switch event {
+        case .messageReceived(let topic, let message):
+            print("Received on \(topic): \(message)")
+        case .peerJoined(let topic, let peer):
+            print("\(peer) joined \(topic)")
+        default: break
+        }
+    }
+}
+
+// Don't forget to shutdown when done!
+gossipsub.shutdown()
 ```
+
+## QUIC Transport
+
+QUIC provides built-in encryption (TLS 1.3) and native stream multiplexing:
+
+```swift
+import P2PTransportQUIC
+
+// QUIC transport with libp2p certificate
+let quicTransport = QUICTransport(configuration: .init(
+    certificateProvider: .libp2p(keyPair: keyPair)
+))
+
+// Listen on QUIC
+let listener = try await quicTransport.listen(
+    Multiaddr("/ip4/0.0.0.0/udp/4001/quic-v1")!
+)
+
+// Dial with QUIC
+let connection = try await quicTransport.dial(
+    Multiaddr("/ip4/192.168.1.100/udp/4001/quic-v1/p2p/12D3KooW...")!
+)
+```
+
+**Benefits of QUIC**:
+- 0-RTT connection establishment
+- Native stream multiplexing (no Yamux needed)
+- Built-in TLS 1.3 security
+- Connection migration support
 
 ## NAT Traversal with Circuit Relay
 
@@ -316,6 +391,9 @@ swift run swift-libp2p-example dial /ip4/127.0.0.1/tcp/4001/p2p/<peer-id>
 - [swift-crypto](https://github.com/apple/swift-crypto) - Cryptographic primitives
 - [swift-log](https://github.com/apple/swift-log) - Logging
 - [swift-protobuf](https://github.com/apple/swift-protobuf) - Protocol Buffers
+- [swift-quic](https://github.com/example/swift-quic) - QUIC protocol (RFC 9000)
+- [swift-SWIM](https://github.com/example/swift-SWIM) - SWIM membership protocol
+- [swift-mDNS](https://github.com/example/swift-mDNS) - mDNS/DNS-SD discovery
 
 ## Contributing
 

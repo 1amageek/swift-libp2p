@@ -59,7 +59,7 @@ public struct RelayClientConfiguration: Sendable {
 ///     using: node
 /// )
 /// ```
-public final class RelayClient: ProtocolService, Sendable {
+public final class RelayClient: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 
@@ -72,7 +72,16 @@ public final class RelayClient: ProtocolService, Sendable {
     /// Client configuration.
     public let configuration: RelayClientConfiguration
 
-    private let state: Mutex<ClientState>
+    /// Event state (dedicated).
+    private let eventState: Mutex<EventState>
+
+    private struct EventState: Sendable {
+        var stream: AsyncStream<CircuitRelayEvent>?
+        var continuation: AsyncStream<CircuitRelayEvent>.Continuation?
+    }
+
+    /// Client state (separated).
+    private let clientState: Mutex<ClientState>
 
     /// Registered listeners per relay peer for direct connection routing.
     private let listeners: Mutex<[PeerID: WeakListenerRef]>
@@ -82,8 +91,6 @@ public final class RelayClient: ProtocolService, Sendable {
         var incomingConnections: [RelayedConnection] = []
         var connectionWaiters: [WaiterKey: ConnectionWaiter] = [:]
         var nextWaiterID: UInt64 = 0
-        var eventContinuation: AsyncStream<CircuitRelayEvent>.Continuation?
-        var eventStream: AsyncStream<CircuitRelayEvent>?
     }
 
     /// Weak reference to listener for routing without retain cycles.
@@ -118,11 +125,11 @@ public final class RelayClient: ProtocolService, Sendable {
 
     /// Stream of relay client events.
     public var events: AsyncStream<CircuitRelayEvent> {
-        state.withLock { s in
-            if let existing = s.eventStream { return existing }
+        eventState.withLock { state in
+            if let existing = state.stream { return existing }
             let (stream, continuation) = AsyncStream<CircuitRelayEvent>.makeStream()
-            s.eventStream = stream
-            s.eventContinuation = continuation
+            state.stream = stream
+            state.continuation = continuation
             return stream
         }
     }
@@ -134,7 +141,8 @@ public final class RelayClient: ProtocolService, Sendable {
     /// - Parameter configuration: Client configuration.
     public init(configuration: RelayClientConfiguration = .init()) {
         self.configuration = configuration
-        self.state = Mutex(ClientState())
+        self.eventState = Mutex(EventState())
+        self.clientState = Mutex(ClientState())
         self.listeners = Mutex([:])
     }
 
@@ -223,7 +231,7 @@ public final class RelayClient: ProtocolService, Sendable {
             )
 
             // Store reservation
-            _ = state.withLock { s in
+            clientState.withLock { s in
                 s.reservations[relay] = reservation
             }
 
@@ -310,7 +318,7 @@ public final class RelayClient: ProtocolService, Sendable {
     /// - Parameter relay: The relay peer ID.
     /// - Returns: The reservation, or nil if none exists or it has expired.
     public func reservation(on relay: PeerID) -> Reservation? {
-        state.withLock { s in
+        clientState.withLock { s in
             guard let res = s.reservations[relay], res.isValid else {
                 return nil
             }
@@ -320,7 +328,7 @@ public final class RelayClient: ProtocolService, Sendable {
 
     /// Returns all active reservations.
     public var activeReservations: [Reservation] {
-        state.withLock { s in
+        clientState.withLock { s in
             Array(s.reservations.values.filter { $0.isValid })
         }
     }
@@ -336,7 +344,7 @@ public final class RelayClient: ProtocolService, Sendable {
         remote: PeerID? = nil
     ) async throws -> RelayedConnection {
         // Check for queued connections first
-        let queued: RelayedConnection? = state.withLock { s in
+        let queued: RelayedConnection? = clientState.withLock { s in
             if let idx = s.incomingConnections.firstIndex(where: { conn in
                 (relay == nil || conn.relay == relay) &&
                 (remote == nil || conn.remotePeer == remote)
@@ -357,7 +365,7 @@ public final class RelayClient: ProtocolService, Sendable {
         let timeout = configuration.connectTimeout
 
         // First create the waiter key outside the continuation
-        let waiterKey = state.withLock { s -> WaiterKey in
+        let waiterKey = clientState.withLock { s -> WaiterKey in
             let key = WaiterKey(id: s.nextWaiterID)
             s.nextWaiterID += 1
             return key
@@ -372,7 +380,7 @@ public final class RelayClient: ProtocolService, Sendable {
 
                     // Check if waiter is still pending
                     if let self = self {
-                        let waiter: ConnectionWaiter? = self.state.withLock { s in
+                        let waiter: ConnectionWaiter? = self.clientState.withLock { s in
                             s.connectionWaiters.removeValue(forKey: waiterKey)
                         }
                         if let waiter = waiter {
@@ -382,7 +390,7 @@ public final class RelayClient: ProtocolService, Sendable {
                 }
 
                 // Register waiter and check for cancellation atomically
-                let alreadyCancelled = state.withLock { s -> Bool in
+                let alreadyCancelled = clientState.withLock { s -> Bool in
                     let waiter = ConnectionWaiter(
                         relay: relay,
                         remote: remote,
@@ -397,7 +405,7 @@ public final class RelayClient: ProtocolService, Sendable {
 
                 // If we were cancelled during registration, clean up immediately
                 if alreadyCancelled {
-                    let waiter: ConnectionWaiter? = state.withLock { s in
+                    let waiter: ConnectionWaiter? = clientState.withLock { s in
                         s.connectionWaiters.removeValue(forKey: waiterKey)
                     }
                     if let waiter = waiter {
@@ -409,7 +417,7 @@ public final class RelayClient: ProtocolService, Sendable {
         } onCancel: { [weak self, waiterKey] in
             // Immediately cancel the waiter when task is cancelled
             guard let self = self else { return }
-            let waiter: ConnectionWaiter? = self.state.withLock { s in
+            let waiter: ConnectionWaiter? = self.clientState.withLock { s in
                 s.connectionWaiters.removeValue(forKey: waiterKey)
             }
             if let waiter = waiter {
@@ -461,7 +469,7 @@ public final class RelayClient: ProtocolService, Sendable {
                 listener.enqueue(connection)
             } else {
                 // Fallback: Deliver to pending waiter or shared queue
-                let matchedWaiter: ConnectionWaiter? = state.withLock { s in
+                let matchedWaiter: ConnectionWaiter? = clientState.withLock { s in
                     // Find a waiter that matches this connection
                     for (key, waiter) in s.connectionWaiters {
                         if waiter.matches(connection) {
@@ -522,8 +530,9 @@ public final class RelayClient: ProtocolService, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: CircuitRelayEvent) {
-        let continuation = state.withLock { $0.eventContinuation }
-        continuation?.yield(event)
+        eventState.withLock { state in
+            state.continuation?.yield(event)
+        }
     }
 
     // MARK: - Shutdown
@@ -533,10 +542,10 @@ public final class RelayClient: ProtocolService, Sendable {
     /// Call this method when the client is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
-        state.withLock { s in
-            s.eventContinuation?.finish()
-            s.eventContinuation = nil
-            s.eventStream = nil
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 
@@ -553,7 +562,7 @@ public final class RelayClient: ProtocolService, Sendable {
     }
 
     private func handleReservationExpired(relay: PeerID) {
-        let removed: Bool = state.withLock { s in
+        let removed: Bool = clientState.withLock { s in
             if let res = s.reservations[relay], !res.isValid {
                 s.reservations.removeValue(forKey: relay)
                 return true

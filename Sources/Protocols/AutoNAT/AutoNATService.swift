@@ -62,7 +62,7 @@ public struct AutoNATConfiguration: Sendable {
 /// // Probe to determine NAT status
 /// let status = try await autonat.probe(using: node, servers: [peer1, peer2, peer3])
 /// ```
-public final class AutoNATService: ProtocolService, Sendable {
+public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 
@@ -75,23 +75,30 @@ public final class AutoNATService: ProtocolService, Sendable {
     /// Service configuration.
     public let configuration: AutoNATConfiguration
 
-    private let state: Mutex<ServiceState>
+    /// Event state (dedicated).
+    private let eventState: Mutex<EventState>
+
+    private struct EventState: Sendable {
+        var stream: AsyncStream<AutoNATEvent>?
+        var continuation: AsyncStream<AutoNATEvent>.Continuation?
+    }
+
+    /// Service state (separated).
+    private let serviceState: Mutex<ServiceState>
 
     private struct ServiceState: Sendable {
         var statusTracker: NATStatusTracker
-        var eventContinuation: AsyncStream<AutoNATEvent>.Continuation?
-        var eventStream: AsyncStream<AutoNATEvent>?
     }
 
     // MARK: - Events
 
     /// Stream of AutoNAT events.
     public var events: AsyncStream<AutoNATEvent> {
-        state.withLock { s in
-            if let existing = s.eventStream { return existing }
+        eventState.withLock { state in
+            if let existing = state.stream { return existing }
             let (stream, continuation) = AsyncStream<AutoNATEvent>.makeStream()
-            s.eventStream = stream
-            s.eventContinuation = continuation
+            state.stream = stream
+            state.continuation = continuation
             return stream
         }
     }
@@ -100,12 +107,12 @@ public final class AutoNATService: ProtocolService, Sendable {
 
     /// Current NAT status.
     public var status: NATStatus {
-        state.withLock { $0.statusTracker.status }
+        serviceState.withLock { $0.statusTracker.status }
     }
 
     /// Current confidence level.
     public var confidence: Int {
-        state.withLock { $0.statusTracker.confidence }
+        serviceState.withLock { $0.statusTracker.confidence }
     }
 
     // MARK: - Initialization
@@ -115,7 +122,8 @@ public final class AutoNATService: ProtocolService, Sendable {
     /// - Parameter configuration: Service configuration.
     public init(configuration: AutoNATConfiguration = .init()) {
         self.configuration = configuration
-        self.state = Mutex(ServiceState(
+        self.eventState = Mutex(EventState())
+        self.serviceState = Mutex(ServiceState(
             statusTracker: NATStatusTracker(minProbes: configuration.minProbes)
         ))
     }
@@ -174,12 +182,12 @@ public final class AutoNATService: ProtocolService, Sendable {
                 emit(.probeCompleted(server: server, result: result))
 
                 // Update status tracker
-                let statusChanged = state.withLock { s in
+                let statusChanged = serviceState.withLock { s in
                     s.statusTracker.recordProbe(result)
                 }
 
                 if statusChanged {
-                    let newStatus = state.withLock { $0.statusTracker.status }
+                    let newStatus = serviceState.withLock { $0.statusTracker.status }
                     emit(.statusChanged(newStatus))
                 }
             }
@@ -273,7 +281,7 @@ public final class AutoNATService: ProtocolService, Sendable {
 
     /// Resets the NAT status tracker.
     public func resetStatus() {
-        state.withLock { s in
+        serviceState.withLock { s in
             s.statusTracker.reset()
         }
         emit(.statusChanged(.unknown))
@@ -449,17 +457,18 @@ public final class AutoNATService: ProtocolService, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
-        state.withLock { s in
-            s.eventContinuation?.finish()
-            s.eventContinuation = nil
-            s.eventStream = nil
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 
     /// Emits an event.
     private func emit(_ event: AutoNATEvent) {
-        let continuation = state.withLock { $0.eventContinuation }
-        continuation?.yield(event)
+        eventState.withLock { state in
+            state.continuation?.yield(event)
+        }
     }
 
     /// Dials multiple addresses in parallel, returning the first successful address.

@@ -95,7 +95,7 @@ public struct KademliaConfiguration: Sendable {
 /// // Get a value
 /// let value = try await kad.getValue(key: myKey, using: node)
 /// ```
-public final class KademliaService: ProtocolService, Sendable {
+public final class KademliaService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 
@@ -120,12 +120,19 @@ public final class KademliaService: ProtocolService, Sendable {
     /// The provider store.
     public let providerStore: ProviderStore
 
-    private let state: Mutex<ServiceState>
+    /// Event state (dedicated).
+    private let eventState: Mutex<EventState>
+
+    private struct EventState: Sendable {
+        var stream: AsyncStream<KademliaEvent>?
+        var continuation: AsyncStream<KademliaEvent>.Continuation?
+    }
+
+    /// Service state (separated).
+    private let serviceState: Mutex<ServiceState>
 
     private struct ServiceState: Sendable {
         var mode: KademliaMode
-        var eventContinuation: AsyncStream<KademliaEvent>.Continuation?
-        var eventStream: AsyncStream<KademliaEvent>?
     }
 
     // MARK: - Initialization
@@ -144,25 +151,27 @@ public final class KademliaService: ProtocolService, Sendable {
         self.routingTable = RoutingTable(localPeerID: localPeerID, kValue: configuration.kValue)
         self.recordStore = RecordStore(defaultTTL: configuration.recordTTL)
         self.providerStore = ProviderStore(defaultTTL: configuration.providerTTL)
-        self.state = Mutex(ServiceState(mode: configuration.mode))
+        self.eventState = Mutex(EventState())
+        self.serviceState = Mutex(ServiceState(mode: configuration.mode))
     }
 
     // MARK: - Events
 
     /// Stream of Kademlia events.
     public var events: AsyncStream<KademliaEvent> {
-        state.withLock { s in
-            if let existing = s.eventStream { return existing }
+        eventState.withLock { state in
+            if let existing = state.stream { return existing }
             let (stream, continuation) = AsyncStream<KademliaEvent>.makeStream()
-            s.eventStream = stream
-            s.eventContinuation = continuation
+            state.stream = stream
+            state.continuation = continuation
             return stream
         }
     }
 
     private func emit(_ event: KademliaEvent) {
-        let continuation = state.withLock { $0.eventContinuation }
-        continuation?.yield(event)
+        eventState.withLock { state in
+            state.continuation?.yield(event)
+        }
     }
 
     // MARK: - Shutdown
@@ -172,10 +181,10 @@ public final class KademliaService: ProtocolService, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
-        state.withLock { s in
-            s.eventContinuation?.finish()
-            s.eventContinuation = nil
-            s.eventStream = nil
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 
@@ -183,12 +192,12 @@ public final class KademliaService: ProtocolService, Sendable {
 
     /// Current operating mode.
     public var mode: KademliaMode {
-        state.withLock { $0.mode }
+        serviceState.withLock { $0.mode }
     }
 
     /// Sets the operating mode.
     public func setMode(_ mode: KademliaMode) {
-        state.withLock { s in
+        serviceState.withLock { s in
             s.mode = mode
         }
         emit(.modeChanged(mode))

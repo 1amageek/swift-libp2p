@@ -56,7 +56,7 @@ public struct DCUtRConfiguration: Sendable {
 ///     dialer: { addr in try await node.connect(to: addr) }
 /// )
 /// ```
-public final class DCUtRService: ProtocolService, Sendable {
+public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - ProtocolService
 
@@ -69,12 +69,19 @@ public final class DCUtRService: ProtocolService, Sendable {
     /// Service configuration.
     public let configuration: DCUtRConfiguration
 
-    private let state: Mutex<ServiceState>
+    /// Event state (dedicated).
+    private let eventState: Mutex<EventState>
+
+    private struct EventState: Sendable {
+        var stream: AsyncStream<DCUtREvent>?
+        var continuation: AsyncStream<DCUtREvent>.Continuation?
+    }
+
+    /// Service state (separated).
+    private let serviceState: Mutex<ServiceState>
 
     private struct ServiceState: Sendable {
         var pendingUpgrades: [PeerID: UpgradeAttempt] = [:]
-        var eventContinuation: AsyncStream<DCUtREvent>.Continuation?
-        var eventStream: AsyncStream<DCUtREvent>?
     }
 
     private struct UpgradeAttempt: Sendable {
@@ -88,11 +95,11 @@ public final class DCUtRService: ProtocolService, Sendable {
 
     /// Stream of DCUtR events.
     public var events: AsyncStream<DCUtREvent> {
-        state.withLock { s in
-            if let existing = s.eventStream { return existing }
+        eventState.withLock { state in
+            if let existing = state.stream { return existing }
             let (stream, continuation) = AsyncStream<DCUtREvent>.makeStream()
-            s.eventStream = stream
-            s.eventContinuation = continuation
+            state.stream = stream
+            state.continuation = continuation
             return stream
         }
     }
@@ -104,7 +111,8 @@ public final class DCUtRService: ProtocolService, Sendable {
     /// - Parameter configuration: Service configuration.
     public init(configuration: DCUtRConfiguration = .init()) {
         self.configuration = configuration
-        self.state = Mutex(ServiceState())
+        self.eventState = Mutex(EventState())
+        self.serviceState = Mutex(ServiceState())
     }
 
     // MARK: - Handler Registration
@@ -412,17 +420,18 @@ public final class DCUtRService: ProtocolService, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
-        state.withLock { s in
-            s.eventContinuation?.finish()
-            s.eventContinuation = nil
-            s.eventStream = nil
+        eventState.withLock { state in
+            state.continuation?.finish()
+            state.continuation = nil
+            state.stream = nil
         }
     }
 
     // MARK: - Event Emission
 
     private func emit(_ event: DCUtREvent) {
-        let continuation = state.withLock { $0.eventContinuation }
-        continuation?.yield(event)
+        eventState.withLock { state in
+            state.continuation?.yield(event)
+        }
     }
 }

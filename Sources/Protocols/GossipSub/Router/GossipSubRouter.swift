@@ -31,7 +31,7 @@ public struct RPCHandleResult: Sendable {
 ///
 /// Manages mesh state, message routing, and control message handling.
 /// Uses class + Mutex pattern for high-frequency operations.
-public final class GossipSubRouter: Sendable {
+public final class GossipSubRouter: EventEmitting, Sendable {
 
     // MARK: - Properties
 
@@ -726,6 +726,7 @@ public final class GossipSubRouter: Sendable {
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil
+            state.stream = nil
         }
     }
 }
