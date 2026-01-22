@@ -23,7 +23,7 @@ struct StreamDebugTests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -91,7 +91,7 @@ struct StreamDebugTests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -149,7 +149,7 @@ struct StreamDebugTests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -199,7 +199,7 @@ struct StreamDebugTests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -259,7 +259,7 @@ struct StreamDebugTests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -319,7 +319,7 @@ struct StreamDebugTests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -379,6 +379,92 @@ struct StreamDebugTests {
 
         // Cleanup
         try await clientStream.close()
+        try await clientConnection.close()
+        try? await serverConnection?.close()
+        try await listener.close()
+
+        print("Test completed!")
+    }
+
+    // MARK: - Step 7: Multiple streams debug
+
+    @Test("Multiple streams sequential echo", .timeLimit(.minutes(1)))
+    func multipleStreamsSequential() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = QUICTransport()
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
+            localKeyPair: serverKeyPair
+        )
+
+        // Server echoes back data on multiple streams
+        let serverTask = Task { () -> (any MuxedConnection)? in
+            print("[Server] Waiting for connection...")
+            for await connection in listener.connections {
+                print("[Server] Got connection")
+
+                // Handle 3 streams
+                for i in 0..<3 {
+                    print("[Server] Waiting for stream \(i)...")
+                    do {
+                        let stream = try await connection.acceptStream()
+                        print("[Server] Got stream \(i), reading...")
+
+                        let data = try await stream.read()
+                        print("[Server] Stream \(i): Read '\(String(data: data, encoding: .utf8) ?? "?")'")
+
+                        try await stream.write(data)
+                        print("[Server] Stream \(i): Echoed back")
+
+                        try await stream.close()
+                        print("[Server] Stream \(i): Closed")
+                    } catch {
+                        print("[Server] Stream \(i): ERROR - \(error)")
+                        throw error
+                    }
+                }
+
+                return connection
+            }
+            return nil
+        }
+
+        // Client
+        print("[Client] Connecting...")
+        let clientConnection = try await transport.dialSecured(
+            listener.localAddress,
+            localKeyPair: clientKeyPair
+        )
+        print("[Client] Connected!")
+
+        // Open 3 streams sequentially
+        for i in 0..<3 {
+            print("[Client] Opening stream \(i)...")
+            let stream = try await clientConnection.newStream()
+            print("[Client] Stream \(i) opened")
+
+            let testData = Data("Stream \(i)".utf8)
+            try await stream.write(testData)
+            print("[Client] Stream \(i): Wrote data")
+
+            try await stream.closeWrite()
+            print("[Client] Stream \(i): Closed write")
+
+            let response = try await stream.read()
+            print("[Client] Stream \(i): Got response '\(String(data: response, encoding: .utf8) ?? "?")'")
+
+            #expect(response == testData)
+
+            try await stream.close()
+            print("[Client] Stream \(i): Closed")
+        }
+
+        // Wait for server
+        let serverConnection = try? await serverTask.value
+
+        // Cleanup
         try await clientConnection.close()
         try? await serverConnection?.close()
         try await listener.close()

@@ -6,6 +6,93 @@ import P2PCore
 import P2PMux
 import QUIC
 
+/// Async channel for buffering and distributing streams.
+///
+/// This class provides a simple producer-consumer pattern for streams.
+/// The producer calls `send()` to add streams, consumers call `receive()`
+/// to get them. Multiple consumers are supported and will receive streams
+/// in FIFO order.
+///
+/// This is essentially a simplified AsyncChannel implementation using
+/// `Mutex` for thread-safe access and `CheckedContinuation` for async waiting.
+private final class StreamChannel: Sendable {
+    private struct State: Sendable {
+        var buffer: [MuxedStream] = []
+        var waiters: [CheckedContinuation<MuxedStream?, Never>] = []
+        var isFinished = false
+    }
+
+    private let state = Mutex(State())
+
+    /// Sends a stream to the channel.
+    /// If there are waiting receivers, the first one gets the stream.
+    /// Otherwise, the stream is buffered.
+    func send(_ stream: MuxedStream) {
+        let waiterToResume: CheckedContinuation<MuxedStream?, Never>? = state.withLock { s in
+            guard !s.isFinished else { return nil }
+            if !s.waiters.isEmpty {
+                return s.waiters.removeFirst()
+            } else {
+                s.buffer.append(stream)
+                return nil
+            }
+        }
+        waiterToResume?.resume(returning: stream)
+    }
+
+    /// Finishes the channel, resuming all waiters with nil.
+    func finish() {
+        let waitersToResume: [CheckedContinuation<MuxedStream?, Never>] = state.withLock { s in
+            guard !s.isFinished else { return [] }
+            s.isFinished = true
+            let waiters = s.waiters
+            s.waiters.removeAll()
+            return waiters
+        }
+        for waiter in waitersToResume {
+            waiter.resume(returning: nil)
+        }
+    }
+
+    /// Receives the next stream from the channel.
+    /// Waits if no streams are available.
+    /// Returns nil if the channel is finished.
+    func receive() async -> MuxedStream? {
+        // Use an enum to track what action to take after the lock
+        enum Action {
+            case returnStream(MuxedStream)
+            case returnNil
+            case wait
+        }
+
+        return await withCheckedContinuation { continuation in
+            let action: Action = state.withLock { s in
+                // If there's a buffered stream, return it immediately
+                if !s.buffer.isEmpty {
+                    return .returnStream(s.buffer.removeFirst())
+                }
+                // If finished and no buffered streams, return nil
+                if s.isFinished {
+                    return .returnNil
+                }
+                // Otherwise, register as waiter
+                s.waiters.append(continuation)
+                return .wait
+            }
+
+            switch action {
+            case .returnStream(let stream):
+                continuation.resume(returning: stream)
+            case .returnNil:
+                continuation.resume(returning: nil)
+            case .wait:
+                // Continuation is stored in waiters, will be resumed by send() or finish()
+                break
+            }
+        }
+    }
+}
+
 /// A QUIC connection wrapped as a MuxedConnection.
 ///
 /// This class wraps a `QUICConnectionProtocol` to conform to the libp2p
@@ -19,6 +106,16 @@ import QUIC
 /// - No SecurityUpgrader is needed (TLS is built into QUIC)
 /// - No Muxer is needed (streams are native to QUIC)
 /// - PeerID is extracted from the TLS certificate
+///
+/// ## Stream Consumption
+///
+/// Both `inboundStreams` and `acceptStream()` consume from the same internal
+/// channel. Use ONE of the following patterns, not both:
+///
+/// - Use `for await stream in connection.inboundStreams { ... }` to iterate
+/// - Use `let stream = try await connection.acceptStream()` repeatedly
+///
+/// Mixing these patterns will cause streams to be split between consumers.
 public final class QUICMuxedConnection: MuxedConnection, Sendable {
 
     private let quicConnection: any QUICConnectionProtocol
@@ -28,16 +125,27 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     private let _remoteAddress: Multiaddr
 
     private let state: Mutex<ConnectionState>
+    private let streamChannel: StreamChannel
 
     private struct ConnectionState: Sendable {
         var isClosed: Bool = false
-        var inboundContinuation: AsyncStream<MuxedStream>.Continuation?
         var forwardingTask: Task<Void, Never>?
     }
 
     /// Incoming streams from the remote peer.
-    /// This stream is created once and should be consumed by a single consumer.
-    public let inboundStreams: AsyncStream<MuxedStream>
+    ///
+    /// - Note: This property and `acceptStream()` consume from the same source.
+    ///   Use only one pattern per connection.
+    public var inboundStreams: AsyncStream<MuxedStream> {
+        AsyncStream { continuation in
+            Task { [streamChannel] in
+                while let stream = await streamChannel.receive() {
+                    continuation.yield(stream)
+                }
+                continuation.finish()
+            }
+        }
+    }
 
     /// The local peer ID.
     public var localPeer: PeerID { _localPeer }
@@ -71,38 +179,28 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         self._remotePeer = remotePeer
         self._localAddress = localAddress
         self._remoteAddress = remoteAddress
-
-        // Create AsyncStream once in init
-        let (stream, continuation) = AsyncStream<MuxedStream>.makeStream()
-        self.inboundStreams = stream
-
-        var initialState = ConnectionState()
-        initialState.inboundContinuation = continuation
-        self.state = Mutex(initialState)
+        self.streamChannel = StreamChannel()
+        self.state = Mutex(ConnectionState())
     }
 
     /// Starts forwarding incoming streams from the QUIC connection.
     ///
     /// This method must be called after initialization to begin
-    /// yielding streams to the `inboundStreams` AsyncStream.
+    /// sending streams to the internal channel for consumption by
+    /// `inboundStreams` or `acceptStream()`.
     public func startForwarding() {
         let task = Task { [weak self] in
             guard let self = self else { return }
 
             for await quicStream in self.quicConnection.incomingStreams {
+                let isClosed = self.state.withLock { $0.isClosed }
+                if isClosed { break }
+
                 let muxedStream = QUICMuxedStream(stream: quicStream)
-                let shouldYield = self.state.withLock { s -> Bool in
-                    guard !s.isClosed else { return false }
-                    s.inboundContinuation?.yield(muxedStream)
-                    return true
-                }
-                if !shouldYield { break }
+                self.streamChannel.send(muxedStream)
             }
 
-            self.state.withLock { s in
-                s.inboundContinuation?.finish()
-                s.inboundContinuation = nil
-            }
+            self.streamChannel.finish()
         }
 
         state.withLock { $0.forwardingTask = task }
@@ -121,11 +219,19 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
 
     /// Accepts an incoming stream.
     ///
+    /// This consumes from the internal channel that is populated by `startForwarding()`.
+    /// Multiple calls to `acceptStream()` are safe and will return streams in FIFO order.
+    ///
+    /// - Note: `acceptStream()` and direct iteration of `inboundStreams` consume from
+    ///   the same source. Use one pattern or the other, not both.
+    ///
     /// - Returns: The next incoming MuxedStream.
     /// - Throws: Error if accept fails or connection is closed.
     public func acceptStream() async throws -> MuxedStream {
-        let quicStream = try await quicConnection.acceptStream()
-        return QUICMuxedStream(stream: quicStream)
+        guard let stream = await streamChannel.receive() else {
+            throw QUICTransportError.connectionClosed
+        }
+        return stream
     }
 
     /// Closes all streams and the connection.
@@ -133,8 +239,6 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         let (alreadyClosed, task) = state.withLock { s -> (Bool, Task<Void, Never>?) in
             let was = s.isClosed
             s.isClosed = true
-            s.inboundContinuation?.finish()
-            s.inboundContinuation = nil
             let t = s.forwardingTask
             s.forwardingTask = nil
             return (was, t)
@@ -142,6 +246,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
 
         guard !alreadyClosed else { return }
 
+        streamChannel.finish()
         task?.cancel()
         await quicConnection.close(error: nil)
     }

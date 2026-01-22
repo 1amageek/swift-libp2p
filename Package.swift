@@ -61,7 +61,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.0.0"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", branch: "main"),
     ],
     targets: [
         // MARK: - Core
@@ -71,7 +71,8 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/Core/P2PCore"
+            path: "Sources/Core/P2PCore",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PCoreTests",
@@ -92,7 +93,8 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
-            path: "Sources/Transport/TCP"
+            path: "Sources/Transport/TCP",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PTransportQUIC",
@@ -102,16 +104,25 @@ let package = Package(
                 "P2PMux",
                 .product(name: "QUIC", package: "swift-quic"),
             ],
-            path: "Sources/Transport/QUIC"
+            path: "Sources/Transport/QUIC",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PTransportMemory",
             dependencies: ["P2PTransport"],
-            path: "Sources/Transport/Memory"
+            path: "Sources/Transport/Memory",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PTransportTests",
-            dependencies: ["P2PTransport", "P2PTransportMemory"],
+            dependencies: [
+                "P2PTransport",
+                "P2PTransportMemory",
+                "P2PTransportTCP",
+                "P2PCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
             path: "Tests/Transport/P2PTransportTests"
         ),
         .testTarget(
@@ -136,12 +147,14 @@ let package = Package(
                 "P2PSecurity",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
-            path: "Sources/Security/Noise"
+            path: "Sources/Security/Noise",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PSecurityPlaintext",
             dependencies: ["P2PSecurity"],
-            path: "Sources/Security/Plaintext"
+            path: "Sources/Security/Plaintext",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PSecurityTests",
@@ -168,7 +181,8 @@ let package = Package(
         .target(
             name: "P2PMuxYamux",
             dependencies: ["P2PMux"],
-            path: "Sources/Mux/Yamux"
+            path: "Sources/Mux/Yamux",
+            exclude: ["CONTEXT.md", "DESIGN_STREAM_LIMITS.md"]
         ),
         .testTarget(
             name: "P2PMuxTests",
@@ -185,7 +199,8 @@ let package = Package(
         .target(
             name: "P2PNegotiation",
             dependencies: ["P2PCore"],
-            path: "Sources/Negotiation/P2PNegotiation"
+            path: "Sources/Negotiation/P2PNegotiation",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PNegotiationTests",
@@ -233,12 +248,14 @@ let package = Package(
         .target(
             name: "P2PIdentify",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
-            path: "Sources/Protocols/Identify"
+            path: "Sources/Protocols/Identify",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PPing",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
-            path: "Sources/Protocols/Ping"
+            path: "Sources/Protocols/Ping",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PIdentifyTests",
@@ -269,7 +286,8 @@ let package = Package(
         .target(
             name: "P2PGossipSub",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
-            path: "Sources/Protocols/GossipSub"
+            path: "Sources/Protocols/GossipSub",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PGossipSubTests",
@@ -279,7 +297,8 @@ let package = Package(
         .target(
             name: "P2PCircuitRelay",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux", "P2PTransport"],
-            path: "Sources/Protocols/CircuitRelay"
+            path: "Sources/Protocols/CircuitRelay",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PCircuitRelayTests",
@@ -289,7 +308,8 @@ let package = Package(
         .target(
             name: "P2PDCUtR",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
-            path: "Sources/Protocols/DCUtR"
+            path: "Sources/Protocols/DCUtR",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PDCUtRTests",
@@ -299,7 +319,8 @@ let package = Package(
         .target(
             name: "P2PAutoNAT",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
-            path: "Sources/Protocols/AutoNAT"
+            path: "Sources/Protocols/AutoNAT",
+            exclude: ["CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PAutoNATTests",
@@ -309,7 +330,8 @@ let package = Package(
         .target(
             name: "P2PKademlia",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
-            path: "Sources/Protocols/Kademlia"
+            path: "Sources/Protocols/Kademlia",
+            exclude: ["CONTEXT.md", "DESIGN_KEY_VALIDATION.md"]
         ),
         .testTarget(
             name: "P2PKademliaTests",
@@ -330,7 +352,8 @@ let package = Package(
                 "P2PProtocols",
                 "P2PPing",
             ],
-            path: "Sources/Integration/P2P"
+            path: "Sources/Integration/P2P",
+            exclude: ["CONTEXT.md", "Connection/CONTEXT.md"]
         ),
         .testTarget(
             name: "P2PTests",
