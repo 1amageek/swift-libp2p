@@ -172,11 +172,13 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     ///   - version: The negotiated protocol version
     ///   - direction: Connection direction
     ///   - stream: The muxed stream
+    ///   - remoteAddress: The remote peer's address (for IP-based Sybil defense)
     public func handlePeerConnected(
         _ peerID: PeerID,
         version: GossipSubVersion,
         direction: PeerDirection,
-        stream: MuxedStream
+        stream: MuxedStream,
+        remoteAddress: Multiaddr? = nil
     ) {
         let state = PeerState(
             peerID: peerID,
@@ -184,6 +186,11 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             direction: direction
         )
         peerState.addPeer(state, stream: stream)
+
+        // Register IP for Sybil defense
+        if let address = remoteAddress, let ip = extractIP(from: address) {
+            registerPeerIP(peerID, ip: ip)
+        }
 
         emit(.peerConnected(peer: peerID))
     }
@@ -202,6 +209,27 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         peerScorer.removePeer(peerID)
 
         emit(.peerDisconnected(peer: peerID))
+    }
+
+    /// Registers a peer's IP address for Sybil defense.
+    ///
+    /// Call this when a peer connects to enable IP-based colocation tracking.
+    /// When too many peers connect from the same IP, they receive penalties.
+    ///
+    /// - Parameters:
+    ///   - peerID: The peer ID.
+    ///   - ip: The peer's IP address.
+    public func registerPeerIP(_ peerID: PeerID, ip: String) {
+        let result = peerScorer.registerPeerIP(peerID, ip: ip)
+        if result.penaltyApplied {
+            emit(.sybilSuspected(ip: result.ipAddress, peerCount: result.peerCount))
+            let currentScore = peerScorer.score(for: peerID)
+            emit(.peerPenalized(
+                peer: peerID,
+                reason: .ipColocation(ip: result.ipAddress, peerCount: result.peerCount),
+                score: currentScore
+            ))
+        }
     }
 
     // MARK: - Message Handling
@@ -276,13 +304,26 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         _ message: GossipSubMessage,
         from peerID: PeerID
     ) -> [(peer: PeerID, rpc: GossipSubRPC)] {
-        // Check if already seen
-        guard seenCache.add(message.id) else {
+        // Reject messages from graylisted peers
+        if peerScorer.isGraylisted(peerID) {
+            emit(.peerPenalized(
+                peer: peerID,
+                reason: .protocolViolation("message from graylisted peer"),
+                score: peerScorer.score(for: peerID)
+            ))
+            return []
+        }
+
+        // === Dedup Phase ===
+        // Check if already seen (before validation to avoid redundant work)
+        let isFirstDelivery = seenCache.add(message.id)
+        if !isFirstDelivery {
             // Duplicate - record penalty and don't forward
             peerScorer.recordDuplicateMessage(from: peerID)
             return []
         }
 
+        // === Validation Phase ===
         // Validate message structure
         guard message.validateStructure() else {
             // Invalid message structure - record penalty
@@ -297,6 +338,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             if configuration.strictSignatureVerification {
                 // Strict mode: require signature
                 guard message.signature != nil, message.source != nil else {
+                    peerScorer.recordInvalidMessage(from: peerID)
                     emit(.messageValidated(messageID: message.id, result: .reject))
                     return []
                 }
@@ -313,6 +355,12 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             }
         }
 
+        // === Scoring Phase ===
+        // Track message delivery AFTER validation succeeds
+        // This prevents attackers from gaining first-delivery bonus with invalid messages
+        peerScorer.recordMessageDelivery(from: peerID, isFirst: true)
+
+        // === Delivery Phase ===
         // Cache the message
         messageCache.put(message)
 
@@ -410,9 +458,37 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         _ iwants: [ControlMessage.IWant],
         from peerID: PeerID
     ) -> [GossipSubMessage] {
+        // Block graylisted peers immediately
+        if peerScorer.isGraylisted(peerID) {
+            return []
+        }
+
         var messages: [GossipSubMessage] = []
 
         for iwant in iwants {
+            for msgID in iwant.messageIDs {
+                // Track the IWANT request and check for excessive requests
+                let result = peerScorer.trackIWantRequest(from: peerID, for: msgID)
+                if case .excessive(let count) = result {
+                    // Apply penalty for excessive IWANT requests
+                    peerScorer.recordExcessiveIWant(from: peerID)
+                    let currentScore = peerScorer.score(for: peerID)
+                    emit(.peerPenalized(
+                        peer: peerID,
+                        reason: .excessiveIWant,
+                        score: currentScore
+                    ))
+                    // Log once per excessive detection, not per request
+                    if count == configuration.maxIWantMessages {
+                        // Only continue processing if score is still acceptable
+                        if peerScorer.isGraylisted(peerID) {
+                            return messages
+                        }
+                    }
+                }
+            }
+
+            // Retrieve requested messages from cache
             let found = messageCache.getMultiple(iwant.messageIDs)
             messages.append(contentsOf: found.values)
         }
@@ -704,12 +780,51 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         peerScorer.applyDecayToAll()
     }
 
+    /// Performs full scoring maintenance including:
+    /// - Score decay
+    /// - IWANT tracking cleanup
+    /// - Delivery rate penalty application
+    ///
+    /// Call this during heartbeat for complete scoring maintenance.
+    public func performScoringMaintenance() {
+        peerScorer.applyDecayToAll()
+        peerScorer.cleanupIWantTracking()
+        let penalizedPeers = peerScorer.applyDeliveryRatePenalties()
+
+        // Emit events for penalized peers
+        for (peer, deliveryRate) in penalizedPeers {
+            let currentScore = peerScorer.score(for: peer)
+            emit(.peerPenalized(
+                peer: peer,
+                reason: .protocolViolation("Low delivery rate: \(String(format: "%.1f%%", deliveryRate * 100))"),
+                score: currentScore
+            ))
+        }
+    }
+
     // MARK: - Event Emission
 
     private func emit(_ event: GossipSubEvent) {
         eventState.withLock { state in
             _ = state.continuation?.yield(event)
         }
+    }
+
+    // MARK: - Helper Methods
+
+    /// Extracts IP address from a Multiaddr.
+    ///
+    /// - Parameter addr: The multiaddr to extract from
+    /// - Returns: IP address string if found, nil otherwise
+    private func extractIP(from addr: Multiaddr) -> String? {
+        for proto in addr.protocols {
+            switch proto {
+            case .ip4(let ip): return ip
+            case .ip6(let ip): return ip
+            default: continue
+            }
+        }
+        return nil
     }
 
     // MARK: - Shutdown
