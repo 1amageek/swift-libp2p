@@ -25,8 +25,8 @@ struct IdentifyProtobufTests {
     @Test("IdentifyInfo with all fields encodes and decodes correctly")
     func testFullInfo() throws {
         let keyPair = KeyPair.generateEd25519()
-        let listenAddr = Multiaddr("/ip4/127.0.0.1/tcp/4001")
-        let observedAddr = Multiaddr("/ip4/1.2.3.4/tcp/5678")
+        let listenAddr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
+        let observedAddr = try Multiaddr("/ip4/1.2.3.4/tcp/5678")
 
         let info = IdentifyInfo(
             publicKey: keyPair.publicKey,
@@ -54,9 +54,9 @@ struct IdentifyProtobufTests {
 
     @Test("Multiple listen addresses encode correctly")
     func testMultipleListenAddresses() throws {
-        let addr1 = Multiaddr("/ip4/127.0.0.1/tcp/4001")
-        let addr2 = Multiaddr("/ip4/0.0.0.0/tcp/4002")
-        let addr3 = Multiaddr("/ip6/::1/tcp/4003")
+        let addr1 = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
+        let addr2 = try Multiaddr("/ip4/0.0.0.0/tcp/4002")
+        let addr3 = try Multiaddr("/ip6/::1/tcp/4003")
 
         let info = IdentifyInfo(
             listenAddresses: [addr1, addr2, addr3]

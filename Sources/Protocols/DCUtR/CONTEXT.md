@@ -128,8 +128,8 @@ DCUtR works in conjunction with Circuit Relay:
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **DCUtRServiceテストの追加** - CONNECT/SYNCフロー検証
-- [ ] **Protobufエンコードテスト** - HolePunchメッセージラウンドトリップ
+- [x] **DCUtRServiceテストの追加** - CONNECT/SYNCフロー検証 ✅ (50テスト)
+- [x] **Protobufエンコードテスト** - HolePunchメッセージラウンドトリップ ✅
 - [ ] **タイミング検証テスト** - RTT測定とSYNC待機の正確性
 
 ### 中優先度
@@ -147,10 +147,25 @@ DCUtR works in conjunction with Circuit Relay:
 - [DCUtR Specification](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md)
 - [Circuit Relay v2 Specification](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md)
 
-## Codex Review (2026-01-18)
+## テスト実装状況
+
+| テストスイート | テスト数 | 説明 |
+|--------------|---------|------|
+| `DCUtRProtocolTests` | 2 | プロトコルID、メッセージサイズ |
+| `DCUtRMessageTests` | 3 | CONNECT/SYNCメッセージ型 |
+| `DCUtRProtobufTests` | 13 | Protobufエンコード/デコード |
+| `DCUtRErrorTests` | 4 | エラー型 |
+| `DCUtREventTests` | 6 | イベント型 |
+| `DCUtRConfigurationTests` | 2 | 設定 |
+| `DCUtRServiceTests` | 9 | サービス初期化、シャットダウン |
+| `DCUtRIntegrationTests` | 11 | 統合テスト |
+
+**合計: 50テスト** (2026-01-23時点)
+
+## Codex Review (2026-01-18) - UPDATED 2026-01-23
 
 ### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Reads have no timeout | `DCUtRService.swift:136-180` | CONNECT/SYNC reads have no timeout; can hang indefinitely |
-| maxAttempts not enforced | `DCUtRService.swift:266-276` | `maxAttempts` configuration exists but retry logic not implemented |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| ~~Reads have no timeout~~ | `DCUtRService.swift:324-338` | ✅ Fixed | `readMessage()` wraps reads with `withTimeout(configuration.timeout)` |
+| ~~maxAttempts not enforced~~ | `DCUtRService.swift:146-190` | ✅ Fixed | `upgradeToDirectConnection()` now retries up to `maxAttempts` with exponential backoff |

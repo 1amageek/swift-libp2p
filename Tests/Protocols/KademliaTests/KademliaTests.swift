@@ -30,7 +30,7 @@ struct KademliaTests {
         @Test("Create key from peer ID")
         func createFromPeerID() throws {
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
             let key = KademliaKey(from: peerID)
             #expect(key.bytes.count == 32)
         }
@@ -204,7 +204,7 @@ struct KademliaTests {
         func insertEmpty() throws {
             var bucket = KBucket(maxSize: 3)
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
 
             let result = bucket.insert(peerID)
             #expect(result == .inserted)
@@ -215,7 +215,7 @@ struct KademliaTests {
         func updateExisting() throws {
             var bucket = KBucket(maxSize: 3)
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
 
             _ = bucket.insert(peerID)
             let result = bucket.insert(peerID)
@@ -231,9 +231,9 @@ struct KademliaTests {
             let keyPair2 = KeyPair.generateEd25519()
             let keyPair3 = KeyPair.generateEd25519()
 
-            let peer1 = try PeerID(publicKey: keyPair1.publicKey)
-            let peer2 = try PeerID(publicKey: keyPair2.publicKey)
-            let peer3 = try PeerID(publicKey: keyPair3.publicKey)
+            let peer1 = PeerID(publicKey: keyPair1.publicKey)
+            let peer2 = PeerID(publicKey: keyPair2.publicKey)
+            let peer3 = PeerID(publicKey: keyPair3.publicKey)
 
             #expect(bucket.insert(peer1) == .inserted)
             #expect(bucket.insert(peer2) == .inserted)
@@ -245,7 +245,7 @@ struct KademliaTests {
         func removePeer() throws {
             var bucket = KBucket(maxSize: 3)
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
 
             _ = bucket.insert(peerID)
             let removed = bucket.remove(peerID)
@@ -263,9 +263,9 @@ struct KademliaTests {
             let keyPair2 = KeyPair.generateEd25519()
             let keyPair3 = KeyPair.generateEd25519()
 
-            let peer1 = try PeerID(publicKey: keyPair1.publicKey)
-            let peer2 = try PeerID(publicKey: keyPair2.publicKey)
-            let peer3 = try PeerID(publicKey: keyPair3.publicKey)
+            let peer1 = PeerID(publicKey: keyPair1.publicKey)
+            let peer2 = PeerID(publicKey: keyPair2.publicKey)
+            let peer3 = PeerID(publicKey: keyPair3.publicKey)
 
             _ = bucket.insert(peer1)
             _ = bucket.insert(peer2)
@@ -285,7 +285,7 @@ struct KademliaTests {
             var peers: [PeerID] = []
             for _ in 0..<5 {
                 let keyPair = KeyPair.generateEd25519()
-                let peer = try PeerID(publicKey: keyPair.publicKey)
+                let peer = PeerID(publicKey: keyPair.publicKey)
                 peers.append(peer)
                 _ = bucket.insert(peer)
             }
@@ -310,12 +310,12 @@ struct KademliaTests {
         @Test("Add peer to routing table")
         func addPeer() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let table = RoutingTable(localPeerID: localPeer, kValue: 20)
 
             let remoteKeyPair = KeyPair.generateEd25519()
-            let remotePeer = try PeerID(publicKey: remoteKeyPair.publicKey)
+            let remotePeer = PeerID(publicKey: remoteKeyPair.publicKey)
 
             let result = table.addPeer(remotePeer)
             #expect(result == .inserted)
@@ -325,7 +325,7 @@ struct KademliaTests {
         @Test("Cannot add self to routing table")
         func cannotAddSelf() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let table = RoutingTable(localPeerID: localPeer)
 
@@ -337,14 +337,14 @@ struct KademliaTests {
         @Test("Find closest peers")
         func closestPeers() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let table = RoutingTable(localPeerID: localPeer, kValue: 5)
 
             // Add some peers
             for _ in 0..<10 {
                 let keyPair = KeyPair.generateEd25519()
-                let peer = try PeerID(publicKey: keyPair.publicKey)
+                let peer = PeerID(publicKey: keyPair.publicKey)
                 _ = table.addPeer(peer)
             }
 
@@ -364,12 +364,12 @@ struct KademliaTests {
         @Test("Remove peer from routing table")
         func removePeer() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let table = RoutingTable(localPeerID: localPeer)
 
             let remoteKeyPair = KeyPair.generateEd25519()
-            let remotePeer = try PeerID(publicKey: remoteKeyPair.publicKey)
+            let remotePeer = PeerID(publicKey: remoteKeyPair.publicKey)
 
             _ = table.addPeer(remotePeer)
             let removed = table.removePeer(remotePeer)
@@ -381,13 +381,13 @@ struct KademliaTests {
         @Test("Routing table statistics")
         func statistics() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let table = RoutingTable(localPeerID: localPeer, kValue: 20)
 
             for _ in 0..<5 {
                 let keyPair = KeyPair.generateEd25519()
-                let peer = try PeerID(publicKey: keyPair.publicKey)
+                let peer = PeerID(publicKey: keyPair.publicKey)
                 _ = table.addPeer(peer)
             }
 
@@ -476,7 +476,7 @@ struct KademliaTests {
             let store = ProviderStore()
             let contentKey = Data("content-cid".utf8)
             let keyPair = KeyPair.generateEd25519()
-            let providerID = try PeerID(publicKey: keyPair.publicKey)
+            let providerID = PeerID(publicKey: keyPair.publicKey)
 
             let added = store.addProvider(for: contentKey, peerID: providerID)
             #expect(added)
@@ -493,7 +493,7 @@ struct KademliaTests {
 
             for _ in 0..<3 {
                 let keyPair = KeyPair.generateEd25519()
-                let providerID = try PeerID(publicKey: keyPair.publicKey)
+                let providerID = PeerID(publicKey: keyPair.publicKey)
                 _ = store.addProvider(for: contentKey, peerID: providerID)
             }
 
@@ -506,7 +506,7 @@ struct KademliaTests {
             let store = ProviderStore()
             let contentKey = Data("content-cid".utf8)
             let keyPair = KeyPair.generateEd25519()
-            let providerID = try PeerID(publicKey: keyPair.publicKey)
+            let providerID = PeerID(publicKey: keyPair.publicKey)
 
             _ = store.addProvider(for: contentKey, peerID: providerID)
             let removed = store.removeProvider(for: contentKey, peerID: providerID)
@@ -520,7 +520,7 @@ struct KademliaTests {
             let store = ProviderStore(defaultTTL: .milliseconds(50))
             let contentKey = Data("content-cid".utf8)
             let keyPair = KeyPair.generateEd25519()
-            let providerID = try PeerID(publicKey: keyPair.publicKey)
+            let providerID = PeerID(publicKey: keyPair.publicKey)
 
             _ = store.addProvider(for: contentKey, peerID: providerID)
             #expect(store.hasProviders(for: contentKey))
@@ -551,7 +551,7 @@ struct KademliaTests {
         @Test("Encode and decode FIND_NODE response")
         func findNodeResponse() throws {
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
             let peer = KademliaPeer(id: peerID, addresses: [])
 
             let message = KademliaMessage.findNodeResponse(closerPeers: [peer])
@@ -586,8 +586,8 @@ struct KademliaTests {
             let keyPair1 = KeyPair.generateEd25519()
             let keyPair2 = KeyPair.generateEd25519()
 
-            let provider = KademliaPeer(id: try PeerID(publicKey: keyPair1.publicKey))
-            let closer = KademliaPeer(id: try PeerID(publicKey: keyPair2.publicKey))
+            let provider = KademliaPeer(id: PeerID(publicKey: keyPair1.publicKey))
+            let closer = KademliaPeer(id: PeerID(publicKey: keyPair2.publicKey))
 
             let message = KademliaMessage.getProvidersResponse(
                 providers: [provider],
@@ -675,7 +675,7 @@ struct KademliaTests {
             delegate.responseDelay = .seconds(10)  // Very slow
 
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
             let initialPeer = KademliaPeer(id: peerID, addresses: [])
 
             do {
@@ -697,7 +697,7 @@ struct KademliaTests {
             delegate.responseDelay = .milliseconds(10)
 
             let keyPair = KeyPair.generateEd25519()
-            let peerID = try PeerID(publicKey: keyPair.publicKey)
+            let peerID = PeerID(publicKey: keyPair.publicKey)
             let initialPeer = KademliaPeer(id: peerID, addresses: [])
 
             let result = try await query.execute(initialPeers: [initialPeer], delegate: delegate)
@@ -719,7 +719,7 @@ struct KademliaTests {
         @Test("Create service")
         func createService() throws {
             let keyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: keyPair.publicKey)
+            let localPeer = PeerID(publicKey: keyPair.publicKey)
 
             let service = KademliaService(localPeerID: localPeer)
 
@@ -731,12 +731,12 @@ struct KademliaTests {
         @Test("Add peer to service routing table")
         func addPeerToService() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let service = KademliaService(localPeerID: localPeer)
 
             let remoteKeyPair = KeyPair.generateEd25519()
-            let remotePeer = try PeerID(publicKey: remoteKeyPair.publicKey)
+            let remotePeer = PeerID(publicKey: remoteKeyPair.publicKey)
 
             let result = service.addPeer(remotePeer)
 
@@ -747,7 +747,7 @@ struct KademliaTests {
         @Test("Local record lookup")
         func localRecordLookup() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let service = KademliaService(localPeerID: localPeer)
 
@@ -765,7 +765,7 @@ struct KademliaTests {
         @Test("Mode changes")
         func modeChanges() throws {
             let localKeyPair = KeyPair.generateEd25519()
-            let localPeer = try PeerID(publicKey: localKeyPair.publicKey)
+            let localPeer = PeerID(publicKey: localKeyPair.publicKey)
 
             let service = KademliaService(localPeerID: localPeer)
 
@@ -950,5 +950,391 @@ final class MockKademliaQueryDelegate: KademliaQueryDelegate, Sendable {
             try await Task.sleep(for: delay)
         }
         return state.withLock { $0.getProvidersResponse }
+    }
+}
+
+// MARK: - RecordValidator Tests
+
+@Suite("RecordValidator Tests")
+struct RecordValidatorTests {
+
+    @Test("AcceptAllValidator accepts all records")
+    func acceptAllValidator() async throws {
+        let validator = AcceptAllValidator()
+        let peer = KeyPair.generateEd25519().peerID
+        let record = KademliaRecord(key: Data("test-key".utf8), value: Data("test-value".utf8))
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == true)
+    }
+
+    @Test("RejectAllValidator rejects all records")
+    func rejectAllValidator() async throws {
+        let validator = RejectAllValidator()
+        let peer = KeyPair.generateEd25519().peerID
+        let record = KademliaRecord(key: Data("test-key".utf8), value: Data("test-value".utf8))
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("KeyLengthValidator validates key length")
+    func keyLengthValidator() async throws {
+        let validator = KeyLengthValidator(minLength: 5, maxLength: 20)
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Valid length (10 bytes)
+        let validRecord = KademliaRecord(key: Data(repeating: 0x42, count: 10), value: Data())
+        let validResult = try await validator.validate(record: validRecord, from: peer)
+        #expect(validResult == true)
+
+        // Too short (3 bytes)
+        let shortRecord = KademliaRecord(key: Data(repeating: 0x42, count: 3), value: Data())
+        let shortResult = try await validator.validate(record: shortRecord, from: peer)
+        #expect(shortResult == false)
+
+        // Too long (30 bytes)
+        let longRecord = KademliaRecord(key: Data(repeating: 0x42, count: 30), value: Data())
+        let longResult = try await validator.validate(record: longRecord, from: peer)
+        #expect(longResult == false)
+    }
+
+    @Test("ValueSizeValidator validates value size")
+    func valueSizeValidator() async throws {
+        let validator = ValueSizeValidator(maxSize: 100)
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Valid size
+        let validRecord = KademliaRecord(key: Data("key".utf8), value: Data(repeating: 0x42, count: 50))
+        let validResult = try await validator.validate(record: validRecord, from: peer)
+        #expect(validResult == true)
+
+        // Too large
+        let largeRecord = KademliaRecord(key: Data("key".utf8), value: Data(repeating: 0x42, count: 200))
+        let largeResult = try await validator.validate(record: largeRecord, from: peer)
+        #expect(largeResult == false)
+    }
+
+    @Test("CompositeValidator combines multiple validators")
+    func compositeValidator() async throws {
+        let validator = CompositeValidator(validators: [
+            KeyLengthValidator(minLength: 5),
+            ValueSizeValidator(maxSize: 100)
+        ])
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Both pass
+        let validRecord = KademliaRecord(key: Data(repeating: 0x42, count: 10), value: Data(repeating: 0x42, count: 50))
+        let validResult = try await validator.validate(record: validRecord, from: peer)
+        #expect(validResult == true)
+
+        // Key too short
+        let shortKeyRecord = KademliaRecord(key: Data(repeating: 0x42, count: 3), value: Data(repeating: 0x42, count: 50))
+        let shortKeyResult = try await validator.validate(record: shortKeyRecord, from: peer)
+        #expect(shortKeyResult == false)
+
+        // Value too large
+        let largeValueRecord = KademliaRecord(key: Data(repeating: 0x42, count: 10), value: Data(repeating: 0x42, count: 200))
+        let largeValueResult = try await validator.validate(record: largeValueRecord, from: peer)
+        #expect(largeValueResult == false)
+    }
+
+    @Test("NamespacedValidator routes to correct validator")
+    func namespacedValidator() async throws {
+        // Create namespace-specific validators
+        let pkValidator = AcceptAllValidator()
+        let ipnsValidator = RejectAllValidator()
+
+        let validator = NamespacedValidator(
+            validators: [
+                "/pk/": pkValidator,
+                "/ipns/": ipnsValidator
+            ],
+            defaultBehavior: .reject
+        )
+        let peer = KeyPair.generateEd25519().peerID
+
+        // /pk/ namespace should accept
+        let pkRecord = KademliaRecord(key: Data("/pk/Qm12345".utf8), value: Data())
+        let pkResult = try await validator.validate(record: pkRecord, from: peer)
+        #expect(pkResult == true)
+
+        // /ipns/ namespace should reject
+        let ipnsRecord = KademliaRecord(key: Data("/ipns/Qm12345".utf8), value: Data())
+        let ipnsResult = try await validator.validate(record: ipnsRecord, from: peer)
+        #expect(ipnsResult == false)
+
+        // Unknown namespace should reject (default behavior)
+        let unknownRecord = KademliaRecord(key: Data("/unknown/key".utf8), value: Data())
+        let unknownResult = try await validator.validate(record: unknownRecord, from: peer)
+        #expect(unknownResult == false)
+    }
+
+    @Test("NamespacedValidator with accept default behavior")
+    func namespacedValidatorAcceptDefault() async throws {
+        let validator = NamespacedValidator(
+            validators: [:],
+            defaultBehavior: .accept
+        )
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Unknown namespace should accept with .accept default
+        let record = KademliaRecord(key: Data("/anything/key".utf8), value: Data())
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == true)
+    }
+
+    @Test("RecordRejectionReason is equatable")
+    func recordRejectionReasonEquatable() {
+        #expect(RecordRejectionReason.validationFailed == RecordRejectionReason.validationFailed)
+        #expect(RecordRejectionReason.invalidSignature == RecordRejectionReason.invalidSignature)
+        #expect(RecordRejectionReason.validationFailed != RecordRejectionReason.invalidSignature)
+    }
+
+    @Test("KademliaConfiguration with validator")
+    func configurationWithValidator() {
+        let validator = AcceptAllValidator()
+        let config = KademliaConfiguration(
+            recordValidator: validator,
+            onValidationFailure: .reject
+        )
+
+        #expect(config.recordValidator != nil)
+        #expect(config.onValidationFailure == .reject)
+    }
+
+    @Test("KademliaConfiguration default has DefaultRecordValidator")
+    func configurationDefaultHasValidator() {
+        let config = KademliaConfiguration()
+
+        #expect(config.recordValidator != nil)
+        #expect(config.recordValidator is DefaultRecordValidator)
+        #expect(config.onValidationFailure == .reject)
+    }
+
+    @Test("recordRejected event can be created")
+    func recordRejectedEvent() {
+        let peer = KeyPair.generateEd25519().peerID
+        let key = Data("test-key".utf8)
+        let event = KademliaEvent.recordRejected(key: key, from: peer, reason: .validationFailed)
+
+        guard case .recordRejected(let k, let p, let r) = event else {
+            Issue.record("Expected recordRejected event")
+            return
+        }
+        #expect(k == key)
+        #expect(p == peer)
+        #expect(r == .validationFailed)
+    }
+
+    // MARK: - DefaultRecordValidator Tests
+
+    @Test("DefaultRecordValidator accepts valid size records")
+    func defaultValidatorAcceptsValid() async throws {
+        let validator = DefaultRecordValidator()
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Within default limits (1KB key, 64KB value)
+        let record = KademliaRecord(
+            key: Data(repeating: 0x42, count: 100),
+            value: Data(repeating: 0x42, count: 1000)
+        )
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == true)
+    }
+
+    @Test("DefaultRecordValidator rejects oversized key")
+    func defaultValidatorRejectsOversizedKey() async throws {
+        let validator = DefaultRecordValidator(maxKeySize: 100)
+        let peer = KeyPair.generateEd25519().peerID
+
+        let record = KademliaRecord(
+            key: Data(repeating: 0x42, count: 200),  // Over 100 byte limit
+            value: Data()
+        )
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("DefaultRecordValidator rejects oversized value")
+    func defaultValidatorRejectsOversizedValue() async throws {
+        let validator = DefaultRecordValidator(maxValueSize: 1000)
+        let peer = KeyPair.generateEd25519().peerID
+
+        let record = KademliaRecord(
+            key: Data("key".utf8),
+            value: Data(repeating: 0x42, count: 2000)  // Over 1000 byte limit
+        )
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    // MARK: - SignedRecordValidator Tests
+
+    @Test("SignedRecordValidator accepts valid signed envelope")
+    func signedValidatorAcceptsValid() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let peer = KeyPair.generateEd25519().peerID  // Different peer sending the record
+
+        // Create a signed PeerRecord
+        let peerRecord = PeerRecord(peerID: peerID, seq: 1, addresses: [])
+        let envelope = try Envelope.seal(record: peerRecord, with: keyPair)
+        let envelopeBytes = try envelope.marshal()
+
+        let validator = SignedRecordValidator(domain: PeerRecord.domain)
+        let record = KademliaRecord(
+            key: Data("/peer/\(peerID.description)".utf8),
+            value: envelopeBytes
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == true)
+    }
+
+    @Test("SignedRecordValidator rejects invalid envelope")
+    func signedValidatorRejectsInvalid() async throws {
+        let peer = KeyPair.generateEd25519().peerID
+
+        let validator = SignedRecordValidator(domain: PeerRecord.domain)
+        let record = KademliaRecord(
+            key: Data("/peer/test".utf8),
+            value: Data("not a valid envelope".utf8)
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("SignedRecordValidator rejects wrong domain")
+    func signedValidatorRejectsWrongDomain() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Create a signed PeerRecord
+        let peerRecord = PeerRecord(peerID: peerID, seq: 1, addresses: [])
+        let envelope = try Envelope.seal(record: peerRecord, with: keyPair)
+        let envelopeBytes = try envelope.marshal()
+
+        // Validate with wrong domain
+        let validator = SignedRecordValidator(domain: "wrong-domain")
+        let record = KademliaRecord(
+            key: Data("/peer/\(peerID.description)".utf8),
+            value: envelopeBytes
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("SignedRecordValidator with key match requirement")
+    func signedValidatorKeyMatchRequired() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let otherPeerID = KeyPair.generateEd25519().peerID
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Create a signed PeerRecord
+        let peerRecord = PeerRecord(peerID: peerID, seq: 1, addresses: [])
+        let envelope = try Envelope.seal(record: peerRecord, with: keyPair)
+        let envelopeBytes = try envelope.marshal()
+
+        // Validator that requires key to match signer
+        let validator = SignedRecordValidator(
+            domain: PeerRecord.domain,
+            requireKeyMatch: true,
+            extractExpectedPeerID: { key in
+                guard let keyString = String(data: key, encoding: .utf8),
+                      keyString.hasPrefix("/peer/") else { return nil }
+                return try? PeerID(string: String(keyString.dropFirst(6)))
+            }
+        )
+
+        // Valid: key matches signer
+        let validRecord = KademliaRecord(
+            key: Data("/peer/\(peerID.description)".utf8),
+            value: envelopeBytes
+        )
+        let validResult = try await validator.validate(record: validRecord, from: peer)
+        #expect(validResult == true)
+
+        // Invalid: key doesn't match signer
+        let invalidRecord = KademliaRecord(
+            key: Data("/peer/\(otherPeerID.description)".utf8),
+            value: envelopeBytes
+        )
+        let invalidResult = try await validator.validate(record: invalidRecord, from: peer)
+        #expect(invalidResult == false)
+    }
+
+    // MARK: - PublicKeyValidator Tests
+
+    @Test("PublicKeyValidator rejects non-/pk/ keys")
+    func publicKeyValidatorRejectsWrongNamespace() async throws {
+        let peer = KeyPair.generateEd25519().peerID
+
+        let validator = PublicKeyValidator()
+        let record = KademliaRecord(
+            key: Data("/wrong/namespace".utf8),
+            value: Data()
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("PublicKeyValidator rejects invalid PeerID in key")
+    func publicKeyValidatorRejectsInvalidPeerID() async throws {
+        let peer = KeyPair.generateEd25519().peerID
+
+        let validator = PublicKeyValidator()
+        let record = KademliaRecord(
+            key: Data("/pk/not-a-valid-peerid".utf8),
+            value: Data()
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("PublicKeyValidator rejects invalid envelope")
+    func publicKeyValidatorRejectsInvalidEnvelope() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let peer = KeyPair.generateEd25519().peerID
+
+        let validator = PublicKeyValidator()
+        let record = KademliaRecord(
+            key: Data("/pk/\(peerID.description)".utf8),
+            value: Data("not a valid envelope".utf8)
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
+    }
+
+    @Test("PublicKeyValidator rejects signer mismatch")
+    func publicKeyValidatorRejectsSignerMismatch() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let otherPeerID = KeyPair.generateEd25519().peerID
+        let peer = KeyPair.generateEd25519().peerID
+
+        // Create a signed PeerRecord using the libp2p-routing-record domain
+        let peerRecord = PeerRecord(peerID: peerID, seq: 1, addresses: [])
+        let envelope = try Envelope.seal(record: peerRecord, with: keyPair)
+        let envelopeBytes = try envelope.marshal()
+
+        let validator = PublicKeyValidator()
+
+        // Key has different PeerID than signer
+        let record = KademliaRecord(
+            key: Data("/pk/\(otherPeerID.description)".utf8),
+            value: envelopeBytes
+        )
+
+        let result = try await validator.validate(record: record, from: peer)
+        #expect(result == false)
     }
 }

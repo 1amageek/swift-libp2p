@@ -23,7 +23,7 @@ struct IdentifyE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -82,11 +82,11 @@ struct IdentifyE2ETests {
         let originalInfo = IdentifyInfo(
             publicKey: keyPair.publicKey,
             listenAddresses: [
-                Multiaddr("/ip4/127.0.0.1/udp/4001/quic-v1"),
-                Multiaddr("/ip4/0.0.0.0/tcp/4001")
+                try Multiaddr("/ip4/127.0.0.1/udp/4001/quic-v1"),
+                try Multiaddr("/ip4/0.0.0.0/tcp/4001")
             ],
             protocols: ["/ipfs/id/1.0.0", "/ipfs/ping/1.0.0", "/meshsub/1.1.0"],
-            observedAddress: Multiaddr("/ip4/1.2.3.4/udp/12345/quic-v1"),
+            observedAddress: try Multiaddr("/ip4/1.2.3.4/udp/12345/quic-v1"),
             protocolVersion: "ipfs/0.1.0",
             agentVersion: "swift-libp2p/0.1.0",
             signedPeerRecord: nil
@@ -117,7 +117,7 @@ struct IdentifyE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
         let serverAddress = listener.localAddress
@@ -190,7 +190,7 @@ struct IdentifyE2ETests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -253,14 +253,14 @@ struct IdentifyE2ETests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
         let listenAddrs = [
-            Multiaddr("/ip4/127.0.0.1/udp/4001/quic-v1"),
-            Multiaddr("/ip4/192.168.1.1/udp/4001/quic-v1"),
-            Multiaddr("/ip6/::1/udp/4001/quic-v1")
+            try Multiaddr("/ip4/127.0.0.1/udp/4001/quic-v1"),
+            try Multiaddr("/ip4/192.168.1.1/udp/4001/quic-v1"),
+            try Multiaddr("/ip6/::1/udp/4001/quic-v1")
         ]
 
         // Server handler

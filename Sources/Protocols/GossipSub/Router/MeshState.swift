@@ -193,7 +193,7 @@ final class MeshState: Sendable {
 
     /// Removes a peer from the fanout for a topic.
     func removeFromFanout(_ peer: PeerID, for topic: Topic) {
-        state.withLock { state in
+        _ = state.withLock { state in
             state.meshes[topic]?.fanoutPeers.remove(peer)
         }
     }

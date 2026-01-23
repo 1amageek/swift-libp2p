@@ -65,7 +65,7 @@ public final class RelayTransport: Transport, Sendable {
     ///
     /// This is useful when the opener (usually a Node) isn't available at init time.
     public func setOpener(_ opener: any StreamOpener) {
-        _ = openerRef.withLock { $0 = opener }
+        openerRef.withLock { $0 = opener }
     }
 
     // MARK: - Transport Protocol
@@ -108,7 +108,7 @@ public final class RelayTransport: Transport, Sendable {
             reservation: reservation
         )
 
-        _ = state.withLock { s in
+        state.withLock { s in
             s.listeners[relay] = listener
         }
 

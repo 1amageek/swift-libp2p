@@ -48,7 +48,7 @@ public final class TCPTransport: Transport, Sendable {
         let channel = try await bootstrap.connect(host: host, port: Int(port)).get()
         let localAddr = channel.localAddress?.toMultiaddr()
 
-        return TCPConnection(
+        return try await TCPConnection.create(
             channel: channel,
             localAddress: localAddr,
             remoteAddress: address

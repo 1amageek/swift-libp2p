@@ -25,6 +25,9 @@ public struct KademliaConfiguration: Sendable {
     /// Query timeout.
     public var queryTimeout: Duration
 
+    /// Per-peer timeout for individual message exchanges.
+    public var peerTimeout: Duration
+
     /// Record TTL.
     public var recordTTL: Duration
 
@@ -40,8 +43,36 @@ public struct KademliaConfiguration: Sendable {
     /// Routing table refresh interval.
     public var refreshInterval: Duration
 
+    /// Interval for automatic cleanup of expired records and providers.
+    /// Set to nil to disable automatic cleanup.
+    public var cleanupInterval: Duration?
+
     /// Operating mode.
     public var mode: KademliaMode
+
+    // MARK: - Record Validation
+
+    /// Record validator for incoming PUT_VALUE requests.
+    ///
+    /// By default, uses `DefaultRecordValidator` which limits key and value sizes
+    /// to prevent DoS attacks. Set to a custom validator for application-specific
+    /// validation, or `nil` to accept all records without validation (not recommended).
+    public var recordValidator: (any RecordValidator)?
+
+    /// Behavior when validation fails.
+    public var onValidationFailure: ValidationFailureAction
+
+    /// Action to take when record validation fails.
+    public enum ValidationFailureAction: Sendable {
+        /// Reject the record and throw an error.
+        case reject
+
+        /// Ignore the record and log a warning (don't store).
+        case ignoreAndLog
+
+        /// Accept the record anyway but emit a warning event.
+        case acceptWithWarning
+    }
 
     /// Creates a new configuration.
     public init(
@@ -49,23 +80,31 @@ public struct KademliaConfiguration: Sendable {
         alphaValue: Int = KademliaProtocol.alphaValue,
         maxMessageSize: Int = KademliaProtocol.maxMessageSize,
         queryTimeout: Duration = KademliaProtocol.queryTimeout,
+        peerTimeout: Duration = KademliaProtocol.requestTimeout,
         recordTTL: Duration = KademliaProtocol.recordTTL,
         providerTTL: Duration = KademliaProtocol.providerTTL,
         recordRepublishInterval: Duration = KademliaProtocol.recordRepublishInterval,
         providerRepublishInterval: Duration = KademliaProtocol.providerRepublishInterval,
         refreshInterval: Duration = KademliaProtocol.refreshInterval,
-        mode: KademliaMode = .automatic
+        cleanupInterval: Duration? = .seconds(300),
+        mode: KademliaMode = .automatic,
+        recordValidator: (any RecordValidator)? = DefaultRecordValidator(),
+        onValidationFailure: ValidationFailureAction = .reject
     ) {
         self.kValue = kValue
         self.alphaValue = alphaValue
         self.maxMessageSize = maxMessageSize
         self.queryTimeout = queryTimeout
+        self.peerTimeout = peerTimeout
         self.recordTTL = recordTTL
         self.providerTTL = providerTTL
         self.recordRepublishInterval = recordRepublishInterval
         self.providerRepublishInterval = providerRepublishInterval
         self.refreshInterval = refreshInterval
+        self.cleanupInterval = cleanupInterval
         self.mode = mode
+        self.recordValidator = recordValidator
+        self.onValidationFailure = onValidationFailure
     }
 
     /// Default configuration.
@@ -135,6 +174,9 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         var mode: KademliaMode
     }
 
+    /// Background cleanup task.
+    private let cleanupTask: Mutex<Task<Void, Never>?>
+
     // MARK: - Initialization
 
     /// Creates a new Kademlia service.
@@ -153,6 +195,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         self.providerStore = ProviderStore(defaultTTL: configuration.providerTTL)
         self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState(mode: configuration.mode))
+        self.cleanupTask = Mutex(nil)
     }
 
     // MARK: - Events
@@ -169,7 +212,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
     }
 
     private func emit(_ event: KademliaEvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }
@@ -181,10 +224,62 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
+        stopMaintenance()
         eventState.withLock { state in
+            state.continuation?.yield(.stopped)
             state.continuation?.finish()
             state.continuation = nil
             state.stream = nil
+        }
+    }
+
+    // MARK: - Maintenance
+
+    /// Starts the background maintenance task for cleaning up expired records.
+    ///
+    /// The maintenance task runs periodically based on `cleanupInterval` and removes:
+    /// - Expired records from RecordStore
+    /// - Expired providers from ProviderStore
+    ///
+    /// Call `stopMaintenance()` or `shutdown()` to stop the task.
+    public func startMaintenance() {
+        guard let interval = configuration.cleanupInterval else { return }
+
+        cleanupTask.withLock { task in
+            guard task == nil else { return }
+            task = Task { [weak self] in
+                await self?.runCleanupLoop(interval: interval)
+            }
+        }
+    }
+
+    /// Stops the background maintenance task.
+    public func stopMaintenance() {
+        cleanupTask.withLock { task in
+            task?.cancel()
+            task = nil
+        }
+    }
+
+    /// Runs the cleanup loop.
+    private func runCleanupLoop(interval: Duration) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: interval)
+
+                let recordsRemoved = recordStore.cleanup()
+                let providersRemoved = providerStore.cleanup()
+
+                if recordsRemoved > 0 || providersRemoved > 0 {
+                    emit(.maintenanceCompleted(
+                        recordsRemoved: recordsRemoved,
+                        providersRemoved: providersRemoved
+                    ))
+                }
+            } catch {
+                // Task was cancelled
+                break
+            }
         }
     }
 
@@ -259,12 +354,12 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         addPeer(context.remotePeer, addresses: [context.remoteAddress])
 
         do {
-            // Apply timeout to server-side processing to prevent DoS
+            // Apply per-peer timeout to server-side processing to prevent DoS
             let stream = context.stream
             let maxMessageSize = configuration.maxMessageSize
 
-            // Read with timeout
-            let data = try await withQueryTimeout {
+            // Read with per-peer timeout
+            let data = try await withPeerTimeout {
                 try await stream.readLengthPrefixedMessage(maxSize: UInt64(maxMessageSize))
             }
 
@@ -276,9 +371,9 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             let message = try KademliaProtobuf.decode(data)
             let response = try await handleMessage(message, from: context.remotePeer)
 
-            // Write response with timeout
+            // Write response with per-peer timeout
             let responseData = KademliaProtobuf.encode(response)
-            try await withQueryTimeout {
+            try await withPeerTimeout {
                 try await stream.writeLengthPrefixedMessage(responseData)
             }
 
@@ -329,6 +424,34 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             guard let record = message.record else {
                 throw KademliaError.protocolViolation("Missing record in PUT_VALUE")
             }
+
+            // Validate the record if a validator is configured
+            if let validator = configuration.recordValidator {
+                let validationResult = await validateRecord(record: record, from: peer, validator: validator)
+
+                switch validationResult {
+                case .accepted:
+                    break  // Continue to store
+
+                case .rejected(let reason):
+                    emit(.recordRejected(key: record.key, from: peer, reason: reason))
+
+                    switch configuration.onValidationFailure {
+                    case .reject:
+                        throw KademliaError.invalidRecord("Validation failed: \(reason)")
+
+                    case .ignoreAndLog:
+                        // Don't store, but return success to avoid protocol issues
+                        emit(.responseSent(to: peer, type: .putValue))
+                        return .putValueResponse(record: record)
+
+                    case .acceptWithWarning:
+                        // Store anyway, warning already emitted via recordRejected
+                        break
+                    }
+                }
+            }
+
             // Store the record
             recordStore.put(record)
             emit(.recordStored(key: record.key))
@@ -363,6 +486,38 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
 
         case .ping:
             throw KademliaError.protocolViolation("PING is deprecated")
+        }
+    }
+
+    // MARK: - Record Validation
+
+    /// Result of record validation.
+    private enum ValidationResult {
+        case accepted
+        case rejected(RecordRejectionReason)
+    }
+
+    /// Validates a record using the configured validator.
+    ///
+    /// - Parameters:
+    ///   - record: The record to validate.
+    ///   - from: The peer that sent the record.
+    ///   - validator: The validator to use.
+    /// - Returns: The validation result.
+    private func validateRecord(
+        record: KademliaRecord,
+        from: PeerID,
+        validator: any RecordValidator
+    ) async -> ValidationResult {
+        do {
+            let isValid = try await validator.validate(record: record, from: from)
+            if isValid {
+                return .accepted
+            } else {
+                return .rejected(.validationFailed)
+            }
+        } catch {
+            return .rejected(.validationError(String(describing: error)))
         }
     }
 
@@ -737,30 +892,34 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         to peer: PeerID,
         opener: any StreamOpener
     ) async throws -> KademliaMessage {
-        // Apply per-peer timeout to prevent malicious peers from stalling
-        try await withQueryTimeout { [configuration] in
-            let stream = try await opener.newStream(to: peer, protocol: KademliaProtocol.protocolID)
+        // Open stream with timeout (phase 1)
+        let stream = try await withPeerTimeout {
+            try await opener.newStream(to: peer, protocol: KademliaProtocol.protocolID)
+        }
 
-            do {
+        do {
+            // Send/receive with timeout (phase 2)
+            let response = try await withPeerTimeout { [configuration] in
                 let data = KademliaProtobuf.encode(message)
                 try await stream.writeLengthPrefixedMessage(data)
 
                 let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
-                let response = try KademliaProtobuf.decode(responseData)
-                try? await stream.close()
-                return response
-            } catch {
-                try? await stream.close()
-                throw error
+                return try KademliaProtobuf.decode(responseData)
             }
+            try? await stream.close()
+            return response
+        } catch {
+            // Ensure stream is closed on timeout or any error
+            try? await stream.close()
+            throw error
         }
     }
 
-    // MARK: - Timeout Helper
+    // MARK: - Timeout Helpers
 
-    /// Wraps an operation with a timeout.
+    /// Wraps an operation with the query timeout (for full query operations).
     ///
-    /// This prevents malicious peers from stalling operations indefinitely.
+    /// This prevents queries from running indefinitely.
     private func withQueryTimeout<T: Sendable>(
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
@@ -770,6 +929,28 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             }
             group.addTask {
                 try await Task.sleep(for: self.configuration.queryTimeout)
+                throw KademliaError.timeout
+            }
+
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
+    /// Wraps an operation with the peer timeout (for individual peer interactions).
+    ///
+    /// This prevents malicious or slow peers from stalling operations indefinitely.
+    /// Uses a shorter timeout than query timeout (default: 10 seconds vs 60 seconds).
+    private func withPeerTimeout<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(for: self.configuration.peerTimeout)
                 throw KademliaError.timeout
             }
 

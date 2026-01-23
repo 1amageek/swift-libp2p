@@ -26,8 +26,8 @@ struct AutoNATProtobufTests {
 
     @Test("Encode and decode DIAL message with peer ID")
     func encodeDecodeDialWithPeerID() throws {
-        let keyPair = try KeyPair.generateEd25519()
-        let peerID = try PeerID(publicKey: keyPair.publicKey)
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
         let addresses = [try Multiaddr("/ip4/127.0.0.1/tcp/4001")]
 
         let peerInfo = AutoNATPeerInfo(id: peerID, addresses: addresses)

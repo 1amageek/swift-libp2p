@@ -83,6 +83,11 @@ public enum GossipSubEvent: Sendable {
         gossipSent: Int
     )
 
+    // MARK: - Security Events
+
+    /// Multiple peers detected from the same IP address (potential Sybil attack).
+    case sybilSuspected(ip: String, peerCount: Int)
+
     // MARK: - Error Events
 
     /// An error occurred.
@@ -106,6 +111,10 @@ extension GossipSubEvent {
         case subscriptionSpam
         /// Sent message to wrong topic.
         case topicMismatch
+        /// Low message delivery rate (mesh peer not forwarding).
+        case lowDeliveryRate(rate: Double)
+        /// Multiple peers from same IP (Sybil attack suspected).
+        case ipColocation(ip: String, peerCount: Int)
         /// Generic protocol violation.
         case protocolViolation(String)
     }

@@ -108,6 +108,16 @@ final class MockMuxedStream: MuxedStream, Sendable {
         state.withLock { $0.isWriteClosed = true }
     }
 
+    func closeRead() async throws {
+        state.withLock { s in
+            s.isClosed = true
+            if let continuation = s.readContinuation {
+                s.readContinuation = nil
+                continuation.resume(returning: Data())
+            }
+        }
+    }
+
     func close() async throws {
         state.withLock { s in
             s.isClosed = true
@@ -204,9 +214,9 @@ func createMockContext(
     StreamContext(
         stream: stream,
         remotePeer: remotePeer,
-        remoteAddress: try! Multiaddr("/ip4/127.0.0.1/tcp/4001"),
+        remoteAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4001),
         localPeer: localPeer,
-        localAddress: try! Multiaddr("/ip4/127.0.0.1/tcp/4002")
+        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002)
     )
 }
 
@@ -237,7 +247,7 @@ struct CircuitRelayIntegrationTests {
             registry: registry,
             opener: serverOpener,
             localPeer: relayKey.peerID,
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         )
 
         // Setup mock opener for client
@@ -325,7 +335,7 @@ struct CircuitRelayIntegrationTests {
 
     @Test("Client connects to peer through relay")
     func testConnectThroughRelay() async throws {
-        let sourceKey = KeyPair.generateEd25519()
+        let _ = KeyPair.generateEd25519()  // sourceKey not used in this test
         let targetKey = KeyPair.generateEd25519()
         let relayKey = KeyPair.generateEd25519()
 
@@ -340,7 +350,7 @@ struct CircuitRelayIntegrationTests {
             registry: registry,
             opener: serverOpener,
             localPeer: relayKey.peerID,
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         )
 
         // First, target makes a reservation
@@ -438,7 +448,7 @@ struct CircuitRelayIntegrationTests {
 
     @Test("Circuit closes cleanly when source closes")
     func testCircuitClosedBySource() async throws {
-        let sourceKey = KeyPair.generateEd25519()
+        let _ = KeyPair.generateEd25519()  // sourceKey not used in this test
         let targetKey = KeyPair.generateEd25519()
         let relayKey = KeyPair.generateEd25519()
 
@@ -545,7 +555,7 @@ struct CircuitRelayIntegrationTests {
 
     @Test("Server respects max circuits per peer limit")
     func testPerPeerCircuitLimit() async throws {
-        let clientKey = KeyPair.generateEd25519()
+        let _ = KeyPair.generateEd25519()  // clientKey not used in this test
         let relayKey = KeyPair.generateEd25519()
 
         // Create server with maxCircuitsPerPeer = 1
@@ -561,7 +571,7 @@ struct CircuitRelayIntegrationTests {
             registry: registry,
             opener: serverOpener,
             localPeer: relayKey.peerID,
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         )
 
         // Verify configuration is set
@@ -638,7 +648,7 @@ struct RelayListenerTests {
             registry: serverRegistry,
             opener: serverOpener,
             localPeer: relayKey.peerID,
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         )
 
         // Step 1: Target makes reservation on relay

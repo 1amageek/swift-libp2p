@@ -48,6 +48,9 @@ Sources/Protocols/GossipSub/
 │   ├── PeerState.swift           # ピアごとの状態
 │   └── MessageCache.swift        # メッセージキャッシュ (IHAVE/IWANT用)
 │
+├── Scoring/
+│   └── PeerScorer.swift          # ピアスコアリング (Sybil/スパム防御)
+│
 ├── Heartbeat/
 │   └── HeartbeatManager.swift    # 定期メンテナンス処理
 │
@@ -66,6 +69,8 @@ Sources/Protocols/GossipSub/
 | `GossipSubService` | プロトコルサービス実装 (ユーザーAPI) |
 | `GossipSubConfiguration` | メッシュパラメータ等の設定 |
 | `GossipSubRouter` | コア状態管理 (class + Mutex) |
+| `PeerScorer` | ピアスコアリング (スパム/Sybil防御) |
+| `PeerScorerConfig` | スコアリング設定 |
 | `Topic` | トピック識別子 |
 | `Message` | Pub/Subメッセージ |
 | `MessageID` | メッセージ一意識別子 |
@@ -318,6 +323,8 @@ Tests/Protocols/GossipSubTests/
 │   ├── GossipSubRouterTests.swift
 │   ├── MeshStateTests.swift
 │   └── MessageCacheTests.swift
+├── Scoring/
+│   └── PeerScorerTests.swift        # スコアリングテスト (21テスト)
 ├── Wire/
 │   ├── GossipSubProtobufTests.swift
 │   └── ControlMessageTests.swift
@@ -335,8 +342,9 @@ Tests/Protocols/GossipSubTests/
 - 2020年以前のレガシー実装との互換性は非対応
 
 ### ピアスコアリング
-- 概要では言及されているが完全未実装
-- バックオフ追跡のみ実装
+- ~~概要では言及されているが完全未実装~~ ✅ 2026-01-23 実装
+- バックオフ追跡実装済み
+- 各種ペナルティ追跡実装済み（詳細は下記）
 
 ### IDONTWANT (v1.2)
 - プロトコルバージョンは宣言されるが機能は限定的
@@ -362,8 +370,13 @@ Tests/Protocols/GossipSubTests/
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **メッセージ署名検証の実装** - 現在は署名フィールド無視で全メッセージ受け入れ
-- [ ] **ピアスコアリングの実装** - バックオフのみ、完全なスコアリングシステムなし
+- [x] **メッセージ署名検証の実装** - `validateSignatures=true`(デフォルト)で署名検証実行、`verifySignature()`で検証 ✅ 2026-01-18
+- [x] **ピアスコアリングの実装** - 完全なスコアリングシステム実装 ✅ 2026-01-23
+  - IWANT重複追跡（過剰リクエスト検出）
+  - メッセージ配信率追跡（最初の配信ボーナス、低配信率ペナルティ）
+  - IPコロケーション追跡（Sybil攻撃防御）
+  - スコア減衰機能
+  - グレイリストによるメッシュ除外
 - [ ] **GossipSubRouterテストの追加** - メッシュ管理ロジックの検証
 - [ ] **MessageCacheテストの追加** - IHAVE/IWANTキャッシュ動作検証
 
@@ -417,3 +430,57 @@ Tests/Protocols/GossipSubTests/
 **動作**:
 - 署名必須、未署名メッセージは拒否
 - 2020年以前のレガシー実装（未署名メッセージ）との互換性は非対応
+
+### ピアスコアリング強化 (2026-01-23)
+
+**問題**: ピアスコアリングがバックオフ追跡のみで、スパム/Sybil攻撃への防御が不十分だった
+
+**解決策**: 包括的なスコアリングシステムを実装
+
+**新機能**:
+
+1. **IWANT重複追跡**
+   - 同じメッセージへの過剰なIWANTリクエストを検出
+   - `iwantDuplicateThreshold` (デフォルト: 3回) 以上でペナルティ
+   - ウィンドウベースの追跡 (`iwantTrackingWindow`: 60秒)
+
+2. **メッセージ配信追跡**
+   - 最初の配信者にボーナス (`firstDeliveryBonus`: +5.0)
+   - 低配信率ピアにペナルティ (`minDeliveryRate`: 80%)
+   - ハートビートで配信率を評価
+
+3. **IPコロケーション追跡 (Sybil防御)**
+   - 同一IPからの複数ピアを追跡
+   - 閾値超過でペナルティ (`ipColocationThreshold`: 2)
+   - IPv4-mapped IPv6の正規化
+
+4. **スコア減衰**
+   - 時間経過でスコアが回復 (`decayFactor`: 0.9, 60秒間隔)
+   - グレイリスト閾値 (`graylistThreshold`: -1000.0)
+
+**修正ファイル**:
+- `Scoring/PeerScorer.swift` - 追跡状態と新メソッド追加
+- `Router/GossipSubRouter.swift` - IWANT追跡、配信追跡、IP登録メソッド追加
+- `GossipSubEvent.swift` - `sybilSuspected`, `lowDeliveryRate`, `ipColocation` イベント追加
+
+**使用例**:
+```swift
+let config = PeerScorerConfig(
+    ipColocationThreshold: 3,      // 同一IPから3ピアまで許可
+    ipColocationPenalty: -20.0,    // 超過時のペナルティ
+    minDeliveryRate: 0.7,          // 70%以上の配信率を期待
+    lowDeliveryPenalty: -50.0      // 低配信率ペナルティ
+)
+let router = GossipSubRouter(
+    localPeerID: myPeerID,
+    peerScorerConfig: config
+)
+
+// ピア接続時にIPを登録
+router.registerPeerIP(peerID, ip: "192.0.2.1")
+
+// ハートビートでスコアリングメンテナンス
+router.performScoringMaintenance()
+```
+
+**テスト**: `Tests/Protocols/GossipSubTests/PeerScorerTests.swift` (21テスト)

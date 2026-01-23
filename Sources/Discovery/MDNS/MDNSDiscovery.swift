@@ -177,13 +177,13 @@ public actor MDNSDiscovery: DiscoveryService {
         for await event in await browser.events {
             switch event {
             case .found(let service):
-                await handleServiceFound(service)
+                handleServiceFound(service)
 
             case .updated(let service):
-                await handleServiceUpdated(service)
+                handleServiceUpdated(service)
 
             case .removed(let service):
-                await handleServiceRemoved(service)
+                handleServiceRemoved(service)
 
             case .error:
                 // Log error but continue

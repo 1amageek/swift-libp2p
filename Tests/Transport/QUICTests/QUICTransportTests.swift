@@ -31,7 +31,7 @@ struct QUICTransportTests {
     @Test("Can dial IPv4 QUIC address")
     func canDialIPv4QUIC() throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip4/127.0.0.1/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
 
         #expect(transport.canDial(addr))
     }
@@ -39,7 +39,7 @@ struct QUICTransportTests {
     @Test("Can dial IPv6 QUIC address")
     func canDialIPv6QUIC() throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip6/::1/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip6/::1/udp/4433/quic-v1")
 
         #expect(transport.canDial(addr))
     }
@@ -47,7 +47,7 @@ struct QUICTransportTests {
     @Test("Cannot dial TCP address")
     func cannotDialTCP() throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4433"
+        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4433")
 
         #expect(!transport.canDial(addr))
     }
@@ -55,7 +55,7 @@ struct QUICTransportTests {
     @Test("Cannot dial UDP-only address")
     func cannotDialUDPOnly() throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip4/127.0.0.1/udp/4433"
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433")
 
         #expect(!transport.canDial(addr))
     }
@@ -65,7 +65,7 @@ struct QUICTransportTests {
     @Test("Can listen on IPv4 QUIC address")
     func canListenIPv4QUIC() throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip4/0.0.0.0/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip4/0.0.0.0/udp/4433/quic-v1")
 
         #expect(transport.canListen(addr))
     }
@@ -73,7 +73,7 @@ struct QUICTransportTests {
     @Test("Can listen on IPv6 QUIC address")
     func canListenIPv6QUIC() throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip6/::/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip6/::/udp/4433/quic-v1")
 
         #expect(transport.canListen(addr))
     }
@@ -83,7 +83,7 @@ struct QUICTransportTests {
     @Test("dial() throws unsupportedAddress for compatibility")
     func dialThrowsForCompatibility() async throws {
         let transport = QUICTransport()
-        let addr: Multiaddr = "/ip4/127.0.0.1/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
 
         // Standard dial() should throw because QUIC doesn't fit RawConnection model
         await #expect(throws: (any Error).self) {

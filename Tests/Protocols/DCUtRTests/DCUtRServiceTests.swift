@@ -21,8 +21,8 @@ struct DCUtRServiceTests {
     }
 
     @Test("Custom configuration values")
-    func customConfiguration() {
-        let addresses = [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")]
+    func customConfiguration() throws {
+        let addresses = [try Multiaddr("/ip4/127.0.0.1/tcp/4001")]
         let config = DCUtRConfiguration(
             timeout: .seconds(15),
             maxAttempts: 5,
@@ -140,7 +140,7 @@ struct DCUtRServiceTests {
     @Test("Upgrade fails with no addresses from peer")
     func upgradeFailsNoAddresses() async {
         let service = DCUtRService(configuration: .init(
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         ))
 
         let mockOpener = DCUtRMockStreamOpener()
@@ -493,6 +493,10 @@ final class DCUtRMockMuxedStream: MuxedStream, Sendable {
     }
 
     func closeWrite() async throws {
+        // Half-close not needed for mock
+    }
+
+    func closeRead() async throws {
         // Half-close not needed for mock
     }
 

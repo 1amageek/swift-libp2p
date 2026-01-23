@@ -164,7 +164,7 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     ///
     /// - Parameter relay: The relay peer ID.
     func unregisterListener(for relay: PeerID) {
-        listeners.withLock { $0.removeValue(forKey: relay) }
+        _ = listeners.withLock { $0.removeValue(forKey: relay) }
     }
 
     // MARK: - Handler Registration
@@ -530,7 +530,7 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: CircuitRelayEvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }

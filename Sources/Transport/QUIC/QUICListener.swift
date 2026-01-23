@@ -17,7 +17,7 @@ import QUICCrypto
 ///
 /// For QUIC connections, prefer using `QUICSecuredListener` which returns
 /// `QUICMuxedConnection` directly.
-public final class QUICListener: Listener, @unchecked Sendable {
+public final class QUICListener: Listener, Sendable {
 
     private let endpoint: QUICEndpoint
     private let _localAddress: Multiaddr
@@ -144,17 +144,14 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                 if isClosed { break }
 
                 // Wait for handshake to complete before extracting PeerID
-                var timeoutCount = 0
-                while !quicConnection.isEstablished {
-                    timeoutCount += 1
-                    if timeoutCount > 3000 {  // 30 seconds (10ms * 3000)
-                        #if DEBUG
-                        print("Rejecting connection: handshake timeout")
-                        #endif
-                        try? await quicConnection.close(error: 0x100)
-                        continue
-                    }
-                    try? await Task.sleep(for: .milliseconds(10))
+                do {
+                    try await self.waitForHandshake(quicConnection, timeout: .seconds(30))
+                } catch {
+                    #if DEBUG
+                    print("Rejecting connection: handshake timeout - \(error)")
+                    #endif
+                    await quicConnection.close(error: 0x100)
+                    continue
                 }
 
                 // Extract remote PeerID from TLS certificate
@@ -165,7 +162,7 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                     #if DEBUG
                     print("Rejecting connection: failed to extract PeerID - \(error)")
                     #endif
-                    try? await quicConnection.close(error: 0x100)
+                    await quicConnection.close(error: 0x100)
                     continue
                 }
 
@@ -241,6 +238,39 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
 
     // MARK: - Private Helpers
 
+    /// Waits for connection establishment with proper async timeout.
+    ///
+    /// Uses TaskGroup to implement a cancellable timeout instead of polling.
+    ///
+    /// - Parameters:
+    ///   - connection: The QUIC connection to wait for
+    ///   - timeout: Maximum time to wait for handshake completion
+    /// - Throws: `QUICTransportError.handshakeTimeout` if timeout is reached
+    private func waitForHandshake(
+        _ connection: any QUICConnectionProtocol,
+        timeout: Duration
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            // Timeout task
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw QUICTransportError.handshakeTimeout
+            }
+
+            // Wait for establishment
+            group.addTask {
+                while !connection.isEstablished {
+                    try Task.checkCancellation()
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+            }
+
+            // First to complete wins
+            try await group.next()
+            group.cancelAll()
+        }
+    }
+
     /// Extracts PeerID from a QUIC connection using the TLS provider.
     ///
     /// The PeerID is extracted from the X.509 certificate extension
@@ -250,22 +280,18 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
     /// - Returns: The remote peer's PeerID
     /// - Throws: `QUICTransportError.certificateInvalid` if PeerID extraction fails
     private func extractPeerID(from connection: any QUICConnectionProtocol) throws -> PeerID {
-        // Try to get the TLS provider from the connection
-        if let managedConnection = connection as? ManagedConnection {
-            let tlsProvider = managedConnection.underlyingTLSProvider
-
-            // Extract PeerID from SwiftQUIC TLS provider
-            if let swiftQUICProvider = tlsProvider as? SwiftQUICTLSProvider {
-                if let remotePeerID = swiftQUICProvider.remotePeerID {
-                    return remotePeerID
-                }
-            }
+        guard let managedConnection = connection as? ManagedConnection else {
+            throw QUICTransportError.certificateInvalid("Unexpected connection type")
         }
 
-        // No fallback - this is a security requirement.
-        // Connections without valid PeerID must be rejected.
-        throw QUICTransportError.certificateInvalid(
-            "Failed to extract PeerID from TLS certificate"
-        )
+        guard let swiftQUICProvider = managedConnection.underlyingTLSProvider as? SwiftQUICTLSProvider else {
+            throw QUICTransportError.certificateInvalid("Unexpected TLS provider type")
+        }
+
+        guard let remotePeerID = swiftQUICProvider.remotePeerID else {
+            throw QUICTransportError.certificateInvalid("Remote PeerID not available after handshake")
+        }
+
+        return remotePeerID
     }
 }

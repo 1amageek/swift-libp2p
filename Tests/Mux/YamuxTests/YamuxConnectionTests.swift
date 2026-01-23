@@ -629,7 +629,7 @@ struct YamuxConnectionTests {
             keepAliveInterval: .milliseconds(50),
             keepAliveTimeout: .milliseconds(100)
         )
-        let (connection, mock) = createTestConnection(configuration: config)
+        let (connection, _) = createTestConnection(configuration: config)
         connection.start()
 
         // Don't respond to pings - wait for timeout

@@ -17,7 +17,7 @@ struct QuickDebugTest {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 

@@ -8,6 +8,16 @@
 import P2PCore
 
 /// A multiplexed stream within a connection.
+///
+/// Stream lifecycle methods:
+/// - `closeWrite()`: Half-close for writing. Signals "I'm done sending" to peer.
+///   Peer can still send data, and we can still read.
+/// - `closeRead()`: Half-close for reading. Signals "I'm done receiving" to peer.
+///   We can still send data, but reads will fail.
+/// - `close()`: Graceful full close. Equivalent to `closeRead()` + `closeWrite()`.
+///   Allows pending data to be transmitted before closing.
+/// - `reset()`: Abrupt close. Immediately terminates the stream in both directions.
+///   Pending data may be lost. Use for error conditions or forced shutdown.
 public protocol MuxedStream: Sendable {
     /// The stream ID.
     var id: UInt64 { get }
@@ -22,12 +32,27 @@ public protocol MuxedStream: Sendable {
     func write(_ data: Data) async throws
 
     /// Closes the stream for writing (half-close).
+    ///
+    /// After calling this, `write()` will fail but `read()` can still receive data
+    /// from the peer until they close their write side.
     func closeWrite() async throws
 
-    /// Closes the stream completely.
+    /// Closes the stream for reading (half-close).
+    ///
+    /// After calling this, `read()` will fail but `write()` can still send data
+    /// to the peer. Signals to the peer that we won't read any more data.
+    func closeRead() async throws
+
+    /// Closes the stream completely (both read and write).
+    ///
+    /// This is a graceful close that allows pending data to be transmitted.
+    /// Equivalent to calling both `closeRead()` and `closeWrite()`.
     func close() async throws
 
     /// Resets the stream (abrupt close).
+    ///
+    /// Immediately terminates the stream in both directions. Any pending data
+    /// may be lost. Use this for error conditions or forced shutdown.
     func reset() async throws
 }
 

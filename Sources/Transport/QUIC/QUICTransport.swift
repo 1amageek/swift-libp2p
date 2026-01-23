@@ -37,19 +37,8 @@ import NIOUDPTransport
 /// ```
 public final class QUICTransport: SecuredTransport, Sendable {
 
-    /// TLS provider mode for QUIC connections.
-    public enum TLSProviderMode: Sendable {
-        /// Use swift-quic's pure Swift TLS 1.3 implementation.
-        /// This is the only mode - provides real TLS 1.3 without external dependencies.
-        /// Compatible with rust-libp2p and go-libp2p.
-        case swiftQUIC
-    }
-
     /// QUIC configuration
     private let configuration: QUICConfiguration
-
-    /// TLS provider mode
-    private let tlsProviderMode: TLSProviderMode
 
     /// Supported protocol chains.
     ///
@@ -62,15 +51,9 @@ public final class QUICTransport: SecuredTransport, Sendable {
 
     /// Creates a new QUIC transport.
     ///
-    /// - Parameters:
-    ///   - configuration: QUIC configuration (defaults to libp2p preset)
-    ///   - tlsProviderMode: TLS provider mode (defaults to swiftQUIC for pure Swift TLS)
-    public init(
-        configuration: QUICConfiguration = .libp2p(),
-        tlsProviderMode: TLSProviderMode = .swiftQUIC
-    ) {
+    /// - Parameter configuration: QUIC configuration (defaults to libp2p preset)
+    public init(configuration: QUICConfiguration = .libp2p()) {
         self.configuration = configuration
-        self.tlsProviderMode = tlsProviderMode
     }
 
     // MARK: - Transport Protocol
@@ -165,7 +148,7 @@ public final class QUICTransport: SecuredTransport, Sendable {
         let quicConnection = try await endpoint.dial(address: socketAddress)
 
         // Extract PeerID from TLS certificate
-        let remotePeer = try extractPeerID(from: quicConnection, localKeyPair: localKeyPair)
+        let remotePeer = try extractPeerID(from: quicConnection)
 
         // Create local address from socket if available
         let localAddress: Multiaddr?
@@ -232,7 +215,7 @@ public final class QUICTransport: SecuredTransport, Sendable {
         // Get actual bound address (important when port 0 was used)
         let actualAddress: Multiaddr
         if let localAddr = await endpoint.localAddress {
-            actualAddress = localAddr.toQUICMultiaddr() ?? address
+            actualAddress = localAddr.toQUICMultiaddr()
         } else {
             actualAddress = address
         }
@@ -256,26 +239,23 @@ public final class QUICTransport: SecuredTransport, Sendable {
     /// The PeerID is extracted from the X.509 certificate extension
     /// (OID 1.3.6.1.4.1.53594.1.1) that was verified during the TLS handshake.
     ///
-    /// - Parameters:
-    ///   - connection: The QUIC connection
-    ///   - localKeyPair: The local key pair (for fallback if TLS provider not available)
+    /// - Parameter connection: The QUIC connection
     /// - Returns: The remote peer's PeerID
     /// - Throws: `QUICTransportError.certificateInvalid` if PeerID extraction fails
-    private func extractPeerID(from connection: any QUICConnectionProtocol, localKeyPair: KeyPair) throws -> PeerID {
-        // Try to get the TLS provider from the connection
-        if let managedConnection = connection as? ManagedConnection {
-            let tlsProvider = managedConnection.underlyingTLSProvider
-
-            // Extract PeerID from SwiftQUIC TLS provider
-            if let swiftQUICProvider = tlsProvider as? SwiftQUICTLSProvider {
-                if let remotePeerID = swiftQUICProvider.remotePeerID {
-                    return remotePeerID
-                }
-            }
+    private func extractPeerID(from connection: any QUICConnectionProtocol) throws -> PeerID {
+        guard let managedConnection = connection as? ManagedConnection else {
+            throw QUICTransportError.certificateInvalid("Unexpected connection type")
         }
 
-        // Fallback: This shouldn't happen if libp2p TLS is properly configured
-        throw QUICTransportError.certificateInvalid("Could not extract PeerID from TLS certificate")
+        guard let swiftQUICProvider = managedConnection.underlyingTLSProvider as? SwiftQUICTLSProvider else {
+            throw QUICTransportError.certificateInvalid("Unexpected TLS provider type")
+        }
+
+        guard let remotePeerID = swiftQUICProvider.remotePeerID else {
+            throw QUICTransportError.certificateInvalid("Remote PeerID not available after handshake")
+        }
+
+        return remotePeerID
     }
 }
 
@@ -300,4 +280,7 @@ public enum QUICTransportError: Error, Sendable {
 
     /// Stream error.
     case streamError(streamID: UInt64, code: UInt64)
+
+    /// TLS handshake timed out.
+    case handshakeTimeout
 }

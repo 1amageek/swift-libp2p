@@ -262,18 +262,6 @@ extension Multiaddr: Codable {
     }
 }
 
-// MARK: - ExpressibleByStringLiteral
-
-extension Multiaddr: ExpressibleByStringLiteral {
-    public init(stringLiteral value: String) {
-        do {
-            try self.init(value)
-        } catch {
-            fatalError("Invalid Multiaddr string literal: \(value)")
-        }
-    }
-}
-
 // MARK: - Common Addresses
 
 extension Multiaddr {
@@ -281,9 +269,11 @@ extension Multiaddr {
     /// Creates a TCP address.
     ///
     /// - Note: Factory methods don't validate size since they create known-small addresses.
+    /// - Note: IPv6 addresses are normalized to expanded form.
     public static func tcp(host: String, port: UInt16) -> Multiaddr {
         if host.contains(":") {
-            return Multiaddr(uncheckedProtocols: [.ip6(host), .tcp(port)])
+            let normalized = MultiaddrProtocol.normalizeIPv6(host) ?? host
+            return Multiaddr(uncheckedProtocols: [.ip6(normalized), .tcp(port)])
         } else {
             return Multiaddr(uncheckedProtocols: [.ip4(host), .tcp(port)])
         }
@@ -292,9 +282,11 @@ extension Multiaddr {
     /// Creates a QUIC address.
     ///
     /// - Note: Factory methods don't validate size since they create known-small addresses.
+    /// - Note: IPv6 addresses are normalized to expanded form.
     public static func quic(host: String, port: UInt16) -> Multiaddr {
         if host.contains(":") {
-            return Multiaddr(uncheckedProtocols: [.ip6(host), .udp(port), .quicV1])
+            let normalized = MultiaddrProtocol.normalizeIPv6(host) ?? host
+            return Multiaddr(uncheckedProtocols: [.ip6(normalized), .udp(port), .quicV1])
         } else {
             return Multiaddr(uncheckedProtocols: [.ip4(host), .udp(port), .quicV1])
         }

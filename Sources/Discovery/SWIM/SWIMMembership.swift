@@ -202,7 +202,7 @@ public actor SWIMMembership: DiscoveryService {
                     var addr = interface.ifa_addr!.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
                     var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
                     inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET_ADDRSTRLEN))
-                    let addressString = String(cString: buffer)
+                    let addressString = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
 
                     // Skip link-local addresses (169.254.x.x)
                     if !addressString.hasPrefix("169.254.") && !addressString.hasPrefix("127.") {
@@ -342,7 +342,7 @@ public actor SWIMMembership: DiscoveryService {
     private func forwardSWIMEvents() async {
         guard let swim = swim else { return }
 
-        let events = await swim.events
+        let events = swim.events
         for await event in events {
             sequenceNumber += 1
 

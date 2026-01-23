@@ -306,7 +306,7 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
     }
 
     private func emit(_ event: PingEvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }

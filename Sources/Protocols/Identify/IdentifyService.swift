@@ -19,14 +19,33 @@ public struct IdentifyConfiguration: Sendable {
     /// Timeout for identify operations.
     public var timeout: Duration
 
+    /// Time-to-live for cached peer info.
+    /// Default: 24 hours (peer info is relatively stable).
+    public var cacheTTL: Duration
+
+    /// Maximum number of cached peers.
+    /// Default: 1000.
+    public var maxCacheSize: Int
+
+    /// Interval for background cache cleanup.
+    /// Set to nil to disable periodic cleanup (lazy-only mode).
+    /// Default: 5 minutes.
+    public var cleanupInterval: Duration?
+
     public init(
         protocolVersion: String = "ipfs/0.1.0",
         agentVersion: String = "swift-libp2p/0.1.0",
-        timeout: Duration = .seconds(60)
+        timeout: Duration = .seconds(60),
+        cacheTTL: Duration = .seconds(24 * 60 * 60),
+        maxCacheSize: Int = 1000,
+        cleanupInterval: Duration? = .seconds(300)
     ) {
         self.protocolVersion = protocolVersion
         self.agentVersion = agentVersion
         self.timeout = timeout
+        self.cacheTTL = cacheTTL
+        self.maxCacheSize = maxCacheSize
+        self.cleanupInterval = cleanupInterval
     }
 }
 
@@ -43,6 +62,9 @@ public enum IdentifyEvent: Sendable {
 
     /// Error during identification.
     case error(peer: PeerID?, IdentifyError)
+
+    /// Background maintenance completed.
+    case maintenanceCompleted(entriesRemoved: Int)
 }
 
 /// Service for the Identify protocol.
@@ -81,16 +103,40 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     /// Configuration for this service.
     public let configuration: IdentifyConfiguration
 
-    /// Peer information cache.
-    private let peerInfoCache: Mutex<[PeerID: IdentifyInfo]>
-
-    /// Event stream continuation.
+    /// Event state (dedicated).
     private let eventState: Mutex<EventState>
 
     private struct EventState: Sendable {
         var continuation: AsyncStream<IdentifyEvent>.Continuation?
         var stream: AsyncStream<IdentifyEvent>?
     }
+
+    /// Cache state (separated from event state).
+    private let cacheState: Mutex<CacheState>
+
+    /// Internal cache entry with expiration metadata.
+    private struct CachedPeerInfo: Sendable {
+        let info: IdentifyInfo
+        let cachedAt: ContinuousClock.Instant
+        let expiresAt: ContinuousClock.Instant
+    }
+
+    /// Internal cache state.
+    private struct CacheState: Sendable {
+        /// Cached peer info by PeerID.
+        var entries: [PeerID: CachedPeerInfo]
+
+        /// Access order for LRU eviction (most recent at end).
+        var accessOrder: [PeerID]
+
+        init() {
+            self.entries = [:]
+            self.accessOrder = []
+        }
+    }
+
+    /// Background cleanup task.
+    private let cleanupTask: Mutex<Task<Void, Never>?>
 
     /// Event stream for monitoring identify events.
     public var events: AsyncStream<IdentifyEvent> {
@@ -109,8 +155,9 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
 
     public init(configuration: IdentifyConfiguration = .init()) {
         self.configuration = configuration
-        self.peerInfoCache = Mutex([:])
         self.eventState = Mutex(EventState())
+        self.cacheState = Mutex(CacheState())
+        self.cleanupTask = Mutex(nil)
     }
 
     // MARK: - Handler Registration
@@ -174,14 +221,19 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
                 let data = try await self.readAll(from: context.stream)
                 let info = try IdentifyProtobuf.decode(data)
 
-                // Update cache
-                self.peerInfoCache.withLock { cache in
-                    cache[context.remotePeer] = info
+                // Verify signed peer record if present
+                if let envelope = info.signedPeerRecord {
+                    try self.verifySignedPeerRecord(envelope, expectedPeer: context.remotePeer)
                 }
 
+                // Update cache
+                self.cacheInfo(info, for: context.remotePeer)
+
                 self.emit(.pushReceived(peer: context.remotePeer, info: info))
-            } catch let pushError {
-                self.emit(.error(peer: context.remotePeer, .streamError(pushError.localizedDescription)))
+            } catch let identifyError as IdentifyError {
+                self.emit(.error(peer: context.remotePeer, identifyError))
+            } catch {
+                self.emit(.error(peer: context.remotePeer, .streamError(error.localizedDescription)))
             }
 
             do {
@@ -242,10 +294,13 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
             }
         }
 
-        // Cache the info
-        peerInfoCache.withLock { cache in
-            cache[peer] = info
+        // Verify signed peer record if present
+        if let envelope = info.signedPeerRecord {
+            try verifySignedPeerRecord(envelope, expectedPeer: peer)
         }
+
+        // Cache the info
+        cacheInfo(info, for: peer)
 
         // Emit event
         emit(.received(peer: peer, info: info))
@@ -299,32 +354,235 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     }
 
     /// Returns cached info for a peer.
+    ///
+    /// Returns `nil` if the entry has expired (lazy cleanup).
     public func cachedInfo(for peer: PeerID) -> IdentifyInfo? {
-        peerInfoCache.withLock { cache in
-            cache[peer]
+        cacheState.withLock { state in
+            guard let cached = state.entries[peer] else { return nil }
+
+            // Check expiration (lazy cleanup)
+            let now = ContinuousClock.now
+            if cached.expiresAt <= now {
+                state.entries.removeValue(forKey: peer)
+                if let index = state.accessOrder.firstIndex(of: peer) {
+                    state.accessOrder.remove(at: index)
+                }
+                return nil
+            }
+
+            // Update LRU order (move to end = most recent)
+            if let index = state.accessOrder.firstIndex(of: peer) {
+                state.accessOrder.remove(at: index)
+                state.accessOrder.append(peer)
+            }
+
+            return cached.info
         }
     }
 
-    /// Returns all cached peer info.
+    /// Returns all cached peer info (excludes expired entries).
     public var allCachedInfo: [PeerID: IdentifyInfo] {
-        peerInfoCache.withLock { $0 }
+        let now = ContinuousClock.now
+        return cacheState.withLock { state in
+            var result: [PeerID: IdentifyInfo] = [:]
+            for (peer, cached) in state.entries where cached.expiresAt > now {
+                result[peer] = cached.info
+            }
+            return result
+        }
     }
 
     /// Clears cached info for a peer.
     public func clearCache(for peer: PeerID) {
-        peerInfoCache.withLock { cache in
-            cache.removeValue(forKey: peer)
+        cacheState.withLock { state in
+            state.entries.removeValue(forKey: peer)
+            if let index = state.accessOrder.firstIndex(of: peer) {
+                state.accessOrder.remove(at: index)
+            }
         }
     }
 
     /// Clears all cached info.
     public func clearAllCache() {
-        peerInfoCache.withLock { cache in
-            cache.removeAll()
+        cacheState.withLock { state in
+            state.entries.removeAll()
+            state.accessOrder.removeAll()
+        }
+    }
+
+    // MARK: - Cache Operations
+
+    /// Adds or updates cached info for a peer.
+    ///
+    /// - Parameters:
+    ///   - info: The identify info to cache
+    ///   - peer: The peer ID to cache for
+    internal func cacheInfo(_ info: IdentifyInfo, for peer: PeerID) {
+        let now = ContinuousClock.now
+        let expiresAt = now.advanced(by: configuration.cacheTTL)
+
+        cacheState.withLock { state in
+            // Update LRU order (move to end = most recent)
+            if let index = state.accessOrder.firstIndex(of: peer) {
+                state.accessOrder.remove(at: index)
+            }
+            state.accessOrder.append(peer)
+
+            // Check capacity - evict if needed for new entry
+            if state.entries[peer] == nil && state.entries.count >= configuration.maxCacheSize {
+                evictEntries(from: &state, count: 1)
+            }
+
+            state.entries[peer] = CachedPeerInfo(
+                info: info,
+                cachedAt: now,
+                expiresAt: expiresAt
+            )
+        }
+    }
+
+    /// Evicts entries using strategy: expired first, then LRU.
+    ///
+    /// - Parameters:
+    ///   - state: The cache state to modify
+    ///   - count: Number of entries to evict
+    /// - Returns: Number of entries actually evicted
+    @discardableResult
+    private func evictEntries(from state: inout CacheState, count: Int) -> Int {
+        let now = ContinuousClock.now
+        var evicted = 0
+        var toEvict: [PeerID] = []
+
+        // Phase 1: Prioritize expired entries
+        for peer in state.accessOrder where evicted < count {
+            if let cached = state.entries[peer], cached.expiresAt <= now {
+                toEvict.append(peer)
+                evicted += 1
+            }
+        }
+
+        // Phase 2: LRU (oldest first) if still need more
+        var lruIndex = 0
+        while evicted < count && lruIndex < state.accessOrder.count {
+            let peer = state.accessOrder[lruIndex]
+            if !toEvict.contains(peer) {
+                toEvict.append(peer)
+                evicted += 1
+            }
+            lruIndex += 1
+        }
+
+        // Execute eviction
+        for peer in toEvict {
+            state.entries.removeValue(forKey: peer)
+            if let index = state.accessOrder.firstIndex(of: peer) {
+                state.accessOrder.remove(at: index)
+            }
+        }
+
+        return evicted
+    }
+
+    /// Cleans up expired entries from the cache.
+    ///
+    /// - Returns: Number of entries removed
+    @discardableResult
+    public func cleanup() -> Int {
+        let now = ContinuousClock.now
+
+        return cacheState.withLock { state in
+            let expiredPeers = state.entries.filter { $0.value.expiresAt <= now }.map { $0.key }
+
+            for peer in expiredPeers {
+                state.entries.removeValue(forKey: peer)
+                if let index = state.accessOrder.firstIndex(of: peer) {
+                    state.accessOrder.remove(at: index)
+                }
+            }
+
+            return expiredPeers.count
+        }
+    }
+
+    // MARK: - Maintenance
+
+    /// Starts the background maintenance task.
+    ///
+    /// The task periodically cleans up expired cache entries.
+    /// Call `stopMaintenance()` or `shutdown()` to stop.
+    public func startMaintenance() {
+        guard let interval = configuration.cleanupInterval else { return }
+
+        cleanupTask.withLock { task in
+            guard task == nil else { return }
+            task = Task { [weak self] in
+                await self?.runCleanupLoop(interval: interval)
+            }
+        }
+    }
+
+    /// Stops the background maintenance task.
+    public func stopMaintenance() {
+        cleanupTask.withLock { task in
+            task?.cancel()
+            task = nil
+        }
+    }
+
+    /// Runs the cleanup loop.
+    private func runCleanupLoop(interval: Duration) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: interval)
+                let removed = cleanup()
+                if removed > 0 {
+                    emit(.maintenanceCompleted(entriesRemoved: removed))
+                }
+            } catch {
+                break // Task cancelled
+            }
         }
     }
 
     // MARK: - Helpers
+
+    /// Verifies a signed peer record from an identify response.
+    ///
+    /// This method ensures that:
+    /// 1. The envelope signature is valid
+    /// 2. The peer ID in the record matches the expected peer
+    ///
+    /// - Parameters:
+    ///   - envelope: The signed envelope containing the peer record
+    ///   - expectedPeer: The peer ID we expect the record to be for
+    /// - Throws: `IdentifyError.invalidSignedPeerRecord` if verification fails
+    private func verifySignedPeerRecord(_ envelope: Envelope, expectedPeer: PeerID) throws {
+        // Verify signature and extract record
+        let peerRecord: PeerRecord
+        do {
+            peerRecord = try envelope.record(as: PeerRecord.self)
+        } catch EnvelopeError.invalidSignature {
+            throw IdentifyError.invalidSignedPeerRecord("Signature verification failed")
+        } catch EnvelopeError.payloadTypeMismatch {
+            throw IdentifyError.invalidSignedPeerRecord("Payload type is not a peer record")
+        } catch {
+            throw IdentifyError.invalidSignedPeerRecord("Failed to decode peer record: \(error)")
+        }
+
+        // Verify peer ID matches
+        if peerRecord.peerID != expectedPeer {
+            throw IdentifyError.invalidSignedPeerRecord(
+                "Peer ID mismatch: expected \(expectedPeer), got \(peerRecord.peerID)"
+            )
+        }
+
+        // Also verify that the envelope's signer matches
+        if envelope.peerID != expectedPeer {
+            throw IdentifyError.invalidSignedPeerRecord(
+                "Envelope signer mismatch: expected \(expectedPeer), got \(envelope.peerID)"
+            )
+        }
+    }
 
     /// Reads all data from a stream until EOF.
     ///
@@ -353,7 +611,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     }
 
     private func emit(_ event: IdentifyEvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }
@@ -364,7 +622,9 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
+    /// Also stops the background maintenance task if running.
     public func shutdown() {
+        stopMaintenance()
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil

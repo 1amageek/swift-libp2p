@@ -5,6 +5,20 @@ import P2PMux
 import Synchronization
 
 /// Internal state for YamuxStream.
+///
+/// Stream state model (bidirectional, independent):
+/// ```
+///        Local                      Remote
+///     ┌──────────┐               ┌──────────┐
+///     │  Write   │ ────FIN────>  │  Read    │
+///     │  Side    │               │  Side    │
+///     └──────────┘               └──────────┘
+///
+///     ┌──────────┐               ┌──────────┐
+///     │  Read    │ <───FIN────   │  Write   │
+///     │  Side    │               │  Side    │
+///     └──────────┘               └──────────┘
+/// ```
 private struct YamuxStreamState: Sendable {
     /// Initial window size from configuration (immutable after creation)
     let initialWindowSize: UInt32
@@ -15,8 +29,18 @@ private struct YamuxStreamState: Sendable {
     var windowWaitContinuations: [CheckedContinuation<Void, Error>] = []
     var sendWindow: UInt32
     var recvWindow: UInt32
-    var localClosed = false
-    var remoteClosed = false
+
+    // Write direction state
+    /// Local has closed write side (sent FIN)
+    var localWriteClosed = false
+
+    // Read direction state
+    /// Local has closed read side (no longer interested in receiving)
+    var localReadClosed = false
+    /// Remote has closed write side (received FIN, no more data coming)
+    var remoteWriteClosed = false
+
+    /// Stream has been reset (abrupt termination)
     var isReset = false
     var protocolID: String?
 
@@ -48,16 +72,25 @@ public final class YamuxStream: MuxedStream, Sendable {
     public func read() async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { state in
+                // Reset state - immediate failure
                 if state.isReset {
                     continuation.resume(throwing: YamuxError.streamClosed)
                     return
                 }
 
+                // Local closed read side - immediate failure (we're not interested)
+                if state.localReadClosed {
+                    continuation.resume(throwing: YamuxError.streamClosed)
+                    return
+                }
+
+                // Return buffered data if available
                 if !state.readBuffer.isEmpty {
                     let data = state.readBuffer
                     state.readBuffer = Data()
                     continuation.resume(returning: data)
-                } else if state.remoteClosed {
+                } else if state.remoteWriteClosed {
+                    // Remote closed write side and buffer is empty - no more data coming
                     continuation.resume(throwing: YamuxError.streamClosed)
                 } else {
                     // Queue this reader to wait for data
@@ -78,7 +111,7 @@ public final class YamuxStream: MuxedStream, Sendable {
     }
 
     public func write(_ data: Data) async throws {
-        let isClosed = state.withLock { state in state.localClosed || state.isReset }
+        let isClosed = state.withLock { state in state.localWriteClosed || state.isReset }
         if isClosed {
             throw YamuxError.streamClosed
         }
@@ -95,8 +128,8 @@ public final class YamuxStream: MuxedStream, Sendable {
             // Atomically check state, calculate chunk size, and reserve window space
             // This prevents TOCTOU race conditions with concurrent writes
             let reserveResult: WindowReserveResult = state.withLock { state in
-                // Check if stream is closed
-                if state.localClosed || state.isReset {
+                // Check if stream is closed for writing
+                if state.localWriteClosed || state.isReset {
                     return .closed
                 }
 
@@ -134,7 +167,7 @@ public final class YamuxStream: MuxedStream, Sendable {
                     group.addTask {
                         try await withCheckedThrowingContinuation { continuation in
                             let shouldResume = self.state.withLock { state -> Bool in
-                                if state.localClosed || state.isReset {
+                                if state.localWriteClosed || state.isReset {
                                     continuation.resume(throwing: YamuxError.streamClosed)
                                     return true
                                 }
@@ -167,10 +200,18 @@ public final class YamuxStream: MuxedStream, Sendable {
     }
 
     public func closeWrite() async throws {
-        let shouldSend = state.withLock { state -> Bool in
-            if state.localClosed || state.isReset { return false }
-            state.localClosed = true
-            return true
+        let (shouldSend, windowConts) = state.withLock { state -> (Bool, [CheckedContinuation<Void, Error>]) in
+            if state.localWriteClosed || state.isReset { return (false, []) }
+            state.localWriteClosed = true
+            // Cancel any pending writers waiting for window space
+            let w = state.windowWaitContinuations
+            state.windowWaitContinuations = []
+            return (true, w)
+        }
+
+        // Resume all waiting writers with error (outside lock)
+        for cont in windowConts {
+            cont.resume(throwing: YamuxError.streamClosed)
         }
 
         if shouldSend {
@@ -185,31 +226,40 @@ public final class YamuxStream: MuxedStream, Sendable {
         }
     }
 
-    public func close() async throws {
-        try await closeWrite()
-        let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<Data, Error>], [CheckedContinuation<Void, Error>]) in
-            state.remoteClosed = true
+    public func closeRead() async throws {
+        // Yamux doesn't have an explicit "stop receiving" signal like QUIC's STOP_SENDING.
+        // We mark the read side as closed locally, which will cause subsequent reads to fail.
+        // The peer will continue sending until their window is exhausted or they close.
+        // Received data after closeRead() will be discarded in dataReceived().
+        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+            if state.localReadClosed || state.isReset { return [] }
+            state.localReadClosed = true
+            // Clear buffer - we're no longer interested in any data
+            state.readBuffer = Data()
             let r = state.readContinuations
-            let w = state.windowWaitContinuations
             state.readContinuations = []
-            state.windowWaitContinuations = []
-            return (r, w)
+            return r
         }
-        // Resume all waiting continuations outside of lock to avoid deadlock
+        // Resume all waiting readers with error
         for cont in readConts {
             cont.resume(throwing: YamuxError.streamClosed)
         }
-        for cont in windowConts {
-            cont.resume(throwing: YamuxError.streamClosed)
-        }
+    }
+
+    public func close() async throws {
+        // Close both directions
+        try await closeWrite()
+        try await closeRead()
         connection.removeStream(id)
     }
 
     public func reset() async throws {
         let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<Data, Error>], [CheckedContinuation<Void, Error>]) in
             state.isReset = true
-            state.localClosed = true
-            state.remoteClosed = true
+            state.localWriteClosed = true
+            state.localReadClosed = true
+            state.remoteWriteClosed = true
+            state.readBuffer = Data()
             let r = state.readContinuations
             let w = state.windowWaitContinuations
             state.readContinuations = []
@@ -242,97 +292,121 @@ public final class YamuxStream: MuxedStream, Sendable {
     /// - Returns: `true` if the data was accepted, `false` if it exceeded
     ///   the receive window (protocol violation).
     func dataReceived(_ data: Data) -> Bool {
-        let (accepted, continuation, errorConts) = state.withLock { state -> (Bool, CheckedContinuation<Data, Error>?, [CheckedContinuation<Data, Error>]) in
-            // Check for receive window violation
+        enum DataReceivedResult {
+            case accepted(continuation: CheckedContinuation<Data, Error>?)
+            case discarded  // localReadClosed - data discarded
+            case windowViolation(errorConts: [CheckedContinuation<Data, Error>])
+        }
+
+        let result: DataReceivedResult = state.withLock { state in
             let dataSize = UInt32(data.count)
+
+            // Check for receive window violation (protocol error)
             if dataSize > state.recvWindow {
-                // Protocol violation: data exceeds receive window
                 state.isReset = true
-                state.localClosed = true
-                state.remoteClosed = true
+                state.localWriteClosed = true
+                state.localReadClosed = true
+                state.remoteWriteClosed = true
                 let conts = state.readContinuations
                 state.readContinuations = []
-                return (false, nil, conts)
+                return .windowViolation(errorConts: conts)
             }
 
-            // Update receive window
+            // Update receive window (always, even if discarding)
             state.recvWindow -= dataSize
 
+            // If local read is closed, discard the data
+            // Yamux has no STOP_SENDING, so peer keeps sending until window exhausted
+            if state.localReadClosed {
+                return .discarded
+            }
+
+            // Normal case: deliver to waiting reader or buffer
             if !state.readContinuations.isEmpty {
-                // Resume first waiting reader (FIFO)
                 let cont = state.readContinuations.removeFirst()
-                return (true, cont, [])
+                return .accepted(continuation: cont)
             } else {
                 state.readBuffer.append(data)
-                return (true, nil, [])
+                return .accepted(continuation: nil)
             }
         }
 
-        // Resume continuations outside of lock to avoid deadlock
-        if !accepted {
+        // Process result outside of lock
+        switch result {
+        case .windowViolation(let errorConts):
             for cont in errorConts {
                 cont.resume(throwing: YamuxError.windowExceeded)
             }
             return false
-        }
 
-        continuation?.resume(returning: data)
+        case .discarded:
+            // Data discarded, but not a protocol error
+            // Don't send window update - let window drain to signal backpressure
+            return true
 
-        // Send window update if needed
-        // Only calculate delta, don't update window yet (will update after successful send)
-        let (needsUpdate, delta) = state.withLock { state -> (Bool, UInt32) in
-            if state.recvWindow < state.initialWindowSize / 2 {
-                let d = state.initialWindowSize - state.recvWindow
-                return (true, d)
+        case .accepted(let continuation):
+            continuation?.resume(returning: data)
+
+            // Send window update if needed (only if not read-closed)
+            let (needsUpdate, delta) = state.withLock { state -> (Bool, UInt32) in
+                // Don't send window updates if read is closed
+                if state.localReadClosed {
+                    return (false, 0)
+                }
+                if state.recvWindow < state.initialWindowSize / 2 {
+                    let d = state.initialWindowSize - state.recvWindow
+                    return (true, d)
+                }
+                return (false, 0)
             }
-            return (false, 0)
-        }
 
-        if needsUpdate {
-            Task { [weak self, connection, id] in
-                let frame = YamuxFrame.windowUpdate(streamID: UInt32(id), delta: delta)
-                do {
-                    try await connection.sendFrame(frame)
-                    // Only update window AFTER successful send
-                    self?.state.withLock { state in
-                        state.recvWindow += delta
+            if needsUpdate {
+                Task { [weak self, connection, id] in
+                    let frame = YamuxFrame.windowUpdate(streamID: UInt32(id), delta: delta)
+                    do {
+                        try await connection.sendFrame(frame)
+                        self?.state.withLock { state in
+                            state.recvWindow += delta
+                        }
+                    } catch {
+                        // Window update failed - connection likely closing
                     }
-                } catch {
-                    // Window update failed - don't update local window
-                    // Peer will continue respecting old window
-                    // Connection is likely closing
                 }
             }
-        }
 
-        return true
+            return true
+        }
     }
 
-    /// Called when remote closes the stream.
+    /// Called when remote closes the stream (received FIN).
+    ///
+    /// This is a half-close: remote stopped sending, but we can still write.
+    /// Only read waiters are cancelled; write waiters continue normally.
     func remoteClose() {
-        let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<Data, Error>], [CheckedContinuation<Void, Error>]) in
-            state.remoteClosed = true
+        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+            state.remoteWriteClosed = true
+            // Only cancel read waiters - write side is unaffected (half-close)
             let r = state.readContinuations
-            let w = state.windowWaitContinuations
             state.readContinuations = []
-            state.windowWaitContinuations = []
-            return (r, w)
+            return r
+            // Note: windowWaitContinuations NOT touched - we can still write!
         }
-        // Resume all waiting continuations outside of lock to avoid deadlock
+        // Resume read waiters outside of lock
         for cont in readConts {
             cont.resume(throwing: YamuxError.streamClosed)
         }
-        for cont in windowConts {
-            cont.resume(throwing: YamuxError.streamClosed)
-        }
     }
 
-    /// Called when the stream is reset by remote.
+    /// Called when the stream is reset by remote (received RST).
+    ///
+    /// This is an abrupt close: both directions are immediately terminated.
     func remoteReset() {
         let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<Data, Error>], [CheckedContinuation<Void, Error>]) in
             state.isReset = true
-            state.localClosed = true
-            state.remoteClosed = true
+            state.localWriteClosed = true
+            state.localReadClosed = true
+            state.remoteWriteClosed = true
+            state.readBuffer = Data()
             let r = state.readContinuations
             let w = state.windowWaitContinuations
             state.readContinuations = []

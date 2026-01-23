@@ -14,7 +14,7 @@ import QUICCore
 import QUICCrypto
 
 /// TLS 1.3 provider for libp2p using swift-quic's pure Swift implementation
-public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
+public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
 
     // MARK: - Properties
 
@@ -29,7 +29,6 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
 
     private struct ProviderState: Sendable {
         var expectedRemotePeerID: PeerID?
-        var remotePeerID: PeerID?
         var handshakeComplete: Bool = false
     }
 
@@ -146,13 +145,8 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
     /// via the certificateValidator callback. For the server, this is the client's
     /// PeerID. For the client, this is the server's PeerID.
     public var remotePeerID: PeerID? {
-        // First check if we have a validated PeerID from the certificate validator
-        if let validatedInfo = tlsHandler.validatedPeerInfo,
-           let peerID = validatedInfo as? PeerID {
-            return peerID
-        }
-        // Fall back to manually extracted PeerID (for backwards compatibility)
-        return state.withLock { $0.remotePeerID }
+        // Single source of truth: certificate validator callback result
+        tlsHandler.validatedPeerInfo as? PeerID
     }
 
     // MARK: - TLS13Provider Protocol
@@ -164,10 +158,11 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
     public func processHandshakeData(_ data: Data, at level: EncryptionLevel) async throws -> [TLSOutput] {
         let outputs = try await tlsHandler.processHandshakeData(data, at: level)
 
-        // Check for handshake completion and extract PeerID
+        // Check for handshake completion
+        // Note: PeerID extraction is handled by the certificate validator callback
+        // and stored in tlsHandler.validatedPeerInfo
         for output in outputs {
             if case .handshakeComplete = output {
-                try extractAndVerifyRemotePeerID()
                 state.withLock { $0.handshakeComplete = true }
             }
         }
@@ -221,51 +216,5 @@ public final class SwiftQUICTLSProvider: TLS13Provider, @unchecked Sendable {
         length: Int
     ) throws -> Data {
         try tlsHandler.exportKeyingMaterial(label: label, context: context, length: length)
-    }
-
-    // MARK: - Private Methods
-
-    /// Extracts and verifies the remote PeerID from the peer's certificate
-    private func extractAndVerifyRemotePeerID() throws {
-        // Get peer certificate from TLS handler
-        guard let peerCertificates = tlsHandler.peerCertificates,
-              let leafCertDER = peerCertificates.first else {
-            throw TLSCertificateError.missingLibp2pExtension
-        }
-
-        // Extract libp2p public key from certificate
-        let (publicKeyBytes, signature) = try LibP2PCertificateHelper.extractLibP2PPublicKey(
-            from: leafCertDER
-        )
-
-        // Parse the protobuf-encoded public key
-        let libp2pPublicKey = try P2PCore.PublicKey(protobufEncoded: publicKeyBytes)
-
-        // Parse the certificate to get SPKI for signature verification
-        // Note: We parse manually because tlsHandler.peerCertificate may be nil
-        // when verifyPeer = false (libp2p does its own verification)
-        let peerCert = try X509Certificate.parse(from: leafCertDER)
-
-        // Verify the signature
-        // Message = "libp2p-tls-handshake:" + DER(SubjectPublicKeyInfo)
-        let spkiDER = peerCert.subjectPublicKeyInfoDER
-        let message = Data("libp2p-tls-handshake:".utf8) + spkiDER
-
-        guard try libp2pPublicKey.verify(signature: signature, for: message) else {
-            throw TLSCertificateError.invalidExtensionSignature
-        }
-
-        // Derive PeerID
-        let remotePeerID = libp2pPublicKey.peerID
-
-        // Verify against expected PeerID if set
-        if let expected = state.withLock({ $0.expectedRemotePeerID }) {
-            guard expected == remotePeerID else {
-                throw TLSCertificateError.peerIDMismatch(expected: expected, actual: remotePeerID)
-            }
-        }
-
-        // Store the verified PeerID
-        state.withLock { $0.remotePeerID = remotePeerID }
     }
 }

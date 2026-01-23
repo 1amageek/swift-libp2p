@@ -85,6 +85,16 @@ final class DCUtRMockStream: MuxedStream, Sendable {
         state.withLock { $0.isWriteClosed = true }
     }
 
+    func closeRead() async throws {
+        state.withLock { s in
+            s.isClosed = true
+            if let continuation = s.readContinuation {
+                s.readContinuation = nil
+                continuation.resume(returning: Data())
+            }
+        }
+    }
+
     func close() async throws {
         state.withLock { s in
             s.isClosed = true
@@ -225,9 +235,9 @@ func createDCUtRContext(
     StreamContext(
         stream: stream,
         remotePeer: remotePeer,
-        remoteAddress: Multiaddr("/ip4/127.0.0.1/tcp/4001"),
+        remoteAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4001),
         localPeer: localPeer,
-        localAddress: Multiaddr("/ip4/127.0.0.1/tcp/4002")
+        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002)
     )
 }
 
@@ -244,12 +254,12 @@ struct DCUtRIntegrationTests {
         let responderKey = KeyPair.generateEd25519()
 
         let initiatorAddresses = [
-            Multiaddr("/ip4/192.168.1.1/tcp/4001"),
-            Multiaddr("/ip4/10.0.0.1/tcp/4001")
+            try Multiaddr("/ip4/192.168.1.1/tcp/4001"),
+            try Multiaddr("/ip4/10.0.0.1/tcp/4001")
         ]
 
         let responderAddresses = [
-            Multiaddr("/ip4/192.168.1.2/tcp/4001")
+            try Multiaddr("/ip4/192.168.1.2/tcp/4001")
         ]
 
         // Create initiator service
@@ -321,7 +331,7 @@ struct DCUtRIntegrationTests {
 
         // Create initiator with addresses but responder has none
         let initiatorConfig = DCUtRConfiguration(
-            getLocalAddresses: { [Multiaddr("/ip4/192.168.1.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "192.168.1.1", port: 4001)] }
         )
         let initiator = DCUtRService(configuration: initiatorConfig)
 
@@ -380,7 +390,7 @@ struct DCUtRIntegrationTests {
     func testInitiatorRole() async throws {
         let responderKey = KeyPair.generateEd25519()
 
-        let initiatorAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let initiatorAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { initiatorAddresses }
@@ -403,7 +413,7 @@ struct DCUtRIntegrationTests {
             #expect(connect.type == .connect)
 
             // Send back CONNECT with our addresses
-            let response = DCUtRMessage.connect(addresses: [Multiaddr("/ip4/192.168.1.2/tcp/4001")])
+            let response = DCUtRMessage.connect(addresses: [try Multiaddr("/ip4/192.168.1.2/tcp/4001")])
             try await responderStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(response))
 
             // Read SYNC
@@ -414,7 +424,7 @@ struct DCUtRIntegrationTests {
 
         // Run initiator - will fail on dial but protocol exchange should complete
         let dialer = MockDialer()
-        dialer.setReachable([Multiaddr("/ip4/192.168.1.2/tcp/4001")])
+        dialer.setReachable([try Multiaddr("/ip4/192.168.1.2/tcp/4001")])
 
         try await initiator.upgradeToDirectConnection(
             with: responderKey.peerID,
@@ -433,10 +443,10 @@ struct DCUtRIntegrationTests {
         let initiatorKey = KeyPair.generateEd25519()
         let responderKey = KeyPair.generateEd25519()
 
-        let responderAddresses = [Multiaddr("/ip4/192.168.1.2/tcp/4001")]
+        let responderAddresses = [try Multiaddr("/ip4/192.168.1.2/tcp/4001")]
 
         let dialer = MockDialer()
-        dialer.setReachable([Multiaddr("/ip4/192.168.1.1/tcp/4001")])
+        dialer.setReachable([try Multiaddr("/ip4/192.168.1.1/tcp/4001")])
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { responderAddresses },
@@ -456,7 +466,7 @@ struct DCUtRIntegrationTests {
         // Simulate initiator
         let initiatorTask = Task<Void, any Error> {
             // Send CONNECT
-            let connect = DCUtRMessage.connect(addresses: [Multiaddr("/ip4/192.168.1.1/tcp/4001")])
+            let connect = DCUtRMessage.connect(addresses: [try Multiaddr("/ip4/192.168.1.1/tcp/4001")])
             try await initiatorStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(connect))
 
             // Read CONNECT response
@@ -492,7 +502,7 @@ struct DCUtRIntegrationTests {
     func testAllDialsFail() async throws {
         let responderKey = KeyPair.generateEd25519()
 
-        let initiatorAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let initiatorAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { initiatorAddresses }
@@ -513,7 +523,7 @@ struct DCUtRIntegrationTests {
             _ = try DCUtRProtobuf.decode(connectData)
 
             // Send back CONNECT with unreachable addresses
-            let response = DCUtRMessage.connect(addresses: [Multiaddr("/ip4/10.255.255.1/tcp/4001")])
+            let response = DCUtRMessage.connect(addresses: [try Multiaddr("/ip4/10.255.255.1/tcp/4001")])
             try await responderStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(response))
 
             // Read SYNC
@@ -545,8 +555,8 @@ struct DCUtRIntegrationTests {
     func testMessageRoundTrip() throws {
         // Test CONNECT
         let addresses = [
-            Multiaddr("/ip4/192.168.1.1/tcp/4001"),
-            Multiaddr("/ip4/10.0.0.1/tcp/4001")
+            try Multiaddr("/ip4/192.168.1.1/tcp/4001"),
+            try Multiaddr("/ip4/10.0.0.1/tcp/4001")
         ]
         let connect = DCUtRMessage.connect(addresses: addresses)
         let connectEncoded = DCUtRProtobuf.encode(connect)
@@ -567,8 +577,8 @@ struct DCUtRIntegrationTests {
     func testEventEmission() async throws {
         let responderKey = KeyPair.generateEd25519()
 
-        let initiatorAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
-        let responderAddresses = [Multiaddr("/ip4/192.168.1.2/tcp/4001")]
+        let initiatorAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let responderAddresses = [try Multiaddr("/ip4/192.168.1.2/tcp/4001")]
 
         let dialer = MockDialer()
         dialer.setReachable(responderAddresses)
@@ -646,7 +656,7 @@ struct DCUtRIntegrationTests {
     func testProtocolViolationWrongMessageType() async throws {
         let responderKey = KeyPair.generateEd25519()
 
-        let initiatorAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let initiatorAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { initiatorAddresses }
@@ -692,7 +702,7 @@ struct DCUtRIntegrationTests {
     func testStreamClosedDuringExchange() async throws {
         let responderKey = KeyPair.generateEd25519()
 
-        let initiatorAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let initiatorAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { initiatorAddresses }
@@ -738,7 +748,7 @@ struct DCUtRIntegrationTests {
         let initiatorKey = KeyPair.generateEd25519()
         let responderKey = KeyPair.generateEd25519()
 
-        let responderAddresses = [Multiaddr("/ip4/192.168.1.2/tcp/4001")]
+        let responderAddresses = [try Multiaddr("/ip4/192.168.1.2/tcp/4001")]
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { responderAddresses }
@@ -777,7 +787,7 @@ struct DCUtRIntegrationTests {
         let initiatorKey = KeyPair.generateEd25519()
         let responderKey = KeyPair.generateEd25519()
 
-        let responderAddresses = [Multiaddr("/ip4/192.168.1.2/tcp/4001")]
+        let responderAddresses = [try Multiaddr("/ip4/192.168.1.2/tcp/4001")]
 
         let config = DCUtRConfiguration(
             getLocalAddresses: { responderAddresses }

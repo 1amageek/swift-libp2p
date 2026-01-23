@@ -68,7 +68,7 @@ struct AutoNATServiceTests {
 
         let service = AutoNATService(configuration: .init(
             minProbes: 2,
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         ))
 
         // Collect events in background
@@ -195,7 +195,7 @@ struct AutoNATServiceTests {
     @Test("Probe with no servers throws error")
     func probeWithNoServersThrows() async throws {
         let service = AutoNATService(configuration: .init(
-            getLocalAddresses: { [try! Multiaddr("/ip4/127.0.0.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         ))
 
         let mockOpener = MockStreamOpener()
@@ -250,10 +250,14 @@ struct AutoNATErrorTests {
         let timeout = AutoNATError.timeout
         let protocolViolation = AutoNATError.protocolViolation("violation")
         let insufficientProbes = AutoNATError.insufficientProbes
+        let rateLimited = AutoNATError.rateLimited(.peerRateLimit)
+        let peerIDMismatch = AutoNATError.peerIDMismatch
+        let portNotAllowed = AutoNATError.portNotAllowed(80)
 
         let errors: [AutoNATError] = [
             noServers, badRequest, dialFailed, dialRefused,
-            internalError, timeout, protocolViolation, insufficientProbes
+            internalError, timeout, protocolViolation, insufficientProbes,
+            rateLimited, peerIDMismatch, portNotAllowed
         ]
         var matched = 0
 
@@ -267,10 +271,298 @@ struct AutoNATErrorTests {
             case .timeout: matched += 1
             case .protocolViolation: matched += 1
             case .insufficientProbes: matched += 1
+            case .rateLimited: matched += 1
+            case .peerIDMismatch: matched += 1
+            case .portNotAllowed: matched += 1
             }
         }
 
-        #expect(matched == 8)
+        #expect(matched == 11)
+    }
+
+    @Test("RateLimitReason descriptions")
+    func rateLimitReasonDescriptions() {
+        #expect(RateLimitReason.globalRateLimit.description == "Global rate limit exceeded")
+        #expect(RateLimitReason.globalConcurrencyLimit.description == "Global concurrency limit exceeded")
+        #expect(RateLimitReason.peerRateLimit.description == "Per-peer rate limit exceeded")
+        #expect(RateLimitReason.peerConcurrencyLimit.description == "Per-peer concurrency limit exceeded")
+        #expect(RateLimitReason.backoff.description == "Peer is in backoff period")
+    }
+
+    @Test("RateLimitReason is equatable")
+    func rateLimitReasonEquatable() {
+        #expect(RateLimitReason.globalRateLimit == RateLimitReason.globalRateLimit)
+        #expect(RateLimitReason.peerRateLimit != RateLimitReason.globalRateLimit)
+    }
+}
+
+@Suite("AutoNAT Rate Limiting Tests", .serialized)
+struct AutoNATRateLimitingTests {
+
+    // MARK: - Helper
+
+    private func makePeerID() -> PeerID {
+        KeyPair.generateEd25519().peerID
+    }
+
+    // MARK: - Configuration Tests
+
+    @Test("Default rate limit configuration values")
+    func defaultRateLimitConfiguration() {
+        let config = AutoNATConfiguration()
+
+        #expect(config.maxRequestsPerPeer == 10)
+        #expect(config.rateLimitWindow == .seconds(60))
+        #expect(config.maxConcurrentDialsPerPeer == 3)
+        #expect(config.maxConcurrentDialsGlobal == 50)
+        #expect(config.maxGlobalRequests == 500)
+        #expect(config.rateLimitBackoff == .seconds(30))
+        #expect(config.allowedPortRange == nil)
+        #expect(config.requirePeerIDMatch == true)
+    }
+
+    @Test("Custom rate limit configuration values")
+    func customRateLimitConfiguration() {
+        let config = AutoNATConfiguration(
+            maxRequestsPerPeer: 5,
+            rateLimitWindow: .seconds(30),
+            maxConcurrentDialsPerPeer: 2,
+            maxConcurrentDialsGlobal: 20,
+            maxGlobalRequests: 100,
+            rateLimitBackoff: .seconds(15),
+            allowedPortRange: 1024...65535,
+            requirePeerIDMatch: false
+        )
+
+        #expect(config.maxRequestsPerPeer == 5)
+        #expect(config.rateLimitWindow == .seconds(30))
+        #expect(config.maxConcurrentDialsPerPeer == 2)
+        #expect(config.maxConcurrentDialsGlobal == 20)
+        #expect(config.maxGlobalRequests == 100)
+        #expect(config.rateLimitBackoff == .seconds(15))
+        #expect(config.allowedPortRange == 1024...65535)
+        #expect(config.requirePeerIDMatch == false)
+    }
+
+    @Test("Service initializes rate limit state")
+    func serviceInitializesRateLimitState() {
+        // Service should initialize without error with rate limiting enabled
+        let _ = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 3,
+            rateLimitWindow: .seconds(10)
+        ))
+    }
+
+    @Test("RequestRejectionReason cases exist")
+    func requestRejectionReasonCases() {
+        let rateLimited = RequestRejectionReason.rateLimited(.peerRateLimit)
+        let peerIDMismatch = RequestRejectionReason.peerIDMismatch
+        let portNotAllowed = RequestRejectionReason.portNotAllowed(80)
+        let noValidAddresses = RequestRejectionReason.noValidAddresses
+
+        // Verify all cases can be created and are equatable
+        #expect(rateLimited == .rateLimited(.peerRateLimit))
+        #expect(peerIDMismatch == .peerIDMismatch)
+        #expect(portNotAllowed == .portNotAllowed(80))
+        #expect(noValidAddresses == .noValidAddresses)
+    }
+
+    @Test("dialRequestRejected event can be created")
+    func dialRequestRejectedEvent() {
+        let peer = KeyPair.generateEd25519().peerID
+        let event = AutoNATEvent.dialRequestRejected(from: peer, reason: .rateLimited(.peerRateLimit))
+
+        guard case .dialRequestRejected(let from, let reason) = event else {
+            Issue.record("Expected dialRequestRejected event")
+            return
+        }
+        #expect(from == peer)
+        #expect(reason == .rateLimited(.peerRateLimit))
+    }
+
+    @Test("rateLimitStateChanged event can be created")
+    func rateLimitStateChangedEvent() {
+        let event = AutoNATEvent.rateLimitStateChanged(globalConcurrent: 5, globalRequests: 100)
+
+        guard case .rateLimitStateChanged(let concurrent, let requests) = event else {
+            Issue.record("Expected rateLimitStateChanged event")
+            return
+        }
+        #expect(concurrent == 5)
+        #expect(requests == 100)
+    }
+
+    // MARK: - Rate Limiting Behavior Tests
+
+    @Test("First request from peer is accepted")
+    func testFirstRequestAccepted() {
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 3
+        ))
+        let peer = makePeerID()
+
+        let result = service.shouldAcceptRequest(from: peer)
+
+        if case .accepted = result {
+            // Expected
+        } else {
+            Issue.record("Expected first request to be accepted")
+        }
+    }
+
+    @Test("Requests within limit are accepted")
+    func testRequestsWithinLimitAccepted() {
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 3,
+            rateLimitWindow: .seconds(60)
+        ))
+        let peer = makePeerID()
+
+        // First 3 requests should be accepted
+        for i in 0..<3 {
+            let result = service.shouldAcceptRequest(from: peer)
+            if case .accepted = result {
+                // Expected
+            } else {
+                Issue.record("Expected request \(i + 1) to be accepted")
+            }
+        }
+    }
+
+    @Test("Requests exceeding peer limit are rejected")
+    func testRequestsExceedingPeerLimitRejected() {
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 3,
+            rateLimitWindow: .seconds(60)
+        ))
+        let peer = makePeerID()
+
+        // Use up the limit
+        for _ in 0..<3 {
+            _ = service.shouldAcceptRequest(from: peer)
+        }
+
+        // 4th request should be rejected
+        let result = service.shouldAcceptRequest(from: peer)
+
+        if case .rejected(let reason) = result {
+            #expect(reason == .peerRateLimit)
+        } else {
+            Issue.record("Expected 4th request to be rejected with peerRateLimit")
+        }
+    }
+
+    @Test("Different peers have separate rate limits")
+    func testDifferentPeersSeparateLimits() {
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 2,
+            rateLimitWindow: .seconds(60)
+        ))
+        let peer1 = makePeerID()
+        let peer2 = makePeerID()
+
+        // Use up peer1's limit
+        _ = service.shouldAcceptRequest(from: peer1)
+        _ = service.shouldAcceptRequest(from: peer1)
+
+        // peer2 should still be accepted
+        let result = service.shouldAcceptRequest(from: peer2)
+
+        if case .accepted = result {
+            // Expected
+        } else {
+            Issue.record("Expected peer2's request to be accepted")
+        }
+    }
+
+    @Test("Global rate limit is enforced")
+    func testGlobalRateLimitEnforced() {
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 100,  // High per-peer limit
+            rateLimitWindow: .seconds(60),
+            maxGlobalRequests: 3      // Low global limit
+        ))
+
+        // Create different peers to avoid per-peer limit
+        let peers = (0..<5).map { _ in makePeerID() }
+
+        // First 3 requests from different peers should be accepted
+        for i in 0..<3 {
+            let result = service.shouldAcceptRequest(from: peers[i])
+            if case .accepted = result {
+                // Expected
+            } else {
+                Issue.record("Expected request \(i + 1) to be accepted")
+            }
+        }
+
+        // 4th request should be rejected due to global limit
+        let result = service.shouldAcceptRequest(from: peers[3])
+
+        if case .rejected(let reason) = result {
+            #expect(reason == .globalRateLimit)
+        } else {
+            Issue.record("Expected 4th request to be rejected with globalRateLimit")
+        }
+    }
+
+    @Test("Backoff after rejection is enforced")
+    func testBackoffAfterRejection() {
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 1,
+            rateLimitWindow: .seconds(60),
+            rateLimitBackoff: .seconds(30)
+        ))
+        let peer = makePeerID()
+
+        // First request accepted
+        _ = service.shouldAcceptRequest(from: peer)
+
+        // Second request rejected (over limit) and sets backoff
+        let result2 = service.shouldAcceptRequest(from: peer)
+        if case .rejected(.peerRateLimit) = result2 {
+            // Expected - this sets lastRejectedAt
+        } else {
+            Issue.record("Expected peerRateLimit rejection")
+        }
+
+        // Third request should be rejected with backoff reason
+        let result3 = service.shouldAcceptRequest(from: peer)
+        if case .rejected(let reason) = result3 {
+            #expect(reason == .backoff)
+        } else {
+            Issue.record("Expected backoff rejection")
+        }
+    }
+
+    @Test("Rate limit resets after window expires")
+    func testRateLimitResetsAfterWindow() async throws {
+        // Use a very short window for testing
+        let service = AutoNATService(configuration: .init(
+            maxRequestsPerPeer: 1,
+            rateLimitWindow: .milliseconds(50),  // 50ms window
+            rateLimitBackoff: .milliseconds(10)  // Very short backoff
+        ))
+        let peer = makePeerID()
+
+        // First request accepted
+        let result1 = service.shouldAcceptRequest(from: peer)
+        if case .accepted = result1 {
+            // Expected
+        } else {
+            Issue.record("Expected first request to be accepted")
+        }
+
+        // Wait for window to expire
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Request should be accepted again after window expires
+        let result2 = service.shouldAcceptRequest(from: peer)
+        if case .accepted = result2 {
+            // Expected
+        } else {
+            Issue.record("Expected request to be accepted after window expired")
+        }
     }
 }
 
@@ -429,6 +721,10 @@ final class MockMuxedStream: MuxedStream, Sendable {
     }
 
     func closeWrite() async throws {
+        // Half-close not needed for mock
+    }
+
+    func closeRead() async throws {
         // Half-close not needed for mock
     }
 

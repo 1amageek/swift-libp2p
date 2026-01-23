@@ -24,7 +24,7 @@ struct QUICE2ETests {
 
         // Start server on random port
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -74,7 +74,7 @@ struct QUICE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
         let serverAddress = listener.localAddress
@@ -129,7 +129,7 @@ struct QUICE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -187,7 +187,7 @@ struct QUICE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -240,7 +240,7 @@ struct QUICE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -292,7 +292,7 @@ struct QUICE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -355,7 +355,7 @@ struct QUICE2ETests {
         // TCP address is not QUIC
         do {
             _ = try await transport.dialSecured(
-                "/ip4/127.0.0.1/tcp/4433",
+                try Multiaddr("/ip4/127.0.0.1/tcp/4433"),
                 localKeyPair: clientKeyPair
             )
             Issue.record("Expected error to be thrown")

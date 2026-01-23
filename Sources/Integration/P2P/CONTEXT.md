@@ -355,17 +355,24 @@ Tests/Integration/P2PTests/
 - [ ] **グレース期間の強制確認** - 現在未検証
 - [ ] **トリムアルゴリズム検査API** - デバッグ/監視用
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18) - UPDATED 2026-01-22
 
-### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Dictionary mutated during iteration | `Connection/ConnectionPool.swift:518` | `cleanupStaleEntries` removes entries while iterating; can crash at runtime |
-| Unbounded buffer + malformed varint | `P2P.swift:1047` | `BufferedStreamReader.readMessage()` treats any varint error as "need more"; DoS via invalid length prefix |
-| No max frame size in upgrade | `ConnectionUpgrader.swift:282` | `readBuffered`/`extractMessage` appends until complete with no size cap; unbounded memory growth |
+### Warning (RESOLVED)
+| Issue | Location | Description | Status |
+|-------|----------|-------------|--------|
+| Dictionary mutation | `ConnectionPool.swift:512-555` | `cleanupStaleEntries` uses two-pass pattern: collect IDs first, then remove | ✅ Fixed |
+| Unbounded buffer | `P2P.swift:1210-1294` | `BufferedStreamReader` has `maxMessageSize=64KB` + proper VarintError handling | ✅ Fixed |
+| No max frame size | `ConnectionUpgrader.swift:283-357` | `readBuffered` checks `buffer.count > maxMessageSize` before reading | ✅ Fixed |
+
+**Resolution Details:**
+1. **ConnectionPool.cleanupStaleEntries()**: Two-pass pattern - first collects IDs to remove, then removes them (avoids iteration mutation)
+2. **BufferedStreamReader**: `VarintError.overflow` and `.valueExceedsIntMax` return `.invalidData(error)` which is thrown; buffer size checked before each read
+3. **ConnectionUpgrader**: Both `readBuffered` and `readBufferedSecured` check `buffer.count > Self.maxMessageSize` before appending; `extractMessage` validates varint-decoded length
 
 ### Info
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Unstructured per-stream tasks | `P2P.swift:962` | Each inbound stream spawns `Task` with no backpressure; task proliferation possible |
-| Timeout relies on cooperative cancel | `Connection/HealthMonitor.swift:257` | If `pingProvider.ping` ignores cancellation, I/O continues; concurrent pings accumulate |
+| Issue | Location | Description | Priority |
+|-------|----------|-------------|----------|
+| Unstructured per-stream tasks | `P2P.swift:962` | Each inbound stream spawns `Task` with no backpressure; task proliferation possible | Low |
+| Timeout relies on cooperative cancel | `Connection/HealthMonitor.swift:257` | If `pingProvider.ping` ignores cancellation, I/O continues; concurrent pings accumulate | Low |
+
+These Info-level items are improvement opportunities, not bugs. They can be addressed in future sprints.

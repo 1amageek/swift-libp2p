@@ -5,6 +5,6 @@ import Testing
 struct SecurityTests {
     @Test("Placeholder")
     func placeholder() {
-        #expect(true)
+        #expect(Bool(true))
     }
 }

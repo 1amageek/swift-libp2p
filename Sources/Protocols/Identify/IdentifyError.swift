@@ -24,4 +24,7 @@ public enum IdentifyError: Error, Sendable {
 
     /// Message exceeds maximum allowed size.
     case messageTooLarge(size: Int, max: Int)
+
+    /// Invalid signed peer record (signature verification failed).
+    case invalidSignedPeerRecord(String)
 }

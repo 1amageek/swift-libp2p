@@ -50,7 +50,7 @@ public protocol Listener: Sendable {
 | TCPTransport | ✅ 完了 | SwiftNIOベースのTCP実装 |
 | MemoryTransport | ✅ 完了 | テスト用インメモリ実装 |
 | RelayTransport | ✅ 完了 | Circuit Relay v2ラッパー |
-| QUICTransport | ⏳ 計画中 | QUIC実装（将来）|
+| QUICTransport | ✅ 完了 | swift-quic使用（TLS 1.3 + libp2p証明書） |
 
 ## 実装ガイドライン
 - `RawConnection`を返す（SecuredConnectionはSecurity層で処理）
@@ -91,8 +91,10 @@ MemoryConnection.ConnectionError
 - エラー: `concurrentAcceptNotSupported`
 
 ### TCPConnection/TCPListener
-- NIOの特性上、複数リーダーは可能だが推奨しない
-- MemoryTransportとの動作差異に注意
+- **並行read/accept対応**: waiters配列でFIFOキュー実装、複数の同時呼び出しを安全に処理
+- **バッファサイズ制限**: `tcpMaxReadBufferSize` (1MB) でDoS対策
+- **close時のバッファ優先**: read()はisClosed前にバッファをチェック、データ消失を防止
+- **リソースクリーンアップ**: close()で全waitersと pending connections を適切に処理
 
 ## バックプレッシャー処理
 
@@ -103,7 +105,7 @@ MemoryConnection.ConnectionError
 
 ### 高優先度
 - [ ] **TCPTransportユニットテストの追加** - 現在統合テストのみ
-- [ ] **RelayTransportユニットテストの追加** - 現在統合テストのみ
+- [x] **RelayTransportユニットテストの追加** - ✅ 2026-01-23 (18テスト)
 - [ ] **TransportError型の標準化** - 各実装で異なるエラー型が混在
 
 ### 中優先度
@@ -112,15 +114,36 @@ MemoryConnection.ConnectionError
 - [ ] **WebSocketTransportの実装** - ブラウザ互換性向上
 
 ### 低優先度
-- [ ] **QUICTransportの実装** - 計画中だが未着手
+- [x] **QUICTransportの実装** - ✅ swift-quic使用で実装完了
 - [ ] **レイテンシシミュレーション** - MemoryTransportへの追加（テスト用）
 
 ## テスト実装状況
 
 | テスト | ステータス | 説明 |
 |-------|----------|------|
-| MemoryTransportTests | ✅ 実装済み | 基本接続、双方向通信、複数接続（`Tests/Transport/P2PTransportTests/MemoryTransportTests.swift`） |
+| MemoryTransportTests | ✅ 実装済み | 基本接続、双方向通信、複数接続 |
 | TransportTests | ⚠️ プレースホルダー | 1テストのみ |
-| TCPTransportTests | ❌ なし | 統合テスト依存 |
+| TCPTransportTests | ✅ 実装済み | 接続、リッスン、双方向通信 |
+| RelayTransportTests | ✅ 実装済み | アドレス解析、RelayListener、RawConnection (18テスト) |
+| QUICTransportTests | ✅ 実装済み | TLS、マルチストリーム、接続管理 (55テスト) |
 
-**推奨**: TCPTransport専用のユニットテスト追加
+**推奨**: TCPTransportのエラーハンドリングテスト追加
+
+## Codex Review (2026-01-18) - UPDATED 2026-01-23
+
+### TCP Transport Issues
+
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| ~~Concurrent read deadlock~~ | `TCPConnection.swift:19,67-96` | ✅ Fixed | `readWaiters` array provides FIFO queue for concurrent reads |
+| ~~Concurrent accept deadlock~~ | `TCPListener.swift:21,71-112` | ✅ Fixed | `acceptWaiters` array provides FIFO queue for concurrent accepts |
+| ~~Buffered data loss on close~~ | `TCPConnection.swift:72-80` | ✅ Fixed | `read()` checks buffer before `isClosed`, returns data even after close |
+| ~~Unbounded inbound buffering~~ | `TCPConnection.swift:13,155-157` | ✅ Fixed | `tcpMaxReadBufferSize` (1MB) limit, drops data when full |
+| ~~Pending connections leak~~ | `TCPListener.swift:130-133` | ✅ Fixed | `close()` closes all pending connections |
+| ~~No isClosed check in write~~ | `TCPConnection.swift:98-104` | ✅ Fixed | Early `isClosed` check added for clearer error messages |
+
+### Info (Design Decisions)
+| Issue | Location | Description |
+|-------|----------|-------------|
+| Port 0 fallback | `TCPReadHandler.channelActive` | Falls back to port 0 if remote address is nil; acceptable for edge cases |
+| Empty Data EOF | `MemoryChannel.swift` | Empty `Data()` as EOF sentinel; documented behavior |

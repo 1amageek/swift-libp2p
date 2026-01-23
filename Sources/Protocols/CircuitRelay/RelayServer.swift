@@ -278,7 +278,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         } catch let writeError {
             logger.debug("Failed to send reservation response: \(writeError)")
             // Failed to send response, remove reservation
-            serverState.withLock { s in
+            _ = serverState.withLock { s in
                 s.reservations.removeValue(forKey: requester)
             }
         }
@@ -335,6 +335,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
             } catch let error {
                 logger.debug("Failed to send circuit limit exceeded status: \(error)")
             }
+            emit(.circuitFailed(source: source, destination: target, reason: .resourceLimitExceeded))
             return
         }
 
@@ -375,6 +376,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
                 } catch let sendError {
                     logger.debug("Failed to send connectionFailed status: \(sendError)")
                 }
+                emit(.circuitFailed(source: source, destination: target, reason: .targetRejected))
                 return
             }
 
@@ -407,6 +409,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
             } catch let sendError {
                 logger.debug("Failed to send connectionFailed status: \(sendError)")
             }
+            emit(.circuitFailed(source: source, destination: target, reason: .targetUnreachable))
         }
     }
 
@@ -558,7 +561,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
     }
 
     private func emit(_ event: CircuitRelayEvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }

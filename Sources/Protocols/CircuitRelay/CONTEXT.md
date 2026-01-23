@@ -135,6 +135,17 @@ Relayed addresses use the `p2p-circuit` protocol:
 2. **Integration tests**: Three-node setup (client, relay, peer) using MemoryTransport
 3. **Interop tests**: Connect to rust-libp2p relay
 
+## テスト実装状況
+
+| テストファイル | テスト数 | 説明 |
+|--------------|---------|------|
+| `CircuitRelayIntegrationTests.swift` | 19 | 統合テスト、キャンセル処理、RelayListenerテスト |
+| `CircuitRelayE2ETests.swift` | 7 | E2Eテスト、マルチ接続、データ制限 |
+| `RelayServerTests.swift` | 19 | イベント発行、予約管理、サーキット制限、エラーシナリオ |
+| `RelayTransportTests.swift` | 18 | アドレス解析、RelayListener、RelayedRawConnection |
+
+**合計: 72テスト** (2026-01-23時点)
+
 ## 既知の制限事項
 
 ### 予約管理
@@ -151,9 +162,9 @@ Relayed addresses use the `p2p-circuit` protocol:
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **RelayClientテストの追加** - 予約フロー、接続フローテスト
-- [ ] **RelayServerテストの追加** - 制限チェック、拒否ケーステスト
-- [ ] **Protobufエンコードテスト** - HopMessage/StopMessageラウンドトリップ
+- [x] **RelayClientテストの追加** - 予約フロー、接続フローテスト ✅ 2026-01-23
+- [x] **RelayServerテストの追加** - 制限チェック、拒否ケーステスト ✅ 2026-01-23
+- [x] **Protobufエンコードテスト** - HopMessage/StopMessageラウンドトリップ ✅ 2026-01-23
 - [ ] **Go/Rust相互運用テスト** - 実際のリレーサーバーとの接続
 
 ### 中優先度
@@ -170,14 +181,19 @@ Relayed addresses use the `p2p-circuit` protocol:
 - [Circuit Relay v2 Spec](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md)
 - [rust-libp2p relay](https://github.com/libp2p/rust-libp2p/tree/master/protocols/relay)
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18) - UPDATED 2026-01-22
 
-### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| RelayListener never receives connections | `Transport/RelayListener.swift:59-151` | Listener waits on queue but nothing feeds it; no call to `client.acceptConnection` or `enqueue`, so `accept()` hangs indefinitely |
+### Warning (RESOLVED)
+| Issue | Location | Description | Status |
+|-------|----------|-------------|--------|
+| RelayListener receives connections via Listener Registry | `RelayClient.swift:463-489` | handleStop() routes to registered listener via enqueue(). RelayListener.init() calls registerListener(), and handleStop() calls listener.enqueue() for direct delivery. | ✅ Fixed |
+
+**Resolution Details:**
+1. `RelayListener.init()` (L72) registers itself: `client.registerListener(self, for: relay)`
+2. `RelayClient.handleStop()` (L463-489) routes to listener: `listener.enqueue(connection)`
+3. `RelayListener.enqueue()` (L154-183) delivers to waiting continuation or queues
 
 ### Info
 | Issue | Location | Description |
 |-------|----------|-------------|
-| Data limits coarse-grained | `RelayServer.swift:410-433` | Limits enforced in 8KB batches; small limits can be overshot |
+| Data limits coarse-grained | `RelayServer.swift:452-503` | Limits enforced in 8KB batches; small limits can be overshot |

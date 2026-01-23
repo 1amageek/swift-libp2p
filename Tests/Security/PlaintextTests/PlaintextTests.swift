@@ -253,10 +253,10 @@ final class MockConnectionPair {
 }
 
 /// A mock connection for testing.
-final class MockConnection: RawConnection, @unchecked Sendable {
+final class MockConnection: RawConnection, Sendable {
     var localAddress: Multiaddr? { nil }
     var remoteAddress: Multiaddr {
-        try! Multiaddr("/ip4/127.0.0.1/tcp/0")
+        Multiaddr.tcp(host: "127.0.0.1", port: 0)
     }
 
     private let state: Mutex<ConnectionState>

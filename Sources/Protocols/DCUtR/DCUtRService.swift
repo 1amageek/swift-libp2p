@@ -430,7 +430,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: DCUtREvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }

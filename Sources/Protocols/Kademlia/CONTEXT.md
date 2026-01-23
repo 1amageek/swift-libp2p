@@ -191,37 +191,63 @@ message Message {
 ## Usage
 
 ```swift
-let dht = KademliaService(configuration: .init(
-    mode: .server,
-    recordStore: InMemoryRecordStore(),
-    providerStore: InMemoryProviderStore()
-))
+let dht = KademliaService(
+    localPeerID: myPeerID,
+    configuration: .init(
+        mode: .server,
+        cleanupInterval: .seconds(300)  // 5分ごとに期限切れレコード削除
+    )
+)
 await dht.registerHandler(registry: node)
+
+// Start background maintenance (TTL cleanup)
+dht.startMaintenance()
 
 // Bootstrap
 try await dht.bootstrap(using: node, seeds: bootstrapPeers)
 
 // Find peers
-let peers = try await dht.findPeer(peerID, using: node)
+let peers = try await dht.findNode(peerID, using: node)
 
 // Store/retrieve values
 try await dht.putValue(key: key, value: data, using: node)
 let record = try await dht.getValue(key: key, using: node)
 
 // Provider operations
-try await dht.provide(cid: contentID, using: node)
-let providers = try await dht.findProviders(cid: contentID, using: node)
+try await dht.provide(key: contentID, addresses: listenAddrs, using: node)
+let providers = try await dht.getProviders(for: contentID, using: node)
+
+// Shutdown (stops maintenance task)
+dht.shutdown()
 ```
 
 ## Events
 
 ```swift
 public enum KademliaEvent {
-    case routingTableUpdated(added: PeerID?, removed: PeerID?)
-    case queryCompleted(id: QueryID, result: QueryResult)
-    case recordStored(key: Data, by: PeerID)
-    case providerAdded(key: Data, provider: PeerID)
-    case inboundRequest(from: PeerID, type: MessageType)
+    // Routing table
+    case peerAdded(PeerID, bucket: Int)
+    case peerRemoved(PeerID, bucket: Int)
+    case peerUpdated(PeerID)
+
+    // Query lifecycle
+    case queryStarted(QueryInfo)
+    case querySucceeded(QueryInfo, result: QueryResultInfo)
+    case queryFailed(QueryInfo, error: String)
+
+    // Records & Providers
+    case recordStored(key: Data)
+    case recordRetrieved(key: Data, from: PeerID?)
+    case providerAdded(key: Data)
+    case providersFound(key: Data, count: Int)
+
+    // Service lifecycle
+    case started
+    case stopped
+    case modeChanged(KademliaMode)
+
+    // Maintenance (NEW)
+    case maintenanceCompleted(recordsRemoved: Int, providersRemoved: Int)
 }
 ```
 
@@ -242,8 +268,8 @@ public enum KademliaEvent {
 - 信頼されたノードからのレコードのみ受け入れ
 
 ### クエリ
-- クエリタイムアウトは全ピアで均一
-- ピアごとのレイテンシ追跡なし
+- ~~クエリタイムアウトは全ピアで均一~~ → `peerTimeout` (10秒) で個別タイムアウト実装済み
+- ピアごとのレイテンシ追跡なし（動的タイムアウト調整なし）
 
 ## 内部実装詳細
 
@@ -262,14 +288,20 @@ class QueryDelegateImpl: QueryDelegate {
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **署名付きレコード検証の実装** - 現在は検証なしで受け入れ
-- [ ] **レコードTTLガベージコレクション** - メモリリーク防止
-- [ ] **ProviderStore TTL強制** - 期限切れプロバイダの削除
+- [x] **RecordValidator フレームワーク実装** - アプリケーション層でレコード検証可能に ✅ 2026-01-23
+  - `RecordValidator` プロトコル、`NamespacedValidator`、`CompositeValidator` など
+  - `KademliaConfiguration.recordValidator` で設定
+  - `recordRejected` イベントで拒否を通知
+- [x] **レコードTTLガベージコレクション** - `cleanupInterval` 設定と `startMaintenance()` で自動クリーンアップ実装 ✅ 2026-01-23
+  - **注意**: `startMaintenance()` を明示的に呼び出す必要あり
+- [x] **ProviderStore TTL強制** - 自動メンテナンスタスクで期限切れプロバイダを削除 ✅ 2026-01-23
 
 ### 中優先度
 - [ ] **永続化ストレージオプション** - SQLite/ファイルベース
-- [ ] **ピアごとのクエリタイムアウト** - レイテンシ追跡に基づく調整
+- [x] **ピアごとのタイムアウト** - `peerTimeout` 設定で実装 ✅ 2026-01-23
+- [ ] **ピアレイテンシ追跡** - 過去のレスポンス時間に基づく動的タイムアウト調整
 - [ ] **クエリ並列度の動的調整** - ネットワーク状態に応じたALPHA調整
+- [ ] **Envelope 統合バリデータ** - P2PCore の Envelope/SignedRecord と統合した署名検証
 
 ### 低優先度
 - [ ] **S/Kademliaの完全実装** - Sybil攻撃耐性向上
@@ -282,6 +314,23 @@ class QueryDelegateImpl: QueryDelegate {
 - [libp2p Kademlia Spec](https://github.com/libp2p/specs/tree/master/kad-dht)
 - [rust-libp2p kad](https://github.com/libp2p/rust-libp2p/tree/master/protocols/kad)
 
+## テスト実装状況
+
+| テストスイート | テスト数 | 説明 |
+|--------------|---------|------|
+| `KademliaKeyTests` | 12 | キー作成、距離計算、バリデーション |
+| `KBucketTests` | 4 | バケット操作 |
+| `RoutingTableTests` | 5 | ルーティングテーブル |
+| `ProtobufTests` | 4 | Protobufエンコード/デコード |
+| `RecordStoreTests` | 4 | レコード保存、TTL |
+| `ProviderStoreTests` | 4 | プロバイダ保存、TTL |
+| `KademliaQueryTests` | 5 | クエリ、タイムアウト |
+| `KademliaServiceTests` | 6 | サービス初期化、モード |
+| `ProtocolInputValidationTests` | 10 | 入力検証 |
+| `RecordValidatorTests` | 11 | バリデータ検証 |
+
+**合計: 65テスト** (2026-01-23時点)
+
 ## Codex Review (2026-01-18)
 
 ### Critical
@@ -293,7 +342,7 @@ class QueryDelegateImpl: QueryDelegate {
 | Issue | Location | Status | Description |
 |-------|----------|--------|-------------|
 | ~~Query timeout never used~~ | `KademliaQuery.swift` | ✅ Fixed | Query timeout is now enforced via TaskGroup race |
-| Per-peer send/receive no timeout | `KademliaService.swift:713-725` | ⬜ Open | sendMessage/receiveResponse have no timeout |
+| ~~Per-peer send/receive no timeout~~ | `KademliaService.swift:740-766` | ✅ Fixed | Added `peerTimeout` config (10s default), `withPeerTimeout` helper, and guaranteed stream cleanup on timeout |
 
 ### Info
 | Issue | Location | Status | Description |

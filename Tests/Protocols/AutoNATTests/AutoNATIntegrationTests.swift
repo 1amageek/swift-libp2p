@@ -85,6 +85,16 @@ final class AutoNATMockStream: MuxedStream, Sendable {
         state.withLock { $0.isWriteClosed = true }
     }
 
+    func closeRead() async throws {
+        state.withLock { s in
+            s.isClosed = true
+            if let continuation = s.readContinuation {
+                s.readContinuation = nil
+                continuation.resume(returning: Data())
+            }
+        }
+    }
+
     func close() async throws {
         state.withLock { s in
             s.isClosed = true
@@ -213,14 +223,14 @@ func createAutoNATContext(
     stream: MuxedStream,
     remotePeer: PeerID,
     localPeer: PeerID,
-    remoteAddress: Multiaddr = Multiaddr("/ip4/192.168.1.1/tcp/4001")
+    remoteAddress: Multiaddr = Multiaddr.tcp(host: "192.168.1.1", port: 4001)
 ) -> StreamContext {
     StreamContext(
         stream: stream,
         remotePeer: remotePeer,
         remoteAddress: remoteAddress,
         localPeer: localPeer,
-        localAddress: Multiaddr("/ip4/127.0.0.1/tcp/4002")
+        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002)
     )
 }
 
@@ -245,7 +255,7 @@ struct AutoNATIntegrationTests {
         let clientKey = KeyPair.generateEd25519()
         let serverKey = KeyPair.generateEd25519()
 
-        let clientAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let clientAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         // Create server that reports OK
         let serverDialer = AutoNATMockDialer()
@@ -302,7 +312,7 @@ struct AutoNATIntegrationTests {
         let clientKey = KeyPair.generateEd25519()
         let serverKey = KeyPair.generateEd25519()
 
-        let clientAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let clientAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         // Create server that reports dial error (unreachable)
         let serverDialer = AutoNATMockDialer()
@@ -361,7 +371,7 @@ struct AutoNATIntegrationTests {
         let clientKey = KeyPair.generateEd25519()
         let serverKey = KeyPair.generateEd25519()
 
-        let clientAddress = Multiaddr("/ip4/192.168.1.100/tcp/4001")
+        let clientAddress = try Multiaddr("/ip4/192.168.1.100/tcp/4001")
 
         let dialer = AutoNATMockDialer()
         dialer.setReachable([clientAddress])
@@ -421,8 +431,8 @@ struct AutoNATIntegrationTests {
         let serverKey = KeyPair.generateEd25519()
 
         // Client claims addresses from different IPs
-        let validAddress = Multiaddr("/ip4/192.168.1.100/tcp/4001")
-        let invalidAddress = Multiaddr("/ip4/10.0.0.1/tcp/4001")  // Different IP
+        let validAddress = try Multiaddr("/ip4/192.168.1.100/tcp/4001")
+        let invalidAddress = try Multiaddr("/ip4/10.0.0.1/tcp/4001")  // Different IP
 
         let dialer = AutoNATMockDialer()
         dialer.setReachable([validAddress, invalidAddress])
@@ -458,7 +468,7 @@ struct AutoNATIntegrationTests {
                 stream: serverStream,
                 remotePeer: clientKey.peerID,
                 localPeer: serverKey.peerID,
-                remoteAddress: Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Same IP as validAddress
+                remoteAddress: try Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Same IP as validAddress
             )
             await handler(context)
         }
@@ -479,7 +489,7 @@ struct AutoNATIntegrationTests {
         let serverKey = KeyPair.generateEd25519()
 
         // Client claims address from different IP than observed
-        let claimedAddress = Multiaddr("/ip4/10.0.0.1/tcp/4001")
+        let claimedAddress = try Multiaddr("/ip4/10.0.0.1/tcp/4001")
 
         let dialer = AutoNATMockDialer()
 
@@ -514,7 +524,7 @@ struct AutoNATIntegrationTests {
                 stream: serverStream,
                 remotePeer: clientKey.peerID,
                 localPeer: serverKey.peerID,
-                remoteAddress: Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Different IP
+                remoteAddress: try Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Different IP
             )
             await handler(context)
         }
@@ -534,7 +544,7 @@ struct AutoNATIntegrationTests {
         let server1Key = KeyPair.generateEd25519()
         let server2Key = KeyPair.generateEd25519()
 
-        let clientAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let clientAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         // Create servers
         let server1Dialer = AutoNATMockDialer()
@@ -621,7 +631,7 @@ struct AutoNATIntegrationTests {
     @Test("Client throws error when no servers provided")
     func testNoServersAvailable() async throws {
         let config = AutoNATConfiguration(
-            getLocalAddresses: { [Multiaddr("/ip4/192.168.1.1/tcp/4001")] }
+            getLocalAddresses: { [Multiaddr.tcp(host: "192.168.1.1", port: 4001)] }
         )
         let client = AutoNATService(configuration: config)
 
@@ -674,8 +684,8 @@ struct AutoNATIntegrationTests {
     func testMessageRoundTrip() throws {
         // Test DIAL request
         let addresses = [
-            Multiaddr("/ip4/192.168.1.1/tcp/4001"),
-            Multiaddr("/ip4/10.0.0.1/tcp/4001")
+            try Multiaddr("/ip4/192.168.1.1/tcp/4001"),
+            try Multiaddr("/ip4/10.0.0.1/tcp/4001")
         ]
         let dial = AutoNATMessage.dial(addresses: addresses)
         let dialEncoded = AutoNATProtobuf.encode(dial)
@@ -827,9 +837,9 @@ struct AutoNATIntegrationTests {
 
         // Create only 3 addresses (less than default maxAddresses of 16)
         let addresses = [
-            Multiaddr("/ip4/192.168.1.1/tcp/4001"),
-            Multiaddr("/ip4/192.168.1.2/tcp/4001"),
-            Multiaddr("/ip4/192.168.1.3/tcp/4001")
+            try Multiaddr("/ip4/192.168.1.1/tcp/4001"),
+            try Multiaddr("/ip4/192.168.1.2/tcp/4001"),
+            try Multiaddr("/ip4/192.168.1.3/tcp/4001")
         ]
 
         let serverDialer = AutoNATMockDialer()
@@ -888,7 +898,7 @@ struct AutoNATIntegrationTests {
         let clientKey = KeyPair.generateEd25519()
         let serverKey = KeyPair.generateEd25519()
 
-        let clientAddresses = [Multiaddr("/ip4/192.168.1.1/tcp/4001")]
+        let clientAddresses = [try Multiaddr("/ip4/192.168.1.1/tcp/4001")]
 
         let serverDialer = AutoNATMockDialer()
         serverDialer.setReachable(clientAddresses)

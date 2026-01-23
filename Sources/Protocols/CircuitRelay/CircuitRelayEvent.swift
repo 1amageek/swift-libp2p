@@ -35,4 +35,19 @@ public enum CircuitRelayEvent: Sendable {
 
     /// A circuit completed (closed normally after data transfer).
     case circuitCompleted(source: PeerID, destination: PeerID, bytesTransferred: UInt64)
+
+    /// A circuit failed to establish.
+    case circuitFailed(source: PeerID, destination: PeerID, reason: CircuitFailureReason)
+}
+
+/// Reasons why a circuit failed to establish.
+public enum CircuitFailureReason: Sendable {
+    /// The target peer is not reachable (no connection exists).
+    case targetUnreachable
+
+    /// The target peer rejected the connection.
+    case targetRejected
+
+    /// The relay's resource limits were exceeded.
+    case resourceLimitExceeded
 }

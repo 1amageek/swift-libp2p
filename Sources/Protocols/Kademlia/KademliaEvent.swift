@@ -47,6 +47,9 @@ public enum KademliaEvent: Sendable {
     /// A record was republished.
     case recordRepublished(key: Data, toPeers: Int)
 
+    /// A record was rejected by the validator.
+    case recordRejected(key: Data, from: PeerID, reason: RecordRejectionReason)
+
     // MARK: - Provider Events
 
     /// Became a provider for content.
@@ -77,6 +80,11 @@ public enum KademliaEvent: Sendable {
 
     /// Service stopped.
     case stopped
+
+    // MARK: - Maintenance Events
+
+    /// Background maintenance completed.
+    case maintenanceCompleted(recordsRemoved: Int, providersRemoved: Int)
 }
 
 /// Information about a query.
@@ -176,6 +184,8 @@ extension KademliaEvent: CustomStringConvertible {
             return "Record not found: \(key.prefix(8).map { String(format: "%02x", $0) }.joined())..."
         case .recordRepublished(let key, let peers):
             return "Record republished: \(key.prefix(8).map { String(format: "%02x", $0) }.joined())... to \(peers) peers"
+        case .recordRejected(let key, let from, let reason):
+            return "Record rejected: \(key.prefix(8).map { String(format: "%02x", $0) }.joined())... from \(from), reason: \(reason)"
         case .providerAdded(let key):
             return "Provider added: \(key.prefix(8).map { String(format: "%02x", $0) }.joined())..."
         case .providerRemoved(let key):
@@ -194,6 +204,8 @@ extension KademliaEvent: CustomStringConvertible {
             return "Kademlia service started"
         case .stopped:
             return "Kademlia service stopped"
+        case .maintenanceCompleted(let recordsRemoved, let providersRemoved):
+            return "Maintenance completed: \(recordsRemoved) records, \(providersRemoved) providers removed"
         }
     }
 }

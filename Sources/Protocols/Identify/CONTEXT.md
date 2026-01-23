@@ -121,18 +121,50 @@ try await identifyService.push(
 
 ### キャッシュ管理
 `IdentifyService`は識別済みピア情報をキャッシュ:
+
 ```swift
-private let peerInfoCache: Mutex<[PeerID: IdentifyInfo]>
+// 設定
+IdentifyConfiguration(
+    cacheTTL: .seconds(24 * 60 * 60),  // デフォルト24時間
+    maxCacheSize: 1000,                 // デフォルト1000エントリ
+    cleanupInterval: .seconds(300)      // デフォルト5分（nil で無効化）
+)
 
 // キャッシュAPI
-func getCachedInfo(for peer: PeerID) -> IdentifyInfo?
-func clearCache()
-func allCachedPeers() -> [PeerID]
+func cachedInfo(for peer: PeerID) -> IdentifyInfo?  // 期限切れは nil を返す
+var allCachedInfo: [PeerID: IdentifyInfo]           // 期限切れをフィルタ
+func clearCache(for peer: PeerID)
+func clearAllCache()
+func cleanup() -> Int                                // 手動クリーンアップ
+
+// メンテナンスAPI
+func startMaintenance()  // バックグラウンドクリーンアップ開始
+func stopMaintenance()   // 停止
+func shutdown()          // stopMaintenance() + イベントストリーム終了
 ```
 
-### signedPeerRecordの制限
-- フィールド8（signedPeerRecord）はエンコードされるが検証は未実装
-- 将来的に署名付きピアレコード検証を追加予定
+**削除戦略**:
+1. 期限切れエントリ優先
+2. LRU（最古アクセス）
+
+**注意**: `startMaintenance()` を明示的に呼び出す必要あり。
+
+### signedPeerRecord検証
+- フィールド8（signedPeerRecord）の署名検証を実装 ✅ 2026-01-23
+- `verifySignedPeerRecord()` で Envelope 署名を検証
+- PeerID の一致を確認（record内、envelope署名者、期待値）
+
+### イベント
+
+```swift
+public enum IdentifyEvent: Sendable {
+    case received(peer: PeerID, info: IdentifyInfo)
+    case sent(peer: PeerID)
+    case pushReceived(peer: PeerID, info: IdentifyInfo)
+    case error(peer: PeerID?, IdentifyError)
+    case maintenanceCompleted(entriesRemoved: Int)
+}
+```
 
 ## テスト
 
@@ -153,12 +185,12 @@ Tests/Protocols/IdentifyTests/
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **signedPeerRecord検証の実装** - フィールド8は存在するが署名検証なし
-- [ ] **IdentifyServiceテストの追加** - キャッシュ動作、Push/Query両方向テスト
+- [x] **signedPeerRecord検証の実装** - `verifySignedPeerRecord()` で署名とPeerID検証 ✅ 2026-01-23
+- [x] **キャッシュTTL/サイズ制限** - TTL ベース有効期限 + LRU 削除 + バックグラウンドメンテナンス ✅ 2026-01-23
+- [x] **IdentifyServiceテストの追加** - キャッシュ TTL/LRU/メンテナンステスト追加 ✅ 2026-01-23
 - [ ] **Protobufラウンドトリップテスト** - 全フィールドのエンコード/デコード検証
 
 ### 中優先度
-- [ ] **キャッシュTTL/サイズ制限** - 現在は無制限、メモリリーク防止
 - [ ] **observedAddr検証** - 観察アドレスの妥当性チェック
 - [ ] **Identify Push自動送信** - アドレス変更時の自動プッシュ
 
@@ -166,9 +198,9 @@ Tests/Protocols/IdentifyTests/
 - [ ] **Delta更新対応** - 差分のみの情報交換（帯域節約）
 - [ ] **protocolVersion/agentVersionパース** - バージョン比較ユーティリティ
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18) - UPDATED 2026-01-23
 
 ### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| readAll silently truncates | `IdentifyService.swift:306-324` | Reads truncated at 64KB with no error; large messages silently incomplete |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| ~~readAll silently truncates~~ | `IdentifyService.swift:384-398` | ✅ Fixed | Now throws `messageTooLarge` error when exceeding 64KB limit |

@@ -27,7 +27,7 @@ struct PingE2ETests {
 
         // Start server
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -93,7 +93,7 @@ struct PingE2ETests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -154,7 +154,7 @@ struct PingE2ETests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -226,7 +226,7 @@ struct PingE2ETests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 
@@ -280,7 +280,7 @@ struct PingE2ETests {
         let transport = QUICTransport()
 
         let listener = try await transport.listenSecured(
-            "/ip4/127.0.0.1/udp/0/quic-v1",
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
             localKeyPair: serverKeyPair
         )
 

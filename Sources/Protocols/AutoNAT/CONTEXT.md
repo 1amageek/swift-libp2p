@@ -115,12 +115,6 @@ public struct AutoNATConfiguration: Sendable {
     /// Minimum number of successful probes to determine status
     public var minProbes: Int = 3
 
-    /// Interval between probe attempts when status is unknown
-    public var retryInterval: Duration = .seconds(60)
-
-    /// Interval between probe attempts when status is known
-    public var refreshInterval: Duration = .seconds(3600)
-
     /// Timeout for dial-back attempts
     public var dialTimeout: Duration = .seconds(30)
 
@@ -132,6 +126,32 @@ public struct AutoNATConfiguration: Sendable {
 
     /// Dialer function for server-side dial-back
     public var dialer: (@Sendable (Multiaddr) async throws -> Void)?
+
+    // --- Rate Limiting (NEW 2026-01-23) ---
+
+    /// Maximum requests per peer within the rate limit window (default: 10)
+    public var maxRequestsPerPeer: Int = 10
+
+    /// Rate limit time window (default: 60 seconds)
+    public var rateLimitWindow: Duration = .seconds(60)
+
+    /// Maximum concurrent dial-back operations per peer (default: 3)
+    public var maxConcurrentDialsPerPeer: Int = 3
+
+    /// Maximum concurrent dial-back operations globally (default: 50)
+    public var maxConcurrentDialsGlobal: Int = 50
+
+    /// Maximum total requests globally within the rate limit window (default: 500)
+    public var maxGlobalRequests: Int = 500
+
+    /// Backoff duration after rate limit is exceeded (default: 30 seconds)
+    public var rateLimitBackoff: Duration = .seconds(30)
+
+    /// Allowed port range for dial-back (nil = all ports allowed)
+    public var allowedPortRange: ClosedRange<UInt16>? = nil
+
+    /// Require peer ID in dial request to match the remote peer (default: true)
+    public var requirePeerIDMatch: Bool = true
 }
 ```
 
@@ -179,6 +199,31 @@ To prevent amplification attacks, the server MUST:
 2. Limit the rate of dial-back attempts per peer
 3. Refuse requests from unknown peers (optionally require prior connection)
 
+### Implementation (2026-01-23)
+
+The following protections are now implemented:
+
+**Rate Limiting**:
+- Per-peer request limit within a time window (`maxRequestsPerPeer`, `rateLimitWindow`)
+- Per-peer concurrent dial limit (`maxConcurrentDialsPerPeer`)
+- Global concurrent dial limit (`maxConcurrentDialsGlobal`)
+- Global request limit (`maxGlobalRequests`)
+- Backoff period after rate limit exceeded (`rateLimitBackoff`)
+
+**Address Validation**:
+- IP address matching (existing)
+- Port range filtering (`allowedPortRange`)
+- Peer ID validation (`requirePeerIDMatch`)
+
+**Events**:
+- `dialRequestRejected(from:reason:)` - Emitted when a request is rejected
+- `rateLimitStateChanged(globalConcurrent:globalRequests:)` - For monitoring
+
+**Errors**:
+- `rateLimited(RateLimitReason)` - Request was rate limited
+- `peerIDMismatch` - Peer ID in request doesn't match remote peer
+- `portNotAllowed(UInt16)` - Port not in allowed range
+
 ## Test Strategy
 
 1. **Unit tests**: Protobuf encoding/decoding, status determination logic
@@ -191,38 +236,53 @@ To prevent amplification attacks, the server MUST:
 - 最小3プローブ必要、不安定なネットワークでは判定遅延
 - ステータス変化時の自動アドレス更新なし
 
-### 増幅攻撃対策
-- IPアドレス検証は実装されているが、レート制限の設定が固定
-
 ### サーバー動作
-- ダイアルバックは同期的（並列ダイアルなし）
+- ~~ダイアルバックは同期的~~ → `dialBackParallel()` で並列ダイアル実装済み
 - ダイアルバック結果のキャッシュなし
 
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **AutoNATServiceテストの追加** - クライアント/サーバー両側テスト
-- [ ] **Protobufエンコードテスト** - Dial/DialResponseラウンドトリップ
-- [ ] **NATステータス判定テスト** - 各ステータスへの遷移検証
+- [x] **AutoNATServiceテストの追加** - クライアント/サーバー両側テスト ✅ (66テスト)
+- [x] **Protobufエンコードテスト** - Dial/DialResponseラウンドトリップ ✅
+- [x] **NATステータス判定テスト** - 各ステータスへの遷移検証 ✅
+- [x] **増幅攻撃対策** - レート制限、Peer ID検証、ポート制限 ✅ 2026-01-23
 
 ### 中優先度
-- [ ] **増幅攻撃対策テスト** - IPアドレス検証、レート制限の検証
-- [ ] **設定可能なレート制限** - ピアあたり、グローバルの制限設定
+- [x] **設定可能なレート制限** - ピアあたり、グローバルの制限設定 ✅ 2026-01-23
 - [ ] **ダイアルバック結果キャッシュ** - 同一ピアへの重複ダイアル防止
 
 ### 低優先度
 - [ ] **AutoNAT v2対応** - より効率的なプロトコル（将来仕様）
 - [ ] **自動アドレス広告** - NATステータス変化時のIdentify Push連携
-- [ ] **並列ダイアルバック** - サーバー側の複数アドレス同時検証
+- [x] **並列ダイアルバック** - `dialBackParallel()` で実装済み ✅
 
 ## References
 
 - [AutoNAT v1 Spec](https://github.com/libp2p/specs/blob/master/autonat/README.md)
 - [rust-libp2p autonat](https://github.com/libp2p/rust-libp2p/tree/master/protocols/autonat)
 
-## Codex Review (2026-01-18)
+## テスト実装状況
+
+| テストスイート | テスト数 | 説明 |
+|--------------|---------|------|
+| `AutoNATProtocolTests` | 2 | プロトコルID、メッセージサイズ |
+| `AutoNATProtobufTests` | 15 | Protobufエンコード/デコード |
+| `AutoNATErrorTests` | 3 | エラー型、RateLimitReason |
+| `AutoNATEventTests` | 5 | イベント型 |
+| `AutoNATServiceTests` | 12 | サービス初期化、シャットダウン |
+| `AutoNATRateLimitingTests` | 6 | レート制限設定、イベント |
+| `AutoNATIntegrationTests` | 15 | 統合テスト |
+| `NATStatusTests` | 7 | NATステータス判定 |
+| `NATStatusTransitionTests` | 5 | ステータス遷移 |
+| `NATStatusErrorHandlingTests` | 2 | エラー処理 |
+| `ProbeResultTests` | 2 | プローブ結果 |
+
+**合計: 74テスト** (2026-01-23時点)
+
+## Codex Review (2026-01-18) - UPDATED 2026-01-23
 
 ### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| IPv6 normalization incorrect | `AutoNATService.swift:393-445` | `::` expansion uses `emptyIndex` from pre-filtered array; can miscompare addresses and refuse valid dial-backs |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| ~~IPv6 normalization incorrect~~ | `AutoNATService.swift:421-469` | ✅ Fixed | `normalizeIPv6()` strips zone identifiers, validates characters, and rejects multiple `::` |

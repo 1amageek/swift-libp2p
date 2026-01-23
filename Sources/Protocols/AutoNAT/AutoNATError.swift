@@ -28,6 +28,48 @@ public enum AutoNATError: Error, Sendable, Equatable {
 
     /// Not enough probes to determine status.
     case insufficientProbes
+
+    /// Request was rate limited.
+    case rateLimited(RateLimitReason)
+
+    /// Peer ID in dial request does not match the remote peer.
+    case peerIDMismatch
+
+    /// Port not allowed for dial-back.
+    case portNotAllowed(UInt16)
+}
+
+/// Reasons for rate limiting a request.
+public enum RateLimitReason: Sendable, Equatable, CustomStringConvertible {
+    /// Global rate limit exceeded.
+    case globalRateLimit
+
+    /// Global concurrent dial limit exceeded.
+    case globalConcurrencyLimit
+
+    /// Per-peer rate limit exceeded.
+    case peerRateLimit
+
+    /// Per-peer concurrent dial limit exceeded.
+    case peerConcurrencyLimit
+
+    /// Peer is in backoff period after previous rejection.
+    case backoff
+
+    public var description: String {
+        switch self {
+        case .globalRateLimit:
+            return "Global rate limit exceeded"
+        case .globalConcurrencyLimit:
+            return "Global concurrency limit exceeded"
+        case .peerRateLimit:
+            return "Per-peer rate limit exceeded"
+        case .peerConcurrencyLimit:
+            return "Per-peer concurrency limit exceeded"
+        case .backoff:
+            return "Peer is in backoff period"
+        }
+    }
 }
 
 /// Response status codes for AutoNAT dial response.

@@ -13,25 +13,25 @@ struct MultiaddrConversionTests {
 
     @Test("IPv4 QUIC address has QUIC protocol")
     func ipv4QUICAddress() throws {
-        let addr: Multiaddr = "/ip4/127.0.0.1/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
         #expect(addr.hasQUICProtocol)
     }
 
     @Test("IPv6 QUIC address has QUIC protocol")
     func ipv6QUICAddress() throws {
-        let addr: Multiaddr = "/ip6/::1/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip6/::1/udp/4433/quic-v1")
         #expect(addr.hasQUICProtocol)
     }
 
     @Test("TCP address does not have QUIC protocol")
     func tcpAddress() throws {
-        let addr: Multiaddr = "/ip4/127.0.0.1/tcp/4433"
+        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4433")
         #expect(!addr.hasQUICProtocol)
     }
 
     @Test("UDP-only address does not have QUIC protocol")
     func udpOnlyAddress() throws {
-        let addr: Multiaddr = "/ip4/127.0.0.1/udp/4433"
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433")
         #expect(!addr.hasQUICProtocol)
     }
 
@@ -39,7 +39,7 @@ struct MultiaddrConversionTests {
 
     @Test("Convert IPv4 QUIC multiaddr to SocketAddress")
     func convertIPv4ToSocketAddress() throws {
-        let addr: Multiaddr = "/ip4/192.168.1.100/udp/4433/quic-v1"
+        let addr = try Multiaddr("/ip4/192.168.1.100/udp/4433/quic-v1")
         let socketAddr = addr.toQUICSocketAddress()
 
         #expect(socketAddr != nil)
@@ -49,7 +49,7 @@ struct MultiaddrConversionTests {
 
     @Test("Convert IPv6 QUIC multiaddr to SocketAddress")
     func convertIPv6ToSocketAddress() throws {
-        let addr: Multiaddr = "/ip6/::1/udp/5555/quic-v1"
+        let addr = try Multiaddr("/ip6/::1/udp/5555/quic-v1")
         let socketAddr = addr.toQUICSocketAddress()
 
         #expect(socketAddr != nil)
@@ -60,10 +60,10 @@ struct MultiaddrConversionTests {
 
     @Test("Non-QUIC address returns nil SocketAddress")
     func nonQUICAddressReturnsNil() throws {
-        let tcpAddr: Multiaddr = "/ip4/127.0.0.1/tcp/4433"
+        let tcpAddr = try Multiaddr("/ip4/127.0.0.1/tcp/4433")
         #expect(tcpAddr.toQUICSocketAddress() == nil)
 
-        let udpAddr: Multiaddr = "/ip4/127.0.0.1/udp/4433"
+        let udpAddr = try Multiaddr("/ip4/127.0.0.1/udp/4433")
         #expect(udpAddr.toQUICSocketAddress() == nil)
     }
 
@@ -105,7 +105,7 @@ struct MultiaddrConversionTests {
 
     @Test("IPv4 round-trip conversion preserves address")
     func ipv4RoundTrip() throws {
-        let original: Multiaddr = "/ip4/172.16.0.1/udp/12345/quic-v1"
+        let original = try Multiaddr("/ip4/172.16.0.1/udp/12345/quic-v1")
         let socketAddr = original.toQUICSocketAddress()
         #expect(socketAddr != nil)
 

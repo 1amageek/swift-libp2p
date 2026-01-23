@@ -28,20 +28,111 @@ public struct AutoNATConfiguration: Sendable {
     /// Dialer function for server-side dial-back.
     public var dialer: (@Sendable (Multiaddr) async throws -> Void)?
 
+    // MARK: - Rate Limiting
+
+    /// Maximum requests per peer within the rate limit window.
+    /// Default: 10 requests per minute.
+    public var maxRequestsPerPeer: Int
+
+    /// Rate limit time window.
+    /// Default: 60 seconds.
+    public var rateLimitWindow: Duration
+
+    /// Maximum concurrent dial-back operations per peer.
+    /// Default: 3.
+    public var maxConcurrentDialsPerPeer: Int
+
+    /// Maximum concurrent dial-back operations globally (all peers).
+    /// Default: 50.
+    public var maxConcurrentDialsGlobal: Int
+
+    /// Maximum total requests globally within the rate limit window.
+    /// Default: 500 requests per minute.
+    public var maxGlobalRequests: Int
+
+    /// Backoff duration after rate limit is exceeded.
+    /// Default: 30 seconds.
+    public var rateLimitBackoff: Duration
+
+    // MARK: - Address Validation
+
+    /// Allowed port range for dial-back (nil = all ports allowed).
+    /// Use this to restrict dial-backs to specific port ranges.
+    public var allowedPortRange: ClosedRange<UInt16>?
+
+    /// Require peer ID in dial request to match the remote peer.
+    /// Default: true.
+    public var requirePeerIDMatch: Bool
+
     /// Creates a new configuration.
     public init(
         minProbes: Int = 3,
         dialTimeout: Duration = .seconds(30),
         maxAddresses: Int = 16,
         getLocalAddresses: @escaping @Sendable () -> [Multiaddr] = { [] },
-        dialer: (@Sendable (Multiaddr) async throws -> Void)? = nil
+        dialer: (@Sendable (Multiaddr) async throws -> Void)? = nil,
+        maxRequestsPerPeer: Int = 10,
+        rateLimitWindow: Duration = .seconds(60),
+        maxConcurrentDialsPerPeer: Int = 3,
+        maxConcurrentDialsGlobal: Int = 50,
+        maxGlobalRequests: Int = 500,
+        rateLimitBackoff: Duration = .seconds(30),
+        allowedPortRange: ClosedRange<UInt16>? = nil,
+        requirePeerIDMatch: Bool = true
     ) {
         self.minProbes = minProbes
         self.dialTimeout = dialTimeout
         self.maxAddresses = maxAddresses
         self.getLocalAddresses = getLocalAddresses
         self.dialer = dialer
+        self.maxRequestsPerPeer = maxRequestsPerPeer
+        self.rateLimitWindow = rateLimitWindow
+        self.maxConcurrentDialsPerPeer = maxConcurrentDialsPerPeer
+        self.maxConcurrentDialsGlobal = maxConcurrentDialsGlobal
+        self.maxGlobalRequests = maxGlobalRequests
+        self.rateLimitBackoff = rateLimitBackoff
+        self.allowedPortRange = allowedPortRange
+        self.requirePeerIDMatch = requirePeerIDMatch
     }
+}
+
+// MARK: - Rate Limiting State
+
+/// Per-peer rate limiting state.
+private struct PeerRateLimitState: Sendable {
+    /// Recent request timestamps within the rate limit window.
+    var requestTimes: [ContinuousClock.Instant] = []
+
+    /// Current number of concurrent dial-back operations.
+    var concurrentDials: Int = 0
+
+    /// Last rejection timestamp (for backoff).
+    var lastRejectedAt: ContinuousClock.Instant?
+}
+
+/// Global rate limiting state.
+private struct GlobalRateLimitState: Sendable {
+    /// Current total concurrent dial-back operations (all peers).
+    var totalConcurrentDials: Int = 0
+
+    /// Recent request timestamps within the rate limit window.
+    var recentRequestTimes: [ContinuousClock.Instant] = []
+}
+
+/// Combined rate limiting state.
+private struct RateLimitState: Sendable {
+    /// Per-peer state.
+    var peers: [PeerID: PeerRateLimitState] = [:]
+
+    /// Global state.
+    var global: GlobalRateLimitState = GlobalRateLimitState()
+}
+
+/// Result of rate limit check.
+/// Internal visibility for testing with @testable import.
+enum RateLimitResult {
+    case accepted
+    case rejected(RateLimitReason)
 }
 
 /// AutoNAT service for detecting NAT status.
@@ -90,6 +181,9 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
         var statusTracker: NATStatusTracker
     }
 
+    /// Rate limiting state (separated for independent locking).
+    private let rateLimitState: Mutex<RateLimitState>
+
     // MARK: - Events
 
     /// Stream of AutoNAT events.
@@ -126,6 +220,7 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
         self.serviceState = Mutex(ServiceState(
             statusTracker: NATStatusTracker(minProbes: configuration.minProbes)
         ))
+        self.rateLimitState = Mutex(RateLimitState())
     }
 
     // MARK: - Handler Registration
@@ -296,6 +391,16 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
         let remoteAddress = context.remoteAddress
 
         do {
+            // Rate limiting check
+            switch shouldAcceptRequest(from: remotePeer) {
+            case .accepted:
+                break
+            case .rejected(let reason):
+                emit(.dialRequestRejected(from: remotePeer, reason: .rateLimited(reason)))
+                try await sendResponse(stream: stream, response: .error(.dialRefused, text: reason.description))
+                return
+            }
+
             // Read request
             let requestData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(AutoNATProtocol.maxMessageSize))
             let request = try AutoNATProtobuf.decode(requestData)
@@ -306,17 +411,32 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
                 return
             }
 
+            // Peer ID validation (optional)
+            if configuration.requirePeerIDMatch {
+                if let requestedPeerID = dial.peer.id, requestedPeerID != remotePeer {
+                    emit(.dialRequestRejected(from: remotePeer, reason: .peerIDMismatch))
+                    try await sendResponse(stream: stream, response: .error(.badRequest, text: "Peer ID mismatch"))
+                    return
+                }
+            }
+
             let addresses = dial.peer.addresses
             emit(.dialBackRequested(from: remotePeer, addresses: addresses))
 
             // Validate addresses - only dial addresses matching observed IP
-            let validAddresses = filterAddressesByObservedIP(
+            var validAddresses = filterAddressesByObservedIP(
                 addresses: addresses,
                 observedAddress: remoteAddress
             )
 
+            // Filter by allowed port range
+            validAddresses = filterAddressesByPort(
+                addresses: validAddresses,
+                allowedRange: configuration.allowedPortRange
+            )
+
             guard !validAddresses.isEmpty else {
-                emit(.dialBackCompleted(to: remotePeer, result: .dialRefused))
+                emit(.dialRequestRejected(from: remotePeer, reason: .noValidAddresses))
                 try await sendResponse(stream: stream, response: .error(.dialRefused, text: "No valid addresses"))
                 return
             }
@@ -327,6 +447,10 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
                 try await sendResponse(stream: stream, response: .error(.internalError, text: "Dialer not configured"))
                 return
             }
+
+            // Track concurrent dials
+            incrementConcurrentDials(for: remotePeer)
+            defer { decrementConcurrentDials(for: remotePeer) }
 
             // Try addresses in parallel for faster dial-back
             let successAddress = await dialBackParallel(
@@ -415,16 +539,35 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
     /// - `::1` → `0000:0000:0000:0000:0000:0000:0000:0001`
     /// - `2001:db8::1` → `2001:0db8:0000:0000:0000:0000:0000:0001`
     /// - `::` → `0000:0000:0000:0000:0000:0000:0000:0000`
+    /// - `fe80::1%eth0` → `fe80:0000:0000:0000:0000:0000:0000:0001` (zone ID stripped)
     ///
     /// Returns empty string if the address is invalid.
     private func normalizeIPv6(_ ip: String) -> String {
         guard !ip.isEmpty else { return "" }
 
+        // Strip zone identifier (e.g., %eth0, %2) if present
+        let ipWithoutZone: String
+        if let percentIndex = ip.firstIndex(of: "%") {
+            ipWithoutZone = String(ip[..<percentIndex])
+        } else {
+            ipWithoutZone = ip
+        }
+
+        // Validate: must contain only hex digits and colons
+        let validChars = CharacterSet(charactersIn: "0123456789abcdefABCDEF:")
+        guard ipWithoutZone.unicodeScalars.allSatisfy({ validChars.contains($0) }) else {
+            return ""
+        }
+
+        // Validate: only one :: allowed in IPv6
+        let doubleColonCount = ipWithoutZone.components(separatedBy: "::").count - 1
+        guard doubleColonCount <= 1 else { return "" }
+
         // Parse into 8 groups, expanding :: if present
         let parts: [String]
-        if ip.contains("::") {
+        if ipWithoutZone.contains("::") {
             // Split by :: (produces at most 2 halves)
-            let halves = ip.split(separator: "::", omittingEmptySubsequences: false)
+            let halves = ipWithoutZone.split(separator: "::", omittingEmptySubsequences: false)
             let left = halves.first.map { $0.split(separator: ":").map(String.init) } ?? []
             let right = halves.count > 1 ? halves[1].split(separator: ":").map(String.init) : []
 
@@ -434,7 +577,7 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
 
             parts = left + Array(repeating: "0", count: missingGroups) + right
         } else {
-            parts = ip.split(separator: ":").map(String.init)
+            parts = ipWithoutZone.split(separator: ":").map(String.init)
         }
 
         // Must have exactly 8 groups
@@ -466,7 +609,7 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
 
     /// Emits an event.
     private func emit(_ event: AutoNATEvent) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }
@@ -499,6 +642,136 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
                 }
             }
             return nil
+        }
+    }
+
+    // MARK: - Rate Limiting
+
+    /// Checks if a request from the given peer should be accepted.
+    ///
+    /// - Parameter peer: The peer making the request.
+    /// - Returns: The result of the rate limit check.
+    ///
+    /// Internal visibility for testing with `@testable import`.
+    func shouldAcceptRequest(from peer: PeerID) -> RateLimitResult {
+        let now = ContinuousClock.now
+
+        return rateLimitState.withLock { state in
+            // Clean up expired timestamps from global state
+            state.global.recentRequestTimes.removeAll { timestamp in
+                now - timestamp > configuration.rateLimitWindow
+            }
+
+            // Check global rate limit
+            if state.global.recentRequestTimes.count >= configuration.maxGlobalRequests {
+                return .rejected(.globalRateLimit)
+            }
+
+            // Check global concurrency limit
+            if state.global.totalConcurrentDials >= configuration.maxConcurrentDialsGlobal {
+                return .rejected(.globalConcurrencyLimit)
+            }
+
+            // Get or create per-peer state
+            var peerState = state.peers[peer] ?? PeerRateLimitState()
+
+            // Check backoff period
+            if let lastRejected = peerState.lastRejectedAt {
+                if now - lastRejected < configuration.rateLimitBackoff {
+                    return .rejected(.backoff)
+                }
+            }
+
+            // Clean up expired timestamps from peer state
+            peerState.requestTimes.removeAll { timestamp in
+                now - timestamp > configuration.rateLimitWindow
+            }
+
+            // Check per-peer rate limit
+            if peerState.requestTimes.count >= configuration.maxRequestsPerPeer {
+                peerState.lastRejectedAt = now
+                state.peers[peer] = peerState
+                return .rejected(.peerRateLimit)
+            }
+
+            // Check per-peer concurrency limit
+            if peerState.concurrentDials >= configuration.maxConcurrentDialsPerPeer {
+                return .rejected(.peerConcurrencyLimit)
+            }
+
+            // Accept - update state
+            peerState.requestTimes.append(now)
+            state.peers[peer] = peerState
+            state.global.recentRequestTimes.append(now)
+
+            return .accepted
+        }
+    }
+
+    /// Increments the concurrent dial count for a peer.
+    ///
+    /// - Parameter peer: The peer to increment the count for.
+    private func incrementConcurrentDials(for peer: PeerID) {
+        let (globalCount, globalRequests) = rateLimitState.withLock { state in
+            var peerState = state.peers[peer] ?? PeerRateLimitState()
+            peerState.concurrentDials += 1
+            state.peers[peer] = peerState
+            state.global.totalConcurrentDials += 1
+            return (state.global.totalConcurrentDials, state.global.recentRequestTimes.count)
+        }
+        emit(.rateLimitStateChanged(globalConcurrent: globalCount, globalRequests: globalRequests))
+    }
+
+    /// Decrements the concurrent dial count for a peer.
+    ///
+    /// - Parameter peer: The peer to decrement the count for.
+    private func decrementConcurrentDials(for peer: PeerID) {
+        let (globalCount, globalRequests) = rateLimitState.withLock { state in
+            if var peerState = state.peers[peer] {
+                peerState.concurrentDials = max(0, peerState.concurrentDials - 1)
+                state.peers[peer] = peerState
+            }
+            state.global.totalConcurrentDials = max(0, state.global.totalConcurrentDials - 1)
+            return (state.global.totalConcurrentDials, state.global.recentRequestTimes.count)
+        }
+        emit(.rateLimitStateChanged(globalConcurrent: globalCount, globalRequests: globalRequests))
+    }
+
+    /// Extracts the port from a multiaddr.
+    ///
+    /// - Parameter addr: The multiaddr to extract from.
+    /// - Returns: The port number, or nil if not found.
+    private func extractPort(from addr: Multiaddr) -> UInt16? {
+        for proto in addr.protocols {
+            switch proto {
+            case .tcp(let port), .udp(let port):
+                return port
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// Filters addresses by allowed port range.
+    ///
+    /// - Parameters:
+    ///   - addresses: The addresses to filter.
+    ///   - allowedRange: The allowed port range (nil = all ports allowed).
+    /// - Returns: Filtered addresses.
+    private func filterAddressesByPort(
+        addresses: [Multiaddr],
+        allowedRange: ClosedRange<UInt16>?
+    ) -> [Multiaddr] {
+        guard let range = allowedRange else {
+            return addresses
+        }
+
+        return addresses.filter { addr in
+            guard let port = extractPort(from: addr) else {
+                return false
+            }
+            return range.contains(port)
         }
     }
 }

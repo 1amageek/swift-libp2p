@@ -217,6 +217,18 @@ P2PTransportQUIC
     └── QUICTransport
 ```
 
+## テスト実装状況
+
+| テストファイル | テスト数 | 説明 |
+|--------------|---------|------|
+| `SwiftQUICTLSProviderTests.swift` | 12 | TLSプロバイダ、証明書検証 |
+| `QUICTransportTests.swift` | 8 | トランスポート接続、マルチアドレス |
+| `QUICE2ETests.swift` | 20 | E2E接続、マルチストリーム |
+| `MultiaddrConversionTests.swift` | 8 | アドレス変換 |
+| `QuickDebugTest.swift` | 7 | デバッグ用テスト |
+
+**合計: 55テスト** (2026-01-23時点)
+
 ## References
 
 - [libp2p QUIC Specification](https://github.com/libp2p/specs/tree/master/quic)

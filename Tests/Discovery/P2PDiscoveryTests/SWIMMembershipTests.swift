@@ -70,13 +70,13 @@ struct SWIMMembershipConfigurationTests {
 
     @Test("Legacy initializer with routable host sets advertisedHost")
     func legacyInitializerRoutableHost() {
-        #expect(true) // Skip deprecated initializer warning
+        #expect(Bool(true)) // Skip deprecated initializer warning
         // Note: Legacy initializer is deprecated, testing via new initializer instead
     }
 
     @Test("Legacy initializer with unroutable host leaves advertisedHost nil")
     func legacyInitializerUnroutableHost() {
-        #expect(true) // Skip deprecated initializer warning
+        #expect(Bool(true)) // Skip deprecated initializer warning
         // Note: Legacy initializer is deprecated, testing via new initializer instead
     }
 }
@@ -226,7 +226,7 @@ struct SWIMMembershipCreationTests {
         )
 
         // Should create successfully without starting
-        #expect(membership != nil)
+        _ = membership
     }
 
     @Test("Create SWIM membership with custom config")
@@ -245,6 +245,7 @@ struct SWIMMembershipCreationTests {
             configuration: config
         )
 
-        #expect(membership != nil)
+        // Use membership to verify it was created
+        _ = membership
     }
 }
