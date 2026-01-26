@@ -69,6 +69,71 @@ public enum MultistreamSelect {
         throw NegotiationError.noAgreement
     }
 
+    /// Negotiates a protocol using V1Lazy (0-RTT optimization).
+    ///
+    /// V1Lazy sends the multistream header and preferred protocol in a single
+    /// message, reducing latency from 2 RTT to 1 RTT when the first protocol
+    /// is accepted. If rejected, falls back to standard V1 negotiation.
+    ///
+    /// Use this when:
+    /// - You have a single preferred protocol (e.g., `/yamux/1.0.0`)
+    /// - Latency is important
+    /// - The responder is likely to support your preferred protocol
+    ///
+    /// - Parameters:
+    ///   - protocols: The protocols to try, in order of preference
+    ///   - read: Function to read data
+    ///   - write: Function to write data
+    /// - Returns: The negotiation result
+    public static func negotiateLazy(
+        protocols: [String],
+        read: () async throws -> Data,
+        write: (Data) async throws -> Void
+    ) async throws -> NegotiationResult {
+        guard !protocols.isEmpty else {
+            throw NegotiationError.noAgreement
+        }
+
+        let firstProtocol = protocols[0]
+
+        // V1Lazy: Send header + first protocol in one batch
+        let batch = encode(protocolID) + encode(firstProtocol)
+        try await write(batch)
+
+        // Read header response
+        let headerResponse = try await read()
+        guard try decode(headerResponse) == protocolID else {
+            throw NegotiationError.protocolMismatch
+        }
+
+        // Read protocol response
+        let protoResponse = try await read()
+        let decoded = try decode(protoResponse)
+
+        if decoded == firstProtocol {
+            // First protocol accepted - 1 RTT success!
+            return NegotiationResult(protocolID: firstProtocol)
+        } else if decoded == "na" {
+            // First protocol rejected - fall back to remaining protocols
+            for proto in protocols.dropFirst() {
+                try await write(encode(proto))
+                let response = try await read()
+                let responseDecoded = try decode(response)
+
+                if responseDecoded == proto {
+                    return NegotiationResult(protocolID: proto)
+                } else if responseDecoded == "na" {
+                    continue
+                } else {
+                    throw NegotiationError.unexpectedResponse(responseDecoded)
+                }
+            }
+            throw NegotiationError.noAgreement
+        } else {
+            throw NegotiationError.unexpectedResponse(decoded)
+        }
+    }
+
     /// Handles protocol negotiation as the responder (listener).
     ///
     /// This method loops until a protocol is agreed upon or the connection

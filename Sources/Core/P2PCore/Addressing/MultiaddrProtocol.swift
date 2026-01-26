@@ -129,19 +129,51 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     }
 
     private static func encodeIPv6(_ address: String) -> Data? {
-        // Simplified IPv6 encoding
-        var bytes = Data(count: 16)
+        // 1. Strip zone ID (e.g., fe80::1%eth0 → fe80::1)
+        let cleanAddress: String
+        if let percentIndex = address.firstIndex(of: "%") {
+            cleanAddress = String(address[..<percentIndex])
+        } else {
+            cleanAddress = address
+        }
 
-        // Handle :: expansion
+        // 2. Validate: only one :: allowed
+        let doubleColonCount = cleanAddress.components(separatedBy: "::").count - 1
+        guard doubleColonCount <= 1 else { return nil }
+
+        // 3. Handle IPv4-mapped IPv6 (::ffff:192.0.2.1 or ::ffff:c0a8:101)
+        let lowercaseAddr = cleanAddress.lowercased()
+        if lowercaseAddr.hasPrefix("::ffff:") {
+            let suffix = String(cleanAddress.dropFirst(7))
+            // Check if it's IPv4 dotted notation
+            if suffix.contains(".") {
+                if let ipv4Bytes = encodeIPv4(suffix) {
+                    var bytes = Data(repeating: 0, count: 16)
+                    bytes[10] = 0xff
+                    bytes[11] = 0xff
+                    bytes[12] = ipv4Bytes[0]
+                    bytes[13] = ipv4Bytes[1]
+                    bytes[14] = ipv4Bytes[2]
+                    bytes[15] = ipv4Bytes[3]
+                    return bytes
+                }
+                return nil
+            }
+            // Fall through to normal hex parsing for ::ffff:c0a8:101 format
+        }
+
+        // 4. Handle :: expansion
+        var bytes = Data(count: 16)
         let parts: [String]
-        if address.contains("::") {
-            let halves = address.split(separator: "::", omittingEmptySubsequences: false)
+        if cleanAddress.contains("::") {
+            let halves = cleanAddress.split(separator: "::", omittingEmptySubsequences: false)
             let left = halves.first.map { $0.split(separator: ":").map(String.init) } ?? []
             let right = halves.count > 1 ? halves[1].split(separator: ":").map(String.init) : []
             let missing = 8 - left.count - right.count
+            guard missing >= 0 else { return nil }  // Too many parts
             parts = left + Array(repeating: "0", count: missing) + right
         } else {
-            parts = address.split(separator: ":").map(String.init)
+            parts = cleanAddress.split(separator: ":").map(String.init)
         }
 
         guard parts.count == 8 else { return nil }
@@ -156,11 +188,18 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     }
 
     /// Normalizes an IPv6 address to expanded form (e.g., "::1" → "0:0:0:0:0:0:0:1").
+    ///
+    /// This function:
+    /// - Expands `::` shorthand to full 8 groups
+    /// - Strips zone IDs (e.g., `%eth0`)
+    /// - Handles IPv4-mapped addresses (e.g., `::ffff:192.0.2.1`)
+    /// - Rejects invalid addresses (multiple `::`, malformed groups)
+    ///
     /// - Parameter address: The IPv6 address string to normalize
-    /// - Returns: The normalized IPv6 address, or nil if invalid or too long (>45 chars)
+    /// - Returns: The normalized IPv6 address, or nil if invalid or too long (>64 chars with zone)
     static func normalizeIPv6(_ address: String) -> String? {
-        // Max IPv6 address length is 45 chars (39 expanded + some slack for edge cases)
-        guard address.count <= 45 else { return nil }
+        // Max IPv6 address length with zone ID is ~64 chars
+        guard address.count <= 64 else { return nil }
         guard let bytes = encodeIPv6(address) else { return nil }
         var parts: [String] = []
         for i in 0..<8 {

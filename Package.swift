@@ -25,10 +25,12 @@ let package = Package(
         .library(name: "P2PSecurity", targets: ["P2PSecurity"]),
         .library(name: "P2PSecurityNoise", targets: ["P2PSecurityNoise"]),
         .library(name: "P2PSecurityPlaintext", targets: ["P2PSecurityPlaintext"]),
+        .library(name: "P2PSecurityTLS", targets: ["P2PSecurityTLS"]),
 
         // MARK: - Mux
         .library(name: "P2PMux", targets: ["P2PMux"]),
         .library(name: "P2PMuxYamux", targets: ["P2PMuxYamux"]),
+        .library(name: "P2PMuxMplex", targets: ["P2PMuxMplex"]),
 
         // MARK: - Negotiation
         .library(name: "P2PNegotiation", targets: ["P2PNegotiation"]),
@@ -37,6 +39,9 @@ let package = Package(
         .library(name: "P2PDiscovery", targets: ["P2PDiscovery"]),
         .library(name: "P2PDiscoveryMDNS", targets: ["P2PDiscoveryMDNS"]),
         .library(name: "P2PDiscoverySWIM", targets: ["P2PDiscoverySWIM"]),
+
+        // MARK: - NAT
+        .library(name: "P2PNAT", targets: ["P2PNAT"]),
 
         // MARK: - Protocols
         .library(name: "P2PProtocols", targets: ["P2PProtocols"]),
@@ -156,6 +161,15 @@ let package = Package(
             path: "Sources/Security/Plaintext",
             exclude: ["CONTEXT.md"]
         ),
+        .target(
+            name: "P2PSecurityTLS",
+            dependencies: [
+                "P2PSecurity",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/Security/TLS",
+            exclude: ["CONTEXT.md"]
+        ),
         .testTarget(
             name: "P2PSecurityTests",
             dependencies: ["P2PSecurity", "P2PSecurityPlaintext"],
@@ -171,6 +185,11 @@ let package = Package(
             dependencies: ["P2PSecurityPlaintext", "P2PSecurity", "P2PCore"],
             path: "Tests/Security/PlaintextTests"
         ),
+        .testTarget(
+            name: "P2PSecurityTLSTests",
+            dependencies: ["P2PSecurityTLS", "P2PCore"],
+            path: "Tests/Security/TLSTests"
+        ),
 
         // MARK: - Mux
         .target(
@@ -184,15 +203,26 @@ let package = Package(
             path: "Sources/Mux/Yamux",
             exclude: ["CONTEXT.md", "DESIGN_STREAM_LIMITS.md"]
         ),
+        .target(
+            name: "P2PMuxMplex",
+            dependencies: ["P2PMux"],
+            path: "Sources/Mux/Mplex",
+            exclude: ["CONTEXT.md"]
+        ),
         .testTarget(
             name: "P2PMuxTests",
-            dependencies: ["P2PMux", "P2PMuxYamux"],
+            dependencies: ["P2PMux", "P2PMuxYamux", "P2PMuxMplex"],
             path: "Tests/Mux/P2PMuxTests"
         ),
         .testTarget(
             name: "P2PMuxYamuxTests",
             dependencies: ["P2PMuxYamux"],
             path: "Tests/Mux/YamuxTests"
+        ),
+        .testTarget(
+            name: "P2PMuxMplexTests",
+            dependencies: ["P2PMuxMplex", "P2PTransportMemory", "P2PSecurityPlaintext"],
+            path: "Tests/Mux/MplexTests"
         ),
 
         // MARK: - Negotiation
@@ -237,6 +267,19 @@ let package = Package(
             name: "P2PDiscoveryTests",
             dependencies: ["P2PDiscovery", "P2PDiscoverySWIM", "P2PDiscoveryMDNS"],
             path: "Tests/Discovery/P2PDiscoveryTests"
+        ),
+
+        // MARK: - NAT
+        .target(
+            name: "P2PNAT",
+            dependencies: ["P2PCore"],
+            path: "Sources/NAT/P2PNAT",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PNATTests",
+            dependencies: ["P2PNAT"],
+            path: "Tests/NAT/P2PNATTests"
         ),
 
         // MARK: - Protocols

@@ -88,9 +88,24 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
 
     private struct ClientState: Sendable {
         var reservations: [PeerID: Reservation] = [:]
+        var reservationOpeners: [PeerID: OpenerRef] = [:]
+        var renewalTasks: [PeerID: Task<Void, Never>] = [:]
         var incomingConnections: [RelayedConnection] = []
         var connectionWaiters: [WaiterKey: ConnectionWaiter] = [:]
         var nextWaiterID: UInt64 = 0
+    }
+
+    /// Reference to stream opener for renewal.
+    ///
+    /// This holds a strong reference to the opener. The reference is cleaned up when:
+    /// - The reservation expires
+    /// - The reservation is cancelled via `cancelReservation(on:)`
+    /// - The client is shut down
+    private final class OpenerRef: @unchecked Sendable {
+        let opener: any StreamOpener
+        init(_ opener: any StreamOpener) {
+            self.opener = opener
+        }
     }
 
     /// Weak reference to listener for routing without retain cycles.
@@ -230,15 +245,16 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
                 voucher: resInfo.voucher
             )
 
-            // Store reservation
+            // Store reservation and opener reference for renewal
             clientState.withLock { s in
                 s.reservations[relay] = reservation
+                s.reservationOpeners[relay] = OpenerRef(opener)
             }
 
             emit(.reservationCreated(relay: relay, reservation: reservation))
 
-            // Schedule expiration check
-            scheduleExpirationCheck(relay: relay, at: expiration)
+            // Schedule renewal or expiration
+            scheduleRenewalOrExpiration(relay: relay, at: expiration)
 
             try await stream.close()
             return reservation
@@ -542,6 +558,16 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     /// Call this method when the client is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
+        // Cancel all renewal tasks
+        clientState.withLock { s in
+            for (_, task) in s.renewalTasks {
+                task.cancel()
+            }
+            s.renewalTasks.removeAll()
+            s.reservations.removeAll()
+            s.reservationOpeners.removeAll()
+        }
+
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil
@@ -551,13 +577,141 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - Reservation Management
 
-    private func scheduleExpirationCheck(relay: PeerID, at expiration: ContinuousClock.Instant) {
-        Task { [weak self] in
-            let now = ContinuousClock.now
-            if expiration > now {
-                try? await Task.sleep(until: expiration, clock: .continuous)
+    /// Schedules renewal or expiration handling for a reservation.
+    private func scheduleRenewalOrExpiration(relay: PeerID, at expiration: ContinuousClock.Instant) {
+        // Cancel any existing renewal task for this relay
+        clientState.withLock { s in
+            s.renewalTasks[relay]?.cancel()
+            s.renewalTasks.removeValue(forKey: relay)
+        }
+
+        let task = Task { [weak self, configuration] in
+            guard let self = self else { return }
+
+            if configuration.autoRenewReservations {
+                // Schedule renewal before expiration
+                let renewalTime = expiration - configuration.renewalBuffer
+                let now = ContinuousClock.now
+
+                if renewalTime > now {
+                    try? await Task.sleep(until: renewalTime, clock: .continuous)
+                }
+
+                // Check for cancellation
+                guard !Task.isCancelled else { return }
+
+                // Attempt renewal
+                do {
+                    try await self.renewReservation(on: relay)
+                    // Renewal succeeded - new task will be scheduled by renewReservation
+                } catch {
+                    // Renewal failed - emit event and wait for expiration
+                    let relayError: CircuitRelayError
+                    if let circuitError = error as? CircuitRelayError {
+                        relayError = circuitError
+                    } else {
+                        relayError = .reservationFailed(status: .reservationRefused)
+                    }
+                    self.emit(.reservationRenewalFailed(relay: relay, error: relayError))
+
+                    // Wait for actual expiration
+                    let now = ContinuousClock.now
+                    if expiration > now {
+                        try? await Task.sleep(until: expiration, clock: .continuous)
+                    }
+                    guard !Task.isCancelled else { return }
+                    self.handleReservationExpired(relay: relay)
+                }
+            } else {
+                // No auto-renewal: just wait for expiration
+                let now = ContinuousClock.now
+                if expiration > now {
+                    try? await Task.sleep(until: expiration, clock: .continuous)
+                }
+                guard !Task.isCancelled else { return }
+                self.handleReservationExpired(relay: relay)
             }
-            self?.handleReservationExpired(relay: relay)
+        }
+
+        // Store the task
+        clientState.withLock { s in
+            s.renewalTasks[relay] = task
+        }
+    }
+
+    /// Renews an existing reservation on a relay.
+    ///
+    /// - Parameter relay: The relay peer to renew reservation on.
+    /// - Throws: `CircuitRelayError` if renewal fails.
+    private func renewReservation(on relay: PeerID) async throws {
+        // Get the stored opener
+        let openerRef: OpenerRef? = clientState.withLock { s in
+            s.reservationOpeners[relay]
+        }
+
+        guard let openerRef = openerRef else {
+            throw CircuitRelayError.reservationFailed(status: .reservationRefused)
+        }
+
+        let opener = openerRef.opener
+
+        // Open stream to relay with Hop protocol
+        let stream = try await opener.newStream(
+            to: relay,
+            protocol: CircuitRelayProtocol.hopProtocolID
+        )
+
+        do {
+            // Send RESERVE message
+            let request = HopMessage.reserve()
+            let requestData = CircuitRelayProtobuf.encode(request)
+            try await writeMessage(requestData, to: stream)
+
+            // Read response
+            let responseData = try await readMessage(from: stream)
+            let response = try CircuitRelayProtobuf.decodeHop(responseData)
+
+            guard response.type == .status else {
+                throw CircuitRelayError.protocolViolation("Expected STATUS response")
+            }
+
+            guard response.status == .ok else {
+                let status = response.status ?? .reservationRefused
+                throw CircuitRelayError.reservationFailed(status: status)
+            }
+
+            guard let resInfo = response.reservation else {
+                throw CircuitRelayError.protocolViolation("Missing reservation in response")
+            }
+
+            // Create new reservation
+            let expiration = ContinuousClock.Instant.now + .seconds(Int64(resInfo.expiration) - Int64(Date().timeIntervalSince1970))
+            let reservation = Reservation(
+                relay: relay,
+                expiration: expiration,
+                addresses: resInfo.addresses,
+                voucher: resInfo.voucher
+            )
+
+            // Update stored reservation
+            clientState.withLock { s in
+                s.reservations[relay] = reservation
+            }
+
+            emit(.reservationRenewed(relay: relay, newExpiration: expiration))
+
+            // Schedule next renewal/expiration
+            scheduleRenewalOrExpiration(relay: relay, at: expiration)
+
+            try await stream.close()
+
+        } catch {
+            do {
+                try await stream.close()
+            } catch let closeError {
+                logger.debug("Failed to close stream during renewal cleanup: \(closeError)")
+            }
+            throw error
         }
     }
 
@@ -565,6 +719,8 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
         let removed: Bool = clientState.withLock { s in
             if let res = s.reservations[relay], !res.isValid {
                 s.reservations.removeValue(forKey: relay)
+                s.reservationOpeners.removeValue(forKey: relay)
+                s.renewalTasks.removeValue(forKey: relay)
                 return true
             }
             return false
@@ -572,6 +728,18 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
 
         if removed {
             emit(.reservationExpired(relay: relay))
+        }
+    }
+
+    /// Cancels a reservation and its renewal task.
+    ///
+    /// - Parameter relay: The relay peer to cancel reservation for.
+    public func cancelReservation(on relay: PeerID) {
+        clientState.withLock { s in
+            s.reservations.removeValue(forKey: relay)
+            s.reservationOpeners.removeValue(forKey: relay)
+            s.renewalTasks[relay]?.cancel()
+            s.renewalTasks.removeValue(forKey: relay)
         }
     }
 }

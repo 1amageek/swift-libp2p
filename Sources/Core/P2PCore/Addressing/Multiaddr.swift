@@ -228,7 +228,8 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
     private static let protocolNames: Set<String> = [
         "ip4", "ip6", "tcp", "udp", "quic", "quic-v1", "ws", "wss",
-        "p2p", "ipfs", "dns", "dns4", "dns6", "dnsaddr", "unix", "memory"
+        "p2p", "ipfs", "dns", "dns4", "dns6", "dnsaddr", "unix", "memory",
+        "p2p-circuit"
     ]
 
     private static func isProtocolName(_ string: String) -> Bool {

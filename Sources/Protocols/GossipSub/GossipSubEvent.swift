@@ -51,6 +51,15 @@ public enum GossipSubEvent: Sendable {
     /// Message received via IWANT response.
     case messageReceivedViaGossip(messageID: MessageID, from: PeerID)
 
+    /// Received IDONTWANT from peer (v1.2).
+    case idontWantReceived(peer: PeerID, messageCount: Int)
+
+    /// Sent IDONTWANT to peer (v1.2).
+    case idontWantSent(peer: PeerID, messageCount: Int)
+
+    /// Skipped forwarding message due to IDONTWANT (v1.2).
+    case messageSkippedByIdontWant(peer: PeerID, messageID: MessageID)
+
     // MARK: - Peer Events
 
     /// A peer subscribed to a topic.

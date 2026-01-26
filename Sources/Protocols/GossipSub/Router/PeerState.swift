@@ -99,6 +99,10 @@ public struct PeerState: Sendable {
     /// Whether we've sent a graft to this peer recently.
     public var pendingGraft: Bool
 
+    /// Messages the peer doesn't want to receive (IDONTWANT, v1.2).
+    /// Maps message ID to expiration time.
+    public var dontWantMessages: [MessageID: ContinuousClock.Instant]
+
     /// Creates a new peer state.
     public init(
         peerID: PeerID,
@@ -114,6 +118,26 @@ public struct PeerState: Sendable {
         self.backoffs = [:]
         self.iwantCount = 0
         self.pendingGraft = false
+        self.dontWantMessages = [:]
+    }
+
+    /// Checks if the peer doesn't want to receive a message.
+    public func doesntWant(_ messageID: MessageID) -> Bool {
+        guard let expiration = dontWantMessages[messageID] else {
+            return false
+        }
+        return ContinuousClock.now < expiration
+    }
+
+    /// Adds a message to the don't-want list.
+    public mutating func addDontWant(_ messageID: MessageID, ttl: Duration) {
+        dontWantMessages[messageID] = .now + ttl
+    }
+
+    /// Clears expired don't-want entries.
+    public mutating func clearExpiredDontWants() {
+        let now = ContinuousClock.now
+        dontWantMessages = dontWantMessages.filter { $0.value > now }
     }
 
     /// Updates the last seen time.
@@ -250,6 +274,15 @@ final class PeerStateManager: Sendable {
         state.withLock { state in
             for peerID in state.peers.keys {
                 state.peers[peerID]?.clearExpiredBackoffs()
+            }
+        }
+    }
+
+    /// Clears expired IDONTWANT entries for all peers.
+    func clearExpiredDontWants() {
+        state.withLock { state in
+            for peerID in state.peers.keys {
+                state.peers[peerID]?.clearExpiredDontWants()
             }
         }
     }

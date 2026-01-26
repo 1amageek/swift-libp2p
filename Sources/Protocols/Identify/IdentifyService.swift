@@ -32,13 +32,23 @@ public struct IdentifyConfiguration: Sendable {
     /// Default: 5 minutes.
     public var cleanupInterval: Duration?
 
+    /// Whether to automatically push identify updates when local addresses change.
+    /// Default: true
+    public var autoPush: Bool
+
+    /// Maximum number of concurrent push operations.
+    /// Default: 10
+    public var maxConcurrentPushes: Int
+
     public init(
         protocolVersion: String = "ipfs/0.1.0",
         agentVersion: String = "swift-libp2p/0.1.0",
         timeout: Duration = .seconds(60),
         cacheTTL: Duration = .seconds(24 * 60 * 60),
         maxCacheSize: Int = 1000,
-        cleanupInterval: Duration? = .seconds(300)
+        cleanupInterval: Duration? = .seconds(300),
+        autoPush: Bool = true,
+        maxConcurrentPushes: Int = 10
     ) {
         self.protocolVersion = protocolVersion
         self.agentVersion = agentVersion
@@ -46,6 +56,8 @@ public struct IdentifyConfiguration: Sendable {
         self.cacheTTL = cacheTTL
         self.maxCacheSize = maxCacheSize
         self.cleanupInterval = cleanupInterval
+        self.autoPush = autoPush
+        self.maxConcurrentPushes = maxConcurrentPushes
     }
 }
 
@@ -59,6 +71,12 @@ public enum IdentifyEvent: Sendable {
 
     /// Received a push update from a peer.
     case pushReceived(peer: PeerID, info: IdentifyInfo)
+
+    /// Auto-push triggered due to address change.
+    case autoPushTriggered(peerCount: Int)
+
+    /// Auto-push to a peer failed (non-fatal).
+    case autoPushFailed(peer: PeerID, error: IdentifyError)
 
     /// Error during identification.
     case error(peer: PeerID?, IdentifyError)
@@ -135,6 +153,35 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         }
     }
 
+    /// Auto-push state for tracking connected peers.
+    private let autoPushState: Mutex<AutoPushState>
+
+    /// Reference to stream opener for auto-push.
+    private final class OpenerRef: @unchecked Sendable {
+        let opener: any StreamOpener
+        init(_ opener: any StreamOpener) {
+            self.opener = opener
+        }
+    }
+
+    /// Internal auto-push state.
+    private struct AutoPushState: Sendable {
+        /// Currently connected peers that support identify push.
+        var connectedPeers: Set<PeerID> = []
+
+        /// Reference to opener for making streams.
+        var openerRef: OpenerRef?
+
+        /// Reference to local key pair for signing.
+        var localKeyPair: KeyPair?
+
+        /// Closure to get current listen addresses.
+        var getListenAddresses: (@Sendable () async -> [Multiaddr])?
+
+        /// Closure to get current supported protocols.
+        var getSupportedProtocols: (@Sendable () async -> [String])?
+    }
+
     /// Background cleanup task.
     private let cleanupTask: Mutex<Task<Void, Never>?>
 
@@ -157,6 +204,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         self.configuration = configuration
         self.eventState = Mutex(EventState())
         self.cacheState = Mutex(CacheState())
+        self.autoPushState = Mutex(AutoPushState())
         self.cleanupTask = Mutex(nil)
     }
 
@@ -169,13 +217,25 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     ///   - localKeyPair: The local key pair
     ///   - getListenAddresses: Closure to get current listen addresses
     ///   - getSupportedProtocols: Closure to get current supported protocols
+    ///   - opener: Optional stream opener for auto-push (required if autoPush is enabled)
     public func registerHandlers(
         registry: any HandlerRegistry,
         localKeyPair: KeyPair,
         getListenAddresses: @escaping @Sendable () async -> [Multiaddr],
-        getSupportedProtocols: @escaping @Sendable () async -> [String]
+        getSupportedProtocols: @escaping @Sendable () async -> [String],
+        opener: (any StreamOpener)? = nil
     ) async {
         let config = self.configuration
+
+        // Store references for auto-push
+        if config.autoPush, let opener = opener {
+            autoPushState.withLock { state in
+                state.openerRef = OpenerRef(opener)
+                state.localKeyPair = localKeyPair
+                state.getListenAddresses = getListenAddresses
+                state.getSupportedProtocols = getSupportedProtocols
+            }
+        }
 
         // Handler for identify requests
         await registry.handle(LibP2PProtocol.identify) { [weak self] context in
@@ -351,6 +411,117 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         try await stream.write(data)
 
         emit(.sent(peer: peer))
+    }
+
+    // MARK: - Peer Tracking for Auto-Push
+
+    /// Notifies the service that a peer connected.
+    ///
+    /// Call this when a new peer connection is established.
+    /// The peer will receive auto-push updates when local addresses change.
+    ///
+    /// - Parameter peer: The connected peer ID
+    public func peerConnected(_ peer: PeerID) {
+        autoPushState.withLock { state in
+            state.connectedPeers.insert(peer)
+        }
+    }
+
+    /// Notifies the service that a peer disconnected.
+    ///
+    /// Call this when a peer connection is closed.
+    ///
+    /// - Parameter peer: The disconnected peer ID
+    public func peerDisconnected(_ peer: PeerID) {
+        autoPushState.withLock { state in
+            state.connectedPeers.remove(peer)
+        }
+    }
+
+    /// Returns the set of connected peers being tracked.
+    public var connectedPeers: Set<PeerID> {
+        autoPushState.withLock { $0.connectedPeers }
+    }
+
+    /// Notifies the service that local addresses have changed.
+    ///
+    /// When `autoPush` is enabled, this will trigger a push to all
+    /// connected peers with the new address information.
+    ///
+    /// - Parameter newAddresses: The new listen addresses (if nil, will fetch via getListenAddresses)
+    public func notifyAddressesChanged(newAddresses: [Multiaddr]? = nil) {
+        guard configuration.autoPush else { return }
+
+        // Get current state
+        let (peers, openerRef, keyPair, getAddrs, getProtos): (
+            Set<PeerID>, OpenerRef?, KeyPair?,
+            (@Sendable () async -> [Multiaddr])?,
+            (@Sendable () async -> [String])?
+        ) = autoPushState.withLock { state in
+            (state.connectedPeers, state.openerRef, state.localKeyPair,
+             state.getListenAddresses, state.getSupportedProtocols)
+        }
+
+        guard !peers.isEmpty else { return }
+        guard let opener = openerRef?.opener,
+              let keyPair = keyPair,
+              let getAddresses = getAddrs,
+              let getProtocols = getProtos else {
+            logger.debug("Auto-push not configured: missing opener or credentials")
+            return
+        }
+
+        emit(.autoPushTriggered(peerCount: peers.count))
+
+        // Run auto-push in background
+        Task { [weak self, configuration] in
+            guard let self = self else { return }
+
+            let addresses: [Multiaddr]
+            if let newAddrs = newAddresses {
+                addresses = newAddrs
+            } else {
+                addresses = await getAddresses()
+            }
+            let protocols = await getProtocols()
+
+            // Use TaskGroup for concurrent pushes with limit
+            await withTaskGroup(of: Void.self) { group in
+                var inFlight = 0
+
+                for peer in peers {
+                    // Limit concurrent pushes
+                    if inFlight >= configuration.maxConcurrentPushes {
+                        await group.next()
+                        inFlight -= 1
+                    }
+
+                    inFlight += 1
+                    group.addTask {
+                        do {
+                            try await self.push(
+                                to: peer,
+                                using: opener,
+                                localKeyPair: keyPair,
+                                listenAddresses: addresses,
+                                supportedProtocols: protocols
+                            )
+                        } catch {
+                            let identifyError: IdentifyError
+                            if let err = error as? IdentifyError {
+                                identifyError = err
+                            } else {
+                                identifyError = .streamError(error.localizedDescription)
+                            }
+                            self.emit(.autoPushFailed(peer: peer, error: identifyError))
+                        }
+                    }
+                }
+
+                // Wait for remaining tasks
+                await group.waitForAll()
+            }
+        }
     }
 
     /// Returns cached info for a peer.
@@ -625,6 +796,16 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     /// Also stops the background maintenance task if running.
     public func shutdown() {
         stopMaintenance()
+
+        // Clear auto-push state
+        autoPushState.withLock { state in
+            state.connectedPeers.removeAll()
+            state.openerRef = nil
+            state.localKeyPair = nil
+            state.getListenAddresses = nil
+            state.getSupportedProtocols = nil
+        }
+
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil

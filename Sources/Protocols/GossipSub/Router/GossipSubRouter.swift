@@ -371,7 +371,47 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         emit(.messageReceived(topic: message.topic, message: message))
 
         // Forward to mesh peers (except sender)
-        return forwardMessage(message, excluding: peerID)
+        var forwards = forwardMessage(message, excluding: peerID)
+
+        // === IDONTWANT Phase (v1.2) ===
+        // Send IDONTWANT to mesh peers for large messages
+        let threshold = configuration.idontwantThreshold
+        if threshold > 0 && message.data.count >= threshold {
+            let idontwantForwards = sendIDontWant(for: message, excluding: peerID)
+            forwards.append(contentsOf: idontwantForwards)
+        }
+
+        return forwards
+    }
+
+    /// Sends IDONTWANT to mesh peers for a message (v1.2).
+    ///
+    /// When we receive a large message, we tell other mesh peers that we don't
+    /// need them to forward it to us, reducing duplicate transmissions.
+    ///
+    /// - Returns: List of (peer, RPC) tuples for sending IDONTWANT
+    private func sendIDontWant(
+        for message: GossipSubMessage,
+        excluding: PeerID
+    ) -> [(peer: PeerID, rpc: GossipSubRPC)] {
+        let topic = message.topic
+        let meshPeers = meshState.meshPeers(for: topic)
+
+        var forwards: [(peer: PeerID, rpc: GossipSubRPC)] = []
+        let idontwant = ControlMessage.IDontWant(messageIDs: [message.id])
+        var control = ControlMessageBatch()
+        control.idontwants.append(idontwant)
+        let rpc = GossipSubRPC(control: control)
+
+        for peer in meshPeers where peer != excluding {
+            // Only send to peers that support v1.2
+            if let state = peerState.getPeer(peer), state.version >= .v12 {
+                forwards.append((peer, rpc))
+                emit(.idontWantSent(peer: peer, messageCount: 1))
+            }
+        }
+
+        return forwards
     }
 
     /// Forwards a message to mesh peers.
@@ -388,6 +428,12 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         let rpc = GossipSubRPC(messages: [message])
 
         for peer in meshPeers where peer != excluding {
+            // Check IDONTWANT (v1.2): Skip if peer doesn't want this message
+            if let state = peerState.getPeer(peer), state.doesntWant(message.id) {
+                emit(.messageSkippedByIdontWant(peer: peer, messageID: message.id))
+                continue
+            }
+
             forwards.append((peer, rpc))
             emit(.messageForwarded(peer: peer, topic: topic, messageID: message.id))
         }
@@ -417,6 +463,9 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
         // Handle PRUNEs
         handlePrunes(control.prunes, from: peerID)
+
+        // Handle IDONTWANTs (v1.2)
+        handleIDontWants(control.idontwants, from: peerID)
 
         return (response, iwantMessages)
     }
@@ -577,6 +626,39 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             // prune.peers could be used to discover new peers
 
             emit(.pruned(peer: peerID, topic: topic, backoff: prune.backoff.map { .seconds(Int64($0)) }))
+        }
+    }
+
+    /// Handles IDONTWANT messages (v1.2).
+    ///
+    /// Peers send IDONTWANT to indicate they don't want to receive certain messages.
+    /// This is typically used for large messages to prevent duplicate transmissions.
+    private func handleIDontWants(
+        _ idontwants: [ControlMessage.IDontWant],
+        from peerID: PeerID
+    ) {
+        guard !idontwants.isEmpty else { return }
+
+        // Check if peer supports v1.2
+        guard let state = peerState.getPeer(peerID), state.version >= .v12 else {
+            // Ignore IDONTWANT from peers that shouldn't send it
+            return
+        }
+
+        let ttl = configuration.idontwantTTL
+        var totalCount = 0
+
+        peerState.updatePeer(peerID) { state in
+            for idontwant in idontwants {
+                for msgID in idontwant.messageIDs {
+                    state.addDontWant(msgID, ttl: ttl)
+                    totalCount += 1
+                }
+            }
+        }
+
+        if totalCount > 0 {
+            emit(.idontWantReceived(peer: peerID, messageCount: totalCount))
         }
     }
 
@@ -770,6 +852,11 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// Cleans up expired backoffs for all peers.
     public func cleanupBackoffs() {
         peerState.clearExpiredBackoffs()
+    }
+
+    /// Cleans up expired IDONTWANT entries for all peers (v1.2).
+    public func cleanupIDontWants() {
+        peerState.clearExpiredDontWants()
     }
 
     /// Applies decay to all peer scores.

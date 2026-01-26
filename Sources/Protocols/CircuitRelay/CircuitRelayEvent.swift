@@ -13,6 +13,12 @@ public enum CircuitRelayEvent: Sendable {
     /// A reservation expired.
     case reservationExpired(relay: PeerID)
 
+    /// A reservation was successfully renewed.
+    case reservationRenewed(relay: PeerID, newExpiration: ContinuousClock.Instant)
+
+    /// A reservation renewal failed.
+    case reservationRenewalFailed(relay: PeerID, error: CircuitRelayError)
+
     /// A reservation request failed.
     case reservationFailed(relay: PeerID, error: CircuitRelayError)
 

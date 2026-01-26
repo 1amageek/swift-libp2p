@@ -92,6 +92,21 @@ public struct GossipSubConfiguration: Sendable {
     /// Maximum IWANT message IDs per request.
     public var maxIWantMessages: Int
 
+    // MARK: - IDONTWANT (v1.2)
+
+    /// Time to live for IDONTWANT entries.
+    ///
+    /// After receiving an IDONTWANT, we remember not to forward the specified
+    /// messages to that peer for this duration. The spec recommends 3 seconds.
+    public var idontwantTTL: Duration
+
+    /// Message size threshold for sending IDONTWANT (v1.2).
+    ///
+    /// When receiving a message larger than this threshold, we send IDONTWANT
+    /// to other mesh peers to prevent them from sending duplicates.
+    /// Set to 0 to disable IDONTWANT sending.
+    public var idontwantThreshold: Int
+
     // MARK: - Flood Publish
 
     /// Whether to flood publish to all peers (not just mesh).
@@ -127,6 +142,8 @@ public struct GossipSubConfiguration: Sendable {
         maxPendingGrafts: Int = 100,
         maxIHaveMessages: Int = 5000,
         maxIWantMessages: Int = 5000,
+        idontwantTTL: Duration = .seconds(3),
+        idontwantThreshold: Int = 1024,  // 1KB - send IDONTWANT for messages >= 1KB
         floodPublish: Bool = true,
         floodPublishMaxPeers: Int = 25
     ) {
@@ -153,6 +170,8 @@ public struct GossipSubConfiguration: Sendable {
         self.maxPendingGrafts = maxPendingGrafts
         self.maxIHaveMessages = maxIHaveMessages
         self.maxIWantMessages = maxIWantMessages
+        self.idontwantTTL = idontwantTTL
+        self.idontwantThreshold = idontwantThreshold
         self.floodPublish = floodPublish
         self.floodPublishMaxPeers = floodPublishMaxPeers
     }
