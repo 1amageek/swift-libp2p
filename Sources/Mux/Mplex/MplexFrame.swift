@@ -166,8 +166,9 @@ public struct MplexFrame: Sendable, Equatable {
             throw MplexError.invalidFlag(flagValue)
         }
 
-        // Extract data
-        let data = Data(buffer[offset..<offset + Int(length)])
+        // Extract data (use startIndex-relative addressing for Data slices)
+        let dataStart = buffer.startIndex + offset
+        let data = Data(buffer[dataStart..<dataStart + Int(length)])
         offset += Int(length)
 
         let frame = MplexFrame(streamID: streamID, flag: flag, data: data)
@@ -191,22 +192,24 @@ func encodeVarint(_ value: UInt64) -> [UInt8] {
 
 /// Decodes a varint from data.
 ///
+/// Uses `startIndex`-relative addressing so it works correctly with Data slices.
+///
 /// - Parameters:
-///   - data: The data to decode from
-///   - offset: The offset to start decoding at
+///   - data: The data to decode from (may be a slice with non-zero startIndex)
+///   - offset: The logical offset from the start of the data
 /// - Returns: The decoded value and number of bytes consumed, or nil if incomplete
 func decodeVarint(from data: Data, at offset: Int) -> (value: UInt64, size: Int)? {
     var value: UInt64 = 0
     var shift: UInt64 = 0
-    var index = offset
+    var index = data.startIndex + offset
 
-    while index < data.count {
+    while index < data.endIndex {
         let byte = data[index]
         value |= UInt64(byte & 0x7F) << shift
         index += 1
 
         if byte & 0x80 == 0 {
-            return (value, index - offset)
+            return (value, index - data.startIndex - offset)
         }
         shift += 7
 

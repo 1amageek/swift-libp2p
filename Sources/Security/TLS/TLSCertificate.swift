@@ -365,22 +365,4 @@ public enum TLSCertificate {
 
         return (publicKey, signature)
     }
-
-    private static func parseASN1Length(from data: Data, at offset: Int) -> (length: Int, size: Int)? {
-        guard offset < data.count else { return nil }
-
-        let firstByte = data[offset]
-        if firstByte < 128 {
-            return (Int(firstByte), 1)
-        }
-
-        let numBytes = Int(firstByte & 0x7F)
-        guard offset + numBytes < data.count else { return nil }
-
-        var length = 0
-        for i in 0..<numBytes {
-            length = (length << 8) | Int(data[offset + 1 + i])
-        }
-        return (length, numBytes + 1)
-    }
 }

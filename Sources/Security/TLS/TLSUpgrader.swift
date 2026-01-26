@@ -86,8 +86,51 @@ public final class TLSUpgrader: SecurityUpgrader, Sendable {
         expectedPeer: PeerID?,
         readBuffer: inout Data
     ) async throws -> (remotePeer: PeerID, sendKey: SymmetricKey, recvKey: SymmetricKey) {
-        // For simplicity, this implements a minimal handshake protocol
-        // that exchanges certificates and derives session keys.
+        // Create a task for the handshake with timeout
+        let handshakeTask = Task {
+            try await self.performHandshakeInternal(
+                connection: connection,
+                isInitiator: isInitiator,
+                localCertificate: localCertificate,
+                localPrivateKey: localPrivateKey,
+                expectedPeer: expectedPeer
+            )
+        }
+
+        let timeoutTask = Task {
+            try await Task.sleep(for: configuration.handshakeTimeout)
+            handshakeTask.cancel()
+        }
+
+        do {
+            let result = try await handshakeTask.value
+            timeoutTask.cancel()
+            // Update readBuffer with any remaining data
+            readBuffer = result.remainingBuffer
+            return (result.remotePeer, result.sendKey, result.recvKey)
+        } catch is CancellationError {
+            throw TLSError.timeout
+        } catch {
+            timeoutTask.cancel()
+            throw error
+        }
+    }
+
+    private struct HandshakeResult {
+        let remotePeer: PeerID
+        let sendKey: SymmetricKey
+        let recvKey: SymmetricKey
+        let remainingBuffer: Data
+    }
+
+    private func performHandshakeInternal(
+        connection: any RawConnection,
+        isInitiator: Bool,
+        localCertificate: Data,
+        localPrivateKey: P256.Signing.PrivateKey,
+        expectedPeer: PeerID?
+    ) async throws -> HandshakeResult {
+        var readBuffer = Data()
 
         // Exchange certificates
         let remoteCertificate: Data
@@ -114,7 +157,6 @@ public final class TLSUpgrader: SecurityUpgrader, Sendable {
         }
 
         // Derive session keys using HKDF
-        // In a real implementation, this would use the TLS key schedule
         let sharedSecret = deriveSharedSecret(
             localPrivateKey: localPrivateKey,
             remoteCertificate: remoteCertificate
@@ -125,7 +167,12 @@ public final class TLSUpgrader: SecurityUpgrader, Sendable {
             isInitiator: isInitiator
         )
 
-        return (remotePeer, sendKey, recvKey)
+        return HandshakeResult(
+            remotePeer: remotePeer,
+            sendKey: sendKey,
+            recvKey: recvKey,
+            remainingBuffer: readBuffer
+        )
     }
 
     private func sendCertificate(_ certificate: Data, to connection: any RawConnection) async throws {
@@ -185,7 +232,7 @@ public final class TLSUpgrader: SecurityUpgrader, Sendable {
         let ecOID = Data(ecOIDBytes)
 
         guard let oidRange = certificateDER.range(of: ecOID) else {
-            throw TLSError.invalidMessage
+            throw TLSError.spkiExtractionFailed
         }
 
         // Go back to find the SEQUENCE that contains this OID
@@ -198,7 +245,7 @@ public final class TLSUpgrader: SecurityUpgrader, Sendable {
 
                 // Verify it contains the OID we found
                 if possibleSPKI.range(of: ecOID) != nil {
-                    // Parse the SEQUENCE to get its full length
+                    // Parse the SEQUENCE to get its full length using shared utility
                     if let (length, lengthSize) = parseASN1Length(from: Array(possibleSPKI), at: 1) {
                         let totalSize = 1 + lengthSize + length
                         return Data(possibleSPKI.prefix(totalSize))
@@ -208,25 +255,7 @@ public final class TLSUpgrader: SecurityUpgrader, Sendable {
             searchStart -= 1
         }
 
-        throw TLSError.invalidMessage
-    }
-
-    private func parseASN1Length(from bytes: [UInt8], at offset: Int) -> (length: Int, size: Int)? {
-        guard offset < bytes.count else { return nil }
-
-        let firstByte = bytes[offset]
-        if firstByte < 128 {
-            return (Int(firstByte), 1)
-        }
-
-        let numBytes = Int(firstByte & 0x7F)
-        guard offset + numBytes < bytes.count else { return nil }
-
-        var length = 0
-        for i in 0..<numBytes {
-            length = (length << 8) | Int(bytes[offset + 1 + i])
-        }
-        return (length, numBytes + 1)
+        throw TLSError.spkiExtractionFailed
     }
 
     private func deriveSharedSecret(

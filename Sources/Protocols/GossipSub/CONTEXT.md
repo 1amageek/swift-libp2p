@@ -484,3 +484,50 @@ router.performScoringMaintenance()
 ```
 
 **テスト**: `Tests/Protocols/GossipSubTests/PeerScorerTests.swift` (21テスト)
+
+---
+
+## Known Issues (2026-01-26 レビュー)
+
+### LOW: IDONTWANT 辞書のサイズ上限なし
+
+**場所**: `Router/PeerState.swift` - `dontWantMessages` 辞書
+
+**問題**: ピアが大量の IDONTWANT メッセージを送信した場合、辞書が無制限に成長する可能性がある
+
+**対応**: `addDontWant()` に最大サイズチェックを追加
+
+```swift
+private let maxDontWantEntries = 10000
+
+func addDontWant(_ messageID: MessageID) {
+    guard dontWantMessages.count < maxDontWantEntries else { return }
+    dontWantMessages[messageID] = .now
+}
+```
+
+### INFO: HeartbeatManager のライフサイクル文書化
+
+**場所**: `Heartbeat/HeartbeatManager.swift`
+
+**補足**: `stop()` が呼ばれずにインスタンスが解放された場合、Task は停止するが明示的な文書化がない
+
+**対応**: deinit コメントまたは明示的なドキュメントを追加
+
+### INFO: emit() の戻り値無視
+
+**場所**: `Router/GossipSubRouter.swift:896`
+
+```swift
+_ = state.continuation?.yield(event)  // 戻り値を無視
+```
+
+**補足**: シャットダウン中にストリームが閉じている場合は正常。設計上の意図として文書化すべき
+
+### INFO: 双方向イベント発火
+
+**場所**: `Router/GossipSubRouter.swift:764, 770`
+
+**補足**: `peerJoinedMesh` と `grafted` が同じアクションで両方発火される。異なる監視目的のための設計決定
+
+**対応**: コメントで設計意図を明確化

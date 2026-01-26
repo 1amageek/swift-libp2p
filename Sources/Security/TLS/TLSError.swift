@@ -38,4 +38,16 @@ public enum TLSError: Error, Sendable {
 
     /// Unsupported TLS version.
     case unsupportedVersion
+
+    /// Frame exceeds maximum allowed size.
+    case frameTooLarge(size: Int, max: Int)
+
+    /// Nonce overflow - connection must be closed.
+    case nonceOverflow
+
+    /// Invalid ASN.1 structure in certificate.
+    case invalidASN1Structure
+
+    /// SPKI extraction failed.
+    case spkiExtractionFailed
 }

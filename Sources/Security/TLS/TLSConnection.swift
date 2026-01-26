@@ -4,25 +4,33 @@ import Crypto
 import P2PCore
 import Synchronization
 
-/// Internal state for TLS send operations.
+// MARK: - Separated State Structures
+
+/// Send-only state for write operations.
 private struct TLSSendState: Sendable {
-    var key: SymmetricKey
-    var nonce: UInt64
-    var isClosed: Bool
+    var cipher: TLSCipherState
 }
 
-/// Internal state for TLS receive operations.
+/// Receive-only state for read operations.
 private struct TLSRecvState: Sendable {
-    var key: SymmetricKey
-    var nonce: UInt64
-    var buffer: Data
-    var isClosed: Bool
+    var cipher: TLSCipherState
+    var buffer: Data = Data()
 }
+
+/// Shared state accessed by both read and write.
+private struct TLSSharedState: Sendable {
+    var isClosed: Bool = false
+}
+
+// MARK: - TLSConnection
 
 /// A TLS-secured connection.
 ///
 /// After TLS handshake completes, this wraps the underlying connection
-/// with encryption using the negotiated keys.
+/// with AES-GCM encryption using the negotiated keys.
+///
+/// Uses separate locks for send and receive operations to enable
+/// full-duplex communication without lock contention.
 public final class TLSConnection: SecuredConnection, Sendable {
 
     public let localPeer: PeerID
@@ -37,8 +45,15 @@ public final class TLSConnection: SecuredConnection, Sendable {
     }
 
     private let underlying: any RawConnection
+
+    /// Send state - only accessed by write()
     private let sendState: Mutex<TLSSendState>
+
+    /// Receive state - only accessed by read()
     private let recvState: Mutex<TLSRecvState>
+
+    /// Shared state - lightweight, accessed by both
+    private let sharedState: Mutex<TLSSharedState>
 
     /// Creates a TLS connection.
     ///
@@ -62,106 +77,113 @@ public final class TLSConnection: SecuredConnection, Sendable {
         self.remotePeer = remotePeer
 
         self.sendState = Mutex(TLSSendState(
-            key: sendKey,
-            nonce: 0,
-            isClosed: false
+            cipher: TLSCipherState(key: sendKey)
         ))
 
         self.recvState = Mutex(TLSRecvState(
-            key: recvKey,
-            nonce: 0,
-            buffer: initialBuffer,
-            isClosed: false
+            cipher: TLSCipherState(key: recvKey),
+            buffer: initialBuffer
         ))
+
+        self.sharedState = Mutex(TLSSharedState())
     }
 
+    // MARK: - SecuredConnection
+
     public func read() async throws -> Data {
-        let isClosed = recvState.withLock { $0.isClosed }
-        if isClosed {
-            throw TLSError.connectionClosed
+        // Try to read a complete frame
+        while true {
+            // 1. Check closed state (lightweight lock)
+            let closed = sharedState.withLock { $0.isClosed }
+            if closed {
+                throw TLSError.connectionClosed
+            }
+
+            // 2. Check buffer and decrypt (receive lock only)
+            let frameResult: Result<Data?, any Error> = recvState.withLock { state in
+                do {
+                    if let (message, consumed) = try readTLSMessage(from: state.buffer) {
+                        state.buffer = Data(state.buffer.dropFirst(consumed))
+
+                        // Decrypt the message
+                        let plaintext = try state.cipher.decrypt(message)
+                        return .success(plaintext)
+                    }
+                } catch {
+                    // Frame parsing or decryption failed - clear buffer to prevent infinite retry
+                    state.buffer = Data()
+                    return .failure(error)
+                }
+                return .success(nil)
+            }
+
+            switch frameResult {
+            case .success(let data):
+                if let data = data {
+                    return data
+                }
+            case .failure(let error):
+                // Mark as closed on error
+                sharedState.withLock { $0.isClosed = true }
+                throw error
+            }
+
+            // 3. Read from network (no lock held)
+            let chunk = try await underlying.read()
+            if chunk.isEmpty {
+                throw TLSError.connectionClosed
+            }
+
+            // 4. Append to buffer (receive lock only)
+            recvState.withLock { state in
+                state.buffer.append(chunk)
+            }
         }
-
-        // Read encrypted frame from underlying connection
-        let encrypted = try await underlying.read()
-
-        if encrypted.isEmpty {
-            recvState.withLock { $0.isClosed = true }
-            throw TLSError.connectionClosed
-        }
-
-        // For this implementation, we pass through directly
-        // In a full implementation, this would decrypt the TLS records
-        return encrypted
     }
 
     public func write(_ data: Data) async throws {
-        let isClosed = sendState.withLock { $0.isClosed }
-        if isClosed {
+        // 1. Check closed state (lightweight lock)
+        let closed = sharedState.withLock { $0.isClosed }
+        if closed {
             throw TLSError.connectionClosed
         }
 
-        // For this implementation, we pass through directly
-        // In a full implementation, this would encrypt as TLS records
-        try await underlying.write(data)
+        // Handle empty data: still send a frame (carries authentication)
+        if data.isEmpty {
+            let encrypted = try sendState.withLock { state -> Data in
+                let ciphertext = try state.cipher.encrypt(Data())
+                return try encodeTLSMessage(ciphertext)
+            }
+            try await underlying.write(encrypted)
+            return
+        }
+
+        var remaining = data[data.startIndex...]
+
+        while !remaining.isEmpty {
+            // 2. Re-check closed state in loop
+            let closed = sharedState.withLock { $0.isClosed }
+            if closed {
+                throw TLSError.connectionClosed
+            }
+
+            let chunkSize = min(remaining.count, tlsMaxPlaintextSize)
+            let chunk = Data(remaining.prefix(chunkSize))
+            remaining = remaining.dropFirst(chunkSize)
+
+            // 3. Encrypt (send lock only)
+            let encrypted = try sendState.withLock { state -> Data in
+                let ciphertext = try state.cipher.encrypt(chunk)
+                return try encodeTLSMessage(ciphertext)
+            }
+
+            // 4. Write to network (no lock held)
+            try await underlying.write(encrypted)
+        }
     }
 
     public func close() async throws {
-        sendState.withLock { $0.isClosed = true }
-        recvState.withLock { $0.isClosed = true }
-
+        sharedState.withLock { $0.isClosed = true }
         try await underlying.close()
-    }
-}
-
-/// TLS record layer framing.
-///
-/// TLS 1.3 record format:
-/// ```
-/// struct {
-///     ContentType type;      // 1 byte
-///     ProtocolVersion legacy_record_version; // 2 bytes, always 0x0303
-///     uint16 length;         // 2 bytes
-///     opaque fragment[length];
-/// } TLSPlaintext;
-/// ```
-enum TLSRecord {
-
-    /// Content types for TLS records.
-    enum ContentType: UInt8 {
-        case changeCipherSpec = 20
-        case alert = 21
-        case handshake = 22
-        case applicationData = 23
-    }
-
-    /// Maximum TLS record size (16KB + overhead).
-    static let maxRecordSize = 16384 + 256
-
-    /// Encodes a TLS record.
-    static func encode(type: ContentType, data: Data) -> Data {
-        var record = Data()
-        record.append(type.rawValue)
-        record.append(0x03)  // TLS 1.2 version for compatibility
-        record.append(0x03)
-        record.append(UInt8(data.count >> 8))
-        record.append(UInt8(data.count & 0xFF))
-        record.append(data)
-        return record
-    }
-
-    /// Decodes a TLS record.
-    ///
-    /// - Returns: Tuple of (content type, data, bytes consumed), or nil if incomplete
-    static func decode(from buffer: Data) -> (type: ContentType, data: Data, consumed: Int)? {
-        guard buffer.count >= 5 else { return nil }
-
-        guard let type = ContentType(rawValue: buffer[0]) else { return nil }
-
-        let length = Int(buffer[3]) << 8 | Int(buffer[4])
-        guard length <= maxRecordSize else { return nil }
-        guard buffer.count >= 5 + length else { return nil }
-
-        let data = Data(buffer[5..<5 + length])
-        return (type, data, 5 + length)
     }
 }
