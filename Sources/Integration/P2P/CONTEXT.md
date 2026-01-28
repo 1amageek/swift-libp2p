@@ -341,13 +341,22 @@ Tests/Integration/P2PTests/
     └── Multiaddr extension tests
 ```
 
+## 未実装機能
+
+| 機能 | 説明 |
+|------|------|
+| ~~Early Muxer Negotiation~~ | ✅ 実装済み — `EarlyMuxerNegotiating` プロトコルで TLS ALPN にmuxerヒントを含め、muxerネゴシエーション RTT を省略 |
+| Resource Manager (multi-scope) | 接続・ストリーム・メモリのスコープ別リソース制限。Go 実装の `rcmgr` 相当 |
+
 ## 品質向上TODO
 
 ### 高優先度
+- [x] **Early Muxer Negotiation** - TLS ALPN でmuxerヒントを渡し、muxerネゴシエーションを省略
 - [ ] **UpgradeError/NodeErrorの包括的テスト** - エラーパステスト追加
 - [ ] **再接続ロジックのユニットテスト** - ポリシーとバックオフのテスト
 
 ### 中優先度
+- [ ] **Resource Manager** - マルチスコープのリソース制限
 - [ ] **接続トリムアルゴリズムの検証テスト** - タグ、保護、優先度のテスト
 - [ ] **イベントストリームの挙動ドキュメント化** - 最初のアクセスでストリーム作成
 

@@ -24,80 +24,138 @@
 
 **迷ったら** → Class + Mutex（後からActorに変更は難しい）
 
-### 2. EventEmitting パターン
+### 2. イベントパターン
 
-`AsyncStream<Event>` を公開するサービスは `EventEmitting` プロトコルに準拠すること。
+`AsyncStream<Event>` を公開する型には2つのパターンがある。**同一モジュール内では必ず同一パターンを使うこと。**
 
-#### プロトコル準拠
+#### パターン選択基準
+
+| 基準 | EventEmitting（単一消費者） | EventBroadcaster（多消費者） |
+|-----|--------------------------|---------------------------|
+| 消費者数 | 1つの `for await` ループ | 複数の独立した `for await` ループ |
+| `events` の意味 | 同じストリームを返す | 呼出しごとに新しいストリームを返す |
+| プロトコル準拠 | `EventEmitting` | なし（プロトコル不要） |
+| 使用層 | Protocols層（Ping, Identify, Kademlia等） | Discovery層（CompositeDiscovery, SWIM, mDNS等） |
+
+**重要**: 2つのパターンは排他的。1つの型が両方に準拠してはならない。
+
+#### パターンA: EventEmitting（単一消費者）
 
 ```swift
 public final class MyService: EventEmitting, Sendable {
-    // ...
-}
-```
+    // イベント状態（専用）
+    private let eventState: Mutex<EventState>
 
-#### パターンA（必須）
-
-イベント状態と業務状態を分離する:
-
-```swift
-// イベント状態（専用）
-private let eventState: Mutex<EventState>
-
-private struct EventState: Sendable {
-    var stream: AsyncStream<MyEvent>?
-    var continuation: AsyncStream<MyEvent>.Continuation?
-}
-
-// 業務状態（分離）
-private let serviceState: Mutex<ServiceState>
-
-private struct ServiceState: Sendable {
-    // 業務ロジック用の状態
-}
-```
-
-#### 必須メソッド
-
-```swift
-// events プロパティ
-public var events: AsyncStream<MyEvent> {
-    eventState.withLock { state in
-        if let existing = state.stream { return existing }
-        let (stream, continuation) = AsyncStream<MyEvent>.makeStream()
-        state.stream = stream
-        state.continuation = continuation
-        return stream
+    private struct EventState: Sendable {
+        var stream: AsyncStream<MyEvent>?
+        var continuation: AsyncStream<MyEvent>.Continuation?
     }
-}
 
-// emit メソッド（private）
-private func emit(_ event: MyEvent) {
-    eventState.withLock { state in
-        state.continuation?.yield(event)
+    // 業務状態（分離）
+    private let serviceState: Mutex<ServiceState>
+
+    // events: 同じストリームを返す（単一消費者）
+    public var events: AsyncStream<MyEvent> {
+        eventState.withLock { state in
+            if let existing = state.stream { return existing }
+            let (stream, continuation) = AsyncStream<MyEvent>.makeStream()
+            state.stream = stream
+            state.continuation = continuation
+            return stream
+        }
     }
-}
 
-// shutdown メソッド（EventEmitting 準拠）
-public func shutdown() {
-    eventState.withLock { state in
-        state.continuation?.finish()  // 必須！
-        state.continuation = nil
-        state.stream = nil            // 必須！
+    private func emit(_ event: MyEvent) {
+        eventState.withLock { $0.continuation?.yield(event) }
+    }
+
+    // EventEmitting 準拠
+    public func shutdown() {
+        eventState.withLock { state in
+            state.continuation?.finish()  // 必須！
+            state.continuation = nil
+            state.stream = nil            // 必須！
+        }
     }
 }
 ```
-
-#### なぜこのパターンか
-
-1. **スレッドセーフティ**: イベントと業務ロジックの独立ロックで競合回避
-2. **SOLID原則**: 単一責任に準拠
-3. **リソースリーク防止**: `shutdown()` で確実に AsyncStream を終了
-4. **テスト容易性**: 状態分離でモック化が容易
 
 **注意**: `continuation.finish()` と `stream = nil` の両方が必須。どちらかが欠けると `for await` がハングする。
 
-### 3. エラーハンドリング
+#### パターンB: EventBroadcaster（多消費者）
+
+```swift
+public final class MyService: Sendable {
+    private let broadcaster = EventBroadcaster<MyEvent>()
+
+    // events: 呼出しごとに新しいストリームを返す（多消費者）
+    public var events: AsyncStream<MyEvent> {
+        broadcaster.subscribe()
+    }
+
+    private func emit(_ event: MyEvent) {
+        broadcaster.emit(event)
+    }
+
+    // ライフサイクル終了
+    public func shutdown() {
+        broadcaster.shutdown()
+    }
+
+    deinit {
+        broadcaster.shutdown()  // idempotent
+    }
+}
+```
+
+actor で使う場合は `nonisolated let` で宣言する:
+
+```swift
+public actor MyActor {
+    private nonisolated let broadcaster = EventBroadcaster<MyEvent>()
+
+    public nonisolated var events: AsyncStream<MyEvent> {
+        broadcaster.subscribe()
+    }
+}
+```
+
+#### Mutex 内でのイベント発行禁止
+
+Mutex ロック内から直接 `emit()` を呼ばない。ロック内でイベントを収集し、ロック外で発行する:
+
+```swift
+// BAD: ネストロックの危険
+func doWork() {
+    state.withLock { s in
+        // ... 状態変更 ...
+        broadcaster.emit(.changed)  // ← broadcaster 内部にも Mutex がある
+    }
+}
+
+// GOOD: ロック外で発行
+func doWork() {
+    let pendingEvents = state.withLock { s -> [MyEvent] in
+        // ... 状態変更 ...
+        return [.changed]
+    }
+    for event in pendingEvents {
+        broadcaster.emit(event)
+    }
+}
+```
+
+### 3. 同一モジュール統一原則
+
+同一モジュール内の型は以下を統一すること:
+
+- **並行処理モデル**: Actor か Class+Mutex か（ルール1の基準で判定）
+- **イベントパターン**: EventEmitting か EventBroadcaster か（ルール2の基準で判定）
+- **ライフサイクルメソッド名**: `shutdown()` / `stop()` / `close()` を混在させない
+
+新しい型を追加する際は、まずそのモジュール内の既存の型を確認し、同じパターンに従うこと。
+
+### 4. エラーハンドリング
 
 ```swift
 // BAD: エラーを握りつぶす
@@ -107,7 +165,7 @@ let addr = try? channel.localAddress?.toMultiaddr()
 let addr = try channel.localAddress?.toMultiaddr()
 ```
 
-### 4. Sendable
+### 5. Sendable
 
 `@unchecked Sendable` は使わない。`Mutex<T>` で解決する。
 

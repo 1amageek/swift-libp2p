@@ -30,38 +30,19 @@ public enum PeerStoreEvent: Sendable, Hashable {
 /// - Emitting events on changes
 public protocol PeerStore: Sendable {
 
-    /// Returns all addresses known for a peer.
-    ///
-    /// - Parameter peer: The peer to look up.
-    /// - Returns: Array of known addresses, may be empty.
+    /// Returns all non-expired addresses known for a peer.
     func addresses(for peer: PeerID) async -> [Multiaddr]
 
-    /// Adds an address for a peer.
+    /// Adds multiple addresses for a peer with an optional TTL.
     ///
-    /// If the address already exists, it updates the lastSeen timestamp.
-    ///
-    /// - Parameters:
-    ///   - address: The address to add.
-    ///   - peer: The peer to add the address for.
-    func addAddress(_ address: Multiaddr, for peer: PeerID) async
-
-    /// Adds multiple addresses for a peer.
-    ///
-    /// - Parameters:
-    ///   - addresses: The addresses to add.
-    ///   - peer: The peer to add the addresses for.
-    func addAddresses(_ addresses: [Multiaddr], for peer: PeerID) async
+    /// If an address already exists and the new expiration is later than the current one,
+    /// the expiration is extended (Go-compatible: new TTL > old TTL only).
+    func addAddresses(_ addresses: [Multiaddr], for peer: PeerID, ttl: Duration?) async
 
     /// Removes an address from a peer.
-    ///
-    /// - Parameters:
-    ///   - address: The address to remove.
-    ///   - peer: The peer to remove the address from.
     func removeAddress(_ address: Multiaddr, for peer: PeerID) async
 
     /// Removes all information about a peer.
-    ///
-    /// - Parameter peer: The peer to remove.
     func removePeer(_ peer: PeerID) async
 
     /// Returns all known peer IDs.
@@ -71,29 +52,33 @@ public protocol PeerStore: Sendable {
     func peerCount() async -> Int
 
     /// Returns detailed record for an address.
-    ///
-    /// - Parameters:
-    ///   - address: The address to look up.
-    ///   - peer: The peer the address belongs to.
-    /// - Returns: The address record, or nil if not found.
     func addressRecord(_ address: Multiaddr, for peer: PeerID) async -> AddressRecord?
 
     /// Records a successful connection to an address.
-    ///
-    /// - Parameters:
-    ///   - address: The address that succeeded.
-    ///   - peer: The peer the address belongs to.
     func recordSuccess(address: Multiaddr, for peer: PeerID) async
 
     /// Records a failed connection attempt to an address.
-    ///
-    /// - Parameters:
-    ///   - address: The address that failed.
-    ///   - peer: The peer the address belongs to.
     func recordFailure(address: Multiaddr, for peer: PeerID) async
 
     /// Stream of events from the peer store.
+    ///
+    /// Each access returns an independent subscriber stream (multi-consumer).
     var events: AsyncStream<PeerStoreEvent> { get }
+}
+
+// MARK: - PeerStore Convenience Extensions
+
+extension PeerStore {
+
+    /// Adds a single address for a peer with no explicit TTL (uses store default).
+    public func addAddress(_ address: Multiaddr, for peer: PeerID) async {
+        await addAddresses([address], for: peer, ttl: nil)
+    }
+
+    /// Adds multiple addresses for a peer with no explicit TTL (uses store default).
+    public func addAddresses(_ addresses: [Multiaddr], for peer: PeerID) async {
+        await addAddresses(addresses, for: peer, ttl: nil)
+    }
 }
 
 // MARK: - Address Record
@@ -119,6 +104,9 @@ public struct AddressRecord: Sendable, Hashable {
     /// Number of consecutive failures.
     public var failureCount: Int
 
+    /// Expiration time. nil = never expires.
+    public var expiresAt: ContinuousClock.Instant?
+
     /// Creates a new address record.
     public init(
         address: Multiaddr,
@@ -126,7 +114,8 @@ public struct AddressRecord: Sendable, Hashable {
         lastSeen: ContinuousClock.Instant = .now,
         lastSuccess: ContinuousClock.Instant? = nil,
         lastFailure: ContinuousClock.Instant? = nil,
-        failureCount: Int = 0
+        failureCount: Int = 0,
+        expiresAt: ContinuousClock.Instant? = nil
     ) {
         self.address = address
         self.addedAt = addedAt
@@ -134,6 +123,7 @@ public struct AddressRecord: Sendable, Hashable {
         self.lastSuccess = lastSuccess
         self.lastFailure = lastFailure
         self.failureCount = failureCount
+        self.expiresAt = expiresAt
     }
 
     /// Whether this address has ever had a successful connection.
@@ -146,6 +136,12 @@ public struct AddressRecord: Sendable, Hashable {
         guard let failure = lastFailure else { return false }
         guard let success = lastSuccess else { return true }
         return failure > success
+    }
+
+    /// Whether this address has expired.
+    public var isExpired: Bool {
+        guard let expiresAt else { return false }
+        return ContinuousClock.now >= expiresAt
     }
 }
 
@@ -191,13 +187,25 @@ public struct MemoryPeerStoreConfiguration: Sendable {
     /// Maximum addresses per peer.
     public var maxAddressesPerPeer: Int
 
+    /// Default TTL for addresses when no explicit TTL is provided.
+    /// `nil` = addresses never expire.
+    public var defaultAddressTTL: Duration?
+
+    /// Interval for background garbage collection of expired addresses.
+    /// `nil` = GC disabled.
+    public var gcInterval: Duration?
+
     /// Creates a configuration.
     public init(
         maxPeers: Int = 1000,
-        maxAddressesPerPeer: Int = 10
+        maxAddressesPerPeer: Int = 10,
+        defaultAddressTTL: Duration? = .seconds(3600),
+        gcInterval: Duration? = .seconds(60)
     ) {
         self.maxPeers = maxPeers
         self.maxAddressesPerPeer = maxAddressesPerPeer
+        self.defaultAddressTTL = defaultAddressTTL
+        self.gcInterval = gcInterval
     }
 
     /// Default configuration.
@@ -208,189 +216,304 @@ public struct MemoryPeerStoreConfiguration: Sendable {
 
 /// In-memory implementation of PeerStore with LRU eviction.
 ///
-/// Thread-safe using actor isolation.
-public actor MemoryPeerStore: PeerStore {
+/// Uses `Mutex` for thread-safe high-frequency access.
+/// Events are distributed via `EventBroadcaster` (multi-consumer).
+public final class MemoryPeerStore: PeerStore, Sendable {
 
-    // MARK: - Properties
+    // MARK: - State
 
     private let configuration: MemoryPeerStoreConfiguration
-    private var peers: [PeerID: PeerRecord] = [:]
+    private let state: Mutex<State>
+    private let broadcaster = EventBroadcaster<PeerStoreEvent>()
 
-    /// Ordered list of peer IDs for LRU eviction (most recent at end).
-    private var accessOrder: [PeerID] = []
-
-    private let eventContinuation: AsyncStream<PeerStoreEvent>.Continuation
-    public nonisolated let events: AsyncStream<PeerStoreEvent>
+    private struct State: Sendable {
+        var peers: [PeerID: PeerRecord] = [:]
+        var accessOrder: [PeerID] = []
+        var gcTask: Task<Void, Never>?
+    }
 
     // MARK: - Initialization
 
-    /// Creates a new memory peer store.
-    ///
-    /// - Parameter configuration: Configuration options.
     public init(configuration: MemoryPeerStoreConfiguration = .default) {
         self.configuration = configuration
-
-        var continuation: AsyncStream<PeerStoreEvent>.Continuation!
-        self.events = AsyncStream { cont in
-            continuation = cont
-        }
-        self.eventContinuation = continuation
+        self.state = Mutex(State())
     }
 
     deinit {
-        eventContinuation.finish()
+        state.withLock { $0.gcTask?.cancel() }
+        broadcaster.shutdown()
+    }
+
+    // MARK: - Lifecycle
+
+    /// Shuts down the peer store: stops GC and terminates all event streams.
+    public func shutdown() {
+        state.withLock { s in
+            s.gcTask?.cancel()
+            s.gcTask = nil
+        }
+        broadcaster.shutdown()
     }
 
     // MARK: - PeerStore Protocol
 
+    public var events: AsyncStream<PeerStoreEvent> {
+        broadcaster.subscribe()
+    }
+
     public func addresses(for peer: PeerID) async -> [Multiaddr] {
-        guard let record = peers[peer] else { return [] }
-        touchPeer(peer)
-        return Array(record.addresses.keys)
+        state.withLock { s in
+            guard let record = s.peers[peer] else { return [] }
+            touchPeer(peer, state: &s)
+            return record.addresses.values
+                .filter { !$0.isExpired }
+                .map(\.address)
+        }
     }
 
-    public func addAddress(_ address: Multiaddr, for peer: PeerID) async {
-        await addAddresses([address], for: peer)
-    }
+    public func addAddresses(_ addresses: [Multiaddr], for peer: PeerID, ttl: Duration?) async {
+        let pendingEvents = state.withLock { s -> [PeerStoreEvent] in
+            let now = ContinuousClock.now
+            let effectiveTTL = ttl ?? configuration.defaultAddressTTL
+            let expiresAt = effectiveTTL.map { now + $0 }
+            var events: [PeerStoreEvent] = []
 
-    public func addAddresses(_ addresses: [Multiaddr], for peer: PeerID) async {
-        let now = ContinuousClock.now
-
-        if var record = peers[peer] {
-            // Update existing peer
-            for address in addresses {
-                if record.addresses[address] != nil {
-                    record.addresses[address]?.lastSeen = now
-                    eventContinuation.yield(.addressUpdated(peer, address))
-                } else {
-                    // Add new address if under limit
-                    if record.addresses.count < configuration.maxAddressesPerPeer {
-                        record.addresses[address] = AddressRecord(address: address, addedAt: now, lastSeen: now)
-                        eventContinuation.yield(.addressAdded(peer, address))
+            if var record = s.peers[peer] {
+                for address in addresses {
+                    if var existing = record.addresses[address] {
+                        existing.lastSeen = now
+                        // Go-compatible: extend TTL only if new expiration is later
+                        if let newExpiry = expiresAt {
+                            if let oldExpiry = existing.expiresAt {
+                                if newExpiry > oldExpiry {
+                                    existing.expiresAt = newExpiry
+                                }
+                            }
+                            // else: old was permanent, keep permanent
+                        }
+                        // nil TTL = upgrade to permanent
+                        if expiresAt == nil {
+                            existing.expiresAt = nil
+                        }
+                        record.addresses[address] = existing
+                        events.append(.addressUpdated(peer, address))
                     } else {
-                        // Evict least recently seen address
-                        evictOldestAddress(from: &record, peer: peer)
-                        record.addresses[address] = AddressRecord(address: address, addedAt: now, lastSeen: now)
-                        eventContinuation.yield(.addressAdded(peer, address))
+                        if record.addresses.count < configuration.maxAddressesPerPeer {
+                            record.addresses[address] = AddressRecord(
+                                address: address, addedAt: now, lastSeen: now, expiresAt: expiresAt
+                            )
+                            events.append(.addressAdded(peer, address))
+                        } else {
+                            if let evicted = evictOldestAddress(from: &record) {
+                                events.append(.addressRemoved(peer, evicted))
+                            }
+                            record.addresses[address] = AddressRecord(
+                                address: address, addedAt: now, lastSeen: now, expiresAt: expiresAt
+                            )
+                            events.append(.addressAdded(peer, address))
+                        }
                     }
                 }
+                record.lastSeen = now
+                s.peers[peer] = record
+                touchPeer(peer, state: &s)
+            } else {
+                events.append(contentsOf: evictPeersIfNeeded(state: &s))
+                var newRecord = PeerRecord(peerID: peer, addedAt: now, lastSeen: now)
+                for address in addresses.prefix(configuration.maxAddressesPerPeer) {
+                    newRecord.addresses[address] = AddressRecord(
+                        address: address, addedAt: now, lastSeen: now, expiresAt: expiresAt
+                    )
+                    events.append(.addressAdded(peer, address))
+                }
+                s.peers[peer] = newRecord
+                s.accessOrder.append(peer)
             }
-            record.lastSeen = now
-            peers[peer] = record
-            touchPeer(peer)
-        } else {
-            // New peer
-            evictPeersIfNeeded()
-
-            var newRecord = PeerRecord(peerID: peer, addedAt: now, lastSeen: now)
-            for address in addresses.prefix(configuration.maxAddressesPerPeer) {
-                newRecord.addresses[address] = AddressRecord(address: address, addedAt: now, lastSeen: now)
-                eventContinuation.yield(.addressAdded(peer, address))
-            }
-            peers[peer] = newRecord
-            accessOrder.append(peer)
+            return events
+        }
+        for event in pendingEvents {
+            broadcaster.emit(event)
         }
     }
 
     public func removeAddress(_ address: Multiaddr, for peer: PeerID) async {
-        guard var record = peers[peer] else { return }
-
-        if record.addresses.removeValue(forKey: address) != nil {
-            eventContinuation.yield(.addressRemoved(peer, address))
-
-            if record.addresses.isEmpty {
-                // Remove peer if no addresses left
-                peers.removeValue(forKey: peer)
-                accessOrder.removeAll { $0 == peer }
-                eventContinuation.yield(.peerRemoved(peer))
-            } else {
-                peers[peer] = record
+        let pendingEvents = state.withLock { s -> [PeerStoreEvent] in
+            guard var record = s.peers[peer] else { return [] }
+            var events: [PeerStoreEvent] = []
+            if record.addresses.removeValue(forKey: address) != nil {
+                events.append(.addressRemoved(peer, address))
+                if record.addresses.isEmpty {
+                    s.peers.removeValue(forKey: peer)
+                    s.accessOrder.removeAll { $0 == peer }
+                    events.append(.peerRemoved(peer))
+                } else {
+                    s.peers[peer] = record
+                }
             }
+            return events
+        }
+        for event in pendingEvents {
+            broadcaster.emit(event)
         }
     }
 
     public func removePeer(_ peer: PeerID) async {
-        guard let record = peers.removeValue(forKey: peer) else { return }
-        accessOrder.removeAll { $0 == peer }
-
-        // Emit address removed events for each address
-        for address in record.addresses.keys {
-            eventContinuation.yield(.addressRemoved(peer, address))
+        let pendingEvents = state.withLock { s -> [PeerStoreEvent] in
+            guard let record = s.peers.removeValue(forKey: peer) else { return [] }
+            s.accessOrder.removeAll { $0 == peer }
+            var events: [PeerStoreEvent] = []
+            for address in record.addresses.keys {
+                events.append(.addressRemoved(peer, address))
+            }
+            events.append(.peerRemoved(peer))
+            return events
         }
-        eventContinuation.yield(.peerRemoved(peer))
+        for event in pendingEvents {
+            broadcaster.emit(event)
+        }
     }
 
     public func allPeers() async -> [PeerID] {
-        Array(peers.keys)
+        state.withLock { Array($0.peers.keys) }
     }
 
     public func peerCount() async -> Int {
-        peers.count
+        state.withLock { $0.peers.count }
     }
 
     public func addressRecord(_ address: Multiaddr, for peer: PeerID) async -> AddressRecord? {
-        peers[peer]?.addresses[address]
+        state.withLock { $0.peers[peer]?.addresses[address] }
     }
 
     public func recordSuccess(address: Multiaddr, for peer: PeerID) async {
-        guard var record = peers[peer],
-              var addrRecord = record.addresses[address] else { return }
-
-        let now = ContinuousClock.now
-        addrRecord.lastSuccess = now
-        addrRecord.lastSeen = now
-        addrRecord.failureCount = 0
-        record.addresses[address] = addrRecord
-        record.lastSeen = now
-        peers[peer] = record
-
-        touchPeer(peer)
-        eventContinuation.yield(.addressUpdated(peer, address))
-    }
-
-    public func recordFailure(address: Multiaddr, for peer: PeerID) async {
-        guard var record = peers[peer],
-              var addrRecord = record.addresses[address] else { return }
-
-        let now = ContinuousClock.now
-        addrRecord.lastFailure = now
-        addrRecord.lastSeen = now
-        addrRecord.failureCount += 1
-        record.addresses[address] = addrRecord
-        record.lastSeen = now
-        peers[peer] = record
-
-        eventContinuation.yield(.addressUpdated(peer, address))
-    }
-
-    // MARK: - Private Methods
-
-    /// Moves a peer to the end of the access order (most recently used).
-    private func touchPeer(_ peer: PeerID) {
-        if let index = accessOrder.firstIndex(of: peer) {
-            accessOrder.remove(at: index)
-            accessOrder.append(peer)
+        let event = state.withLock { s -> PeerStoreEvent? in
+            guard var record = s.peers[peer],
+                  var addrRecord = record.addresses[address] else { return nil }
+            let now = ContinuousClock.now
+            addrRecord.lastSuccess = now
+            addrRecord.lastSeen = now
+            addrRecord.failureCount = 0
+            record.addresses[address] = addrRecord
+            record.lastSeen = now
+            s.peers[peer] = record
+            touchPeer(peer, state: &s)
+            return .addressUpdated(peer, address)
+        }
+        if let event {
+            broadcaster.emit(event)
         }
     }
 
-    /// Evicts peers if over the limit.
-    private func evictPeersIfNeeded() {
-        while peers.count >= configuration.maxPeers, let oldest = accessOrder.first {
-            if let record = peers.removeValue(forKey: oldest) {
-                accessOrder.removeFirst()
-                for address in record.addresses.keys {
-                    eventContinuation.yield(.addressRemoved(oldest, address))
+    public func recordFailure(address: Multiaddr, for peer: PeerID) async {
+        let event = state.withLock { s -> PeerStoreEvent? in
+            guard var record = s.peers[peer],
+                  var addrRecord = record.addresses[address] else { return nil }
+            let now = ContinuousClock.now
+            addrRecord.lastFailure = now
+            addrRecord.lastSeen = now
+            addrRecord.failureCount += 1
+            record.addresses[address] = addrRecord
+            record.lastSeen = now
+            s.peers[peer] = record
+            return .addressUpdated(peer, address)
+        }
+        if let event {
+            broadcaster.emit(event)
+        }
+    }
+
+    // MARK: - Garbage Collection
+
+    /// Removes all expired addresses and peers with no remaining addresses.
+    @discardableResult
+    public func cleanup() -> Int {
+        let (totalRemoved, pendingEvents) = state.withLock { s -> (Int, [PeerStoreEvent]) in
+            var totalRemoved = 0
+            var events: [PeerStoreEvent] = []
+            var peersToRemove: [PeerID] = []
+
+            for (peerID, var record) in s.peers {
+                let expiredAddrs = record.addresses.filter { $0.value.isExpired }
+                for (addr, _) in expiredAddrs {
+                    record.addresses.removeValue(forKey: addr)
+                    events.append(.addressRemoved(peerID, addr))
                 }
-                eventContinuation.yield(.peerRemoved(oldest))
+                totalRemoved += expiredAddrs.count
+                if record.addresses.isEmpty {
+                    peersToRemove.append(peerID)
+                } else if !expiredAddrs.isEmpty {
+                    s.peers[peerID] = record
+                }
+            }
+
+            for peerID in peersToRemove {
+                s.peers.removeValue(forKey: peerID)
+                s.accessOrder.removeAll { $0 == peerID }
+                events.append(.peerRemoved(peerID))
+            }
+            return (totalRemoved, events)
+        }
+        for event in pendingEvents {
+            broadcaster.emit(event)
+        }
+        return totalRemoved
+    }
+
+    /// Starts the background garbage collection task.
+    public func startGC() {
+        guard let interval = configuration.gcInterval else { return }
+        state.withLock { s in
+            guard s.gcTask == nil else { return }
+            s.gcTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(for: interval)
+                        self?.cleanup()
+                    } catch {
+                        break
+                    }
+                }
             }
         }
     }
 
-    /// Evicts the oldest address from a peer record.
-    private func evictOldestAddress(from record: inout PeerRecord, peer: PeerID) {
-        guard let oldest = record.addresses.values.min(by: { $0.lastSeen < $1.lastSeen }) else { return }
+    /// Stops the background garbage collection task.
+    public func stopGC() {
+        state.withLock { s in
+            s.gcTask?.cancel()
+            s.gcTask = nil
+        }
+    }
+
+    // MARK: - Private
+
+    private func touchPeer(_ peer: PeerID, state s: inout State) {
+        if let index = s.accessOrder.firstIndex(of: peer) {
+            s.accessOrder.remove(at: index)
+            s.accessOrder.append(peer)
+        }
+    }
+
+    private func evictPeersIfNeeded(state s: inout State) -> [PeerStoreEvent] {
+        var events: [PeerStoreEvent] = []
+        while s.peers.count >= configuration.maxPeers, let oldest = s.accessOrder.first {
+            if let record = s.peers.removeValue(forKey: oldest) {
+                s.accessOrder.removeFirst()
+                for address in record.addresses.keys {
+                    events.append(.addressRemoved(oldest, address))
+                }
+                events.append(.peerRemoved(oldest))
+            }
+        }
+        return events
+    }
+
+    private func evictOldestAddress(from record: inout PeerRecord) -> Multiaddr? {
+        guard let oldest = record.addresses.values.min(by: { $0.lastSeen < $1.lastSeen }) else {
+            return nil
+        }
         record.addresses.removeValue(forKey: oldest.address)
-        eventContinuation.yield(.addressRemoved(peer, oldest.address))
+        return oldest.address
     }
 }
 

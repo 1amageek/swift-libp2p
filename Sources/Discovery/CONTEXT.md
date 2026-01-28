@@ -119,12 +119,18 @@ base: 0.5                           // ベーススコア
 
 | モジュール | ステータス | 説明 |
 |-----------|----------|------|
-| P2PDiscovery | ✅ 完了 | プロトコル定義 |
-| CompositeDiscovery | ✅ 完了 | 複数サービス合成 |
-| P2PDiscoverySWIM | ✅ 完了 | swift-SWIM統合 |
-| P2PDiscoveryMDNS | ✅ 完了 | ローカルネットワーク発見 |
-| P2PDiscoveryCYCLON | ⏳ 計画中 | ランダムピアサンプリング |
-| P2PDiscoveryPlumtree | ⏳ 計画中 | ゴシップベースブロードキャスト |
+| P2PDiscovery | ✅ 実装済み | プロトコル定義 |
+| CompositeDiscovery | ✅ 実装済み | 複数サービス合成 |
+| P2PDiscoverySWIM | ✅ 実装済み | swift-SWIM統合 |
+| P2PDiscoveryMDNS | ✅ 実装済み | ローカルネットワーク発見 |
+| PeerStore (in-memory) | ✅ 実装済み | LRUキャッシュ、最大1000ピア、TTLベースGC |
+| AddressBook | ✅ 実装済み | スコアリング、優先順位付け |
+| Bootstrap | ✅ 実装済み | シードピア接続 |
+| PeerStore TTL-based GC | ✅ 実装済み | `expiresAt`フィールド、`cleanup()`、`startGC()`/`stopGC()` |
+| ProtoBook | ✅ 実装済み | Go互換API、`MemoryProtoBook`（`Mutex`ベース） |
+| KeyBook | ✅ 実装済み | PeerID検証付き、`MemoryKeyBook`（`Mutex`ベース） |
+| P2PDiscoveryCYCLON | ❌ 未実装 | ランダムピアサンプリング |
+| P2PDiscoveryPlumtree | ❌ 未実装 | ゴシップベースブロードキャスト |
 
 ## 追加コンポーネント
 
@@ -215,12 +221,14 @@ let composite = CompositeDiscovery(services: [
 | DiscoveryTests | ✅ 完了 | 34 | Observation、ScoredCandidate、CompositeDiscovery |
 | SWIMBridgeTests | ✅ 完了 | 20 | 型変換、イベントマッピング |
 | PeerIDServiceCodecTests | ✅ 完了 | 44 | エンコード/デコード、スコアリング |
+| PeerStoreGCTests | ✅ 完了 | 10 | TTL、GC、期限切れフィルタリング |
+| ProtoBookTests | ✅ 完了 | 8 | set/add/remove/supports/peers |
+| KeyBookTests | ✅ 完了 | 8 | set/get/mismatch/extraction/remove |
 | SWIMMembershipTests | ❌ なし | 0 | 統合テストが必要 |
 | MDNSDiscoveryTests | ❌ なし | 0 | 統合テストが必要 |
 | AddressBookTests | ❌ なし | 0 | 追加推奨 |
-| PeerStoreTests | ❌ なし | 0 | 追加推奨 |
 
-**合計**: 98テスト実装済み
+**合計**: 124テスト実装済み
 
 ## 品質向上TODO
 

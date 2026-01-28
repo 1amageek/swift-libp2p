@@ -232,7 +232,7 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
     private static let protocolNames: Set<String> = [
         "ip4", "ip6", "tcp", "udp", "quic", "quic-v1", "ws", "wss",
         "p2p", "ipfs", "dns", "dns4", "dns6", "dnsaddr", "unix", "memory",
-        "p2p-circuit"
+        "p2p-circuit", "webrtc-direct", "certhash"
     ]
 
     private static func isProtocolName(_ string: String) -> Bool {
@@ -303,6 +303,22 @@ extension Multiaddr {
     /// - Note: Factory methods don't validate size since they create known-small addresses.
     public static func memory(id: String) -> Multiaddr {
         Multiaddr(uncheckedProtocols: [.memory(id)])
+    }
+
+    /// Creates a WebRTC Direct address.
+    ///
+    /// - Parameters:
+    ///   - host: The IP address
+    ///   - port: The UDP port
+    ///   - certhash: The certificate hash (multihash-encoded)
+    /// - Returns: A Multiaddr of the form `/ip4/<host>/udp/<port>/webrtc-direct/certhash/<hash>`
+    public static func webrtcDirect(host: String, port: UInt16, certhash: Data) -> Multiaddr {
+        if host.contains(":") {
+            let normalized = MultiaddrProtocol.normalizeIPv6(host) ?? host
+            return Multiaddr(uncheckedProtocols: [.ip6(normalized), .udp(port), .webrtcDirect, .certhash(certhash)])
+        } else {
+            return Multiaddr(uncheckedProtocols: [.ip4(host), .udp(port), .webrtcDirect, .certhash(certhash)])
+        }
     }
 
     /// The memory identifier, if present.

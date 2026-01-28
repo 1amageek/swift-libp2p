@@ -345,9 +345,14 @@ Tests/Protocols/GossipSubTests/
 - ~~概要では言及されているが完全未実装~~ ✅ 2026-01-23 実装
 - バックオフ追跡実装済み
 - 各種ペナルティ追跡実装済み（詳細は下記）
+- ❌ **per-topic scoring は未実装** — 現在はグローバルスコアリングのみ
 
 ### IDONTWANT (v1.2)
-- プロトコルバージョンは宣言されるが機能は限定的
+- ✅ データモデル（`ControlMessage.IDontWant`）
+- ✅ protobuf encode/decode（`GossipSubProtobuf` field 5: `ControlIDontWant`）
+- ✅ `PeerState.dontWantMessages` で受信済みメッセージの追跡
+- ✅ `GossipSubRouter.sendIDontWant()` で v1.2 ピアへの送信
+- ✅ `GossipSubRouter.handleIDontWants()` で受信処理
 
 ### バッファ制限
 - RPCサイズ: 最大5MB
@@ -381,7 +386,8 @@ Tests/Protocols/GossipSubTests/
 - [ ] **MessageCacheテストの追加** - IHAVE/IWANTキャッシュ動作検証
 
 ### 中優先度
-- [ ] **IDONTWANT完全実装** - v1.2プロトコルの完全サポート
+- [x] **IDONTWANT protobuf encode/decode** - ControlIDontWant のワイヤーフォーマット実装（v1.2 完全サポート）
+- [ ] **Per-topic scoring** - トピックごとのスコアリングパラメータ（v1.1 仕様準拠）
 - [ ] **Peer Exchange検証** - PRUNEメッセージのピア情報交換テスト
 - [ ] **バックオフ期間の強制テスト** - PRUNE後の再GRAFT防止
 - [ ] **ハートビートタイミングテスト** - 1秒間隔の正確性検証

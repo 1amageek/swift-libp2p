@@ -178,8 +178,11 @@ public actor DefaultBootstrap: BootstrapService {
     private var autoBootstrapTask: Task<Void, Never>?
     private var _isAutoBootstrapRunning = false
 
-    private let eventContinuation: AsyncStream<BootstrapEvent>.Continuation
-    public nonisolated let events: AsyncStream<BootstrapEvent>
+    private nonisolated let broadcaster = EventBroadcaster<BootstrapEvent>()
+
+    public nonisolated var events: AsyncStream<BootstrapEvent> {
+        broadcaster.subscribe()
+    }
 
     // MARK: - Initialization
 
@@ -197,17 +200,11 @@ public actor DefaultBootstrap: BootstrapService {
         self.configuration = configuration
         self.connectionProvider = connectionProvider
         self.peerStore = peerStore
-
-        var continuation: AsyncStream<BootstrapEvent>.Continuation!
-        self.events = AsyncStream { cont in
-            continuation = cont
-        }
-        self.eventContinuation = continuation
     }
 
     deinit {
         autoBootstrapTask?.cancel()
-        eventContinuation.finish()
+        broadcaster.shutdown()
     }
 
     // MARK: - BootstrapService Protocol
@@ -217,7 +214,7 @@ public actor DefaultBootstrap: BootstrapService {
     }
 
     public func bootstrap() async -> BootstrapResult {
-        eventContinuation.yield(.started)
+        broadcaster.emit(.started)
 
         // Add seeds to peer store
         if let peerStore = peerStore {
@@ -236,7 +233,7 @@ public actor DefaultBootstrap: BootstrapService {
                 connected: configuration.seeds.map { $0.peerID },
                 failed: []
             )
-            eventContinuation.yield(.completed(result))
+            broadcaster.emit(.completed(result))
             return result
         }
 
@@ -263,12 +260,12 @@ public actor DefaultBootstrap: BootstrapService {
                 switch result {
                 case .success(let peerID):
                     connected.append(peerID)
-                    eventContinuation.yield(.seedConnected(peerID))
+                    broadcaster.emit(.seedConnected(peerID))
 
                 case .failure(let error):
                     let errorDesc = String(describing: error)
                     failed.append((seed, errorDesc))
-                    eventContinuation.yield(.seedFailed(seed, errorDesc))
+                    broadcaster.emit(.seedFailed(seed, errorDesc))
                 }
 
                 // Add next seed if available
@@ -282,7 +279,7 @@ public actor DefaultBootstrap: BootstrapService {
         }
 
         let result = BootstrapResult(connected: connected, failed: failed)
-        eventContinuation.yield(.completed(result))
+        broadcaster.emit(.completed(result))
 
         return result
     }
@@ -323,7 +320,7 @@ public actor DefaultBootstrap: BootstrapService {
             let currentCount = await connectionProvider.connectedPeerCount()
 
             if currentCount < configuration.minPeers {
-                eventContinuation.yield(.autoBootstrapTriggered(currentPeerCount: currentCount))
+                broadcaster.emit(.autoBootstrapTriggered(currentPeerCount: currentCount))
                 _ = await bootstrap()
             }
 

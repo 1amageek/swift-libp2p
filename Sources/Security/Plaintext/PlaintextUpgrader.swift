@@ -77,34 +77,19 @@ public struct Exchange: Sendable {
 
     /// Encodes the exchange message with length prefix.
     public func encode() -> Data {
-        // Simple protobuf encoding:
-        // Field 1 (id): bytes
-        // Field 2 (pubkey): bytes
         var proto = Data()
+        proto.append(encodeProtobufField(fieldNumber: 1, data: peerID.bytes))
+        proto.append(encodeProtobufField(fieldNumber: 2, data: publicKey.protobufEncoded))
 
-        // Field 1: PeerID bytes
-        let idBytes = peerID.bytes
-        proto.append(0x0A) // (1 << 3) | 2 = length-delimited
-        proto.append(contentsOf: Varint.encode(UInt64(idBytes.count)))
-        proto.append(idBytes)
-
-        // Field 2: PublicKey protobuf
-        let pubkeyBytes = publicKey.protobufEncoded
-        proto.append(0x12) // (2 << 3) | 2 = length-delimited
-        proto.append(contentsOf: Varint.encode(UInt64(pubkeyBytes.count)))
-        proto.append(pubkeyBytes)
-
-        // Prefix with length
+        // Prefix with varint length
         var result = Data()
         result.append(contentsOf: Varint.encode(UInt64(proto.count)))
         result.append(proto)
-
         return result
     }
 
     /// Decodes an exchange message from length-prefixed data.
     public static func decode(from data: Data) throws -> Exchange {
-        // Read length prefix
         let (length, lengthBytes) = try Varint.decode(data)
         let remaining = data.dropFirst(lengthBytes)
 
@@ -112,38 +97,23 @@ public struct Exchange: Sendable {
             throw PlaintextError.insufficientData
         }
 
-        // Parse protobuf fields
+        let protoData = Data(remaining.prefix(Int(length)))
+
+        let fields: [ProtobufField]
+        do {
+            fields = try decodeProtobufFields(from: protoData)
+        } catch {
+            throw PlaintextError.invalidExchange
+        }
+
         var peerIDBytes: Data?
         var pubkeyBytes: Data?
 
-        let protoEnd = remaining.startIndex.advanced(by: Int(length))
-        var protoData = remaining[remaining.startIndex..<protoEnd]
-
-        while !protoData.isEmpty {
-            let (fieldTag, tagBytes) = try Varint.decode(Data(protoData))
-            protoData = protoData.dropFirst(tagBytes)
-
-            let fieldNumber = fieldTag >> 3
-
-            // All fields are length-delimited bytes
-            let (fieldLength, fieldLengthBytes) = try Varint.decode(Data(protoData))
-            protoData = protoData.dropFirst(fieldLengthBytes)
-
-            guard protoData.count >= fieldLength else {
-                throw PlaintextError.insufficientData
-            }
-
-            let fieldData = Data(protoData.prefix(Int(fieldLength)))
-            protoData = protoData.dropFirst(Int(fieldLength))
-
-            switch fieldNumber {
-            case 1:
-                peerIDBytes = fieldData
-            case 2:
-                pubkeyBytes = fieldData
-            default:
-                // Skip unknown fields
-                break
+        for field in fields {
+            switch field.fieldNumber {
+            case 1: peerIDBytes = field.data
+            case 2: pubkeyBytes = field.data
+            default: break
             }
         }
 
@@ -152,10 +122,10 @@ public struct Exchange: Sendable {
             throw PlaintextError.invalidExchange
         }
 
-        let peerID = try PeerID(bytes: idBytes)
-        let publicKey = try PublicKey(protobufEncoded: keyBytes)
-
-        return Exchange(peerID: peerID, publicKey: publicKey)
+        return Exchange(
+            peerID: try PeerID(bytes: idBytes),
+            publicKey: try PublicKey(protobufEncoded: keyBytes)
+        )
     }
 }
 

@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "P2PTransport", targets: ["P2PTransport"]),
         .library(name: "P2PTransportTCP", targets: ["P2PTransportTCP"]),
         .library(name: "P2PTransportQUIC", targets: ["P2PTransportQUIC"]),
+        .library(name: "P2PTransportWebRTC", targets: ["P2PTransportWebRTC"]),
         .library(name: "P2PTransportMemory", targets: ["P2PTransportMemory"]),
 
         // MARK: - Security
@@ -68,6 +69,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-quic.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-tls.git", branch: "main"),
+        .package(url: "https://github.com/1amageek/swift-webrtc.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -116,6 +118,17 @@ let package = Package(
             exclude: ["CONTEXT.md"]
         ),
         .target(
+            name: "P2PTransportWebRTC",
+            dependencies: [
+                "P2PTransport",
+                "P2PCore",
+                "P2PMux",
+                .product(name: "WebRTC", package: "swift-webrtc"),
+                .product(name: "DTLSCore", package: "swift-tls"),
+            ],
+            path: "Sources/Transport/WebRTC"
+        ),
+        .target(
             name: "P2PTransportMemory",
             dependencies: ["P2PTransport"],
             path: "Sources/Transport/Memory",
@@ -141,6 +154,14 @@ let package = Package(
                 .product(name: "QUIC", package: "swift-quic"),
             ],
             path: "Tests/Transport/QUICTests"
+        ),
+        .testTarget(
+            name: "P2PTransportWebRTCTests",
+            dependencies: [
+                "P2PTransportWebRTC",
+                "P2PCore",
+            ],
+            path: "Tests/Transport/WebRTCTests"
         ),
 
         // MARK: - Security

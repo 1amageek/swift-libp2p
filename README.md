@@ -5,14 +5,114 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 ## Features
 
 - **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), Memory for testing
-- **Security Layer**: Noise Protocol (XX pattern), QUIC TLS 1.3, Plaintext for testing
-- **Multiplexing**: Yamux stream multiplexer, QUIC native multiplexing
+- **Security Layer**: TLS 1.3 (libp2p spec, via swift-tls), Noise Protocol (XX pattern), QUIC TLS 1.3, Plaintext for testing
+- **Multiplexing**: Yamux stream multiplexer, Mplex, QUIC native multiplexing
 - **Protocol Negotiation**: multistream-select 1.0
 - **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
 - **Discovery**: SWIM membership, mDNS local discovery
 - **NAT Traversal**: Circuit Relay v2, AutoNAT, DCUtR hole punching
-- **Standard Protocols**: Identify, Ping, GossipSub, Kademlia DHT
+- **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT
+
+## Implementation Status
+
+### Core Stack
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| PeerID / KeyPair (Ed25519, ECDSA P-256) | ✅ Implemented | |
+| Multiaddr | ✅ Implemented | |
+| Varint / Multihash | ✅ Implemented | |
+| Signed Envelope / Peer Records | ✅ Implemented | |
+| EventEmitting pattern | ✅ Implemented | |
+| ProtobufLite (shared wire type 2 utility) | ✅ Implemented | |
+
+### Transport
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| TCP (SwiftNIO) | ✅ Implemented | |
+| QUIC (swift-quic) | ✅ Implemented | 0-RTT, connection migration pending |
+| Memory (testing) | ✅ Implemented | |
+| Circuit Relay v2 Transport | ✅ Implemented | |
+| WebSocket | ❌ Not implemented | Browser interop |
+| WebRTC | ❌ Not implemented | |
+
+### Security
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Noise XX (X25519 + ChaChaPoly + SHA256) | ✅ Implemented | Small-order key validation included |
+| TLS 1.3 (swift-tls, libp2p spec) | ✅ Implemented | Go/Rust compatible |
+| QUIC TLS 1.3 (libp2p certificate) | ✅ Implemented | |
+| Plaintext (testing) | ✅ Implemented | |
+| Early Muxer Negotiation (TLS ALPN) | ✅ Implemented | `EarlyMuxerNegotiating` protocol, ALPN muxer hints |
+
+### Multiplexing
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Yamux | ✅ Implemented | Flow control, keep-alive, 42+ tests |
+| Mplex | ✅ Implemented | Frame-level tests; connection/stream tests limited |
+| QUIC native multiplexing | ✅ Implemented | |
+
+### Protocol Negotiation
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| multistream-select v1 | ✅ Implemented | 20 tests |
+| multistream-select v1 Lazy (0-RTT) | ❌ Not implemented | |
+
+### Discovery
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| SWIM membership | ✅ Implemented | |
+| mDNS local discovery | ✅ Implemented | |
+| PeerStore (basic, in-memory, LRU) | ✅ Implemented | |
+| AddressBook (scoring, priority) | ✅ Implemented | |
+| Bootstrap (seed peers) | ✅ Implemented | |
+| PeerStore TTL-based garbage collection | ❌ Not implemented | `lastSeen` exists but no TTL-based GC |
+| ProtoBook (per-peer protocol tracking) | ❌ Not implemented | |
+| KeyBook (per-peer public key storage) | ❌ Not implemented | |
+
+### Protocols
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Identify (+ Push) | ✅ Implemented | SignedPeerRecord verification included |
+| Ping | ✅ Implemented | Single/multiple ping + statistics |
+| Circuit Relay v2 | ✅ Implemented | Client + Server, 72 tests |
+| DCUtR (hole punching) | ✅ Implemented | 50 tests |
+| AutoNAT v1 | ✅ Implemented | Rate limiting, 74 tests |
+| GossipSub v1.1 | ✅ Implemented | Peer scoring, signature verification |
+| GossipSub IDONTWANT (v1.2 wire format) | ✅ Implemented | Full encode/decode + send/receive |
+| GossipSub per-topic scoring | ❌ Not implemented | Global scoring only |
+| Kademlia DHT | ✅ Implemented | 65 tests, record validation |
+| Kademlia client/server mode restriction | ⚠️ Partial | Config exists but doesn't restrict behavior |
+| Kademlia RecordValidator.Select | ❌ Not implemented | Best record selection missing |
+| Kademlia persistent storage | ❌ Not implemented | In-memory only |
+
+### NAT Traversal
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| NAT port mapping (UPnP + NAT-PMP) | ✅ Implemented | macOS-only gateway detection |
+| Circuit Relay v2 (client + server) | ✅ Implemented | |
+| AutoNAT | ✅ Implemented | |
+| DCUtR | ✅ Implemented | |
+
+### Integration
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Node (actor) | ✅ Implemented | |
+| ConnectionPool (limits, trimming) | ✅ Implemented | |
+| ConnectionUpgrader | ✅ Implemented | Sequential 2-phase multistream-select |
+| ConnectionGater | ✅ Implemented | |
+| HealthMonitor | ✅ Implemented | |
+| ReconnectionPolicy | ✅ Implemented | |
+| Resource Manager (multi-scope) | ❌ Not implemented | |
 
 ## Requirements
 
@@ -94,9 +194,9 @@ try await stream.write(Data("Hello!".utf8))
 +-----------------------------------------------------------+
 |  Protocol Negotiation (multistream-select)                |
 +-----------------------------------------------------------+
-|  Stream Multiplexing (Yamux)                              |
+|  Stream Multiplexing (Yamux, Mplex)                       |
 +-----------------------------------------------------------+
-|  Security Layer (Noise XX)                                |
+|  Security Layer (TLS 1.3, Noise XX)                       |
 +-----------------------------------------------------------+
 |  Transport Layer (TCP, Memory, Circuit Relay)             |
 +-----------------------------------------------------------+
@@ -116,10 +216,12 @@ try await stream.write(Data("Hello!".utf8))
 | `P2PTransportQUIC` | QUIC transport implementation (RFC 9000) |
 | `P2PTransportMemory` | In-memory transport for testing |
 | `P2PSecurity` | Security protocol definition |
+| `P2PSecurityTLS` | TLS 1.3 implementation (swift-tls) |
 | `P2PSecurityNoise` | Noise Protocol implementation |
 | `P2PSecurityPlaintext` | Plaintext security for testing |
 | `P2PMux` | Muxer protocol definition |
 | `P2PMuxYamux` | Yamux multiplexer implementation |
+| `P2PMuxMplex` | Mplex multiplexer implementation |
 | `P2PNegotiation` | multistream-select protocol |
 | `P2PDiscovery` | Discovery protocol definition |
 | `P2PDiscoverySWIM` | SWIM membership protocol |
@@ -141,8 +243,10 @@ This implementation follows the official libp2p specifications for wire-protocol
 | Protocol | Protocol ID | Specification |
 |----------|-------------|---------------|
 | multistream-select | `/multistream/1.0.0` | [spec](https://github.com/multiformats/multistream-select) |
+| TLS | `/tls/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/tls/tls.md) |
 | Noise | `/noise` | [spec](https://github.com/libp2p/specs/blob/master/noise/README.md) |
 | Yamux | `/yamux/1.0.0` | [spec](https://github.com/hashicorp/yamux/blob/master/spec.md) |
+| Mplex | `/mplex/6.7.0` | [spec](https://github.com/libp2p/specs/blob/master/mplex/README.md) |
 | Identify | `/ipfs/id/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/identify/README.md) |
 | Ping | `/ipfs/ping/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/ping/README.md) |
 | Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop`, `/libp2p/circuit/relay/0.2.0/stop` | [spec](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md) |
@@ -391,6 +495,9 @@ swift run swift-libp2p-example dial /ip4/127.0.0.1/tcp/4001/p2p/<peer-id>
 - [swift-crypto](https://github.com/apple/swift-crypto) - Cryptographic primitives
 - [swift-log](https://github.com/apple/swift-log) - Logging
 - [swift-protobuf](https://github.com/apple/swift-protobuf) - Protocol Buffers
+- [swift-tls](https://github.com/1amageek/swift-tls) - TLS 1.3 (pure Swift)
+- [swift-certificates](https://github.com/apple/swift-certificates) - X.509 certificate handling
+- [swift-asn1](https://github.com/apple/swift-asn1) - ASN.1 DER encoding/decoding
 - [swift-quic](https://github.com/example/swift-quic) - QUIC protocol (RFC 9000)
 - [swift-SWIM](https://github.com/example/swift-SWIM) - SWIM membership protocol
 - [swift-mDNS](https://github.com/example/swift-mDNS) - mDNS/DNS-SD discovery

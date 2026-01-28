@@ -188,6 +188,9 @@ message Message {
 - Useful for resource-constrained nodes
 - Does not advertise protocol support
 
+### ⚠️ 制限事項: Client/Server モード
+設定（`KademliaConfiguration.mode`）は存在するが、現在の実装では **client モードでもクエリへの応答を制限しない**。モード設定はプロトコルの advertise 有無にのみ影響する。Go/Rust 実装では client モード時にインバウンドクエリを拒否するが、この動作は未実装。
+
 ## Usage
 
 ```swift
@@ -260,8 +263,16 @@ public enum KademliaEvent {
 ## 既知の制限事項
 
 ### レコードストレージ
-- `RecordStore`と`ProviderStore`はメモリのみ
-- TTL切れレコードのガベージコレクションなし
+- `RecordStore`と`ProviderStore`はメモリのみ（❌ 永続化ストレージ未実装）
+- ✅ TTLベースのガベージコレクションは `startMaintenance()` で実装済み
+
+### RecordValidator.Select
+- ❌ **未実装** — 同一キーに複数のレコードがある場合の最適レコード選択機能
+- Go/Rust 実装では `Select(key, records)` で最適なレコードを選ぶが、本実装は `Validate` のみ
+
+### Client/Server モード制限
+- ⚠️ Client モード設定はプロトコル advertise の有無にのみ影響
+- Client モード時のインバウンドクエリ拒否は未実装
 
 ### 署名付きレコード
 - レコード署名フィールドは存在するが検証未実装
@@ -297,6 +308,8 @@ class QueryDelegateImpl: QueryDelegate {
 - [x] **ProviderStore TTL強制** - 自動メンテナンスタスクで期限切れプロバイダを削除 ✅ 2026-01-23
 
 ### 中優先度
+- [ ] **RecordValidator.Select 実装** - 同一キーの複数レコードから最適なものを選択
+- [ ] **Client モードのインバウンドクエリ拒否** - Go/Rust 互換の動作制限
 - [ ] **永続化ストレージオプション** - SQLite/ファイルベース
 - [x] **ピアごとのタイムアウト** - `peerTimeout` 設定で実装 ✅ 2026-01-23
 - [ ] **ピアレイテンシ追跡** - 過去のレスポンス時間に基づく動的タイムアウト調整

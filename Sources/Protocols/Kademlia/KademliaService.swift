@@ -351,7 +351,25 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - Stream Handling
 
+    /// Whether inbound queries should be accepted based on the current mode.
+    ///
+    /// Client mode rejects all inbound DHT queries (Go-compatible behavior).
+    /// Server and automatic modes accept all inbound queries.
+    private func shouldAcceptInbound() -> Bool {
+        switch mode {
+        case .server:    return true
+        case .client:    return false
+        case .automatic: return true
+        }
+    }
+
     private func handleStream(_ context: StreamContext) async {
+        // Client mode: reject all inbound queries
+        guard shouldAcceptInbound() else {
+            try? await context.stream.close()
+            return
+        }
+
         // Add peer to routing table
         addPeer(context.remotePeer, addresses: [context.remoteAddress])
 

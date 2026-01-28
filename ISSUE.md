@@ -10,17 +10,19 @@ Full codebase review findings. 154 issues across 8 modules.
 | Mux | ~~3~~ **0** | ~~5~~ **0** | ~~6~~ **4** | 6 | 20 |
 | Negotiation | 0 | ~~2~~ **0** | ~~4~~ **2** | 4 | 10 |
 | Protocols | ~~3~~ **0** | ~~3~~ **0** | ~~7~~ **4** | 4 | 17 |
-| Security | ~~3~~ **1** | ~~6~~ **0** | ~~7~~ **6** | 7 | 23 |
+| Security | ~~3~~ **0** | ~~6~~ **0** | ~~7~~ **2** | ~~7~~ **4** | 23 |
 | Transport | ~~4~~ **0** | ~~6~~ **0** | ~~8~~ **7** | 7 | 25 |
-| **Total** | ~~19~~ **1** | ~~34~~ **0** | ~~52~~ **35** | **49** | ~~154~~ **85** |
+| **Total** | ~~19~~ **0** | ~~34~~ **0** | ~~52~~ **31** | ~~49~~ **46** | ~~154~~ **77** |
 
-**Resolved: 69 issues** (34 HIGH + 18 CRITICAL + 11 MEDIUM + 6 non-issues confirmed)
+**Resolved: 77 issues** (34 HIGH + 19 CRITICAL + 15 MEDIUM + 3 LOW + 6 non-issues confirmed)
+
+**Implementation Gaps: 10** (~~2~~ **0** P0 + 4 P1 + 6 P2) — see bottom of this file
 
 ---
 
 ## CRITICAL
 
-> **18 of 19 CRITICAL issues resolved.** Only C-SEC-2 (non-standard TLS handshake) remains open.
+> **All 19 CRITICAL issues resolved.**
 
 ### ✅ C-SEC-1: TLS deriveSharedSecret is not a real key exchange
 - **Module:** Security
@@ -29,18 +31,12 @@ Full codebase review findings. 154 issues across 8 modules.
 - **Fix:** Implement ECDHE using `P256.KeyAgreement.PrivateKey` and `sharedSecretFromKeyAgreement(with:)`.
 - **Resolution:** ECDHE implemented using `P256.KeyAgreement.PrivateKey` and `sharedSecretFromKeyAgreement(with:)`. Both sides derive identical shared secret via elliptic curve Diffie-Hellman. Session keys derived via HKDF with role-specific info strings.
 
-### C-SEC-2: TLS handshake is not real TLS
+### ✅ C-SEC-2: TLS handshake is not real TLS
 - **Module:** Security
-- **File:** `Sources/Security/TLS/TLSUpgrader.swift:126-176`
+- **File:** `Sources/Security/TLS/TLSUpgrader.swift`
 - **Problem:** Simple certificate exchange with custom 4-byte framing. No cipher suite negotiation, no key exchange, no TLS record layer. Protocol ID `/tls/1.0.0` claims TLS but will never interoperate with Go/Rust libp2p.
-- **Fix:** Use a real TLS library (swift-nio-ssl or SwiftNIO built-in TLS).
-- **Design Direction:**
-  - Current cryptographic primitives (ECDHE + AES-256-GCM) are correct. The issue is framing and handshake protocol.
-  - **Option A** (recommended): `swift-nio-ssl` (OpenSSL) — cross-platform, full TLS 1.3, custom certificate verification callbacks for libp2p self-signed certs.
-  - **Option B**: `Network.framework` — Apple-native, iOS/macOS only, limited certificate callback control.
-  - Both options require custom X.509 certificate verification to accept libp2p self-signed certs with embedded peer ID extension (OID 1.3.6.1.4.1.53594.1.1).
-  - `TLSUpgrader.secure()` interface is preserved; only internal implementation changes.
-  - **Scope:** Large-scale modification. Separate implementation track required.
+- **Fix:** Use a real TLS library.
+- **Resolution:** Replaced with swift-tls (pure Swift TLS 1.3 implementation). Full RFC 8446 compliant handshake via `TLSRecord.TLSConnection`. Self-signed X.509 certificates with libp2p extension (OID 1.3.6.1.4.1.53594.1.1) generated using swift-certificates + SwiftASN1. Mutual TLS with ALPN "libp2p". PeerID extracted via `CertificateValidator` callback. Old custom crypto files (`TLSCryptoState.swift`, `TLSUtils.swift`) deleted.
 
 ### ✅ C-SEC-3: TLS SPKI extraction uses fragile byte pattern matching
 - **Module:** Security
@@ -306,22 +302,22 @@ Full codebase review findings. 154 issues across 8 modules.
 - **Resolution:** Created `Sources/Core/P2PCore/Utilities/HexEncoding.swift` with public `Data(hexString:)`. Removed private extensions.
 
 ### ✅ H-SEC-2: Duplicate ASN.1 length parsing
-- **File:** `Sources/Security/TLS/TLSUtils.swift:71-113`
+- **File:** `Sources/Security/TLS/TLSUtils.swift` (deleted)
 - **Problem:** Two overloads (`[UInt8]` and `Data`) with identical logic.
 - **Fix:** Keep only `Data` version.
-- **Resolution:** Assessed — the two overloads (`[UInt8]` and `Data`) serve different callers intentionally. No change needed.
+- **Resolution:** File deleted. swift-tls integration replaced all manual ASN.1 parsing with swift-certificates + SwiftASN1.
 
 ### ✅ H-SEC-3: Duplicate framing between Noise and TLS
-- **Files:** `Sources/Security/Noise/NoisePayload.swift:165-200`, `Sources/Security/TLS/TLSUtils.swift:27-57`
+- **Files:** `Sources/Security/Noise/NoisePayload.swift:165-200`, `Sources/Security/TLS/TLSUtils.swift` (deleted)
 - **Problem:** Identical 2-byte big-endian length-prefixed framing duplicated.
 - **Fix:** Extract generic `readLengthPrefixedFrame`/`encodeLengthPrefixedFrame`.
-- **Resolution:** Created `Sources/Core/P2PCore/Utilities/LengthPrefixedFraming.swift`. Noise and TLS framing functions now delegate to shared utility.
+- **Resolution:** TLS framing removed (swift-tls handles record layer). Noise framing delegates to shared `LengthPrefixedFraming.swift` utility.
 
 ### ✅ H-SEC-4: TLSConfiguration.alpnProtocols never used
-- **File:** `Sources/Security/TLS/TLSUpgrader.swift:16,21-24`
+- **File:** `Sources/Security/TLS/TLSUpgrader.swift`
 - **Problem:** Dead configuration field.
 - **Fix:** Implement ALPN or remove.
-- **Resolution:** Removed `alpnProtocols` property and init parameter. Updated tests.
+- **Resolution:** swift-tls integration implements ALPN "libp2p" via `TLSCore.TLSConfiguration.alpnProtocols`. Old dead field removed.
 
 ### ✅ H-SEC-5: x25519SmallOrderPoints uses if let -- silent failure on bad hex
 - **File:** `Sources/Security/Noise/NoiseCryptoState.swift:291-341`
@@ -330,10 +326,10 @@ Full codebase review findings. 154 issues across 8 modules.
 - **Resolution:** All 6 `if let` changed to `guard let ... else { preconditionFailure(...) }`.
 
 ### ✅ H-SEC-6: TOCTOU race on isClosed in NoiseConnection and TLSConnection
-- **Files:** `Sources/Security/Noise/NoiseConnection.swift:81-130`, `Sources/Security/TLS/TLSConnection.swift:93-141`
+- **Files:** `Sources/Security/Noise/NoiseConnection.swift`, `Sources/Security/TLS/TLSConnection.swift`
 - **Problem:** `isClosed` checked then lock released before `underlying.read()`. Concurrent `close()` causes unexpected error type.
 - **Fix:** Catch post-close errors and re-throw as `connectionClosed`.
-- **Resolution:** Moved `isClosed` into per-direction state structs (`SendState`/`RecvState`). Check and synchronous operation (buffer read / encrypt) are now atomic within the same lock.
+- **Resolution:** NoiseConnection: Moved `isClosed` into per-direction state structs (`SendState`/`RecvState`). TLSSecuredConnection: `Mutex<ConnectionState>` with atomic `isClosed` check within lock.
 
 ### ✅ H-TRANS-1: Duplicated extractPeerID
 - **Files:** `Sources/Transport/QUIC/QUICTransport.swift:245-259`, `Sources/Transport/QUIC/QUICListener.swift:282-296`
@@ -526,19 +522,23 @@ Full codebase review findings. 154 issues across 8 modules.
 - **Fix:** Add max size check after varint decode.
 - **Resolution:** Added `maxPlaintextHandshakeSize` (64KB) check after varint decode. Throws `PlaintextError.messageTooLarge`.
 
-### M-SEC-4: TLS receiveCertificate accesses buffer by absolute index
-- **File:** `Sources/Security/TLS/TLSUpgrader.swift:190-224`
+### ✅ M-SEC-4: TLS receiveCertificate accesses buffer by absolute index
+- **File:** `Sources/Security/TLS/TLSUpgrader.swift` (rewritten)
 - **Problem:** `buffer[0]` fragile if buffer becomes a slice.
+- **Resolution:** Obsolete. swift-tls handles all TLS record parsing internally. No manual buffer indexing in the new implementation.
 
-### M-SEC-5: Duplicate protobuf encoding in NoisePayload and Exchange
-- **Files:** `Sources/Security/Noise/NoisePayload.swift:63-155`, `Sources/Security/Plaintext/PlaintextUpgrader.swift:79-159`
+### ✅ M-SEC-5: Duplicate protobuf encoding in NoisePayload and Exchange
+- **Files:** `Sources/Security/Noise/NoisePayload.swift`, `Sources/Security/Plaintext/PlaintextUpgrader.swift`
+- **Resolution:** Extracted shared `ProtobufLite.swift` utility (wire type 2 only) to `Sources/Core/P2PCore/Utilities/`. NoisePayload and Exchange encode/decode now delegate to `encodeProtobufField`/`decodeProtobufFields`. Exchange.decode() gained wireType validation and field size bounds checking.
 
-### M-SEC-6: TLSCryptoState catches all errors, losing information
-- **File:** `Sources/Security/TLS/TLSCryptoState.swift:38-51`
+### ✅ M-SEC-6: TLSCryptoState catches all errors, losing information
+- **File:** `Sources/Security/TLS/TLSCryptoState.swift` (deleted)
 - **Problem:** Original `AES.GCM.seal` error discarded, replaced with `TLSError.encryptionFailed`.
+- **Resolution:** File deleted. swift-tls handles all encryption/decryption internally with proper error propagation.
 
-### M-SEC-7: NoiseHandshake not Sendable but used across async boundaries
-- **File:** `Sources/Security/Noise/NoiseHandshake.swift:17`
+### ✅ M-SEC-7: NoiseHandshake not Sendable but used across async boundaries
+- **File:** `Sources/Security/Noise/NoiseHandshake.swift`
+- **Resolution:** Converted `NoiseHandshake` from `final class` to `struct: Sendable`. All fields (Curve25519 keys, NoiseSymmetricState, KeyPair) are Sendable. Methods marked `mutating`, callers updated to `var` + `inout`.
 
 ### M-TRANS-1: Duplicated tlsProviderFactory configuration
 - **File:** `Sources/Transport/QUIC/QUICTransport.swift:131-142,190-200`
@@ -685,12 +685,14 @@ Full codebase review findings. 154 issues across 8 modules.
 ### L-SEC-2: NoiseCipherState empty init only used once
 - **File:** `Sources/Security/Noise/NoiseCryptoState.swift:19-21`
 
-### L-SEC-3: TLSError.peerIDMismatch uses String instead of PeerID (dead code)
-- **File:** `Sources/Security/TLS/TLSError.swift:16`
+### ✅ L-SEC-3: TLSError.peerIDMismatch uses String instead of PeerID (dead code)
+- **File:** `Sources/Security/TLS/TLSError.swift`
+- **Resolution:** `peerIDMismatch` is now actively used by `makeCertificateValidator` when `expectedPeer` doesn't match. Uses `String` for Sendable compliance.
 
-### L-SEC-4: Unused TLS error cases
+### ✅ L-SEC-4: Unused TLS error cases
 - **File:** `Sources/Security/TLS/TLSError.swift`
 - **Problem:** `keyGenerationFailed`, `unsupportedVersion`, `invalidASN1Structure` never thrown.
+- **Resolution:** All old unused error cases removed. Current `TLSError` has 7 cases, all actively used.
 
 ### L-SEC-5: NoiseConnection.read() clears buffer on error
 - **File:** `Sources/Security/Noise/NoiseConnection.swift:100-104`
@@ -698,8 +700,9 @@ Full codebase review findings. 154 issues across 8 modules.
 ### L-SEC-6: Framing helpers in wrong file (NoisePayload.swift)
 - **File:** `Sources/Security/Noise/NoisePayload.swift:158-200`
 
-### L-SEC-7: TLSCertificate uses manual loop for random serial
-- **File:** `Sources/Security/TLS/TLSCertificate.swift:156-159`
+### ✅ L-SEC-7: TLSCertificate uses manual loop for random serial
+- **File:** `Sources/Security/TLS/TLSCertificate.swift`
+- **Resolution:** Rewritten using swift-certificates. Serial number generated via `Certificate.SerialNumber()` which handles random generation internally.
 
 ### L-TRANS-1: QUICListener.close() doesn't close QUIC endpoint
 - **File:** `Sources/Transport/QUIC/QUICListener.swift:59-63`
@@ -721,3 +724,94 @@ Full codebase review findings. 154 issues across 8 modules.
 
 ### L-TRANS-7: QUICSecuredListener handshake uses 50ms polling
 - **File:** `Sources/Transport/QUIC/QUICListener.swift:261-264`
+
+---
+
+## Implementation Gaps (libp2p Feature Parity)
+
+Gap analysis vs Go/Rust implementations (2026-01-28).
+
+### P0 (Critical for interop)
+
+> **All P0 gaps resolved.**
+
+#### ✅ GAP-1: Early Muxer Negotiation (TLS ALPN)
+- **Module:** Security / Integration
+- **Status:** ✅ Resolved
+- **Resolution:** Added `EarlyMuxerNegotiating` protocol in P2PSecurity. TLSUpgrader encodes muxer hints in ALPN (e.g., `"libp2p/yamux/1.0.0"`). NegotiatingUpgrader skips multistream-select muxer phase when ALPN negotiation succeeds. Falls back to sequential negotiation when peer doesn't support early muxer negotiation.
+- **Files:** `Sources/Security/P2PSecurity/P2PSecurity.swift`, `Sources/Security/TLS/TLSUpgrader.swift`, `Sources/Integration/P2P/ConnectionUpgrader.swift`
+
+#### ✅ GAP-2: GossipSub IDONTWANT Wire Format
+- **Module:** GossipSub
+- **Status:** ✅ Resolved
+- **Resolution:** Added protobuf encode/decode for `ControlIDontWant` (field 5) in `GossipSubProtobuf.swift`. Added `encodeIDontWant()`, `decodeIDontWant()`, field tag constants, and updated `encodeControl()`/`decodeControl()` to handle IDONTWANT. 3 new tests added.
+- **Files:** `Sources/Protocols/GossipSub/Wire/GossipSubProtobuf.swift`
+
+### P1 (Important for production use)
+
+#### ✅ GAP-3: PeerStore TTL-based Garbage Collection
+- **Module:** Discovery
+- **Status:** ✅ Resolved
+- **Resolution:** Added `expiresAt: ContinuousClock.Instant?` to `AddressRecord` with `isExpired` computed property. Changed `PeerStore` protocol to require `addAddresses(_:for:ttl:)` with backward-compatible convenience extensions. `MemoryPeerStoreConfiguration` gained `defaultAddressTTL` (default 1 hour) and `gcInterval` (default 60s). `MemoryPeerStore` implements `cleanup()` (removes expired addresses/empty peers) and `startGC()`/`stopGC()` for background collection. Go-compatible: TTL extends only if new > old. Node integrates GC lifecycle in start/stop. 10 tests added.
+- **Files:** `Sources/Discovery/P2PDiscovery/PeerStore.swift`, `Sources/Integration/P2P/P2P.swift`
+
+#### ✅ GAP-4: ProtoBook (Per-Peer Protocol Tracking)
+- **Module:** Discovery
+- **Status:** ✅ Resolved
+- **Resolution:** Added `ProtoBook` protocol (Go-compatible: `setProtocols`, `addProtocols`, `removeProtocols`, `supportsProtocols`, `firstSupportedProtocol`, `peers(supporting:)`) and `MemoryProtoBook` implementation (`final class + Mutex` for high-frequency access). Node exposes `protoBook` property with default `MemoryProtoBook`. 8 tests added.
+- **Files:** `Sources/Discovery/P2PDiscovery/ProtoBook.swift`, `Sources/Discovery/P2PDiscovery/MemoryProtoBook.swift`, `Sources/Integration/P2P/P2P.swift`
+
+#### ✅ GAP-5: KeyBook (Per-Peer Public Key Storage)
+- **Module:** Discovery
+- **Status:** ✅ Resolved
+- **Resolution:** Added `KeyBook` protocol with `publicKey(for:)` (falls back to PeerID identity extraction), `setPublicKey(_:for:)` (verifies PeerID match, throws `KeyBookError.peerIDMismatch`), `removePublicKey`, `removePeer`, `peersWithKeys`. `MemoryKeyBook` implementation (`final class + Mutex`). Node exposes `keyBook` property with default `MemoryKeyBook`. 8 tests added.
+- **Files:** `Sources/Discovery/P2PDiscovery/KeyBook.swift`, `Sources/Discovery/P2PDiscovery/MemoryKeyBook.swift`, `Sources/Integration/P2P/P2P.swift`
+
+#### ✅ GAP-6: Kademlia Client/Server Mode Behavioral Restriction
+- **Module:** Kademlia
+- **Status:** ✅ Resolved
+- **Resolution:** Added `shouldAcceptInbound()` guard in `handleStream()`. Client mode rejects all inbound DHT queries by closing the stream before processing (Go-compatible). Server and automatic modes accept all queries. Stream is closed silently without error response. 4 tests added.
+- **Files:** `Sources/Protocols/Kademlia/KademliaService.swift`
+
+### P2 (Nice to have)
+
+#### GAP-7: GossipSub Per-Topic Scoring
+- **Module:** GossipSub
+- **Status:** ❌ Not implemented
+- **Description:** Current scoring is global only. GossipSub v1.1 spec defines per-topic scoring parameters (topic weight, time-in-mesh, first-message-delivery, mesh-message-delivery, etc.). Go/Rust implementations support per-topic score functions.
+- **Impact:** Cannot fine-tune scoring behavior for different topics
+- **Files:** `Sources/Protocols/GossipSub/Scoring/PeerScorer.swift`
+
+#### GAP-8: Kademlia RecordValidator.Select
+- **Module:** Kademlia
+- **Status:** ❌ Not implemented
+- **Description:** `RecordValidator` protocol has `validate(key:value:)` but no `select(key:records:)` method. When multiple records exist for the same key, there is no way to determine the "best" record. Go implementation defines `Select(key, []Record) (int, error)`.
+- **Impact:** Cannot resolve conflicts when multiple values exist for a key
+- **Files:** `Sources/Protocols/Kademlia/RecordStore.swift`
+
+#### GAP-9: Resource Manager (Multi-Scope)
+- **Module:** Integration
+- **Status:** ❌ Not implemented
+- **Description:** No multi-scope resource limiter. Go's `rcmgr` provides limits at system, transient, service, protocol, peer, and connection scopes. Current implementation only has connection-level limits via `ConnectionLimits`.
+- **Impact:** Cannot prevent resource exhaustion at fine-grained scopes
+- **Files:** `Sources/Integration/P2P/Connection/ConnectionLimits.swift`
+
+#### GAP-10: multistream-select V1 Lazy
+- **Module:** Negotiation
+- **Status:** ❌ Not implemented
+- **Description:** V1 Lazy optimization allows the dialer to send the protocol header and selection in a single message when only one protocol is offered, saving one RTT. The function `negotiateLazy` exists but is not wired into the connection upgrade path.
+- **Impact:** Extra RTT on every protocol negotiation with a single candidate
+- **Files:** `Sources/Negotiation/P2PNegotiation/P2PNegotiation.swift`
+
+#### GAP-11: WebSocket Transport
+- **Module:** Transport
+- **Status:** ❌ Not implemented
+- **Description:** No WebSocket transport. Required for browser interoperability via js-libp2p.
+- **Impact:** Cannot connect to browser-based peers
+
+#### GAP-12: Kademlia Persistent Storage
+- **Module:** Kademlia
+- **Status:** ❌ Not implemented
+- **Description:** `RecordStore` and `ProviderStore` are in-memory only. All DHT records are lost on restart. Go/Rust implementations support persistent backends (LevelDB, etc.).
+- **Impact:** DHT data lost on every restart; requires full re-bootstrap
+- **Files:** `Sources/Protocols/Kademlia/RecordStore.swift`, `Sources/Protocols/Kademlia/ProviderStore.swift`

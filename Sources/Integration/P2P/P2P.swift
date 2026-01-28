@@ -95,6 +95,12 @@ public struct NodeConfiguration: Sendable {
     /// Bootstrap configuration (nil to disable bootstrap).
     public let bootstrap: BootstrapConfiguration?
 
+    /// ProtoBook for per-peer protocol tracking (nil for default MemoryProtoBook).
+    public let protoBook: (any ProtoBook)?
+
+    /// KeyBook for per-peer public key storage (nil for default MemoryKeyBook).
+    public let keyBook: (any KeyBook)?
+
     public init(
         keyPair: KeyPair = .generateEd25519(),
         listenAddresses: [Multiaddr] = [],
@@ -107,7 +113,9 @@ public struct NodeConfiguration: Sendable {
         discoveryConfig: DiscoveryConfiguration = .default,
         peerStore: (any PeerStore)? = nil,
         addressBookConfig: AddressBookConfiguration? = nil,
-        bootstrap: BootstrapConfiguration? = nil
+        bootstrap: BootstrapConfiguration? = nil,
+        protoBook: (any ProtoBook)? = nil,
+        keyBook: (any KeyBook)? = nil
     ) {
         self.keyPair = keyPair
         self.listenAddresses = listenAddresses
@@ -121,6 +129,8 @@ public struct NodeConfiguration: Sendable {
         self.peerStore = peerStore
         self.addressBookConfig = addressBookConfig
         self.bootstrap = bootstrap
+        self.protoBook = protoBook
+        self.keyBook = keyBook
     }
 }
 
@@ -174,6 +184,8 @@ public actor Node: StreamOpener, HandlerRegistry {
     // Discovery components
     private let _peerStore: any PeerStore
     private let _addressBook: any AddressBook
+    private let _protoBook: any ProtoBook
+    private let _keyBook: any KeyBook
     private var _bootstrap: (any BootstrapService)?
 
     /// The peer store for this node.
@@ -181,6 +193,12 @@ public actor Node: StreamOpener, HandlerRegistry {
 
     /// The address book for this node.
     public var addressBook: any AddressBook { _addressBook }
+
+    /// The protocol book for this node.
+    public var protoBook: any ProtoBook { _protoBook }
+
+    /// The key book for this node.
+    public var keyBook: any KeyBook { _keyBook }
 
     // Listeners
     private var listeners: [any Listener] = []
@@ -231,6 +249,8 @@ public actor Node: StreamOpener, HandlerRegistry {
             peerStore: peerStore,
             configuration: configuration.addressBookConfig ?? .default
         )
+        self._protoBook = configuration.protoBook ?? MemoryProtoBook()
+        self._keyBook = configuration.keyBook ?? MemoryKeyBook()
     }
 
     // MARK: - Protocol Handlers
@@ -327,6 +347,11 @@ public actor Node: StreamOpener, HandlerRegistry {
             }
         }
 
+        // Start PeerStore GC if using MemoryPeerStore
+        if let memoryStore = _peerStore as? MemoryPeerStore {
+            memoryStore.startGC()
+        }
+
         // Initialize and start bootstrap if configured
         if let bootstrapConfig = configuration.bootstrap, !bootstrapConfig.seeds.isEmpty {
             let connectionProvider = NodeConnectionProvider(node: self)
@@ -350,6 +375,11 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// Stops the node.
     public func stop() async {
         isRunning = false
+
+        // Shutdown PeerStore if using MemoryPeerStore (stops GC + releases events)
+        if let memoryStore = _peerStore as? MemoryPeerStore {
+            memoryStore.shutdown()
+        }
 
         // Cancel background tasks
         idleCheckTask?.cancel()

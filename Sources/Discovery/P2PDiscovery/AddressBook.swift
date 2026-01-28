@@ -159,11 +159,11 @@ public protocol AddressBook: Sendable {
 /// 1. Transport type (configurable order)
 /// 2. Connection success history
 /// 3. Recency of last activity
-public actor DefaultAddressBook: AddressBook {
+public final class DefaultAddressBook: AddressBook, Sendable {
 
     // MARK: - Properties
 
-    public nonisolated let peerStore: any PeerStore
+    public let peerStore: any PeerStore
     private let configuration: AddressBookConfiguration
 
     // MARK: - Initialization

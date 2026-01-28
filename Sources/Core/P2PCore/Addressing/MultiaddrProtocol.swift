@@ -21,6 +21,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     case unix(String)
     case memory(String)
     case p2pCircuit
+    case webrtcDirect
+    case certhash(Data)
 
     /// The protocol code as defined in the multiaddr spec.
     public var code: UInt64 {
@@ -41,6 +43,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .unix: return 400
         case .memory: return 777  // Custom code for in-memory transport
         case .p2pCircuit: return 290
+        case .webrtcDirect: return 276
+        case .certhash: return 466
         }
     }
 
@@ -63,6 +67,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .unix: return "unix"
         case .memory: return "memory"
         case .p2pCircuit: return "p2p-circuit"
+        case .webrtcDirect: return "webrtc-direct"
+        case .certhash: return "certhash"
         }
     }
 
@@ -73,7 +79,14 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .ip6(let addr): return addr
         case .tcp(let port): return String(port)
         case .udp(let port): return String(port)
-        case .quic, .quicV1, .ws, .wss, .p2pCircuit: return nil
+        case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect: return nil
+        case .certhash(let hash):
+            // Encode as multibase base64url (prefix 'u')
+            let base64url = hash.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+            return "u" + base64url
         case .p2p(let peerID): return peerID.description
         case .dns(let name): return name
         case .dns4(let name): return name
@@ -99,8 +112,10 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             return bytes
         case .tcp(let port), .udp(let port):
             return Self.encodePort(port)
-        case .quic, .quicV1, .ws, .wss, .p2pCircuit:
+        case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect:
             return Data()
+        case .certhash(let hash):
+            return Varint.encode(UInt64(hash.count)) + hash
         case .p2p(let peerID):
             let bytes = peerID.bytes
             return Varint.encode(UInt64(bytes.count)) + bytes
@@ -263,6 +278,18 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case 290: // p2p-circuit
             return (.p2pCircuit, 0)
 
+        case 276: // webrtc-direct
+            return (.webrtcDirect, 0)
+
+        case 466: // certhash
+            let (length, lengthBytes) = try Varint.decode(data)
+            guard length <= 1024 else { throw MultiaddrError.fieldTooLarge }
+            let len = Int(length)
+            let start = data.dropFirst(lengthBytes)
+            guard start.count >= len else { throw MultiaddrError.invalidAddress }
+            let hash = Data(start.prefix(len))
+            return (.certhash(hash), lengthBytes + len)
+
         case 421: // p2p
             let (length, lengthBytes) = try Varint.decode(data)
             // PeerIDs are typically < 100 bytes, 4KB is more than enough
@@ -366,6 +393,28 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case "memory":
             guard let v = value else { throw MultiaddrError.missingValue }
             return .memory(v)
+        case "webrtc-direct":
+            return .webrtcDirect
+        case "certhash":
+            guard let v = value else { throw MultiaddrError.missingValue }
+            // Decode multibase base64url (prefix 'u')
+            guard v.hasPrefix("u") else { throw MultiaddrError.invalidAddress }
+            let base64url = String(v.dropFirst())
+            let base64 = base64url
+                .replacingOccurrences(of: "-", with: "+")
+                .replacingOccurrences(of: "_", with: "/")
+            // Add padding if needed
+            let paddedBase64: String
+            let remainder = base64.count % 4
+            if remainder > 0 {
+                paddedBase64 = base64 + String(repeating: "=", count: 4 - remainder)
+            } else {
+                paddedBase64 = base64
+            }
+            guard let data = Data(base64Encoded: paddedBase64) else {
+                throw MultiaddrError.invalidAddress
+            }
+            return .certhash(data)
         default:
             throw MultiaddrError.unknownProtocolName(name)
         }

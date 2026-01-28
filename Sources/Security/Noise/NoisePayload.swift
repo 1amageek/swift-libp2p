@@ -73,73 +73,37 @@ struct NoisePayload: Sendable {
     /// ```
     func encode() -> Data {
         var result = Data()
-
-        // Field 1: identity_key (bytes)
         if !identityKey.isEmpty {
-            result.append(0x0A) // (1 << 3) | 2 = length-delimited
-            result.append(contentsOf: Varint.encode(UInt64(identityKey.count)))
-            result.append(identityKey)
+            result.append(encodeProtobufField(fieldNumber: 1, data: identityKey))
         }
-
-        // Field 2: identity_sig (bytes)
         if !identitySig.isEmpty {
-            result.append(0x12) // (2 << 3) | 2 = length-delimited
-            result.append(contentsOf: Varint.encode(UInt64(identitySig.count)))
-            result.append(identitySig)
+            result.append(encodeProtobufField(fieldNumber: 2, data: identitySig))
         }
-
-        // Field 3: data (bytes)
         if !data.isEmpty {
-            result.append(0x1A) // (3 << 3) | 2 = length-delimited
-            result.append(contentsOf: Varint.encode(UInt64(data.count)))
-            result.append(data)
+            result.append(encodeProtobufField(fieldNumber: 3, data: data))
         }
-
         return result
     }
 
     /// Decodes a payload from protobuf format.
     static func decode(from data: Data) throws -> NoisePayload {
+        let fields: [ProtobufField]
+        do {
+            fields = try decodeProtobufFields(from: data)
+        } catch {
+            throw NoiseError.invalidPayload
+        }
+
         var identityKey: Data?
         var identitySig: Data?
         var payloadData: Data?
 
-        var remaining = data[data.startIndex...]
-
-        while !remaining.isEmpty {
-            // Read field tag
-            let (fieldTag, tagBytes) = try Varint.decode(Data(remaining))
-            remaining = remaining.dropFirst(tagBytes)
-
-            let fieldNumber = fieldTag >> 3
-            let wireType = fieldTag & 0x07
-
-            // All our fields are length-delimited (wire type 2)
-            guard wireType == 2 else {
-                throw NoiseError.invalidPayload
-            }
-
-            // Read field length
-            let (fieldLength, lengthBytes) = try Varint.decode(Data(remaining))
-            remaining = remaining.dropFirst(lengthBytes)
-
-            guard remaining.count >= fieldLength else {
-                throw NoiseError.invalidPayload
-            }
-
-            let fieldData = Data(remaining.prefix(Int(fieldLength)))
-            remaining = remaining.dropFirst(Int(fieldLength))
-
-            switch fieldNumber {
-            case 1:
-                identityKey = fieldData
-            case 2:
-                identitySig = fieldData
-            case 3:
-                payloadData = fieldData
-            default:
-                // Skip unknown fields
-                break
+        for field in fields {
+            switch field.fieldNumber {
+            case 1: identityKey = field.data
+            case 2: identitySig = field.data
+            case 3: payloadData = field.data
+            default: break
             }
         }
 

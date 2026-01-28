@@ -1338,3 +1338,69 @@ struct RecordValidatorTests {
         #expect(result == false)
     }
 }
+
+// MARK: - Client Mode Tests
+
+@Suite("Kademlia Client Mode Tests")
+struct KademliaClientModeTests {
+
+    @Test("Client mode can be set and retrieved")
+    func setModeClient() {
+        let service = KademliaService(
+            localPeerID: KeyPair.generateEd25519().peerID,
+            configuration: KademliaConfiguration(mode: .server)
+        )
+
+        #expect(service.mode == .server)
+
+        service.setMode(.client)
+        #expect(service.mode == .client)
+    }
+
+    @Test("Server mode is default for automatic configuration")
+    func automaticModeDefault() {
+        let service = KademliaService(
+            localPeerID: KeyPair.generateEd25519().peerID,
+            configuration: KademliaConfiguration(mode: .automatic)
+        )
+
+        #expect(service.mode == .automatic)
+    }
+
+    @Test("Client mode configuration is propagated from KademliaConfiguration")
+    func clientModeFromConfig() {
+        let service = KademliaService(
+            localPeerID: KeyPair.generateEd25519().peerID,
+            configuration: KademliaConfiguration(mode: .client)
+        )
+
+        #expect(service.mode == .client)
+    }
+
+    @Test("Mode change emits modeChanged event")
+    func modeChangeEmitsEvent() async {
+        let service = KademliaService(
+            localPeerID: KeyPair.generateEd25519().peerID,
+            configuration: KademliaConfiguration(mode: .server)
+        )
+
+        let eventsStream = service.events
+
+        service.setMode(.client)
+
+        // Consume the event
+        var receivedEvent: KademliaEvent?
+        for await event in eventsStream {
+            receivedEvent = event
+            break
+        }
+
+        if case .modeChanged(let newMode) = receivedEvent {
+            #expect(newMode == .client)
+        } else {
+            Issue.record("Expected modeChanged event, got: \(String(describing: receivedEvent))")
+        }
+
+        service.shutdown()
+    }
+}

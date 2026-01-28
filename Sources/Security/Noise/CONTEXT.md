@@ -207,26 +207,27 @@ struct NoiseSymmetricState {
 
 ### HandshakeState
 ```swift
-final class NoiseHandshake {
+struct NoiseHandshake: Sendable {
     let localStaticKey: Curve25519.KeyAgreement.PrivateKey
-    var localEphemeralKey: Curve25519.KeyAgreement.PrivateKey?
-    var remoteStaticKey: Curve25519.KeyAgreement.PublicKey?
-    var remoteEphemeralKey: Curve25519.KeyAgreement.PublicKey?
-    var symmetricState: NoiseSymmetricState
+    let localKeyPair: KeyPair
     let isInitiator: Bool
+    private let localEphemeralKey: Curve25519.KeyAgreement.PrivateKey
+    private var _remoteStaticKey: Curve25519.KeyAgreement.PublicKey?
+    private var _remoteEphemeralKey: Curve25519.KeyAgreement.PublicKey?
+    private var symmetricState: NoiseSymmetricState
 
     // Initiator methods
-    func writeMessageA() -> Data
-    func readMessageB(_ data: Data) throws -> NoisePayload
-    func writeMessageC(payload: NoisePayload) throws -> Data
+    mutating func writeMessageA() -> Data
+    mutating func readMessageB(_ data: Data) throws -> NoisePayload
+    mutating func writeMessageC() throws -> Data
 
     // Responder methods
-    func readMessageA(_ data: Data) throws
-    func writeMessageB(payload: NoisePayload) throws -> Data
-    func readMessageC(_ data: Data) throws -> NoisePayload
+    mutating func readMessageA(_ data: Data) throws
+    mutating func writeMessageB() throws -> Data
+    mutating func readMessageC(_ data: Data) throws -> NoisePayload
 
     // Finalization
-    func split() -> (send: NoiseCipherState, recv: NoiseCipherState)
+    mutating func split() -> (send: NoiseCipherState, recv: NoiseCipherState)
 }
 ```
 

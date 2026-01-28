@@ -91,12 +91,22 @@ MultistreamSelect.encode("/noise")
 MultistreamSelect.decode(data)
 ```
 
+## 実装ステータス
+
+| 機能 | ステータス | 説明 |
+|------|----------|------|
+| multistream-select v1 (Initiator) | ✅ 実装済み | ヘッダー交換 + プロトコル選択 |
+| multistream-select v1 (Responder) | ✅ 実装済み | ヘッダー交換 + プロトコル応答 |
+| ls コマンド | ✅ 実装済み | サポートプロトコル一覧 |
+| V1 Lazy (0-RTT) | ❌ 未実装 | 単一プロトコル時のレイテンシ最適化 |
+
 ## 既知の制限事項
 
 ### V1Lazy未実装
 - 現在の実装は標準のV1ネゴシエーションのみ
-- V1Lazy（0-RTT最適化）は未実装
+- ❌ V1Lazy（0-RTT最適化）は未実装
 - 単一プロトコルのダイアラーでも2 RTT必要
+- Go/Rust 実装ではダイアラーが単一プロトコルの場合、ヘッダーとプロトコル選択を同時送信してRTTを削減
 
 ### バッファリング
 - 不完全な読み取りが発生する可能性あり

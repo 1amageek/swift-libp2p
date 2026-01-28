@@ -12,9 +12,10 @@ import Crypto
 /// -> s, se
 /// ```
 ///
-/// Note: This class is not `Sendable` as it's designed to be used
-/// within a single async task during the handshake phase.
-final class NoiseHandshake {
+/// Value type: ownership is explicit at the type level. The handshake progresses
+/// through mutating methods within a single task, then `split()` extracts
+/// transport cipher keys.
+struct NoiseHandshake: Sendable {
     /// The local Noise static key pair (X25519).
     let localStaticKey: Curve25519.KeyAgreement.PrivateKey
 
@@ -66,7 +67,7 @@ final class NoiseHandshake {
     ///
     /// Pattern: `-> e`
     /// - Sends ephemeral public key
-    func writeMessageA() -> Data {
+    mutating func writeMessageA() -> Data {
         let ephemeralPub = Data(localEphemeralKey.publicKey.rawRepresentation)
 
         // Mix ephemeral into hash
@@ -83,7 +84,7 @@ final class NoiseHandshake {
     /// - Decrypts responder's static
     /// - Performs es DH
     /// - Decrypts and verifies payload
-    func readMessageB(_ message: Data) throws -> NoisePayload {
+    mutating func readMessageB(_ message: Data) throws -> NoisePayload {
         var offset = 0
 
         // Read remote ephemeral (32 bytes, unencrypted)
@@ -145,7 +146,7 @@ final class NoiseHandshake {
     /// - Encrypts our static public key
     /// - Performs se DH
     /// - Encrypts our payload
-    func writeMessageC() throws -> Data {
+    mutating func writeMessageC() throws -> Data {
         guard let remoteEphemeral = _remoteEphemeralKey else {
             throw NoiseError.messageOutOfOrder
         }
@@ -175,7 +176,7 @@ final class NoiseHandshake {
     ///
     /// Pattern: `-> e`
     /// - Receives initiator's ephemeral public key
-    func readMessageA(_ message: Data) throws {
+    mutating func readMessageA(_ message: Data) throws {
         guard message.count >= noisePublicKeySize else {
             throw NoiseError.handshakeFailed("Message A too short")
         }
@@ -202,7 +203,7 @@ final class NoiseHandshake {
     /// - Encrypts and sends our static
     /// - Performs es DH
     /// - Encrypts and sends payload
-    func writeMessageB() throws -> Data {
+    mutating func writeMessageB() throws -> Data {
         guard let remoteEphemeral = _remoteEphemeralKey else {
             throw NoiseError.messageOutOfOrder
         }
@@ -242,7 +243,7 @@ final class NoiseHandshake {
     /// - Decrypts initiator's static public key
     /// - Performs se DH
     /// - Decrypts and verifies payload
-    func readMessageC(_ message: Data) throws -> NoisePayload {
+    mutating func readMessageC(_ message: Data) throws -> NoisePayload {
         var offset = 0
 
         // Decrypt remote static (32 bytes + 16 tag)
@@ -282,7 +283,7 @@ final class NoiseHandshake {
     /// Splits the handshake state into transport cipher states.
     ///
     /// Returns (send cipher, receive cipher) for this peer.
-    func split() -> (send: NoiseCipherState, recv: NoiseCipherState) {
+    mutating func split() -> (send: NoiseCipherState, recv: NoiseCipherState) {
         let (c1, c2) = symmetricState.split()
 
         if isInitiator {

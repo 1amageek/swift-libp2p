@@ -39,6 +39,7 @@ public enum GossipSubProtobuf {
     private static let tagControlIWant: UInt8 = 0x12       // field 2, wire type 2
     private static let tagControlGraft: UInt8 = 0x1A       // field 3, wire type 2
     private static let tagControlPrune: UInt8 = 0x22       // field 4, wire type 2
+    private static let tagControlIDontWant: UInt8 = 0x2A  // field 5, wire type 2
 
     // MARK: - Control SubMessage Tags
 
@@ -52,6 +53,8 @@ public enum GossipSubProtobuf {
     private static let tagPruneTopic: UInt8 = 0x0A         // field 1, wire type 2
     private static let tagPrunePeers: UInt8 = 0x12         // field 2, wire type 2
     private static let tagPruneBackoff: UInt8 = 0x18       // field 3, wire type 0 (varint)
+
+    private static let tagIDontWantMessageIDs: UInt8 = 0x0A // field 1, wire type 2
 
     private static let tagPeerInfoPeerID: UInt8 = 0x0A     // field 1, wire type 2
     private static let tagPeerInfoRecord: UInt8 = 0x12     // field 2, wire type 2
@@ -185,6 +188,14 @@ public enum GossipSubProtobuf {
             result.append(pruneData)
         }
 
+        // Field 5: idontwant (repeated, v1.2)
+        for idontwant in control.idontwants {
+            let idontwantData = encodeIDontWant(idontwant)
+            result.append(tagControlIDontWant)
+            result.append(contentsOf: Varint.encode(UInt64(idontwantData.count)))
+            result.append(idontwantData)
+        }
+
         return result
     }
 
@@ -271,6 +282,19 @@ public enum GossipSubProtobuf {
             result.append(tagPeerInfoRecord)
             result.append(contentsOf: Varint.encode(UInt64(record.count)))
             result.append(record)
+        }
+
+        return result
+    }
+
+    private static func encodeIDontWant(_ idontwant: ControlMessage.IDontWant) -> Data {
+        var result = Data()
+
+        // Field 1: messageIDs (repeated bytes)
+        for msgID in idontwant.messageIDs {
+            result.append(tagIDontWantMessageIDs)
+            result.append(contentsOf: Varint.encode(UInt64(msgID.bytes.count)))
+            result.append(msgID.bytes)
         }
 
         return result
@@ -488,6 +512,10 @@ public enum GossipSubProtobuf {
             case 4: // prune
                 let prune = try decodePrune(fieldData)
                 batch.prunes.append(prune)
+
+            case 5: // idontwant (v1.2)
+                let idontwant = try decodeIDontWant(fieldData)
+                batch.idontwants.append(idontwant)
 
             default:
                 break
@@ -712,6 +740,37 @@ public enum GossipSubProtobuf {
         }
 
         return ControlMessage.Prune.PeerInfo(peerID: peerID, signedPeerRecord: signedPeerRecord)
+    }
+
+    private static func decodeIDontWant(_ data: Data) throws -> ControlMessage.IDontWant {
+        var messageIDs: [MessageID] = []
+
+        var offset = data.startIndex
+
+        while offset < data.endIndex {
+            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+            offset += tagBytes
+
+            let fieldNumber = tag >> 3
+            let wireType = tag & 0x07
+
+            guard wireType == wireTypeLengthDelimited else {
+                offset = try skipField(in: data, at: offset, wireType: wireType)
+                continue
+            }
+
+            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            offset += lengthBytes
+            let fieldEnd = offset + Int(length)
+            let fieldData = Data(data[offset..<fieldEnd])
+            offset = fieldEnd
+
+            if fieldNumber == 1 {
+                messageIDs.append(MessageID(bytes: fieldData))
+            }
+        }
+
+        return ControlMessage.IDontWant(messageIDs: messageIDs)
     }
 
     // MARK: - Helpers

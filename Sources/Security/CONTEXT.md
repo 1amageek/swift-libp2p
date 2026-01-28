@@ -8,6 +8,7 @@
 Security/
 ├── P2PSecurity/      # Protocol定義のみ
 ├── Noise/            # P2PSecurityNoise（Noise XX）
+├── TLS/              # P2PSecurityTLS（TLS 1.3、swift-tls使用）
 └── Plaintext/        # P2PSecurityPlaintext（テスト用）
 ```
 
@@ -22,6 +23,7 @@ Security/
 |-----------|------|----------|
 | `P2PSecurity` | SecurityUpgraderプロトコル定義 | P2PCore |
 | `P2PSecurityNoise` | Noise XXパターン実装 | P2PSecurity, swift-crypto |
+| `P2PSecurityTLS` | TLS 1.3実装（swift-tls使用） | P2PSecurity, swift-tls, swift-certificates, swift-asn1, swift-crypto |
 | `P2PSecurityPlaintext` | テスト用プレーンテキスト | P2PSecurity |
 
 ## 主要なプロトコル
@@ -42,25 +44,28 @@ public protocol SecurityUpgrader: Sendable {
 ## 接続フロー
 ```
 RawConnection
-    ↓ multistream-select (/noise or /plaintext/2.0.0)
+    ↓ multistream-select (/tls/1.0.0 or /noise or /plaintext/2.0.0)
     ↓ SecurityUpgrader.secure()
 SecuredConnection (localPeer, remotePeer確定)
 ```
 
 ## Wire Protocol IDs
+- `/tls/1.0.0` - TLS 1.3（libp2p TLS仕様準拠、Go/Rust互換）
 - `/noise` - Noise XXパターン
 - `/plaintext/2.0.0` - プレーンテキスト（テスト用）
 
 ## 実装の特性
 
 ### 状態管理
-- **NoiseConnection**: `Mutex<NoiseConnectionState>`でスレッドセーフ
+- **NoiseConnection**: `Mutex<SendState>` + `Mutex<RecvState>` で全二重通信をロック競合なく実現
+- **TLSSecuredConnection**: `Mutex<ConnectionState>` でスレッドセーフ
 - **PlaintextConnection**: initialBufferのみMutex管理
-- ハンドシェイク中のNoiseHandshakeはスレッドセーフでない（単一async taskで使用が前提）
+- **NoiseHandshake**: `struct: Sendable`（値型で所有権が型レベルで明確、`mutating` メソッドで状態遷移）
 
 ### バッファリング戦略
-- NoiseUpgrader/PlaintextUpgrader: ハンドシェイク中に読み込みバッファ生成、SecuredConnectionに初期バッファとして渡す
+- NoiseUpgrader/PlaintextUpgrader/TLSUpgrader: ハンドシェイク中に読み込みバッファ生成、SecuredConnectionに初期バッファとして渡す
 - NoiseConnection: フレーム再構成用の読み込みバッファ
+- TLSSecuredConnection: ハンドシェイク完了時にTCPセグメントに混在したアプリケーションデータを `initialApplicationData` として保持
 - PlaintextConnection: Exchange後の余剰データバッファ
 
 ## 注意点
@@ -98,6 +103,23 @@ public enum PlaintextError: Error, Sendable {
 ### ノンス形式
 12バイトノンス = 4バイトゼロ + 8バイトリトルエンディアンカウンタ
 
+## TLS 実装詳細
+
+### 概要
+swift-tls による RFC 8446 準拠の TLS 1.3 実装。libp2p TLS 仕様に準拠し、Go/Rust 実装との互換性を持つ。
+
+### 暗号化
+TLS 1.3 ハンドシェイク・暗号化/復号は swift-tls が担当。libp2p 層は証明書生成/検証のみを実装。
+
+### 証明書
+- エフェメラル P-256 鍵ペアで自己署名 X.509 証明書を生成
+- libp2p 拡張 (OID: 1.3.6.1.4.1.53594.1.1) に SignedKey 構造体を埋め込み
+- CertificateValidator コールバックで PeerID を抽出・検証
+- swift-certificates + SwiftASN1 で証明書の生成・解析
+
+### タイムアウト
+`Mutex<Bool>` フラグで外部キャンセルとタイムアウトを区別。
+
 ## テスト実装状況
 
 | テスト | ステータス | テスト数 | 説明 |
@@ -106,18 +128,27 @@ public enum PlaintextError: Error, Sendable {
 | NoisePayloadTests | ✅ 完了 | 284行 | エンコード/デコード、署名 |
 | NoiseHandshakeTests | ✅ 完了 | 401行 | メッセージA/B/Cシーケンス |
 | NoiseIntegrationTests | ✅ 完了 | 423行 | E2Eハンドシェイク、読み書き |
+| TLSCertificateTests | ✅ 完了 | 13テスト | 証明書生成、PeerID抽出、CertificateValidator |
 | PlaintextTests | ✅ 完了 | 300行 | Exchange、双方向通信 |
 
-**合計**: ~1,678行のテストコード
+## 実装ステータス
+
+| 実装 | ステータス | 説明 |
+|-----|----------|------|
+| Noise XX | ✅ 実装済み | X25519 + ChaChaPoly + SHA256、小次数鍵検証含む |
+| TLS 1.3 | ✅ 実装済み | swift-tls、libp2p証明書拡張、Go/Rust互換 |
+| Plaintext | ✅ 実装済み | テスト用 |
+| Early Muxer Negotiation (TLS ALPN) | ✅ 実装済み | `EarlyMuxerNegotiating` プロトコル + TLSUpgrader ALPN muxerヒント |
 
 ## 品質向上TODO
 
 ### 高優先度
 - [x] **PlaintextErrorの文書化** - CONTEXT.mdに追加済み
+- [x] **Early Muxer Negotiation** - TLS ALPN に muxer ヒントを含め、muxer ネゴシエーション RTT を省略
 - [ ] **エラーメッセージの一貫性** - NoiseUpgraderのエラーメッセージ形式統一
 
 ### 中優先度
-- [ ] **TLS実装の追加** - rust-libp2pとの互換性向上
+- [x] **TLS実装の追加** - swift-tls による TLS 1.3 実装完了（Go/Rust互換）
 - [ ] **セキュリティ監査** - Noise実装の第三者レビュー
 - [ ] **鍵交換メトリクス** - ハンドシェイク時間の計測
 

@@ -8,7 +8,7 @@
 Mux/
 ├── P2PMux/           # Protocol定義のみ
 ├── Yamux/            # P2PMuxYamux
-└── Mplex/            # P2PMuxMplex（将来実装）
+└── Mplex/            # P2PMuxMplex
 ```
 
 ## 設計原則
@@ -22,7 +22,7 @@ Mux/
 |-----------|------|----------|
 | `P2PMux` | Muxer/MuxedConnection/MuxedStreamプロトコル | P2PCore |
 | `P2PMuxYamux` | Yamux multiplexer実装 | P2PMux |
-| `P2PMuxMplex` | Mplex multiplexer実装（将来） | P2PMux |
+| `P2PMuxMplex` | Mplex multiplexer実装 | P2PMux |
 
 ## 主要なプロトコル
 
@@ -135,22 +135,31 @@ public protocol MuxedConnection: Sendable {
 - Type: Data(0), WindowUpdate(1), Ping(2), GoAway(3)
 - Flags: SYN(0x0001), ACK(0x0002), FIN(0x0004), RST(0x0008)
 
+## 実装ステータス
+
+| 実装 | ステータス | 説明 |
+|-----|----------|------|
+| Yamux | ✅ 実装済み | フロー制御、keep-alive、DoS対策、42+テスト |
+| Mplex | ✅ 実装済み | フレームエンコード/デコード、接続管理。フレームレベルテストのみ |
+
 ## テスト実装状況
 
 | テスト | ステータス | 説明 |
 |-------|----------|------|
 | MuxTests | ⚠️ プレースホルダー | 1テストのみ |
-| YamuxFrameTests | ✅ 実装済み | フレームエンコード/デコードの基本検証 |
-| YamuxConnection/Stream Tests | ❌ なし | フロー制御、RST/FIN、タイムアウトが未検証 |
-
-**クリティカル**: YamuxConnection/YamuxStreamのユニットテスト追加を強く推奨
+| YamuxFrameTests | ✅ 実装済み | フレームエンコード/デコード、設定、エラー型 |
+| YamuxConnectionTests | ✅ 実装済み | GoAway、close、ストリーム管理 |
+| YamuxStreamTests | ✅ 実装済み | ウィンドウオーバーフロー保護 |
+| MplexFrameTests | ✅ 実装済み | フレームエンコード/デコード |
+| MplexConnection/StreamTests | ❌ なし | 接続レベル・ストリームレベルのテストが不足 |
 
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **Yamuxフレームエンコード/デコードテスト** - バイトオーダー、バージョン検証
-- [ ] **Yamuxフロー制御テスト** - ウィンドウ予約、更新、タイムアウト
-- [ ] **Mplex実装** - rust-libp2p/go-libp2pとの互換性向上
+- [x] **Yamuxフレームエンコード/デコードテスト** - ✅ 実装済み
+- [x] **Yamuxフロー制御テスト** - ✅ ウィンドウオーバーフロー保護テスト実装済み
+- [x] **Mplex実装** - ✅ 実装済み（フレームレベルテスト完了）
+- [ ] **Mplexコネクション/ストリームテスト** - 接続レベル・ストリームレベルのテスト追加
 - [ ] **Yamuxストレステスト** - 大量ストリーム同時オープンテスト
 
 ### 中優先度

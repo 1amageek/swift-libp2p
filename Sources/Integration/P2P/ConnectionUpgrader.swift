@@ -153,19 +153,26 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
         role: SecurityRole,
         expectedPeer: PeerID?
     ) async throws -> UpgradeResult {
-        // Phase 1: Negotiate and upgrade security
-        let (secured, securityProtocol) = try await upgradeToSecured(
+        // Phase 1: Negotiate and upgrade security (with early muxer negotiation if supported)
+        let muxerProtocolIDs = muxers.map(\.protocolID)
+        let (secured, securityProtocol, earlyMuxer) = try await upgradeToSecured(
             raw,
             localKeyPair: localKeyPair,
             role: role,
-            expectedPeer: expectedPeer
+            expectedPeer: expectedPeer,
+            muxerProtocols: muxerProtocolIDs
         )
 
         // Phase 2: Negotiate and upgrade muxer
-        let (muxed, muxerProtocol) = try await upgradeToMuxed(
-            secured,
-            role: role
-        )
+        // If early muxer negotiation succeeded, skip multistream-select
+        let (muxed, muxerProtocol): (MuxedConnection, String)
+        if let earlyMuxer,
+           let muxer = muxers.first(where: { $0.protocolID == earlyMuxer }) {
+            let muxedConn = try await muxer.multiplex(secured, isInitiator: role == .initiator)
+            (muxed, muxerProtocol) = (muxedConn, earlyMuxer)
+        } else {
+            (muxed, muxerProtocol) = try await upgradeToMuxed(secured, role: role)
+        }
 
         return UpgradeResult(
             connection: muxed,
@@ -180,8 +187,9 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
         _ raw: any RawConnection,
         localKeyPair: KeyPair,
         role: SecurityRole,
-        expectedPeer: PeerID?
-    ) async throws -> (any SecuredConnection, String) {
+        expectedPeer: PeerID?,
+        muxerProtocols: [String]
+    ) async throws -> (any SecuredConnection, String, String?) {
         let protocolIDs = securityUpgraders.map(\.protocolID)
 
         guard !protocolIDs.isEmpty else {
@@ -218,7 +226,20 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
         // ahead during multistream-select negotiation.
         let bufferedRaw = BufferedRawConnection(underlying: raw, initialBuffer: buffer)
 
-        // Perform security upgrade with the buffered connection
+        // Use early muxer negotiation if the security upgrader supports it
+        if let earlyMuxerUpgrader = upgrader as? EarlyMuxerNegotiating,
+           !muxerProtocols.isEmpty {
+            let (secured, negotiatedMuxer) = try await earlyMuxerUpgrader.secureWithEarlyMuxer(
+                bufferedRaw,
+                localKeyPair: localKeyPair,
+                as: role,
+                expectedPeer: expectedPeer,
+                muxerProtocols: muxerProtocols
+            )
+            return (secured, negotiatedProtocol, negotiatedMuxer)
+        }
+
+        // Standard security upgrade (no early muxer negotiation)
         let secured = try await upgrader.secure(
             bufferedRaw,
             localKeyPair: localKeyPair,
@@ -226,7 +247,7 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
             expectedPeer: expectedPeer
         )
 
-        return (secured, negotiatedProtocol)
+        return (secured, negotiatedProtocol, nil)
     }
 
     // MARK: - Muxer Upgrade

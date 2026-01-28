@@ -140,6 +140,57 @@ struct GossipSubProtobufTests {
         #expect(decoded.control?.iwants[0].messageIDs.count == 2)
     }
 
+    @Test("Encode and decode IDONTWANT")
+    func encodeDecodeIDontWant() throws {
+        let msgID1 = MessageID(bytes: Data([0x01, 0x02, 0x03]))
+        let msgID2 = MessageID(bytes: Data([0x04, 0x05, 0x06]))
+
+        var control = ControlMessageBatch()
+        control.idontwants.append(ControlMessage.IDontWant(messageIDs: [msgID1, msgID2]))
+
+        let rpc = GossipSubRPC(control: control)
+        let encoded = GossipSubProtobuf.encode(rpc)
+        let decoded = try GossipSubProtobuf.decode(encoded)
+
+        #expect(decoded.control?.idontwants.count == 1)
+        #expect(decoded.control?.idontwants[0].messageIDs.count == 2)
+        #expect(decoded.control?.idontwants[0].messageIDs[0] == msgID1)
+        #expect(decoded.control?.idontwants[0].messageIDs[1] == msgID2)
+    }
+
+    @Test("Encode and decode multiple IDONTWANTs in batch")
+    func encodeDecodeMultipleIDontWants() throws {
+        let msgID1 = MessageID(bytes: Data([0x01, 0x02]))
+        let msgID2 = MessageID(bytes: Data([0x03, 0x04]))
+        let msgID3 = MessageID(bytes: Data([0x05, 0x06]))
+
+        var control = ControlMessageBatch()
+        control.idontwants.append(ControlMessage.IDontWant(messageIDs: [msgID1]))
+        control.idontwants.append(ControlMessage.IDontWant(messageIDs: [msgID2, msgID3]))
+
+        let rpc = GossipSubRPC(control: control)
+        let encoded = GossipSubProtobuf.encode(rpc)
+        let decoded = try GossipSubProtobuf.decode(encoded)
+
+        #expect(decoded.control?.idontwants.count == 2)
+        #expect(decoded.control?.idontwants[0].messageIDs.count == 1)
+        #expect(decoded.control?.idontwants[0].messageIDs[0] == msgID1)
+        #expect(decoded.control?.idontwants[1].messageIDs.count == 2)
+    }
+
+    @Test("Encode and decode IDONTWANT with empty messageIDs")
+    func encodeDecodeIDontWantEmpty() throws {
+        var control = ControlMessageBatch()
+        control.idontwants.append(ControlMessage.IDontWant(messageIDs: []))
+
+        let rpc = GossipSubRPC(control: control)
+        let encoded = GossipSubProtobuf.encode(rpc)
+        let decoded = try GossipSubProtobuf.decode(encoded)
+
+        #expect(decoded.control?.idontwants.count == 1)
+        #expect(decoded.control?.idontwants[0].messageIDs.isEmpty == true)
+    }
+
     // MARK: - Complex RPC Tests
 
     @Test("Encode and decode complex RPC with all fields")
@@ -169,6 +220,9 @@ struct GossipSubProtobufTests {
         control.iwants.append(ControlMessage.IWant(
             messageIDs: [MessageID(bytes: Data([0xCC, 0xDD]))]
         ))
+        control.idontwants.append(ControlMessage.IDontWant(
+            messageIDs: [MessageID(bytes: Data([0xEE, 0xFF]))]
+        ))
         rpc.control = control
 
         let encoded = GossipSubProtobuf.encode(rpc)
@@ -180,5 +234,7 @@ struct GossipSubProtobufTests {
         #expect(decoded.control?.prunes.count == 1)
         #expect(decoded.control?.ihaves.count == 1)
         #expect(decoded.control?.iwants.count == 1)
+        #expect(decoded.control?.idontwants.count == 1)
+        #expect(decoded.control?.idontwants[0].messageIDs[0] == MessageID(bytes: Data([0xEE, 0xFF])))
     }
 }

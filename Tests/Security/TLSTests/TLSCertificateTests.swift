@@ -2,6 +2,7 @@
 import Testing
 import Foundation
 import P2PCore
+import P2PSecurity
 @testable import P2PSecurityTLS
 
 @Suite("TLSCertificate Tests")
@@ -148,5 +149,49 @@ struct TLSCertificateTests {
         let config = TLSUpgraderConfiguration(handshakeTimeout: .seconds(10))
         let upgrader = TLSUpgrader(configuration: config)
         #expect(upgrader.protocolID == "/tls/1.0.0")
+    }
+
+    // MARK: - Early Muxer Negotiation (ALPN) Tests
+
+    @Test("Build ALPN protocols with muxer hints")
+    func buildALPNWithMuxers() {
+        let alpn = TLSUpgrader.buildALPNProtocols(muxerProtocols: ["/yamux/1.0.0", "/mplex/6.7.0"])
+
+        #expect(alpn.count == 3)
+        #expect(alpn[0] == "libp2p/yamux/1.0.0")
+        #expect(alpn[1] == "libp2p/mplex/6.7.0")
+        #expect(alpn[2] == "libp2p")
+    }
+
+    @Test("Build ALPN protocols without muxer hints")
+    func buildALPNWithoutMuxers() {
+        let alpn = TLSUpgrader.buildALPNProtocols(muxerProtocols: [])
+
+        #expect(alpn.count == 1)
+        #expect(alpn[0] == "libp2p")
+    }
+
+    @Test("Extract muxer protocol from ALPN with muxer hint")
+    func extractMuxerFromALPN() {
+        let muxer = TLSUpgrader.extractMuxerProtocol(from: "libp2p/yamux/1.0.0")
+        #expect(muxer == "/yamux/1.0.0")
+    }
+
+    @Test("Extract muxer protocol from base ALPN returns nil")
+    func extractMuxerFromBaseALPN() {
+        let muxer = TLSUpgrader.extractMuxerProtocol(from: "libp2p")
+        #expect(muxer == nil)
+    }
+
+    @Test("Extract muxer protocol from mplex ALPN")
+    func extractMuxerFromMplexALPN() {
+        let muxer = TLSUpgrader.extractMuxerProtocol(from: "libp2p/mplex/6.7.0")
+        #expect(muxer == "/mplex/6.7.0")
+    }
+
+    @Test("TLSUpgrader conforms to EarlyMuxerNegotiating")
+    func upgraderConformsToEarlyMuxer() {
+        let upgrader = TLSUpgrader()
+        #expect(upgrader is EarlyMuxerNegotiating)
     }
 }

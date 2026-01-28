@@ -21,21 +21,21 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         expectedPeer: PeerID?
     ) async throws -> any SecuredConnection {
         let isInitiator = role == .initiator
-        let handshake = NoiseHandshake(localKeyPair: localKeyPair, isInitiator: isInitiator)
+        var handshake = NoiseHandshake(localKeyPair: localKeyPair, isInitiator: isInitiator)
 
         var readBuffer = Data()
         let remotePeer: PeerID
 
         if isInitiator {
             remotePeer = try await performInitiatorHandshake(
-                handshake: handshake,
+                handshake: &handshake,
                 connection: connection,
                 expectedPeer: expectedPeer,
                 readBuffer: &readBuffer
             )
         } else {
             remotePeer = try await performResponderHandshake(
-                handshake: handshake,
+                handshake: &handshake,
                 connection: connection,
                 expectedPeer: expectedPeer,
                 readBuffer: &readBuffer
@@ -58,7 +58,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
     // MARK: - Initiator Handshake
 
     private func performInitiatorHandshake(
-        handshake: NoiseHandshake,
+        handshake: inout NoiseHandshake,
         connection: any RawConnection,
         expectedPeer: PeerID?,
         readBuffer: inout Data
@@ -95,7 +95,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
     // MARK: - Responder Handshake
 
     private func performResponderHandshake(
-        handshake: NoiseHandshake,
+        handshake: inout NoiseHandshake,
         connection: any RawConnection,
         expectedPeer: PeerID?,
         readBuffer: inout Data

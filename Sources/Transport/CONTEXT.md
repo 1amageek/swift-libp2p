@@ -9,7 +9,7 @@ Transport/
 ├── P2PTransport/     # Protocol定義のみ（NIO依存なし）
 ├── TCP/              # P2PTransportTCP（SwiftNIO使用）
 ├── Memory/           # P2PTransportMemory（テスト用）
-└── QUIC/             # P2PTransportQUIC（将来実装）
+└── QUIC/             # P2PTransportQUIC（swift-quic使用）
 ```
 
 ## 設計原則
@@ -47,10 +47,12 @@ public protocol Listener: Sendable {
 
 | 実装 | ステータス | 説明 |
 |-----|----------|------|
-| TCPTransport | ✅ 完了 | SwiftNIOベースのTCP実装 |
-| MemoryTransport | ✅ 完了 | テスト用インメモリ実装 |
-| RelayTransport | ✅ 完了 | Circuit Relay v2ラッパー |
-| QUICTransport | ✅ 完了 | swift-quic使用（TLS 1.3 + libp2p証明書） |
+| TCPTransport | ✅ 実装済み | SwiftNIOベースのTCP実装 |
+| MemoryTransport | ✅ 実装済み | テスト用インメモリ実装 |
+| RelayTransport | ✅ 実装済み | Circuit Relay v2ラッパー |
+| QUICTransport | ✅ 実装済み | swift-quic使用（TLS 1.3 + libp2p証明書） |
+| WebSocketTransport | ❌ 未実装 | ブラウザ互換性向上に必要 |
+| WebRTCTransport | ❌ 未実装 | |
 
 ## 実装ガイドライン
 - `RawConnection`を返す（SecuredConnectionはSecurity層で処理）

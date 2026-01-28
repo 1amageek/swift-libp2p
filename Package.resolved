@@ -1,5 +1,5 @@
 {
-  "originHash" : "39b1b5de0ba5473e6ca8fa5b4243348a70a31fd7fbea7cd0d44f7d6762a5838c",
+  "originHash" : "9da5e3032e573f0b06a9d08d1e6e9ae3e13990696ac6050730b8b4fc914f4bb4",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -115,7 +115,16 @@
       "location" : "https://github.com/1amageek/swift-tls.git",
       "state" : {
         "branch" : "main",
-        "revision" : "fdd1113eb328d3904318df625541a2a9b6324a1a"
+        "revision" : "903a9d0370ccf2462788c99a508c29fd7e6ca36d"
+      }
+    },
+    {
+      "identity" : "swift-webrtc",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/swift-webrtc.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "284641c8dd208d9892da3e69f0204ab01c8d3618"
       }
     }
   ],
