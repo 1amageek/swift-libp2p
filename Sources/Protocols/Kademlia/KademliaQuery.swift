@@ -366,27 +366,3 @@ public struct KademliaQuery: Sendable {
         }
     }
 }
-
-/// Extension for PUT_VALUE operations (not a query, but similar flow).
-public struct KademliaPutOperation: Sendable {
-    /// The record to store.
-    public let record: KademliaRecord
-
-    /// Number of peers to store the record on.
-    public let replicationFactor: Int
-
-    /// Creates a put operation.
-    public init(
-        record: KademliaRecord,
-        replicationFactor: Int = KademliaProtocol.kValue
-    ) {
-        self.record = record
-        self.replicationFactor = replicationFactor
-    }
-}
-
-/// Delegate for PUT_VALUE operations.
-public protocol KademliaPutDelegate: Sendable {
-    /// Sends a PUT_VALUE request to a peer.
-    func sendPutValue(to peer: PeerID, record: KademliaRecord) async throws
-}

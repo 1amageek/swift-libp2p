@@ -207,30 +207,31 @@ public final class TCPConnection: RawConnection, Sendable {
 /// The handler queues connections created before the listener is set, ensuring no connections
 /// are dropped during listener initialization.
 ///
-/// NIO ChannelHandler requires @unchecked Sendable due to framework requirements.
-final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
+/// All mutable state is protected by `Mutex<HandlerState>` for thread safety.
+/// NIO handler methods and external methods (`setListener`, `setConnection`) may run
+/// on different threads, so full synchronization is required.
+final class TCPReadHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer
 
-    private var connection: TCPConnection?
-    private var bufferedData: [[UInt8]] = []
-    private var isInactive = false
-
     /// Whether this handler is in accept mode (creates connection on channelActive)
-    private let acceptMode: Bool
+    let acceptMode: Bool
 
-    /// Callback for accept side: set via setListener(), may be set after channelActive
-    private var onAccepted: (@Sendable (TCPConnection) -> Void)?
+    private let state: Mutex<HandlerState>
 
-    /// Connection created before listener was set (queued for delivery)
-    private var pendingConnection: TCPConnection?
-
-    /// Lock for thread-safe access to onAccepted and pendingConnection
-    private let lock = NSLock()
+    private struct HandlerState: Sendable {
+        var connection: TCPConnection?
+        var bufferedData: [[UInt8]] = []
+        var isInactive = false
+        /// Callback for accept side: set via setListener(), may be set after channelActive
+        var onAccepted: (@Sendable (TCPConnection) -> Void)?
+        /// Connection created before listener was set (queued for delivery)
+        var pendingConnection: TCPConnection?
+    }
 
     /// Dial side initializer: no callback, connection set via setConnection()
     init() {
         self.acceptMode = false
-        self.onAccepted = nil
+        self.state = Mutex(HandlerState())
         tcpLogger.debug("TCPReadHandler: Initialized (dial mode)")
     }
 
@@ -238,7 +239,7 @@ final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
     /// Callback can be provided now or later via setListener()
     init(onAccepted: (@Sendable (TCPConnection) -> Void)? = nil) {
         self.acceptMode = true
-        self.onAccepted = onAccepted
+        self.state = Mutex(HandlerState(onAccepted: onAccepted))
         tcpLogger.debug("TCPReadHandler: Initialized (accept mode, callback: \(onAccepted != nil))")
     }
 
@@ -246,11 +247,12 @@ final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
     /// If a connection was already created (pending), it is delivered immediately.
     /// This enables late binding of the listener after bootstrap completes.
     func setListener(_ callback: @escaping @Sendable (TCPConnection) -> Void) {
-        lock.lock()
-        self.onAccepted = callback
-        let pending = pendingConnection
-        pendingConnection = nil
-        lock.unlock()
+        let pending: TCPConnection? = state.withLock { s in
+            s.onAccepted = callback
+            let p = s.pendingConnection
+            s.pendingConnection = nil
+            return p
+        }
 
         // Deliver pending connection outside of lock
         if let conn = pending {
@@ -262,7 +264,7 @@ final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
     /// Called when channel becomes active.
     /// For accept side: creates connection and delivers via callback or queues for later.
     func channelActive(context: ChannelHandlerContext) {
-        if acceptMode && connection == nil {
+        if acceptMode {
             let channel = context.channel
             let remoteAddr = channel.remoteAddress?.toMultiaddr()
                 ?? Multiaddr(uncheckedProtocols: [.ip4("0.0.0.0"), .tcp(0)])
@@ -275,20 +277,44 @@ final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
                 localAddress: localAddr,
                 remoteAddress: remoteAddr
             )
-            self.connection = newConnection
-            flushBufferedData(to: newConnection)
 
-            // Try to deliver immediately, or queue for later
-            lock.lock()
-            if let callback = onAccepted {
-                lock.unlock()
+            enum ActiveAction {
+                case deliver(@Sendable (TCPConnection) -> Void, [[UInt8]])
+                case queue([[UInt8]])
+                case skip
+            }
+
+            let action: ActiveAction = state.withLock { s in
+                guard s.connection == nil else { return .skip }
+                s.connection = newConnection
+                let buffered = s.bufferedData
+                s.bufferedData.removeAll()
+
+                if let callback = s.onAccepted {
+                    return .deliver(callback, buffered)
+                } else {
+                    s.pendingConnection = newConnection
+                    return .queue(buffered)
+                }
+            }
+
+            // Flush buffered data and act outside lock
+            switch action {
+            case .deliver(let callback, let buffered):
+                for data in buffered {
+                    tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
+                    newConnection.dataReceived(data)
+                }
                 tcpLogger.debug("TCPReadHandler.channelActive: Delivering connection immediately")
                 callback(newConnection)
-            } else {
-                // Listener not yet set - queue the connection
-                pendingConnection = newConnection
-                lock.unlock()
+            case .queue(let buffered):
+                for data in buffered {
+                    tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
+                    newConnection.dataReceived(data)
+                }
                 tcpLogger.debug("TCPReadHandler.channelActive: Queuing connection (listener not ready)")
+            case .skip:
+                break
             }
         }
         context.fireChannelActive()
@@ -297,9 +323,18 @@ final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
     /// Dial side: manually set connection after handler is added to pipeline.
     func setConnection(_ connection: TCPConnection) {
         tcpLogger.debug("TCPReadHandler.setConnection: Setting connection")
-        self.connection = connection
-        flushBufferedData(to: connection)
-        if isInactive {
+        let (buffered, inactive) = state.withLock { s -> ([[UInt8]], Bool) in
+            s.connection = connection
+            let b = s.bufferedData
+            s.bufferedData.removeAll()
+            let i = s.isInactive
+            return (b, i)
+        }
+        for data in buffered {
+            tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
+            connection.dataReceived(data)
+        }
+        if inactive {
             connection.channelInactive()
         }
     }
@@ -307,41 +342,48 @@ final class TCPReadHandler: ChannelInboundHandler, @unchecked Sendable {
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buffer = unwrapInboundIn(data)
         if let bytes = buffer.readBytes(length: buffer.readableBytes) {
-            if let connection = connection {
+            let conn: TCPConnection? = state.withLock { s in
+                if let connection = s.connection {
+                    return connection
+                } else {
+                    s.bufferedData.append(bytes)
+                    return nil
+                }
+            }
+            if let conn {
                 tcpLogger.debug("TCPReadHandler.channelRead: Forwarding \(bytes.count) bytes")
-                connection.dataReceived(bytes)
+                conn.dataReceived(bytes)
             } else {
                 tcpLogger.debug("TCPReadHandler.channelRead: Buffering \(bytes.count) bytes")
-                bufferedData.append(bytes)
             }
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
         tcpLogger.debug("TCPReadHandler.channelInactive: Channel inactive")
-        if let connection = connection {
-            connection.channelInactive()
-        } else {
-            isInactive = true
+        let conn: TCPConnection? = state.withLock { s in
+            if let connection = s.connection {
+                return connection
+            } else {
+                s.isInactive = true
+                return nil
+            }
         }
+        conn?.channelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         tcpLogger.error("TCPReadHandler.errorCaught: \(error)")
-        if let connection = connection {
-            connection.channelInactive()
-        } else {
-            isInactive = true
+        let conn: TCPConnection? = state.withLock { s in
+            if let connection = s.connection {
+                return connection
+            } else {
+                s.isInactive = true
+                return nil
+            }
         }
+        conn?.channelInactive()
         context.close(promise: nil)
-    }
-
-    private func flushBufferedData(to connection: TCPConnection) {
-        for data in bufferedData {
-            tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
-            connection.dataReceived(data)
-        }
-        bufferedData.removeAll()
     }
 }
 

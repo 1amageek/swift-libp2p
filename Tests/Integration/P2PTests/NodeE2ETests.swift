@@ -325,7 +325,7 @@ struct NodeE2ETests {
         _ = try await client.connect(to: serverAddr)
 
         // Send multiple pings
-        let results = await pingService.pingMultiple(
+        let results = try await pingService.pingMultiple(
             serverPeerID,
             using: client,
             count: 3,

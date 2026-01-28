@@ -1,6 +1,7 @@
 /// MplexFrameTests - Tests for Mplex frame encoding/decoding
 import Testing
 import Foundation
+import P2PCore
 @testable import P2PMuxMplex
 
 @Suite("MplexFrame Tests")
@@ -9,46 +10,47 @@ struct MplexFrameTests {
     // MARK: - Varint Encoding/Decoding
 
     @Test("Encode and decode small varint")
-    func encodeDecodeSmallVarint() {
+    func encodeDecodeSmallVarint() throws {
         let values: [UInt64] = [0, 1, 127]
         for value in values {
-            let encoded = encodeVarint(value)
+            let encoded = Varint.encode(value)
             #expect(encoded.count == 1)
-            let (decoded, size) = decodeVarint(from: Data(encoded), at: 0)!
+            let (decoded, size) = try Varint.decode(encoded)
             #expect(decoded == value)
             #expect(size == 1)
         }
     }
 
     @Test("Encode and decode medium varint")
-    func encodeDecodeMediumVarint() {
+    func encodeDecodeMediumVarint() throws {
         let values: [UInt64] = [128, 255, 300, 16383]
         for value in values {
-            let encoded = encodeVarint(value)
+            let encoded = Varint.encode(value)
             #expect(encoded.count == 2)
-            let (decoded, size) = decodeVarint(from: Data(encoded), at: 0)!
+            let (decoded, size) = try Varint.decode(encoded)
             #expect(decoded == value)
             #expect(size == 2)
         }
     }
 
     @Test("Encode and decode large varint")
-    func encodeDecodeLargeVarint() {
+    func encodeDecodeLargeVarint() throws {
         let values: [UInt64] = [0x100000, 0x7FFFFFFF, UInt64.max]
         for value in values {
-            let encoded = encodeVarint(value)
-            let (decoded, size) = decodeVarint(from: Data(encoded), at: 0)!
+            let encoded = Varint.encode(value)
+            let (decoded, size) = try Varint.decode(encoded)
             #expect(decoded == value)
             #expect(size == encoded.count)
         }
     }
 
-    @Test("Decode incomplete varint returns nil")
+    @Test("Decode incomplete varint throws error")
     func decodeIncompleteVarint() {
         // A continuation byte (0x80 set) with no following byte
         let incompleteData = Data([0x80])
-        let result = decodeVarint(from: incompleteData, at: 0)
-        #expect(result == nil)
+        #expect(throws: VarintError.self) {
+            _ = try Varint.decode(incompleteData)
+        }
     }
 
     // MARK: - Frame Encoding/Decoding
@@ -201,8 +203,8 @@ struct MplexFrameTests {
         // Create invalid frame data manually: header with flag 7 (invalid)
         var data = Data()
         let header: UInt64 = (1 << 3) | 7 // stream ID 1, flag 7
-        data.append(contentsOf: encodeVarint(header))
-        data.append(contentsOf: encodeVarint(0)) // length 0
+        data.append(Varint.encode(header))
+        data.append(Varint.encode(0)) // length 0
 
         #expect(throws: MplexError.self) {
             _ = try MplexFrame.decode(from: data)

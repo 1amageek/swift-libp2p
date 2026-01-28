@@ -85,6 +85,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         var reservations: [PeerID: ServerReservation] = [:]
         var activeCircuits: [CircuitID: ActiveCircuit] = [:]
         var circuitsByPeer: [PeerID: Set<CircuitID>] = [:]
+        var cleanupTasks: [PeerID: Task<Void, Never>] = [:]
     }
 
     private struct ServerReservation: Sendable {
@@ -573,6 +574,14 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
     /// Call this method when the server is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
+        let tasks = serverState.withLock { s -> [Task<Void, Never>] in
+            let tasks = Array(s.cleanupTasks.values)
+            s.cleanupTasks.removeAll()
+            return tasks
+        }
+        for task in tasks {
+            task.cancel()
+        }
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil
@@ -581,9 +590,18 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
     }
 
     private func scheduleReservationCleanup(peer: PeerID, at expiration: ContinuousClock.Instant) {
-        Task { [weak self] in
+        let task = Task { [weak self] in
             try? await Task.sleep(until: expiration, clock: .continuous)
-            self?.cleanupExpiredReservation(peer: peer)
+            guard let self else { return }
+            self.cleanupExpiredReservation(peer: peer)
+            self.serverState.withLock { s in
+                _ = s.cleanupTasks.removeValue(forKey: peer)
+            }
+        }
+        serverState.withLock { s in
+            // Cancel any existing cleanup task for this peer (reservation renewed)
+            s.cleanupTasks[peer]?.cancel()
+            s.cleanupTasks[peer] = task
         }
     }
 

@@ -36,8 +36,8 @@ struct MplexStreamTests {
 
         let stream = try await connection.newStream()
 
-        // Inject data before read
-        let messageFrame = MplexFrame.message(id: 1, isInitiator: false, data: Data("hello".utf8))
+        // Inject data before read (stream ID 0 = first locally-opened stream)
+        let messageFrame = MplexFrame.message(id: 0, isInitiator: false, data: Data("hello".utf8))
         injectFrame(mock, messageFrame)
 
         try await Task.sleep(for: .milliseconds(50))
@@ -63,8 +63,8 @@ struct MplexStreamTests {
 
         try await Task.sleep(for: .milliseconds(50))
 
-        // Inject data
-        let messageFrame = MplexFrame.message(id: 1, isInitiator: false, data: Data("delayed".utf8))
+        // Inject data (stream ID 0 = first locally-opened stream)
+        let messageFrame = MplexFrame.message(id: 0, isInitiator: false, data: Data("delayed".utf8))
         injectFrame(mock, messageFrame)
 
         let data = try await readTask.value
@@ -83,14 +83,14 @@ struct MplexStreamTests {
         // Wait for readLoop to start
         try await Task.sleep(for: .milliseconds(100))
 
-        // Inject first data frame
-        injectFrame(mock, MplexFrame.message(id: 1, isInitiator: false, data: Data("hello".utf8)))
+        // Inject first data frame (stream ID 0 = first locally-opened stream)
+        injectFrame(mock, MplexFrame.message(id: 0, isInitiator: false, data: Data("hello".utf8)))
 
         // Wait for processing
         try await Task.sleep(for: .milliseconds(100))
 
         // Inject second data frame
-        injectFrame(mock, MplexFrame.message(id: 1, isInitiator: false, data: Data("world".utf8)))
+        injectFrame(mock, MplexFrame.message(id: 0, isInitiator: false, data: Data("world".utf8)))
 
         // Wait for processing
         try await Task.sleep(for: .milliseconds(100))
@@ -146,8 +146,8 @@ struct MplexStreamTests {
 
         let stream = try await connection.newStream()
 
-        // Inject Close from remote
-        let closeFrame = MplexFrame.close(id: 1, isInitiator: false)
+        // Inject Close from remote (stream ID 0 = first locally-opened stream)
+        let closeFrame = MplexFrame.close(id: 0, isInitiator: false)
         injectFrame(mock, closeFrame)
 
         try await Task.sleep(for: .milliseconds(50))
@@ -178,7 +178,7 @@ struct MplexStreamTests {
         let hasMessage = outbound.contains { data in
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
             return frame.flag == .messageInitiator &&
-                   frame.streamID == 1 &&
+                   frame.streamID == 0 &&
                    String(data: frame.data, encoding: .utf8) == "test data"
         }
         #expect(hasMessage)
@@ -239,7 +239,7 @@ struct MplexStreamTests {
         let outbound = mock.captureOutbound()
         let hasClose = outbound.contains { data in
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
-            return frame.flag == .closeInitiator && frame.streamID == 1
+            return frame.flag == .closeInitiator && frame.streamID == 0
         }
         #expect(hasClose)
 
@@ -265,7 +265,7 @@ struct MplexStreamTests {
         let outbound = mock.captureOutbound()
         let closeCount = outbound.filter { data in
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
-            return frame.flag == .closeInitiator && frame.streamID == 1
+            return frame.flag == .closeInitiator && frame.streamID == 0
         }.count
         #expect(closeCount == 1)
 
@@ -279,8 +279,8 @@ struct MplexStreamTests {
 
         let stream = try await connection.newStream()
 
-        // Buffer some data
-        let messageFrame = MplexFrame.message(id: 1, isInitiator: false, data: Data("buffered".utf8))
+        // Buffer some data (stream ID 0 = first locally-opened stream)
+        let messageFrame = MplexFrame.message(id: 0, isInitiator: false, data: Data("buffered".utf8))
         injectFrame(mock, messageFrame)
 
         try await Task.sleep(for: .milliseconds(50))
@@ -306,8 +306,8 @@ struct MplexStreamTests {
         // Close write side
         try await stream.closeWrite()
 
-        // Read should still work when data arrives
-        let messageFrame = MplexFrame.message(id: 1, isInitiator: false, data: Data("can still read".utf8))
+        // Read should still work when data arrives (stream ID 0)
+        let messageFrame = MplexFrame.message(id: 0, isInitiator: false, data: Data("can still read".utf8))
         injectFrame(mock, messageFrame)
 
         try await Task.sleep(for: .milliseconds(50))
@@ -335,7 +335,7 @@ struct MplexStreamTests {
         let outbound = mock.captureOutbound()
         let hasReset = outbound.contains { data in
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
-            return frame.flag == .resetInitiator && frame.streamID == 1
+            return frame.flag == .resetInitiator && frame.streamID == 0
         }
         #expect(hasReset)
 
@@ -390,8 +390,8 @@ struct MplexStreamTests {
 
         try await Task.sleep(for: .milliseconds(50))
 
-        // Inject Reset from remote
-        let resetFrame = MplexFrame.reset(id: 1, isInitiator: false)
+        // Inject Reset from remote (stream ID 0 = first locally-opened stream)
+        let resetFrame = MplexFrame.reset(id: 0, isInitiator: false)
         injectFrame(mock, resetFrame)
 
         // Both reads should fail
@@ -415,8 +415,8 @@ struct MplexStreamTests {
         let stream1 = try await connection.newStream()
         let stream2 = try await connection.newStream()
 
-        #expect(stream1.id == 1)
-        #expect(stream2.id == 3)
+        #expect(stream1.id == 0)
+        #expect(stream2.id == 1)
 
         try await connection.close()
     }

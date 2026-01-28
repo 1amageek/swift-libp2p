@@ -1,37 +1,20 @@
-/// TLSConnection - SecuredConnection implementation for TLS
+/// TLSSecuredConnection - SecuredConnection implementation using swift-tls
+///
+/// Wraps a raw TCP connection with TLS 1.3 record-layer encryption
+/// via `TLSConnection`. After the TLS handshake completes
+/// (driven by `TLSUpgrader`), this class handles encrypting outgoing
+/// application data and decrypting incoming TLS records.
 import Foundation
-import Crypto
 import P2PCore
+import P2PSecurity
 import Synchronization
+import TLSRecord
 
-// MARK: - Separated State Structures
-
-/// Send-only state for write operations.
-private struct TLSSendState: Sendable {
-    var cipher: TLSCipherState
-}
-
-/// Receive-only state for read operations.
-private struct TLSRecvState: Sendable {
-    var cipher: TLSCipherState
-    var buffer: Data = Data()
-}
-
-/// Shared state accessed by both read and write.
-private struct TLSSharedState: Sendable {
-    var isClosed: Bool = false
-}
-
-// MARK: - TLSConnection
-
-/// A TLS-secured connection.
+/// A TLS 1.3 secured connection.
 ///
-/// After TLS handshake completes, this wraps the underlying connection
-/// with AES-GCM encryption using the negotiated keys.
-///
-/// Uses separate locks for send and receive operations to enable
-/// full-duplex communication without lock contention.
-public final class TLSConnection: SecuredConnection, Sendable {
+/// Uses swift-tls record layer for encryption/decryption of application data.
+/// The handshake is already complete when this object is created.
+public final class TLSSecuredConnection: SecuredConnection, Sendable {
 
     public let localPeer: PeerID
     public let remotePeer: PeerID
@@ -45,145 +28,95 @@ public final class TLSConnection: SecuredConnection, Sendable {
     }
 
     private let underlying: any RawConnection
+    private let tlsConnection: TLSConnection
+    private let state: Mutex<ConnectionState>
 
-    /// Send state - only accessed by write()
-    private let sendState: Mutex<TLSSendState>
+    private struct ConnectionState: Sendable {
+        var applicationDataBuffer: Data
+        var isClosed: Bool = false
+    }
 
-    /// Receive state - only accessed by read()
-    private let recvState: Mutex<TLSRecvState>
-
-    /// Shared state - lightweight, accessed by both
-    private let sharedState: Mutex<TLSSharedState>
-
-    /// Creates a TLS connection.
+    /// Creates a TLS secured connection.
     ///
     /// - Parameters:
-    ///   - underlying: The raw connection
+    ///   - underlying: The raw TCP connection
+    ///   - tlsConnection: The swift-tls connection (handshake already complete)
     ///   - localPeer: The local peer ID
     ///   - remotePeer: The remote peer ID
-    ///   - sendKey: The key for encrypting outgoing data
-    ///   - recvKey: The key for decrypting incoming data
-    ///   - initialBuffer: Any data already read during handshake
+    ///   - initialApplicationData: Application data received during the handshake
+    ///     completion that must be delivered before reading new TCP data
     init(
         underlying: any RawConnection,
+        tlsConnection: TLSConnection,
         localPeer: PeerID,
         remotePeer: PeerID,
-        sendKey: SymmetricKey,
-        recvKey: SymmetricKey,
-        initialBuffer: Data = Data()
+        initialApplicationData: Data = Data()
     ) {
         self.underlying = underlying
+        self.tlsConnection = tlsConnection
         self.localPeer = localPeer
         self.remotePeer = remotePeer
-
-        self.sendState = Mutex(TLSSendState(
-            cipher: TLSCipherState(key: sendKey)
-        ))
-
-        self.recvState = Mutex(TLSRecvState(
-            cipher: TLSCipherState(key: recvKey),
-            buffer: initialBuffer
-        ))
-
-        self.sharedState = Mutex(TLSSharedState())
+        self.state = Mutex(ConnectionState(applicationDataBuffer: initialApplicationData))
     }
 
     // MARK: - SecuredConnection
 
     public func read() async throws -> Data {
-        // Try to read a complete frame
+        // Drain buffered application data first (from handshake overlap)
+        let buffered = state.withLock { state -> Data? in
+            guard !state.isClosed else { return nil }
+            guard !state.applicationDataBuffer.isEmpty else { return nil }
+            let data = state.applicationDataBuffer
+            state.applicationDataBuffer = Data()
+            return data
+        }
+
+        if let buffered {
+            return buffered
+        }
+
+        let isClosed = state.withLock { $0.isClosed }
+        if isClosed { throw TLSError.connectionClosed }
+
+        // Read from network until we get application data
         while true {
-            // 1. Check closed state (lightweight lock)
-            let closed = sharedState.withLock { $0.isClosed }
-            if closed {
+            let received = try await underlying.read()
+            guard !received.isEmpty else {
                 throw TLSError.connectionClosed
             }
 
-            // 2. Check buffer and decrypt (receive lock only)
-            let frameResult: Result<Data?, any Error> = recvState.withLock { state in
-                do {
-                    if let (message, consumed) = try readTLSMessage(from: state.buffer) {
-                        state.buffer = Data(state.buffer.dropFirst(consumed))
+            let output = try await tlsConnection.processReceivedData(received)
 
-                        // Decrypt the message
-                        let plaintext = try state.cipher.decrypt(message)
-                        return .success(plaintext)
-                    }
-                } catch {
-                    // Frame parsing or decryption failed - clear buffer to prevent infinite retry
-                    state.buffer = Data()
-                    return .failure(error)
-                }
-                return .success(nil)
+            // Send any post-handshake response data (e.g. NewSessionTicket ack)
+            if !output.dataToSend.isEmpty {
+                try await underlying.write(output.dataToSend)
             }
 
-            switch frameResult {
-            case .success(let data):
-                if let data = data {
-                    return data
-                }
-            case .failure(let error):
-                // Mark as closed on error
-                sharedState.withLock { $0.isClosed = true }
-                throw error
+            if !output.applicationData.isEmpty {
+                return output.applicationData
             }
 
-            // 3. Read from network (no lock held)
-            let chunk = try await underlying.read()
-            if chunk.isEmpty {
-                throw TLSError.connectionClosed
-            }
-
-            // 4. Append to buffer (receive lock only)
-            recvState.withLock { state in
-                state.buffer.append(chunk)
-            }
+            // No application data in this batch (e.g. post-handshake messages only),
+            // continue reading.
         }
     }
 
     public func write(_ data: Data) async throws {
-        // 1. Check closed state (lightweight lock)
-        let closed = sharedState.withLock { $0.isClosed }
-        if closed {
-            throw TLSError.connectionClosed
-        }
+        let isClosed = state.withLock { $0.isClosed }
+        guard !isClosed else { throw TLSError.connectionClosed }
 
-        // Handle empty data: still send a frame (carries authentication)
-        if data.isEmpty {
-            let encrypted = try sendState.withLock { state -> Data in
-                let ciphertext = try state.cipher.encrypt(Data())
-                return try encodeTLSMessage(ciphertext)
-            }
-            try await underlying.write(encrypted)
-            return
-        }
-
-        var remaining = data[data.startIndex...]
-
-        while !remaining.isEmpty {
-            // 2. Re-check closed state in loop
-            let closed = sharedState.withLock { $0.isClosed }
-            if closed {
-                throw TLSError.connectionClosed
-            }
-
-            let chunkSize = min(remaining.count, tlsMaxPlaintextSize)
-            let chunk = Data(remaining.prefix(chunkSize))
-            remaining = remaining.dropFirst(chunkSize)
-
-            // 3. Encrypt (send lock only)
-            let encrypted = try sendState.withLock { state -> Data in
-                let ciphertext = try state.cipher.encrypt(chunk)
-                return try encodeTLSMessage(ciphertext)
-            }
-
-            // 4. Write to network (no lock held)
-            try await underlying.write(encrypted)
-        }
+        let encrypted = try tlsConnection.writeApplicationData(data)
+        try await underlying.write(encrypted)
     }
 
     public func close() async throws {
-        sharedState.withLock { $0.isClosed = true }
+        state.withLock { $0.isClosed = true }
+        do {
+            let closeData = try tlsConnection.close()
+            try await underlying.write(closeData)
+        } catch {
+            // Best effort to send close_notify
+        }
         try await underlying.close()
     }
 }

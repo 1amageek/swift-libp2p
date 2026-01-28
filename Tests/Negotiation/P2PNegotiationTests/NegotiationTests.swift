@@ -28,8 +28,9 @@ struct MultistreamSelectTests {
     @Test("Decode valid message")
     func decodeBasic() throws {
         let encoded = MultistreamSelect.encode("/noise")
-        let decoded = try MultistreamSelect.decode(encoded)
+        let (decoded, consumed) = try MultistreamSelect.decode(encoded)
         #expect(decoded == "/noise")
+        #expect(consumed == encoded.count)
     }
 
     @Test("Encode/Decode round trip")
@@ -44,15 +45,16 @@ struct MultistreamSelectTests {
         ]
         for proto in protocols {
             let encoded = MultistreamSelect.encode(proto)
-            let decoded = try MultistreamSelect.decode(encoded)
+            let (decoded, consumed) = try MultistreamSelect.decode(encoded)
             #expect(decoded == proto, "Round trip failed for: \(proto)")
+            #expect(consumed == encoded.count)
         }
     }
 
     @Test("Decode empty protocol")
     func decodeEmptyProtocol() throws {
         let encoded = MultistreamSelect.encode("")
-        let decoded = try MultistreamSelect.decode(encoded)
+        let (decoded, _) = try MultistreamSelect.decode(encoded)
         #expect(decoded == "")
     }
 
@@ -99,8 +101,8 @@ struct MultistreamSelectTests {
         // Verify what was written
         let written = mockChannel.writtenData
         #expect(written.count == 2)
-        #expect(try MultistreamSelect.decode(written[0]) == "/multistream/1.0.0")
-        #expect(try MultistreamSelect.decode(written[1]) == "/noise")
+        #expect(try MultistreamSelect.decode(written[0]).0 == "/multistream/1.0.0")
+        #expect(try MultistreamSelect.decode(written[1]).0 == "/noise")
     }
 
     @Test("Initiator negotiation falls back to second protocol")
@@ -123,9 +125,9 @@ struct MultistreamSelectTests {
         // Verify all protocols were tried
         let written = mockChannel.writtenData
         #expect(written.count == 3)
-        #expect(try MultistreamSelect.decode(written[0]) == "/multistream/1.0.0")
-        #expect(try MultistreamSelect.decode(written[1]) == "/noise")
-        #expect(try MultistreamSelect.decode(written[2]) == "/yamux/1.0.0")
+        #expect(try MultistreamSelect.decode(written[0]).0 == "/multistream/1.0.0")
+        #expect(try MultistreamSelect.decode(written[1]).0 == "/noise")
+        #expect(try MultistreamSelect.decode(written[2]).0 == "/yamux/1.0.0")
     }
 
     @Test("Initiator negotiation fails with no agreement")
@@ -199,8 +201,8 @@ struct MultistreamSelectTests {
         // Verify responses
         let written = mockChannel.writtenData
         #expect(written.count == 2)
-        #expect(try MultistreamSelect.decode(written[0]) == "/multistream/1.0.0")
-        #expect(try MultistreamSelect.decode(written[1]) == "/noise")
+        #expect(try MultistreamSelect.decode(written[0]).0 == "/multistream/1.0.0")
+        #expect(try MultistreamSelect.decode(written[1]).0 == "/noise")
     }
 
     @Test("Responder sends 'na' for unsupported protocol then accepts supported")
@@ -222,8 +224,8 @@ struct MultistreamSelectTests {
         // Verify "na" was sent for unknown protocol
         let written = mockChannel.writtenData
         #expect(written.count == 3)
-        #expect(try MultistreamSelect.decode(written[1]) == "na")
-        #expect(try MultistreamSelect.decode(written[2]) == "/noise")
+        #expect(try MultistreamSelect.decode(written[1]).0 == "na")
+        #expect(try MultistreamSelect.decode(written[2]).0 == "/noise")
     }
 
     @Test("Responder fails on multistream header mismatch")
@@ -385,10 +387,46 @@ struct MultistreamSelectTests {
     func negotiationErrorEquatable() {
         #expect(NegotiationError.protocolMismatch == NegotiationError.protocolMismatch)
         #expect(NegotiationError.noAgreement == NegotiationError.noAgreement)
-        #expect(NegotiationError.timeout == NegotiationError.timeout)
         #expect(NegotiationError.invalidMessage == NegotiationError.invalidMessage)
         #expect(NegotiationError.unexpectedResponse("foo") == NegotiationError.unexpectedResponse("foo"))
         #expect(NegotiationError.unexpectedResponse("foo") != NegotiationError.unexpectedResponse("bar"))
+    }
+
+    // MARK: - Trailing Bytes / Coalesced Read Tests
+
+    @Test("Decode returns correct bytes consumed with trailing data")
+    func decodeWithTrailingData() throws {
+        let msg1 = MultistreamSelect.encode("/noise")
+        let msg2 = MultistreamSelect.encode("/yamux/1.0.0")
+        let combined = msg1 + msg2
+
+        let (decoded, consumed) = try MultistreamSelect.decode(combined)
+        #expect(decoded == "/noise")
+        #expect(consumed == msg1.count)
+
+        // Remaining data can be decoded as second message
+        let remaining = Data(combined.dropFirst(consumed))
+        let (decoded2, consumed2) = try MultistreamSelect.decode(remaining)
+        #expect(decoded2 == "/yamux/1.0.0")
+        #expect(consumed2 == msg2.count)
+    }
+
+    @Test("Responder handles V1Lazy coalesced header + protocol")
+    func responderHandlesCoalescedLazy() async throws {
+        let mockChannel = MockChannel()
+
+        // V1Lazy: initiator sends header + protocol in one batch
+        let batch = MultistreamSelect.encode("/multistream/1.0.0")
+                  + MultistreamSelect.encode("/noise")
+        mockChannel.queueRead(batch)
+
+        let result = try await MultistreamSelect.handle(
+            supported: ["/noise", "/yamux/1.0.0"],
+            read: { try await mockChannel.read() },
+            write: { try await mockChannel.write($0) }
+        )
+
+        #expect(result.protocolID == "/noise")
     }
 }
 

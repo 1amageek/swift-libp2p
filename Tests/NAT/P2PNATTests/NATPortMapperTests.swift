@@ -79,7 +79,7 @@ struct NATPortMapperTests {
             gatewayType: .natpmp(gatewayIP: "192.168.1.1")
         )
 
-        let tcpAddr = try #require(tcpMapping.multiaddr)
+        let tcpAddr = try tcpMapping.multiaddr()
         #expect(tcpAddr.description == "/ip4/203.0.113.1/tcp/4001")
 
         let udpMapping = PortMapping(
@@ -91,7 +91,7 @@ struct NATPortMapperTests {
             gatewayType: .natpmp(gatewayIP: "192.168.1.1")
         )
 
-        let udpAddr = try #require(udpMapping.multiaddr)
+        let udpAddr = try udpMapping.multiaddr()
         #expect(udpAddr.description == "/ip4/203.0.113.2/udp/4002")
     }
 

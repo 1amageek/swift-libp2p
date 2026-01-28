@@ -60,11 +60,17 @@ public final class YamuxStream: MuxedStream, Sendable {
         set { state.withLock { $0.protocolID = newValue } }
     }
 
+    /// Stream ID as UInt32 for Yamux frame construction.
+    /// Yamux spec uses 32-bit stream IDs; validated at init.
+    private let yamuxStreamID: UInt32
+
     private let state: Mutex<YamuxStreamState>
     private let connection: YamuxConnection
 
     init(id: UInt64, connection: YamuxConnection, initialWindowSize: UInt32 = yamuxDefaultWindowSize) {
+        precondition(id <= UInt32.max, "Yamux stream IDs must fit in UInt32")
         self.id = id
+        self.yamuxStreamID = UInt32(id)
         self.connection = connection
         self.state = Mutex(YamuxStreamState(initialWindowSize: initialWindowSize))
     }
@@ -152,7 +158,7 @@ public final class YamuxStream: MuxedStream, Sendable {
                 offset += chunkSize
 
                 let frame = YamuxFrame.data(
-                    streamID: UInt32(id),
+                    streamID: yamuxStreamID,
                     data: chunk
                 )
                 try await connection.sendFrame(frame)
@@ -218,7 +224,7 @@ public final class YamuxStream: MuxedStream, Sendable {
             let frame = YamuxFrame(
                 type: .data,
                 flags: .fin,
-                streamID: UInt32(id),
+                streamID: yamuxStreamID,
                 length: 0,
                 data: nil
             )
@@ -277,7 +283,7 @@ public final class YamuxStream: MuxedStream, Sendable {
         let frame = YamuxFrame(
             type: .data,
             flags: .rst,
-            streamID: UInt32(id),
+            streamID: yamuxStreamID,
             length: 0,
             data: nil
         )
@@ -299,6 +305,16 @@ public final class YamuxStream: MuxedStream, Sendable {
         }
 
         let result: DataReceivedResult = state.withLock { state in
+            // Guard against data exceeding UInt32 range (Yamux uses 32-bit lengths)
+            guard data.count <= UInt32.max else {
+                state.isReset = true
+                state.localWriteClosed = true
+                state.localReadClosed = true
+                state.remoteWriteClosed = true
+                let conts = state.readContinuations
+                state.readContinuations = []
+                return .windowViolation(errorConts: conts)
+            }
             let dataSize = UInt32(data.count)
 
             // Check for receive window violation (protocol error)
@@ -348,6 +364,7 @@ public final class YamuxStream: MuxedStream, Sendable {
             continuation?.resume(returning: data)
 
             // Send window update if needed (only if not read-closed)
+            // Update recvWindow BEFORE sending to prevent duplicate updates from concurrent calls
             let (needsUpdate, delta) = state.withLock { state -> (Bool, UInt32) in
                 // Don't send window updates if read is closed
                 if state.localReadClosed {
@@ -355,19 +372,17 @@ public final class YamuxStream: MuxedStream, Sendable {
                 }
                 if state.recvWindow < state.initialWindowSize / 2 {
                     let d = state.initialWindowSize - state.recvWindow
+                    state.recvWindow += d
                     return (true, d)
                 }
                 return (false, 0)
             }
 
             if needsUpdate {
-                Task { [weak self, connection, id] in
-                    let frame = YamuxFrame.windowUpdate(streamID: UInt32(id), delta: delta)
+                Task { [connection, yamuxStreamID] in
+                    let frame = YamuxFrame.windowUpdate(streamID: yamuxStreamID, delta: delta)
                     do {
                         try await connection.sendFrame(frame)
-                        self?.state.withLock { state in
-                            state.recvWindow += delta
-                        }
                     } catch {
                         // Window update failed - connection likely closing
                     }

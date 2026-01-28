@@ -19,7 +19,7 @@ SwiftNIOを使用したTCPトランスポートの実装。
 |-----|------|------|
 | `TCPTransport` | ✅ 完了 | Transport実装 - ClientBootstrap使用 |
 | `TCPConnection` | ✅ 完了 | RawConnection実装 - Mutex<State>ベース |
-| `TCPListener` | ✅ 完了 | Listener実装 - OSAllocatedUnfairLock使用 |
+| `TCPListener` | ✅ 完了 | Listener実装 - Mutex\<ListenerState\>ベース |
 
 ## 内部コンポーネント
 
@@ -56,7 +56,7 @@ public final class TCPTransport: Transport, Sendable {
 - **async/await を全面採用**（EventLoopFuture は使わない）
 - `Channel` + `ChannelInboundHandler` で読み取りをブリッジ
 - Channel状態管理が必要な場合のみ `class + mutex`
-- `TCPListener` は `OSAllocatedUnfairLock` を使用（NIOハンドラは `@unchecked Sendable`）
+- `TCPListener` は `Mutex<ListenerState>` を使用（`HandlerCollector` / `TCPReadHandler` も `Mutex<T>` ベース）
 
 ## Wire Protocol
 - 標準TCP（libp2p固有のフレーミングなし）

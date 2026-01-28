@@ -409,6 +409,8 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Finish event stream
         eventContinuation?.finish()
+        eventContinuation = nil
+        _events = nil
     }
 
     // MARK: - Connections
@@ -477,6 +479,22 @@ public actor Node: StreamOpener, HandlerRegistry {
             return try await performSecuredDial(to: address, using: securedTransport)
         }
 
+        // Track connecting state if peer ID is known from address
+        let connectingID: ConnectionID?
+        if let peerID = address.peerID {
+            connectingID = pool.addConnecting(for: peerID, address: address, direction: .outbound)
+        } else {
+            connectingID = nil
+        }
+
+        // Clean up connecting entry on any failure path
+        var didConnect = false
+        defer {
+            if !didConnect, let id = connectingID {
+                pool.remove(id)
+            }
+        }
+
         // Standard transport: dial then upgrade
         let rawConnection = try await transport.dial(address)
 
@@ -511,13 +529,20 @@ public actor Node: StreamOpener, HandlerRegistry {
             throw NodeError.connectionLimitReached
         }
 
-        // Add to pool
-        let connID = pool.add(
-            result.connection,
-            for: remotePeer,
-            address: address,
-            direction: .outbound
-        )
+        // Transition connecting entry to connected, or create new entry
+        let connID: ConnectionID
+        if let cid = connectingID {
+            pool.updateConnection(cid, connection: result.connection)
+            connID = cid
+        } else {
+            connID = pool.add(
+                result.connection,
+                for: remotePeer,
+                address: address,
+                direction: .outbound
+            )
+        }
+        didConnect = true
 
         // Enable auto-reconnect if policy allows
         if configuration.pool.reconnectionPolicy.enabled {
@@ -548,6 +573,22 @@ public actor Node: StreamOpener, HandlerRegistry {
         to address: Multiaddr,
         using transport: SecuredTransport
     ) async throws -> PeerID {
+        // Track connecting state if peer ID is known from address
+        let connectingID: ConnectionID?
+        if let peerID = address.peerID {
+            connectingID = pool.addConnecting(for: peerID, address: address, direction: .outbound)
+        } else {
+            connectingID = nil
+        }
+
+        // Clean up connecting entry on any failure path
+        var didConnect = false
+        defer {
+            if !didConnect, let id = connectingID {
+                pool.remove(id)
+            }
+        }
+
         // SecuredTransport returns MuxedConnection directly
         let muxedConnection = try await transport.dialSecured(
             address,
@@ -571,13 +612,20 @@ public actor Node: StreamOpener, HandlerRegistry {
             throw NodeError.connectionLimitReached
         }
 
-        // Add to pool
-        let connID = pool.add(
-            muxedConnection,
-            for: remotePeer,
-            address: address,
-            direction: .outbound
-        )
+        // Transition connecting entry to connected, or create new entry
+        let connID: ConnectionID
+        if let cid = connectingID {
+            pool.updateConnection(cid, connection: muxedConnection)
+            connID = cid
+        } else {
+            connID = pool.add(
+                muxedConnection,
+                for: remotePeer,
+                address: address,
+                direction: .outbound
+            )
+        }
+        didConnect = true
 
         // Enable auto-reconnect if policy allows
         if configuration.pool.reconnectionPolicy.enabled {
@@ -725,7 +773,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         let wasConnected = managed?.state.isConnected ?? false
 
         // Don't overwrite reconnecting state - let the reconnection logic handle it
-        if managed?.state.isConnecting == true {
+        if case .reconnecting = managed?.state {
             return
         }
 
@@ -739,9 +787,13 @@ public actor Node: StreamOpener, HandlerRegistry {
             emit(.peerDisconnected(peer))
             emitConnectionEvent(.disconnected(peer: peer, reason: .remoteClose))
 
+            // Reset retry count if connection was stable (prevents retry accumulation
+            // from transient disconnections after long-lived connections)
+            pool.resetRetryCountIfStable(id)
+
             // Check if we should reconnect
             if let address = pool.reconnectAddress(for: peer) {
-                let retryCount = managed?.retryCount ?? 0
+                let retryCount = pool.managedConnection(id)?.retryCount ?? 0
                 let policy = configuration.pool.reconnectionPolicy
 
                 if policy.shouldReconnect(attempt: retryCount, reason: .remoteClose) {
@@ -773,11 +825,48 @@ public actor Node: StreamOpener, HandlerRegistry {
         guard pool.reconnectAddress(for: peer) != nil else { return }
 
         do {
-            // Dial and upgrade (without adding to pool)
             guard let transport = configuration.transports.first(where: { $0.canDial(address) }) else {
                 throw NodeError.noSuitableTransport
             }
 
+            // SecuredTransport (e.g., QUIC) bypasses the upgrade pipeline
+            if let securedTransport = transport as? SecuredTransport {
+                let muxedConnection = try await securedTransport.dialSecured(
+                    address,
+                    localKeyPair: configuration.keyPair
+                )
+
+                let remotePeer = muxedConnection.remotePeer
+
+                guard remotePeer == peer else {
+                    try? await muxedConnection.close()
+                    throw NodeError.notConnected(peer)
+                }
+
+                if let gater = configuration.pool.gater {
+                    if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
+                        try? await muxedConnection.close()
+                        emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
+                        throw NodeError.connectionGated(stage: .secured)
+                    }
+                }
+
+                pool.updateConnection(id, connection: muxedConnection)
+                pool.resetRetryCount(id)
+
+                emit(.peerConnected(remotePeer))
+                emitConnectionEvent(.reconnected(peer: peer, attempt: attempt))
+
+                await healthMonitor?.startMonitoring(peer: remotePeer)
+
+                Task { [weak self] in
+                    await self?.handleInboundStreams(connection: muxedConnection)
+                    await self?.handleConnectionClosed(id: id, peer: remotePeer)
+                }
+                return
+            }
+
+            // Standard transport: dial then upgrade
             let rawConnection = try await transport.dial(address)
 
             let result: UpgradeResult
@@ -1066,6 +1155,7 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// SecuredListener yields pre-secured, pre-multiplexed connections.
     private func securedAcceptLoop(listener: any SecuredListener, address: Multiaddr) async {
         for await muxedConnection in listener.connections {
+            guard isRunning else { break }
             Task { [weak self] in
                 await self?.handleSecuredInboundConnection(muxedConnection, from: address)
             }
@@ -1178,25 +1268,20 @@ public actor Node: StreamOpener, HandlerRegistry {
 // MARK: - NodePingProvider
 
 /// Internal adapter to make Node work with HealthMonitor.
-///
-/// Uses `nonisolated(unsafe)` for the weak reference to Node because:
-/// - Node is an actor (Sendable)
-/// - Weak reference access is atomic in Swift
-/// - The compiler cannot verify this automatically
 private final class NodePingProvider: PingProvider, Sendable {
-    nonisolated(unsafe) private weak var node: Node?
+    private let nodeRef: Mutex<Node?>
+    private let pingService: PingService
 
     init(node: Node) {
-        self.node = node
+        self.nodeRef = Mutex(node)
+        self.pingService = PingService()
     }
 
     func ping(_ peer: PeerID) async throws -> Duration {
-        guard let node = node else {
+        guard let node = nodeRef.withLock({ $0 }) else {
             throw NodeError.nodeNotRunning
         }
 
-        // Use the Ping protocol
-        let pingService = PingService()
         let result = try await pingService.ping(peer, using: node)
         return result.rtt
     }

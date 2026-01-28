@@ -5,6 +5,8 @@ import P2PMux
 import P2PProtocols
 import Synchronization
 
+private let logger = Logger(label: "p2p.gossipsub")
+
 /// The main GossipSub service implementing the ProtocolService interface.
 ///
 /// Provides a high-level API for pub/sub messaging using the GossipSub protocol.
@@ -429,7 +431,7 @@ public final class GossipSubService: ProtocolService, Sendable {
                 }
             }
         } catch {
-            // Stream read error
+            logger.warning("GossipSub incoming RPC read error from \(peerID): \(error)")
         }
 
         // Always clean up peer state when stream ends
@@ -495,7 +497,8 @@ public final class GossipSubService: ProtocolService, Sendable {
 
             try await stream.write(data)
         } catch {
-            // Send failed - will be handled by disconnect
+            logger.warning("GossipSub sendRPC failed to \(peerID): \(error)")
+            try? await stream.close()
         }
     }
 

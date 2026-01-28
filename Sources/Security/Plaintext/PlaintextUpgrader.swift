@@ -165,9 +165,15 @@ public enum PlaintextError: Error, Sendable {
     case insufficientData
     case invalidExchange
     case peerIDMismatch
+    case messageTooLarge
 }
 
 // MARK: - Buffered Reading
+
+/// Maximum size for a plaintext handshake message (64KB).
+/// A plaintext exchange contains PeerID + PublicKey, which is well under 1KB.
+/// This generous limit provides DoS protection against oversized messages.
+private let maxPlaintextHandshakeSize = 64 * 1024
 
 /// Reads a length-prefixed message from a connection.
 ///
@@ -185,6 +191,12 @@ private func readLengthPrefixedMessage(from connection: any RawConnection) async
         if !buffer.isEmpty {
             do {
                 let (length, lengthBytes) = try Varint.decode(buffer)
+
+                // Validate message size to prevent memory exhaustion
+                guard length <= UInt64(maxPlaintextHandshakeSize) else {
+                    throw PlaintextError.messageTooLarge
+                }
+
                 let totalNeeded = lengthBytes + Int(length)
 
                 // Check if we have enough data

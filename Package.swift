@@ -67,6 +67,9 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-quic.git", branch: "main"),
+        .package(url: "https://github.com/1amageek/swift-tls.git", branch: "main"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
+        .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
     targets: [
         // MARK: - Core
@@ -166,6 +169,10 @@ let package = Package(
             dependencies: [
                 "P2PSecurity",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "TLSCore", package: "swift-tls"),
+                .product(name: "TLSRecord", package: "swift-tls"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
             path: "Sources/Security/TLS",
             exclude: ["CONTEXT.md"]
@@ -187,7 +194,10 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PSecurityTLSTests",
-            dependencies: ["P2PSecurityTLS", "P2PCore"],
+            dependencies: [
+                "P2PSecurityTLS",
+                "P2PCore",
+            ],
             path: "Tests/Security/TLSTests"
         ),
 

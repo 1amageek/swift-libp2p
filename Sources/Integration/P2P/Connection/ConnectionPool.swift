@@ -119,6 +119,48 @@ internal final class ConnectionPool: Sendable {
 
     // MARK: - Connection Management
 
+    /// Creates an entry in `.connecting` state to track an in-progress dial.
+    ///
+    /// The entry has no `MuxedConnection` yet. On success, call
+    /// `updateConnection(_:connection:)` to transition to `.connected`.
+    /// On failure, call `remove(_:)` to clean up.
+    ///
+    /// - Parameters:
+    ///   - peer: The remote peer
+    ///   - address: The connection address
+    ///   - direction: Connection direction
+    /// - Returns: The assigned connection ID
+    @discardableResult
+    func addConnecting(
+        for peer: PeerID,
+        address: Multiaddr,
+        direction: ConnectionDirection
+    ) -> ConnectionID {
+        let id = ConnectionID()
+        let now = ContinuousClock.now
+
+        let managed = ManagedConnection(
+            id: id,
+            peer: peer,
+            address: address,
+            direction: direction,
+            connection: nil,
+            state: .connecting,
+            retryCount: 0,
+            lastActivity: now,
+            connectedAt: nil,
+            tags: [],
+            isProtected: false
+        )
+
+        state.withLock { state in
+            state.connections[id] = managed
+            state.peerConnections[peer, default: []].insert(id)
+        }
+
+        return id
+    }
+
     /// Adds a new connection to the pool.
     ///
     /// - Parameters:
@@ -623,6 +665,24 @@ internal final class ConnectionPool: Sendable {
     func resetRetryCount(_ id: ConnectionID) {
         state.withLock { state in
             state.connections[id]?.retryCount = 0
+        }
+    }
+
+    /// Resets the retry count if the connection was stable for longer than `resetThreshold`.
+    ///
+    /// Per `ReconnectionPolicy.resetThreshold`: if a connection remained connected
+    /// for at least this duration, transient disconnections should not accumulate
+    /// retry counts. This prevents permanent failure from intermittent network issues.
+    ///
+    /// - Parameter id: The connection ID
+    func resetRetryCountIfStable(_ id: ConnectionID) {
+        state.withLock { state in
+            guard let managed = state.connections[id],
+                  let connectedAt = managed.connectedAt else { return }
+            let connectedDuration = ContinuousClock.now - connectedAt
+            if connectedDuration >= configuration.reconnectionPolicy.resetThreshold {
+                state.connections[id]?.retryCount = 0
+            }
         }
     }
 

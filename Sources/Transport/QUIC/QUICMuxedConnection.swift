@@ -130,6 +130,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     private struct ConnectionState: Sendable {
         var isClosed: Bool = false
         var forwardingTask: Task<Void, Never>?
+        var inboundStream: AsyncStream<MuxedStream>?
     }
 
     /// Incoming streams from the remote peer.
@@ -137,13 +138,20 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     /// - Note: This property and `acceptStream()` consume from the same source.
     ///   Use only one pattern per connection.
     public var inboundStreams: AsyncStream<MuxedStream> {
-        AsyncStream { continuation in
-            Task { [streamChannel] in
-                while let stream = await streamChannel.receive() {
-                    continuation.yield(stream)
-                }
-                continuation.finish()
+        state.withLock { s in
+            if let existing = s.inboundStream {
+                return existing
             }
+            let stream = AsyncStream<MuxedStream> { continuation in
+                Task { [streamChannel] in
+                    while let stream = await streamChannel.receive() {
+                        continuation.yield(stream)
+                    }
+                    continuation.finish()
+                }
+            }
+            s.inboundStream = stream
+            return stream
         }
     }
 

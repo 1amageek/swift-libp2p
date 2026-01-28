@@ -4,28 +4,33 @@ import P2PCore
 import P2PTransport
 import NIOCore
 import NIOPosix
+import Synchronization
 import os
 
 /// Debug logger for TCP listener
 private let tcpListenerLogger = Logger(subsystem: "swift-libp2p", category: "TCPListener")
 
 /// A TCP listener wrapping a NIO ServerChannel.
-public final class TCPListener: Listener, @unchecked Sendable {
+public final class TCPListener: Listener, Sendable {
 
     private let serverChannel: Channel
     private let _localAddress: Multiaddr
 
-    private let lock = OSAllocatedUnfairLock()
-    private var pendingConnections: [TCPConnection] = []
-    /// Queue of waiters for concurrent accept support.
-    private var acceptWaiters: [CheckedContinuation<any RawConnection, Error>] = []
-    private var isClosed = false
+    private let state: Mutex<ListenerState>
+
+    private struct ListenerState: Sendable {
+        var pendingConnections: [TCPConnection] = []
+        /// Queue of waiters for concurrent accept support.
+        var acceptWaiters: [CheckedContinuation<any RawConnection, Error>] = []
+        var isClosed = false
+    }
 
     public var localAddress: Multiaddr { _localAddress }
 
     private init(serverChannel: Channel, localAddress: Multiaddr) {
         self.serverChannel = serverChannel
         self._localAddress = localAddress
+        self.state = Mutex(ListenerState())
     }
 
     /// Binds a new TCP listener.
@@ -89,18 +94,18 @@ public final class TCPListener: Listener, @unchecked Sendable {
                 case waiting(Int)
             }
 
-            let result: AcceptResult = lock.withLock {
-                if isClosed {
+            let result: AcceptResult = state.withLock { s in
+                if s.isClosed {
                     return .closed
                 }
 
-                if !pendingConnections.isEmpty {
-                    let connection = pendingConnections.removeFirst()
+                if !s.pendingConnections.isEmpty {
+                    let connection = s.pendingConnections.removeFirst()
                     return .connection(connection)
                 } else {
                     // Queue the waiter for FIFO delivery
-                    let waiterCount = acceptWaiters.count + 1
-                    acceptWaiters.append(continuation)
+                    let waiterCount = s.acceptWaiters.count + 1
+                    s.acceptWaiters.append(continuation)
                     return .waiting(waiterCount)
                 }
             }
@@ -123,12 +128,12 @@ public final class TCPListener: Listener, @unchecked Sendable {
 
     public func close() async throws {
         // Extract waiters and pending connections within lock
-        let (waiters, pending) = lock.withLock { () -> ([CheckedContinuation<any RawConnection, Error>], [TCPConnection]) in
-            isClosed = true
-            let w = acceptWaiters
-            let p = pendingConnections
-            acceptWaiters.removeAll()
-            pendingConnections.removeAll()
+        let (waiters, pending) = state.withLock { s -> ([CheckedContinuation<any RawConnection, Error>], [TCPConnection]) in
+            s.isClosed = true
+            let w = s.acceptWaiters
+            let p = s.pendingConnections
+            s.acceptWaiters.removeAll()
+            s.pendingConnections.removeAll()
             return (w, p)
         }
 
@@ -149,21 +154,38 @@ public final class TCPListener: Listener, @unchecked Sendable {
     fileprivate func connectionAccepted(_ connection: TCPConnection) {
         let remoteAddr = connection.remoteAddress
         tcpListenerLogger.debug("connectionAccepted(): New connection from \(remoteAddr)")
-        // Extract waiter within lock, resume outside to avoid deadlock
-        let (waiter, pendingCount) = lock.withLock { () -> (CheckedContinuation<any RawConnection, Error>?, Int) in
+
+        enum AcceptAction {
+            case deliverToWaiter(CheckedContinuation<any RawConnection, Error>)
+            case queued(Int)
+            case rejected
+        }
+
+        // Extract action within lock, execute outside to avoid deadlock
+        let action: AcceptAction = state.withLock { s in
+            // Reject connections after close to prevent resource leaks
+            guard !s.isClosed else {
+                return .rejected
+            }
+
             // FIFO: dequeue the first waiter if any
-            if !acceptWaiters.isEmpty {
-                return (acceptWaiters.removeFirst(), 0)
+            if !s.acceptWaiters.isEmpty {
+                return .deliverToWaiter(s.acceptWaiters.removeFirst())
             } else {
-                pendingConnections.append(connection)
-                return (nil, pendingConnections.count)
+                s.pendingConnections.append(connection)
+                return .queued(s.pendingConnections.count)
             }
         }
-        if let waiter = waiter {
+
+        switch action {
+        case .deliverToWaiter(let waiter):
             tcpListenerLogger.debug("connectionAccepted(): Delivering to waiting accept()")
             waiter.resume(returning: connection)
-        } else {
-            tcpListenerLogger.debug("connectionAccepted(): Queuing connection (pending: \(pendingCount))")
+        case .queued(let count):
+            tcpListenerLogger.debug("connectionAccepted(): Queuing connection (pending: \(count))")
+        case .rejected:
+            tcpListenerLogger.debug("connectionAccepted(): Rejected (listener closed)")
+            Task { try? await connection.close() }
         }
     }
 }
@@ -177,32 +199,48 @@ public final class TCPListener: Listener, @unchecked Sendable {
 /// 2. After the listener is created, setListener() is called to store the callback
 /// 3. New handlers added after setListener() automatically receive the callback
 /// 4. Any connections that arrived before binding are delivered from the handler's queue
-private final class HandlerCollector: @unchecked Sendable {
-    private var handlers: [TCPReadHandler] = []
-    private var listenerCallback: (@Sendable (TCPConnection) -> Void)?
-    private let lock = NSLock()
+private final class HandlerCollector: Sendable {
+    private let state: Mutex<CollectorState>
+
+    private struct CollectorState: Sendable {
+        var handlers: [TCPReadHandler] = []
+        var listenerCallback: (@Sendable (TCPConnection) -> Void)?
+    }
+
+    init() {
+        self.state = Mutex(CollectorState())
+    }
 
     /// Adds a handler to the collection.
-    /// If the listener callback is already set, applies it immediately.
+    /// If the listener callback is already set, applies it immediately
+    /// without storing the handler (avoiding memory leak).
     func add(_ handler: TCPReadHandler) {
-        lock.lock()
-        handlers.append(handler)
-        let callback = listenerCallback
-        lock.unlock()
+        let callback: (@Sendable (TCPConnection) -> Void)? = state.withLock { s in
+            if let cb = s.listenerCallback {
+                return cb
+            } else {
+                // Only store if listener isn't set yet (needed for setListener batch apply)
+                s.handlers.append(handler)
+                return nil
+            }
+        }
 
-        // If listener is already set, apply callback immediately
-        if let callback = callback {
+        // If listener is already set, apply callback immediately (outside lock)
+        if let callback {
             handler.setListener(callback)
         }
     }
 
     /// Sets the listener callback on all collected handlers and future handlers.
     /// This delivers any queued connections and enables future deliveries.
+    /// Clears the stored handlers afterward since they are no longer needed.
     func setListener(_ callback: @escaping @Sendable (TCPConnection) -> Void) {
-        lock.lock()
-        listenerCallback = callback
-        let currentHandlers = handlers
-        lock.unlock()
+        let currentHandlers: [TCPReadHandler] = state.withLock { s in
+            s.listenerCallback = callback
+            let h = s.handlers
+            s.handlers.removeAll()
+            return h
+        }
 
         for handler in currentHandlers {
             handler.setListener(callback)

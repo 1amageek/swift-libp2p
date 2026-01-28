@@ -33,9 +33,13 @@ public enum PeerIDServiceCodec {
     ) -> Service {
         var txtRecord = TXTRecord()
 
-        // Encode public key if available
-        if let publicKey = try? peerID.extractPublicKey() {
-            txtRecord[PeerTXTKey.publicKey] = publicKey.rawBytes.base64EncodedString()
+        // Encode public key if available (not all key types support extraction)
+        do {
+            if let publicKey = try peerID.extractPublicKey() {
+                txtRecord[PeerTXTKey.publicKey] = publicKey.rawBytes.base64EncodedString()
+            }
+        } catch {
+            // Public key not extractable for this key type - omit from TXT record
         }
 
         // Agent version
@@ -62,38 +66,32 @@ public enum PeerIDServiceCodec {
     /// - Parameters:
     ///   - service: The mDNS Service to decode.
     ///   - observer: The local peer ID observing this service.
-    /// - Returns: A ScoredCandidate, or nil if decoding fails.
+    /// - Returns: A ScoredCandidate.
+    /// - Throws: `MDNSDiscoveryError.invalidPeerID` if the service name is not a valid peer ID.
     public static func decode(
         service: Service,
         observer: PeerID
-    ) -> ScoredCandidate? {
+    ) throws -> ScoredCandidate {
         // Parse PeerID from service name (base58 encoded)
-        guard let peerID = try? PeerID(string: service.name) else {
-            return nil
+        let peerID: PeerID
+        do {
+            peerID = try PeerID(string: service.name)
+        } catch {
+            throw MDNSDiscoveryError.invalidPeerID(service.name)
         }
 
         // Build addresses from resolved service info
         var addresses: [Multiaddr] = []
 
         if let port = service.port {
-            // Add IPv4 addresses
+            // Add IPv4 addresses (TCP — mDNS-SD advertises TCP service ports)
             for ipv4 in service.ipv4Addresses {
-                if let addr = try? Multiaddr("/ip4/\(ipv4)/udp/\(port)") {
-                    addresses.append(addr)
-                }
-                if let addr = try? Multiaddr("/ip4/\(ipv4)/tcp/\(port)") {
-                    addresses.append(addr)
-                }
+                addresses.append(try Multiaddr("/ip4/\(ipv4)/tcp/\(port)"))
             }
 
             // Add IPv6 addresses
             for ipv6 in service.ipv6Addresses {
-                if let addr = try? Multiaddr("/ip6/\(ipv6)/udp/\(port)") {
-                    addresses.append(addr)
-                }
-                if let addr = try? Multiaddr("/ip6/\(ipv6)/tcp/\(port)") {
-                    addresses.append(addr)
-                }
+                addresses.append(try Multiaddr("/ip6/\(ipv6)/tcp/\(port)"))
             }
         }
 
@@ -114,29 +112,29 @@ public enum PeerIDServiceCodec {
     ///   - kind: The observation kind.
     ///   - observer: The local peer ID.
     ///   - sequenceNumber: The sequence number for ordering.
-    /// - Returns: An Observation, or nil if the service cannot be decoded.
+    /// - Returns: An Observation.
+    /// - Throws: `MDNSDiscoveryError.invalidPeerID` if the service name is not a valid peer ID.
     public static func toObservation(
         service: Service,
         kind: Observation.Kind,
         observer: PeerID,
         sequenceNumber: UInt64
-    ) -> Observation? {
-        guard let peerID = try? PeerID(string: service.name) else {
-            return nil
+    ) throws -> Observation {
+        let peerID: PeerID
+        do {
+            peerID = try PeerID(string: service.name)
+        } catch {
+            throw MDNSDiscoveryError.invalidPeerID(service.name)
         }
 
-        // Build address hints
+        // Build address hints (TCP — consistent with decode())
         var hints: [Multiaddr] = []
         if let port = service.port {
             for ipv4 in service.ipv4Addresses {
-                if let addr = try? Multiaddr("/ip4/\(ipv4)/udp/\(port)") {
-                    hints.append(addr)
-                }
+                hints.append(try Multiaddr("/ip4/\(ipv4)/tcp/\(port)"))
             }
             for ipv6 in service.ipv6Addresses {
-                if let addr = try? Multiaddr("/ip6/\(ipv6)/udp/\(port)") {
-                    hints.append(addr)
-                }
+                hints.append(try Multiaddr("/ip6/\(ipv6)/tcp/\(port)"))
             }
         }
 

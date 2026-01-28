@@ -1,12 +1,15 @@
-/// TLSError - TLS security errors
+/// TLSError - TLS security errors for libp2p
 import Foundation
 
-/// Errors that can occur during TLS operations.
+/// Errors that can occur during libp2p TLS operations.
+///
+/// Crypto-level errors (encryption, decryption, framing) are handled
+/// internally by swift-tls. These errors cover libp2p-specific concerns.
 public enum TLSError: Error, Sendable {
     /// TLS handshake failed.
     case handshakeFailed(reason: String)
 
-    /// Invalid certificate signature.
+    /// Invalid certificate signature (libp2p extension verification failed).
     case invalidCertificateSignature
 
     /// Missing libp2p extension in certificate.
@@ -18,36 +21,9 @@ public enum TLSError: Error, Sendable {
     /// Connection was closed.
     case connectionClosed
 
-    /// Decryption failed.
-    case decryptionFailed
-
-    /// Encryption failed.
-    case encryptionFailed
-
     /// TLS handshake timeout.
     case timeout
 
-    /// Invalid TLS message format.
-    case invalidMessage
-
-    /// Certificate generation failed.
-    case certificateGenerationFailed(reason: String)
-
-    /// Key generation failed.
-    case keyGenerationFailed
-
-    /// Unsupported TLS version.
-    case unsupportedVersion
-
-    /// Frame exceeds maximum allowed size.
-    case frameTooLarge(size: Int, max: Int)
-
-    /// Nonce overflow - connection must be closed.
-    case nonceOverflow
-
-    /// Invalid ASN.1 structure in certificate.
-    case invalidASN1Structure
-
-    /// SPKI extraction failed.
-    case spkiExtractionFailed
+    /// ALPN protocol mismatch (expected "libp2p").
+    case alpnMismatch
 }

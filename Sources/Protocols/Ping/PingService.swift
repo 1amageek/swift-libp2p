@@ -236,17 +236,19 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
         using opener: any StreamOpener,
         count: Int = 3,
         interval: Duration = .milliseconds(100)
-    ) async -> [PingResult] {
+    ) async throws -> [PingResult] {
         var results: [PingResult] = []
 
         for i in 0..<count {
             if i > 0 {
-                try? await Task.sleep(for: interval)
+                try await Task.sleep(for: interval)
             }
 
             do {
                 let result = try await ping(peer, using: opener)
                 results.append(result)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 emit(.failure(peer: peer, error: error as? PingError ?? .streamError("\(error)")))
             }

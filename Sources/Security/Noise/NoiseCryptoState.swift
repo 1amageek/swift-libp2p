@@ -1,6 +1,7 @@
 /// NoiseCryptoState - Cryptographic state management for Noise protocol
 import Foundation
 import Crypto
+import P2PCore
 
 // MARK: - CipherState
 
@@ -303,39 +304,45 @@ private let x25519SmallOrderPoints: Set<Data> = {
 
     // Point 3: order 8 point (little-endian hex)
     // ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
-    if let point = Data(hexString: "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") {
-        points.insert(point)
+    guard let p3 = Data(hexString: "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") else {
+        preconditionFailure("Invalid hex constant for X25519 small-order point 3")
     }
+    points.insert(p3)
 
     // Point 4: order 8 point
     // e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800
-    if let point = Data(hexString: "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800") {
-        points.insert(point)
+    guard let p4 = Data(hexString: "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800") else {
+        preconditionFailure("Invalid hex constant for X25519 small-order point 4")
     }
+    points.insert(p4)
 
     // Point 5: order 8 point
     // 5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157
-    if let point = Data(hexString: "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157") {
-        points.insert(point)
+    guard let p5 = Data(hexString: "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157") else {
+        preconditionFailure("Invalid hex constant for X25519 small-order point 5")
     }
+    points.insert(p5)
 
     // Point 6: order 2 point (p-1 clamped)
     // edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
-    if let point = Data(hexString: "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") {
-        points.insert(point)
+    guard let p6 = Data(hexString: "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") else {
+        preconditionFailure("Invalid hex constant for X25519 small-order point 6")
     }
+    points.insert(p6)
 
     // Point 7: order 8 point on twist
     // daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-    if let point = Data(hexString: "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") {
-        points.insert(point)
+    guard let p7 = Data(hexString: "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") else {
+        preconditionFailure("Invalid hex constant for X25519 small-order point 7")
     }
+    points.insert(p7)
 
     // Point 8: order 8 point on twist
     // dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-    if let point = Data(hexString: "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") {
-        points.insert(point)
+    guard let p8 = Data(hexString: "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") else {
+        preconditionFailure("Invalid hex constant for X25519 small-order point 8")
     }
+    points.insert(p8)
 
     return points
 }()
@@ -352,24 +359,4 @@ func validateX25519PublicKey(_ publicKey: Data) -> Bool {
     return true
 }
 
-// MARK: - Hex String Extension
-
-private extension Data {
-    /// Creates Data from a hex string.
-    init?(hexString: String) {
-        let hex = hexString.lowercased()
-        var data = Data()
-        var index = hex.startIndex
-
-        while index < hex.endIndex {
-            let nextIndex = hex.index(index, offsetBy: 2)
-            guard nextIndex <= hex.endIndex else { return nil }
-            let byteString = hex[index..<nextIndex]
-            guard let byte = UInt8(byteString, radix: 16) else { return nil }
-            data.append(byte)
-            index = nextIndex
-        }
-
-        self = data
-    }
-}
+// Data(hexString:) is provided by P2PCore/Utilities/HexEncoding.swift

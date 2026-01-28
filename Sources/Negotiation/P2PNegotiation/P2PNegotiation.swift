@@ -46,19 +46,24 @@ public enum MultistreamSelect {
         try await write(encode(protocolID))
 
         // Read multistream header response
-        let response = try await read()
-        guard try decode(response) == protocolID else {
+        var buffer = try await read()
+        let (headerString, headerConsumed) = try decode(buffer)
+        guard headerString == protocolID else {
             throw NegotiationError.protocolMismatch
         }
+        buffer = Data(buffer.dropFirst(headerConsumed))
 
         // Try each protocol
         for proto in protocols {
             try await write(encode(proto))
-            let protoResponse = try await read()
-            let decoded = try decode(protoResponse)
+            if buffer.isEmpty {
+                buffer = try await read()
+            }
+            let (decoded, consumed) = try decode(buffer)
+            buffer = Data(buffer.dropFirst(consumed))
 
             if decoded == proto {
-                return NegotiationResult(protocolID: proto)
+                return NegotiationResult(protocolID: proto, remainder: buffer)
             } else if decoded == "na" {
                 continue
             } else {
@@ -100,28 +105,36 @@ public enum MultistreamSelect {
         let batch = encode(protocolID) + encode(firstProtocol)
         try await write(batch)
 
-        // Read header response
-        let headerResponse = try await read()
-        guard try decode(headerResponse) == protocolID else {
+        // Read response — may contain header + protocol response coalesced
+        var buffer = try await read()
+        let (headerString, headerConsumed) = try decode(buffer)
+        guard headerString == protocolID else {
             throw NegotiationError.protocolMismatch
         }
+        buffer = Data(buffer.dropFirst(headerConsumed))
 
-        // Read protocol response
-        let protoResponse = try await read()
-        let decoded = try decode(protoResponse)
+        // Read protocol response (may already be in buffer from coalesced read)
+        if buffer.isEmpty {
+            buffer = try await read()
+        }
+        let (decoded, consumed) = try decode(buffer)
+        buffer = Data(buffer.dropFirst(consumed))
 
         if decoded == firstProtocol {
             // First protocol accepted - 1 RTT success!
-            return NegotiationResult(protocolID: firstProtocol)
+            return NegotiationResult(protocolID: firstProtocol, remainder: buffer)
         } else if decoded == "na" {
             // First protocol rejected - fall back to remaining protocols
             for proto in protocols.dropFirst() {
                 try await write(encode(proto))
-                let response = try await read()
-                let responseDecoded = try decode(response)
+                if buffer.isEmpty {
+                    buffer = try await read()
+                }
+                let (responseDecoded, responseConsumed) = try decode(buffer)
+                buffer = Data(buffer.dropFirst(responseConsumed))
 
                 if responseDecoded == proto {
-                    return NegotiationResult(protocolID: proto)
+                    return NegotiationResult(protocolID: proto, remainder: buffer)
                 } else if responseDecoded == "na" {
                     continue
                 } else {
@@ -151,21 +164,35 @@ public enum MultistreamSelect {
         write: (Data) async throws -> Void
     ) async throws -> NegotiationResult {
         // Read and respond to multistream header
-        let header = try await read()
-        guard try decode(header) == protocolID else {
+        // Buffer handles coalesced TCP reads (e.g., V1Lazy sends header + protocol in one write)
+        var buffer = try await read()
+        let (headerString, headerConsumed) = try decode(buffer)
+        guard headerString == protocolID else {
             throw NegotiationError.protocolMismatch
         }
+        buffer = Data(buffer.dropFirst(headerConsumed))
         try await write(encode(protocolID))
 
         // Handle protocol requests until agreement or connection close
         // Timeouts are handled at the transport level per libp2p spec
+        // Iteration limit prevents DoS via unlimited unsupported protocol requests
+        let maxNegotiationAttempts = 1000
+        var attempts = 0
         while true {
-            let request = try await read()
-            let requested = try decode(request)
+            attempts += 1
+            if attempts > maxNegotiationAttempts {
+                throw NegotiationError.tooManyAttempts
+            }
+
+            if buffer.isEmpty {
+                buffer = try await read()
+            }
+            let (requested, consumed) = try decode(buffer)
+            buffer = Data(buffer.dropFirst(consumed))
 
             if supported.contains(requested) {
                 try await write(encode(requested))
-                return NegotiationResult(protocolID: requested)
+                return NegotiationResult(protocolID: requested, remainder: buffer)
             } else if requested == "ls" {
                 // List supported protocols per multistream-select spec:
                 // Format: <outer-length> <proto1-len>/proto1\n <proto2-len>/proto2\n ... \n
@@ -198,9 +225,9 @@ public enum MultistreamSelect {
     /// Decodes a protocol string from multistream-select format.
     ///
     /// - Parameter data: The length-prefixed data to decode
-    /// - Returns: The decoded protocol string
+    /// - Returns: The decoded protocol string and number of bytes consumed
     /// - Throws: `NegotiationError` or `VarintError` if decoding fails
-    public static func decode(_ data: Data) throws -> String {
+    public static func decode(_ data: Data) throws -> (String, Int) {
         let (length, lengthBytes) = try Varint.decode(data)
 
         // Validate message size to prevent memory exhaustion attacks
@@ -213,7 +240,8 @@ public enum MultistreamSelect {
             throw NegotiationError.messageTooLarge(size: messageLength, max: maxMessageSize)
         }
 
-        guard data.count >= lengthBytes + messageLength else {
+        let totalConsumed = lengthBytes + messageLength
+        guard data.count >= totalConsumed else {
             throw NegotiationError.invalidMessage
         }
         let content = data.dropFirst(lengthBytes).prefix(messageLength)
@@ -229,7 +257,7 @@ public enum MultistreamSelect {
         }
         string.removeLast()
 
-        return string
+        return (string, totalConsumed)
     }
 }
 
@@ -237,8 +265,8 @@ public enum NegotiationError: Error, Equatable {
     case protocolMismatch
     case noAgreement
     case unexpectedResponse(String)
-    case timeout
     case invalidMessage
     case invalidUtf8
     case messageTooLarge(size: Int, max: Int)
+    case tooManyAttempts
 }

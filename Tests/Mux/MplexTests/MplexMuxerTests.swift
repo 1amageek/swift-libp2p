@@ -47,7 +47,7 @@ struct MplexMuxerTests {
 
         // Connection should be started - newStream should work
         let stream = try await connection.newStream()
-        #expect(stream.id == 1)
+        #expect(stream.id == 0)
 
         try await connection.close()
     }
@@ -56,17 +56,17 @@ struct MplexMuxerTests {
     func multiplexPassesIsInitiator() async throws {
         let muxer = MplexMuxer()
 
-        // Test as initiator
+        // Test as initiator - both sides start at 0 (no parity rule in Mplex spec)
         let mockInitiator = createMockConnection()
         let initiatorConnection = try await muxer.multiplex(mockInitiator, isInitiator: true)
         let initiatorStream = try await initiatorConnection.newStream()
-        #expect(initiatorStream.id % 2 == 1) // Odd ID for initiator
+        #expect(initiatorStream.id == 0)
 
-        // Test as responder
+        // Test as responder - also starts at 0
         let mockResponder = createMockConnection()
         let responderConnection = try await muxer.multiplex(mockResponder, isInitiator: false)
         let responderStream = try await responderConnection.newStream()
-        #expect(responderStream.id % 2 == 0) // Even ID for responder
+        #expect(responderStream.id == 0)
 
         try await initiatorConnection.close()
         try await responderConnection.close()

@@ -11,6 +11,8 @@ import P2PCore
 import P2PMux
 import P2PProtocols
 
+private let logger = Logger(label: "p2p.kademlia")
+
 /// Configuration for KademliaService.
 public struct KademliaConfiguration: Sendable {
     /// K value (replication factor).
@@ -378,7 +380,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             }
 
         } catch {
-            // Timeout or error - close stream silently
+            logger.warning("Kademlia stream handler error from \(context.remotePeer): \(error)")
         }
 
         try? await context.stream.close()
@@ -917,27 +919,6 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - Timeout Helpers
 
-    /// Wraps an operation with the query timeout (for full query operations).
-    ///
-    /// This prevents queries from running indefinitely.
-    private func withQueryTimeout<T: Sendable>(
-        _ operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            group.addTask {
-                try await Task.sleep(for: self.configuration.queryTimeout)
-                throw KademliaError.timeout
-            }
-
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
-        }
-    }
-
     /// Wraps an operation with the peer timeout (for individual peer interactions).
     ///
     /// This prevents malicious or slow peers from stalling operations indefinitely.
@@ -960,15 +941,6 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         }
     }
 
-    // MARK: - Length-Prefixed I/O
-
-    private func readLengthPrefixed(from stream: MuxedStream) async throws -> Data {
-        try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
-    }
-
-    private func writeLengthPrefixed(_ data: Data, to stream: MuxedStream) async throws {
-        try await stream.writeLengthPrefixedMessage(data)
-    }
 }
 
 // MARK: - Query Delegate Implementation

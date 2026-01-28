@@ -163,24 +163,14 @@ struct NoisePayload: Sendable {
 /// - Returns: (message, bytesConsumed) or nil if incomplete
 /// - Throws: `NoiseError.frameTooLarge` if the frame exceeds max size
 func readNoiseMessage(from data: Data) throws -> (message: Data, bytesConsumed: Int)? {
-    guard data.count >= 2 else {
-        return nil
+    do {
+        guard let result = try readLengthPrefixedFrame(from: data, maxMessageSize: noiseMaxMessageSize) else {
+            return nil
+        }
+        return (result.message, result.consumed)
+    } catch is FramingError {
+        throw NoiseError.frameTooLarge(size: 0, max: noiseMaxMessageSize)
     }
-
-    // Read 2-byte big-endian length
-    let length = Int(data[data.startIndex]) << 8 | Int(data[data.startIndex + 1])
-
-    // Check max size to detect protocol violations
-    guard length <= noiseMaxMessageSize else {
-        throw NoiseError.frameTooLarge(size: length, max: noiseMaxMessageSize)
-    }
-
-    guard data.count >= 2 + length else {
-        return nil
-    }
-
-    let message = Data(data[data.startIndex + 2 ..< data.startIndex + 2 + length])
-    return (message, 2 + length)
 }
 
 /// Encodes a Noise message with length prefix.
@@ -188,13 +178,9 @@ func readNoiseMessage(from data: Data) throws -> (message: Data, bytesConsumed: 
 /// - Parameter message: The message to encode
 /// - Returns: Length-prefixed message
 func encodeNoiseMessage(_ message: Data) throws -> Data {
-    guard message.count <= noiseMaxMessageSize else {
+    do {
+        return try encodeLengthPrefixedFrame(message, maxMessageSize: noiseMaxMessageSize)
+    } catch is FramingError {
         throw NoiseError.frameTooLarge(size: message.count, max: noiseMaxMessageSize)
     }
-
-    var result = Data(capacity: 2 + message.count)
-    result.append(UInt8((message.count >> 8) & 0xFF))
-    result.append(UInt8(message.count & 0xFF))
-    result.append(message)
-    return result
 }

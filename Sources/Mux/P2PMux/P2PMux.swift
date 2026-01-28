@@ -116,18 +116,29 @@ extension MuxedStream {
     /// - Parameter maxSize: Maximum allowed message size.
     /// - Returns: The message data.
     /// - Throws: `StreamMessageError` on failure.
+    /// - Note: If the underlying stream delivers more bytes than needed for one message,
+    ///   the excess bytes are discarded. Use `readLengthPrefixedMessage(buffer:maxSize:)`
+    ///   to preserve excess bytes across sequential reads.
     public func readLengthPrefixedMessage(maxSize: UInt64 = 64 * 1024) async throws -> Data {
-        var buffer = Data()
+        var buf = Data()
+        return try await readLengthPrefixedMessage(buffer: &buf, maxSize: maxSize)
+    }
 
+    /// Reads a length-prefixed message from the stream, preserving excess bytes.
+    ///
+    /// When the stream delivers more bytes than needed for the current message,
+    /// the excess bytes are kept in `buffer` for the next call. This prevents data
+    /// loss when multiple messages are batched into a single read.
+    ///
+    /// - Parameters:
+    ///   - buffer: A persistent buffer for leftover bytes between calls.
+    ///   - maxSize: Maximum allowed message size.
+    /// - Returns: The message data.
+    /// - Throws: `StreamMessageError` on failure.
+    public func readLengthPrefixedMessage(buffer: inout Data, maxSize: UInt64 = 64 * 1024) async throws -> Data {
         // Read until we have a complete varint (max 10 bytes)
         while true {
-            let chunk = try await read()
-            if chunk.isEmpty {
-                throw StreamMessageError.streamClosed
-            }
-            buffer.append(chunk)
-
-            // Check if we have a complete varint (byte with MSB = 0)
+            // Check if we already have a complete varint in the buffer
             var foundEnd = false
             for i in 0..<min(buffer.count, 10) {
                 if buffer[i] & 0x80 == 0 {
@@ -138,6 +149,12 @@ extension MuxedStream {
             if foundEnd || buffer.count >= 10 {
                 break
             }
+
+            let chunk = try await read()
+            if chunk.isEmpty {
+                throw StreamMessageError.streamClosed
+            }
+            buffer.append(chunk)
         }
 
         guard !buffer.isEmpty else {
@@ -157,7 +174,7 @@ extension MuxedStream {
         buffer.removeFirst(varintBytes)
 
         // Read more if needed
-        while buffer.count < length {
+        while buffer.count < Int(length) {
             let chunk = try await read()
             if chunk.isEmpty {
                 throw StreamMessageError.streamClosed
@@ -165,11 +182,10 @@ extension MuxedStream {
             buffer.append(chunk)
         }
 
-        // Return exactly length bytes (avoid copy if possible)
-        if buffer.count == length {
-            return buffer
-        }
-        return Data(buffer.prefix(Int(length)))
+        // Extract exactly length bytes, keep excess in buffer
+        let result = Data(buffer.prefix(Int(length)))
+        buffer.removeFirst(Int(length))
+        return result
     }
 
     /// Writes a length-prefixed message to the stream.

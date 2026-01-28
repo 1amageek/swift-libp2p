@@ -14,7 +14,7 @@ private let logger = Logger(subsystem: "swift-libp2p", category: "QUICMuxedStrea
 /// This class wraps a `QUICStreamProtocol` to conform to the libp2p
 /// `MuxedStream` protocol, enabling QUIC streams to be used with
 /// libp2p's protocol negotiation and stream handling.
-public final class QUICMuxedStream: MuxedStream, @unchecked Sendable {
+public final class QUICMuxedStream: MuxedStream, Sendable {
 
     private let stream: any QUICStreamProtocol
     private let state: Mutex<StreamState>

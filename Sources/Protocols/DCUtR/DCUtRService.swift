@@ -148,9 +148,37 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
         using opener: any StreamOpener,
         dialer: @escaping @Sendable (Multiaddr) async throws -> Void
     ) async throws {
+        // Prevent duplicate concurrent upgrades for the same peer
+        let alreadyPending = serviceState.withLock { state in
+            state.pendingUpgrades[peer] != nil
+        }
+        if alreadyPending {
+            throw DCUtRError.holePunchFailed("Upgrade already in progress for peer")
+        }
+
+        // Track the upgrade attempt
+        serviceState.withLock { state in
+            state.pendingUpgrades[peer] = UpgradeAttempt(
+                peer: peer,
+                observedAddresses: [],
+                startTime: .now,
+                attemptCount: 0
+            )
+        }
+
+        defer {
+            _ = serviceState.withLock { state in
+                state.pendingUpgrades.removeValue(forKey: peer)
+            }
+        }
+
         var lastError: Error = DCUtRError.allDialsFailed
 
         for attempt in 1...configuration.maxAttempts {
+            serviceState.withLock { state in
+                state.pendingUpgrades[peer]?.attemptCount = attempt
+            }
+
             do {
                 try await performSingleUpgradeAttempt(
                     with: peer,
@@ -158,7 +186,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
                     using: opener,
                     dialer: dialer
                 )
-                // Success - return
+                // Success - return (defer cleans up pendingUpgrades)
                 return
             } catch {
                 lastError = error
@@ -424,6 +452,9 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
             state.continuation?.finish()
             state.continuation = nil
             state.stream = nil
+        }
+        serviceState.withLock { state in
+            state.pendingUpgrades.removeAll()
         }
     }
 

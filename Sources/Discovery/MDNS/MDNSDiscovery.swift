@@ -23,8 +23,7 @@ public actor MDNSDiscovery: DiscoveryService {
     private var isStarted = false
     private var forwardTask: Task<Void, Never>?
 
-    private var eventContinuation: AsyncStream<Observation>.Continuation?
-    private nonisolated let eventStream: AsyncStream<Observation>
+    private nonisolated let broadcaster = EventBroadcaster<Observation>()
 
     // MARK: - Initialization
 
@@ -58,24 +57,19 @@ public actor MDNSDiscovery: DiscoveryService {
         advertiserConfig.networkInterface = configuration.networkInterface
 
         self.advertiser = ServiceAdvertiser(configuration: advertiserConfig)
-
-        // Create event stream
-        var continuation: AsyncStream<Observation>.Continuation!
-        self.eventStream = AsyncStream { cont in
-            continuation = cont
-        }
-        self.eventContinuation = continuation
     }
 
     deinit {
-        eventContinuation?.finish()
+        broadcaster.shutdown()
     }
 
     // MARK: - Lifecycle
 
     /// Starts the mDNS discovery service.
     public func start() async throws {
-        guard !isStarted else { return }
+        guard !isStarted else {
+            throw MDNSDiscoveryError.alreadyStarted
+        }
 
         try await browser.start()
         try await advertiser.start()
@@ -100,7 +94,8 @@ public actor MDNSDiscovery: DiscoveryService {
         await browser.stop()
         await advertiser.stop()
         isStarted = false
-        eventContinuation?.finish()
+        knownServices.removeAll()
+        broadcaster.shutdown()
     }
 
     // MARK: - DiscoveryService Protocol
@@ -129,9 +124,8 @@ public actor MDNSDiscovery: DiscoveryService {
         let targetName = peer.description
 
         if let service = knownServices[targetName] {
-            if let candidate = PeerIDServiceCodec.decode(service: service, observer: localPeerID) {
-                return [candidate]
-            }
+            let candidate = try PeerIDServiceCodec.decode(service: service, observer: localPeerID)
+            return [candidate]
         }
 
         return []
@@ -149,7 +143,7 @@ public actor MDNSDiscovery: DiscoveryService {
                     return
                 }
 
-                for await observation in self.eventStream {
+                for await observation in self.observations {
                     if observation.subject.description == targetID {
                         continuation.yield(observation)
                     }
@@ -162,13 +156,19 @@ public actor MDNSDiscovery: DiscoveryService {
     /// Returns all known peer IDs.
     public func knownPeers() async -> [PeerID] {
         knownServices.compactMap { (name, _) in
-            try? PeerID(string: name)
+            do {
+                return try PeerID(string: name)
+            } catch {
+                // Service names are validated at storage time; this should not occur
+                return nil
+            }
         }.filter { $0 != localPeerID }
     }
 
     /// Returns all observations as a stream (for general subscription).
+    /// Each call returns an independent stream (multi-consumer safe).
     nonisolated public var observations: AsyncStream<Observation> {
-        eventStream
+        broadcaster.subscribe()
     }
 
     // MARK: - Private Methods
@@ -196,32 +196,38 @@ public actor MDNSDiscovery: DiscoveryService {
         // Ignore our own service
         guard service.name != localPeerID.description else { return }
 
-        knownServices[service.name] = service
         sequenceNumber += 1
 
-        if let observation = PeerIDServiceCodec.toObservation(
-            service: service,
-            kind: .announcement,
-            observer: localPeerID,
-            sequenceNumber: sequenceNumber
-        ) {
-            eventContinuation?.yield(observation)
+        do {
+            let observation = try PeerIDServiceCodec.toObservation(
+                service: service,
+                kind: .announcement,
+                observer: localPeerID,
+                sequenceNumber: sequenceNumber
+            )
+            knownServices[service.name] = service
+            broadcaster.emit(observation)
+        } catch {
+            // Invalid service name - not a valid libp2p peer, skip
         }
     }
 
     private func handleServiceUpdated(_ service: Service) {
         guard service.name != localPeerID.description else { return }
 
-        knownServices[service.name] = service
         sequenceNumber += 1
 
-        if let observation = PeerIDServiceCodec.toObservation(
-            service: service,
-            kind: .reachable,
-            observer: localPeerID,
-            sequenceNumber: sequenceNumber
-        ) {
-            eventContinuation?.yield(observation)
+        do {
+            let observation = try PeerIDServiceCodec.toObservation(
+                service: service,
+                kind: .reachable,
+                observer: localPeerID,
+                sequenceNumber: sequenceNumber
+            )
+            knownServices[service.name] = service
+            broadcaster.emit(observation)
+        } catch {
+            // Invalid service name - not a valid libp2p peer, skip
         }
     }
 
@@ -231,13 +237,16 @@ public actor MDNSDiscovery: DiscoveryService {
         knownServices.removeValue(forKey: service.name)
         sequenceNumber += 1
 
-        if let observation = PeerIDServiceCodec.toObservation(
-            service: service,
-            kind: .unreachable,
-            observer: localPeerID,
-            sequenceNumber: sequenceNumber
-        ) {
-            eventContinuation?.yield(observation)
+        do {
+            let observation = try PeerIDServiceCodec.toObservation(
+                service: service,
+                kind: .unreachable,
+                observer: localPeerID,
+                sequenceNumber: sequenceNumber
+            )
+            broadcaster.emit(observation)
+        } catch {
+            // Invalid service name - already removed from known services
         }
     }
 

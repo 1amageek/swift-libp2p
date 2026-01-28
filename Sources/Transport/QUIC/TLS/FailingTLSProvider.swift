@@ -18,26 +18,26 @@ import QUICCore
 /// `fatalError`, this provider is returned and will fail gracefully during
 /// the handshake phase, allowing proper error handling.
 @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
-public final class FailingTLSProvider: TLS13Provider, @unchecked Sendable {
+public final class FailingTLSProvider: TLS13Provider, Sendable {
 
-    /// The error that occurred during provider creation.
-    private let creationError: Error
+    /// Description of the error that occurred during provider creation.
+    private let errorDescription: String
 
     /// Creates a failing TLS provider.
     ///
     /// - Parameter error: The error that caused provider creation to fail
     public init(error: Error) {
-        self.creationError = error
+        self.errorDescription = String(describing: error)
     }
 
     // MARK: - TLS13Provider Protocol
 
     public func startHandshake(isClient: Bool) async throws -> [TLSOutput] {
-        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+        throw TLSError.internalError("TLS provider creation failed: \(errorDescription)")
     }
 
     public func processHandshakeData(_ data: Data, at level: EncryptionLevel) async throws -> [TLSOutput] {
-        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+        throw TLSError.internalError("TLS provider creation failed: \(errorDescription)")
     }
 
     public func getLocalTransportParameters() -> Data {
@@ -45,7 +45,7 @@ public final class FailingTLSProvider: TLS13Provider, @unchecked Sendable {
     }
 
     public func setLocalTransportParameters(_ params: Data) throws {
-        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+        throw TLSError.internalError("TLS provider creation failed: \(errorDescription)")
     }
 
     public func getPeerTransportParameters() -> Data? {
@@ -65,15 +65,15 @@ public final class FailingTLSProvider: TLS13Provider, @unchecked Sendable {
     }
 
     public func requestKeyUpdate() async throws -> [TLSOutput] {
-        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+        throw TLSError.internalError("TLS provider creation failed: \(errorDescription)")
     }
 
     public func exportKeyingMaterial(label: String, context: Data?, length: Int) throws -> Data {
-        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+        throw TLSError.internalError("TLS provider creation failed: \(errorDescription)")
     }
 
     public func configureResumption(ticket: SessionTicketData, attemptEarlyData: Bool) throws {
-        throw TLSError.internalError("TLS provider creation failed: \(creationError)")
+        throw TLSError.internalError("TLS provider creation failed: \(errorDescription)")
     }
 
     public var is0RTTAccepted: Bool {

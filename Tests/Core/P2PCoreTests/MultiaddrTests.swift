@@ -77,7 +77,7 @@ struct MultiaddrTests {
     func encapsulation() throws {
         let keyPair = KeyPair.generateEd25519()
         let base = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
-        let withPeer = base.encapsulate(.p2p(keyPair.peerID))
+        let withPeer = try base.encapsulate(.p2p(keyPair.peerID))
 
         #expect(withPeer.protocols.count == 3)
         #expect(withPeer.peerID == keyPair.peerID)

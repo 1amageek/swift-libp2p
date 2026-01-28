@@ -20,10 +20,19 @@ private actor MplexFrameWriter {
     }
 }
 
+/// Composite key for Mplex stream lookup.
+///
+/// Mplex spec: both sides use independent counters starting at 0.
+/// Direction is distinguished by message flags, not ID parity.
+struct MplexStreamKey: Hashable, Sendable {
+    let id: UInt64
+    let initiatedLocally: Bool
+}
+
 /// Internal state for MplexConnection.
 private struct MplexConnectionState: Sendable {
-    var streams: [UInt64: MplexStream] = [:]
-    var nextStreamID: UInt64
+    var streams: [MplexStreamKey: MplexStream] = [:]
+    var nextStreamID: UInt64 = 0
     var pendingAccepts: [CheckedContinuation<MuxedStream, Error>] = []
     var isClosed = false
     var isStarted = false
@@ -31,11 +40,6 @@ private struct MplexConnectionState: Sendable {
     /// Offset into readBuffer for the next unprocessed byte
     var readBufferOffset = 0
     var inboundContinuation: AsyncStream<MuxedStream>.Continuation?
-
-    init(isInitiator: Bool) {
-        // Initiator uses odd IDs, responder uses even IDs
-        self.nextStreamID = isInitiator ? 1 : 2
-    }
 
     /// Returns a slice of the unprocessed portion of the read buffer
     var unprocessedBuffer: Data {
@@ -92,7 +96,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
         self.configuration = configuration
         self.frameWriter = MplexFrameWriter(connection: underlying)
 
-        var initialState = MplexConnectionState(isInitiator: isInitiator)
+        var initialState = MplexConnectionState()
 
         // Create bounded AsyncStream for inbound streams
         let (inboundStream, inboundContinuation) = AsyncStream<MuxedStream>.makeStream(
@@ -141,7 +145,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
             let id = state.nextStreamID
 
             // Check for stream ID exhaustion
-            let (newID, overflow) = id.addingReportingOverflow(2)
+            let (newID, overflow) = id.addingReportingOverflow(1)
             if overflow {
                 return .exhausted
             }
@@ -161,9 +165,10 @@ public final class MplexConnection: MuxedConnection, Sendable {
         }
 
         // We initiate this stream
-        let stream = MplexStream(id: streamID, connection: self, isInitiator: true)
+        let key = MplexStreamKey(id: streamID, initiatedLocally: true)
+        let stream = MplexStream(id: streamID, connection: self, isInitiator: true, maxReadBufferSize: configuration.maxFrameSize)
         state.withLock { state in
-            state.streams[streamID] = stream
+            state.streams[key] = stream
         }
 
         // Send NewStream frame - clean up on failure
@@ -172,7 +177,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
             try await sendFrame(frame)
         } catch {
             state.withLock { state in
-                _ = state.streams.removeValue(forKey: streamID)
+                _ = state.streams.removeValue(forKey: key)
             }
             throw error
         }
@@ -220,9 +225,10 @@ public final class MplexConnection: MuxedConnection, Sendable {
         try await frameWriter.write(frame.encode())
     }
 
-    func removeStream(_ id: UInt64) {
+    func removeStream(id: UInt64, initiatedLocally: Bool) {
+        let key = MplexStreamKey(id: id, initiatedLocally: initiatedLocally)
         state.withLock { state in
-            _ = state.streams.removeValue(forKey: id)
+            _ = state.streams.removeValue(forKey: key)
         }
     }
 
@@ -249,9 +255,10 @@ public final class MplexConnection: MuxedConnection, Sendable {
                 }
 
                 // Process all complete frames
+                let maxFrameSize = UInt64(configuration.maxFrameSize)
                 while true {
                     let frameResult: (frame: MplexFrame, bytesConsumed: Int)? = try state.withLock { state in
-                        try MplexFrame.decode(from: state.unprocessedBuffer)
+                        try MplexFrame.decode(from: state.unprocessedBuffer, maxFrameSize: maxFrameSize)
                     }
                     guard let (frame, bytesConsumed) = frameResult else { break }
                     state.withLock { state in
@@ -285,27 +292,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
     private func handleNewStream(_ frame: MplexFrame) async throws {
         let streamID = frame.streamID
-
-        // Validate stream ID parity:
-        // - We're initiator -> expect even IDs from responder
-        // - We're responder -> expect odd IDs from initiator
-        let isValidStreamID: Bool
-        if streamID == 0 {
-            isValidStreamID = false
-        } else if isInitiator {
-            // We're initiator, remote is responder, expect even IDs
-            isValidStreamID = streamID % 2 == 0
-        } else {
-            // We're responder, remote is initiator, expect odd IDs
-            isValidStreamID = streamID % 2 == 1
-        }
-
-        if !isValidStreamID {
-            // Protocol violation
-            let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
-            try? await sendFrame(rstFrame)
-            return
-        }
+        let key = MplexStreamKey(id: streamID, initiatedLocally: false)
 
         // Check, create, and insert stream atomically
         enum SynResult {
@@ -315,8 +302,8 @@ public final class MplexConnection: MuxedConnection, Sendable {
         }
 
         let result: SynResult = state.withLock { state -> SynResult in
-            // Check if stream ID already exists
-            if state.streams[streamID] != nil {
+            // Check if stream ID already exists (remote-initiated)
+            if state.streams[key] != nil {
                 return .rejectReuse
             }
 
@@ -326,8 +313,8 @@ public final class MplexConnection: MuxedConnection, Sendable {
             }
 
             // Remote initiated this stream, so we are not the initiator
-            let stream = MplexStream(id: streamID, connection: self, isInitiator: false)
-            state.streams[streamID] = stream
+            let stream = MplexStream(id: streamID, connection: self, isInitiator: false, maxReadBufferSize: configuration.maxFrameSize)
+            state.streams[key] = stream
             return .accept(stream)
         }
 
@@ -371,7 +358,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
                 // No consumer - reject stream
                 let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
                 try? await sendFrame(rstFrame)
-                state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
+                state.withLock { _ = $0.streams.removeValue(forKey: key) }
                 return
             }
 
@@ -385,10 +372,10 @@ public final class MplexConnection: MuxedConnection, Sendable {
                 // Buffer full - reject
                 let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
                 try? await sendFrame(rstFrame)
-                state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
+                state.withLock { _ = $0.streams.removeValue(forKey: key) }
 
             case .terminated:
-                state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
+                state.withLock { _ = $0.streams.removeValue(forKey: key) }
 
             @unknown default:
                 break
@@ -397,8 +384,8 @@ public final class MplexConnection: MuxedConnection, Sendable {
     }
 
     private func handleMessage(_ frame: MplexFrame) {
-        let streamID = frame.streamID
-        let stream = state.withLock { state in state.streams[streamID] }
+        let key = streamKeyFromFlag(frame)
+        let stream = state.withLock { state in state.streams[key] }
 
         if let stream = stream {
             stream.dataReceived(frame.data)
@@ -407,19 +394,40 @@ public final class MplexConnection: MuxedConnection, Sendable {
     }
 
     private func handleClose(_ frame: MplexFrame) {
-        let streamID = frame.streamID
-        let stream = state.withLock { state in state.streams[streamID] }
+        let key = streamKeyFromFlag(frame)
+        let stream = state.withLock { state in state.streams[key] }
         stream?.remoteClose()
     }
 
     private func handleReset(_ frame: MplexFrame) {
-        let streamID = frame.streamID
+        let key = streamKeyFromFlag(frame)
         let stream = state.withLock { state -> MplexStream? in
-            let s = state.streams[streamID]
-            _ = state.streams.removeValue(forKey: streamID)
+            let s = state.streams[key]
+            _ = state.streams.removeValue(forKey: key)
             return s
         }
         stream?.remoteReset()
+    }
+
+    /// Derives the stream key from an incoming frame's flag.
+    ///
+    /// Mplex flags encode the sender's relationship to the stream:
+    /// - "Initiator" flags mean the sender opened the stream → `initiatedLocally: false`
+    /// - "Receiver" flags mean the receiver opened the stream → `initiatedLocally: true`
+    private func streamKeyFromFlag(_ frame: MplexFrame) -> MplexStreamKey {
+        let initiatedLocally: Bool
+        switch frame.flag {
+        case .messageInitiator, .closeInitiator, .resetInitiator:
+            // Remote sent with "initiator" flag = remote opened this stream
+            initiatedLocally = false
+        case .messageReceiver, .closeReceiver, .resetReceiver:
+            // Remote sent with "receiver" flag = local opened this stream
+            initiatedLocally = true
+        case .newStream:
+            // New stream from remote = not locally initiated
+            initiatedLocally = false
+        }
+        return MplexStreamKey(id: frame.streamID, initiatedLocally: initiatedLocally)
     }
 
     // MARK: - Shutdown Infrastructure

@@ -8,16 +8,13 @@ import Synchronization
 /// Send-only state for write operations.
 private struct SendState: Sendable {
     var cipher: NoiseCipherState
+    var isClosed: Bool = false
 }
 
 /// Receive-only state for read operations.
 private struct RecvState: Sendable {
     var cipher: NoiseCipherState
     var buffer: Data = Data()
-}
-
-/// Shared state accessed by both read and write.
-private struct SharedState: Sendable {
     var isClosed: Bool = false
 }
 
@@ -39,9 +36,6 @@ public final class NoiseConnection: SecuredConnection, Sendable {
 
     /// Receive state - only accessed by read()
     private let recvState: Mutex<RecvState>
-
-    /// Shared state - lightweight, accessed by both
-    private let sharedState: Mutex<SharedState>
 
     /// Creates a new NoiseConnection.
     ///
@@ -65,7 +59,6 @@ public final class NoiseConnection: SecuredConnection, Sendable {
         self.remotePeer = remotePeer
         self.sendState = Mutex(SendState(cipher: sendCipher))
         self.recvState = Mutex(RecvState(cipher: recvCipher, buffer: initialBuffer))
-        self.sharedState = Mutex(SharedState())
     }
 
     // MARK: - SecuredConnection
@@ -81,14 +74,11 @@ public final class NoiseConnection: SecuredConnection, Sendable {
     public func read() async throws -> Data {
         // Try to read a complete frame
         while true {
-            // 1. Check closed state (lightweight lock)
-            let closed = sharedState.withLock { $0.isClosed }
-            if closed {
-                throw NoiseError.connectionClosed
-            }
-
-            // 2. Check buffer and decrypt (receive lock only)
+            // 1. Check closed + buffer atomically (receive lock)
             let frameResult: Result<Data?, any Error> = recvState.withLock { state in
+                if state.isClosed {
+                    return .failure(NoiseError.connectionClosed)
+                }
                 do {
                     if let (message, consumed) = try readNoiseMessage(from: state.buffer) {
                         state.buffer = Data(state.buffer.dropFirst(consumed))
@@ -100,6 +90,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
                 } catch {
                     // Frame parsing or decryption failed - clear buffer to prevent infinite retry
                     state.buffer = Data()
+                    state.isClosed = true
                     return .failure(error)
                 }
                 return .success(nil)
@@ -111,18 +102,16 @@ public final class NoiseConnection: SecuredConnection, Sendable {
                     return data
                 }
             case .failure(let error):
-                // Mark as closed on error
-                sharedState.withLock { $0.isClosed = true }
                 throw error
             }
 
-            // 3. Read from network (no lock held)
+            // 2. Read from network (no lock held)
             let chunk = try await underlying.read()
             if chunk.isEmpty {
                 throw NoiseError.connectionClosed
             }
 
-            // 4. Append to buffer (receive lock only)
+            // 3. Append to buffer (receive lock only)
             recvState.withLock { state in
                 state.buffer.append(chunk)
             }
@@ -130,15 +119,10 @@ public final class NoiseConnection: SecuredConnection, Sendable {
     }
 
     public func write(_ data: Data) async throws {
-        // 1. Check closed state (lightweight lock)
-        let closed = sharedState.withLock { $0.isClosed }
-        if closed {
-            throw NoiseError.connectionClosed
-        }
-
         // Handle empty data: still send a frame (carries authentication)
         if data.isEmpty {
             let encrypted = try sendState.withLock { state -> Data in
+                guard !state.isClosed else { throw NoiseError.connectionClosed }
                 let ciphertext = try state.cipher.encryptWithAD(Data(), plaintext: Data())
                 return try encodeNoiseMessage(ciphertext)
             }
@@ -149,29 +133,25 @@ public final class NoiseConnection: SecuredConnection, Sendable {
         var remaining = data[data.startIndex...]
 
         while !remaining.isEmpty {
-            // 2. Re-check closed state in loop
-            let closed = sharedState.withLock { $0.isClosed }
-            if closed {
-                throw NoiseError.connectionClosed
-            }
-
             let chunkSize = min(remaining.count, noiseMaxPlaintextSize)
             let chunk = Data(remaining.prefix(chunkSize))
             remaining = remaining.dropFirst(chunkSize)
 
-            // 3. Encrypt (send lock only)
+            // Check closed + encrypt atomically (send lock)
             let encrypted = try sendState.withLock { state -> Data in
+                guard !state.isClosed else { throw NoiseError.connectionClosed }
                 let ciphertext = try state.cipher.encryptWithAD(Data(), plaintext: chunk)
                 return try encodeNoiseMessage(ciphertext)
             }
 
-            // 4. Write to network (no lock held)
+            // Write to network (no lock held)
             try await underlying.write(encrypted)
         }
     }
 
     public func close() async throws {
-        sharedState.withLock { $0.isClosed = true }
+        recvState.withLock { $0.isClosed = true }
+        sendState.withLock { $0.isClosed = true }
         try await underlying.close()
     }
 }

@@ -47,4 +47,5 @@ public enum TransportError: Error, Sendable {
     case connectionFailed(underlying: Error)
     case listenerClosed
     case timeout
+    case unsupportedOperation(String)
 }

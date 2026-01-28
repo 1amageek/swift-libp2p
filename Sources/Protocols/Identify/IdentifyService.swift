@@ -157,7 +157,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     private let autoPushState: Mutex<AutoPushState>
 
     /// Reference to stream opener for auto-push.
-    private final class OpenerRef: @unchecked Sendable {
+    private final class OpenerRef: Sendable {
         let opener: any StreamOpener
         init(_ opener: any StreamOpener) {
             self.opener = opener
@@ -422,7 +422,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     ///
     /// - Parameter peer: The connected peer ID
     public func peerConnected(_ peer: PeerID) {
-        autoPushState.withLock { state in
+        _ = autoPushState.withLock { state in
             state.connectedPeers.insert(peer)
         }
     }
@@ -433,7 +433,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     ///
     /// - Parameter peer: The disconnected peer ID
     public func peerDisconnected(_ peer: PeerID) {
-        autoPushState.withLock { state in
+        _ = autoPushState.withLock { state in
             state.connectedPeers.remove(peer)
         }
     }

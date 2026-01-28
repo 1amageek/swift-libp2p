@@ -4,6 +4,10 @@ import P2PCore
 import P2PTransport
 import NIOCore
 import NIOPosix
+import os
+
+/// Debug logger for TCP transport
+private let tcpTransportLogger = Logger(subsystem: "swift-libp2p", category: "TCPTransport")
 
 /// TCP transport using SwiftNIO.
 public final class TCPTransport: Transport, Sendable {
@@ -30,7 +34,11 @@ public final class TCPTransport: Transport, Sendable {
 
     deinit {
         if ownsGroup {
-            try? group.syncShutdownGracefully()
+            do {
+                try group.syncShutdownGracefully()
+            } catch {
+                tcpTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+            }
         }
     }
 

@@ -198,22 +198,25 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
     /// Creates a new Multiaddr by appending the given protocol.
     ///
-    /// - Note: No size validation is performed since the resulting address
-    ///   cannot be larger than the original plus one component.
-    public func appending(_ proto: MultiaddrProtocol) -> Multiaddr {
-        Multiaddr(uncheckedProtocols: protocols + [proto])
+    /// - Throws: `MultiaddrError.tooManyComponents` if the result exceeds the component limit
+    public func appending(_ proto: MultiaddrProtocol) throws -> Multiaddr {
+        let newProtocols = protocols + [proto]
+        return try Multiaddr(protocols: newProtocols)
     }
 
     /// Creates a new Multiaddr by appending the given Multiaddr.
     ///
-    /// - Note: No size validation is performed since both inputs were already validated.
-    public func appending(_ other: Multiaddr) -> Multiaddr {
-        Multiaddr(uncheckedProtocols: protocols + other.protocols)
+    /// - Throws: `MultiaddrError.tooManyComponents` if the result exceeds the component limit
+    public func appending(_ other: Multiaddr) throws -> Multiaddr {
+        let newProtocols = protocols + other.protocols
+        return try Multiaddr(protocols: newProtocols)
     }
 
     /// Creates a new Multiaddr by encapsulating with the given protocol.
-    public func encapsulate(_ proto: MultiaddrProtocol) -> Multiaddr {
-        appending(proto)
+    ///
+    /// - Throws: `MultiaddrError.tooManyComponents` if the result exceeds the component limit
+    public func encapsulate(_ proto: MultiaddrProtocol) throws -> Multiaddr {
+        try appending(proto)
     }
 
     /// Creates a new Multiaddr by removing protocols after and including the given code.

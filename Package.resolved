@@ -1,5 +1,5 @@
 {
-  "originHash" : "2b25977d3da8f3a54a4c51d30ce4683f3af178754d8ebb9de162b4683bee7f86",
+  "originHash" : "39b1b5de0ba5473e6ca8fa5b4243348a70a31fd7fbea7cd0d44f7d6762a5838c",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -107,6 +107,15 @@
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
+      }
+    },
+    {
+      "identity" : "swift-tls",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/swift-tls.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "fdd1113eb328d3904318df625541a2a9b6324a1a"
       }
     }
   ],

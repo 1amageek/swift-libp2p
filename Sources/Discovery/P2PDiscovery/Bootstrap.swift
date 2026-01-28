@@ -86,8 +86,8 @@ public struct BootstrapResult: Sendable {
     /// Peers that were successfully connected.
     public let connected: [PeerID]
 
-    /// Peers that failed to connect with their errors.
-    public let failed: [(SeedPeer, Error)]
+    /// Peers that failed to connect with their error descriptions.
+    public let failed: [(SeedPeer, String)]
 
     /// Whether bootstrap was successful (at least one connection).
     public var isSuccess: Bool {
@@ -109,7 +109,7 @@ public enum BootstrapEvent: Sendable {
     /// A seed peer connection succeeded.
     case seedConnected(PeerID)
     /// A seed peer connection failed.
-    case seedFailed(SeedPeer, Error)
+    case seedFailed(SeedPeer, String)
     /// Bootstrap completed.
     case completed(BootstrapResult)
     /// Automatic bootstrap triggered.
@@ -242,7 +242,7 @@ public actor DefaultBootstrap: BootstrapService {
 
         // Connect to seeds with limited concurrency
         var connected: [PeerID] = []
-        var failed: [(SeedPeer, Error)] = []
+        var failed: [(SeedPeer, String)] = []
 
         await withTaskGroup(of: (SeedPeer, Result<PeerID, Error>).self) { group in
             var pending = seedsToConnect[...]
@@ -266,8 +266,9 @@ public actor DefaultBootstrap: BootstrapService {
                     eventContinuation.yield(.seedConnected(peerID))
 
                 case .failure(let error):
-                    failed.append((seed, error))
-                    eventContinuation.yield(.seedFailed(seed, error))
+                    let errorDesc = String(describing: error)
+                    failed.append((seed, errorDesc))
+                    eventContinuation.yield(.seedFailed(seed, errorDesc))
                 }
 
                 // Add next seed if available
@@ -369,7 +370,7 @@ public enum BootstrapError: Error, Sendable {
     /// No seeds configured.
     case noSeeds
     /// All seed connections failed.
-    case allSeedsFailed([Error])
+    case allSeedsFailed([String])
     /// Bootstrap already in progress.
     case alreadyInProgress
 }
@@ -382,7 +383,7 @@ extension BootstrapError: CustomStringConvertible {
         case .noSeeds:
             return "No seed peers configured"
         case .allSeedsFailed(let errors):
-            return "All seed connections failed: \(errors.map { String(describing: $0) }.joined(separator: ", "))"
+            return "All seed connections failed: \(errors.joined(separator: ", "))"
         case .alreadyInProgress:
             return "Bootstrap already in progress"
         }

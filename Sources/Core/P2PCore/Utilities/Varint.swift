@@ -55,6 +55,47 @@ public enum Varint {
         throw VarintError.insufficientData
     }
 
+    /// Decodes an unsigned varint from data at the given offset.
+    ///
+    /// Uses direct index-based access for zero-copy performance.
+    /// Suitable for hot paths where creating Data slices would be costly.
+    ///
+    /// - Parameters:
+    ///   - data: Source data (may be a slice with non-zero startIndex)
+    ///   - offset: Logical offset from the start of data
+    /// - Returns: Decoded value and number of bytes consumed
+    /// - Throws: `.insufficientData` if incomplete, `.overflow` if malformed
+    public static func decode(from data: Data, at offset: Int) throws -> (value: UInt64, bytesRead: Int) {
+        var value: UInt64 = 0
+        var shift: UInt64 = 0
+        var bytesRead = 0
+        var index = data.startIndex + offset
+
+        while index < data.endIndex {
+            let byte = data[index]
+            bytesRead += 1
+            index += 1
+
+            if shift >= 63 && byte > 1 {
+                throw VarintError.overflow
+            }
+
+            value |= UInt64(byte & 0x7F) << shift
+
+            if byte & 0x80 == 0 {
+                return (value, bytesRead)
+            }
+
+            shift += 7
+
+            if bytesRead >= 10 {
+                throw VarintError.overflow
+            }
+        }
+
+        throw VarintError.insufficientData
+    }
+
     /// Decodes an unsigned varint from the given data, returning the value and remaining data.
     ///
     /// - Parameter data: The data to decode from

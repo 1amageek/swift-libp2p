@@ -62,28 +62,19 @@ struct MplexConnectionTests {
         #expect(connection.remoteAddress == mock.remoteAddress)
     }
 
-    @Test("Initiator starts with odd stream ID")
-    func initiatorStartsWithOddStreamID() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
-        connection.start()
+    @Test("Both sides start with stream ID 0")
+    func bothSidesStartWithStreamID0() async throws {
+        let (initiatorConn, _) = createTestConnection(isInitiator: true)
+        initiatorConn.start()
+        let stream1 = try await initiatorConn.newStream()
+        #expect(stream1.id == 0)
+        try await initiatorConn.close()
 
-        let stream = try await connection.newStream()
-        #expect(stream.id % 2 == 1)
-        #expect(stream.id == 1)
-
-        try await connection.close()
-    }
-
-    @Test("Responder starts with even stream ID")
-    func responderStartsWithEvenStreamID() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: false)
-        connection.start()
-
-        let stream = try await connection.newStream()
-        #expect(stream.id % 2 == 0)
-        #expect(stream.id == 2)
-
-        try await connection.close()
+        let (responderConn, _) = createTestConnection(isInitiator: false)
+        responderConn.start()
+        let stream2 = try await responderConn.newStream()
+        #expect(stream2.id == 0)
+        try await responderConn.close()
     }
 
     // MARK: - Start Tests
@@ -104,48 +95,32 @@ struct MplexConnectionTests {
 
     // MARK: - Stream ID Management Tests
 
-    @Test("Initiator assigns odd stream IDs")
-    func initiatorAssignsOddStreamIDs() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+    @Test("Stream IDs are sequential starting from 0")
+    func streamIDsSequentialFrom0() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream1 = try await connection.newStream()
         let stream2 = try await connection.newStream()
         let stream3 = try await connection.newStream()
 
-        #expect(stream1.id == 1)
-        #expect(stream2.id == 3)
-        #expect(stream3.id == 5)
+        #expect(stream1.id == 0)
+        #expect(stream2.id == 1)
+        #expect(stream3.id == 2)
 
         try await connection.close()
     }
 
-    @Test("Responder assigns even stream IDs")
-    func responderAssignsEvenStreamIDs() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: false)
-        connection.start()
-
-        let stream1 = try await connection.newStream()
-        let stream2 = try await connection.newStream()
-        let stream3 = try await connection.newStream()
-
-        #expect(stream1.id == 2)
-        #expect(stream2.id == 4)
-        #expect(stream3.id == 6)
-
-        try await connection.close()
-    }
-
-    @Test("Stream IDs increment by 2")
-    func streamIDsIncrementBy2() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+    @Test("Stream IDs increment by 1")
+    func streamIDsIncrementBy1() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         var previousID: UInt64 = 0
         for i in 0..<5 {
             let stream = try await connection.newStream()
             if i > 0 {
-                #expect(stream.id == previousID + 2)
+                #expect(stream.id == previousID + 1)
             }
             previousID = stream.id
         }
@@ -166,7 +141,7 @@ struct MplexConnectionTests {
 
         let frame = try decodeOutboundFrame(mock)
         #expect(frame.flag == .newStream)
-        #expect(frame.streamID == 1)
+        #expect(frame.streamID == 0)
 
         try await connection.close()
     }
@@ -216,7 +191,7 @@ struct MplexConnectionTests {
         // Next newStream should work after failure
         mock.clearOutbound()
         let stream = try await connection.newStream()
-        #expect(stream.id == 3) // ID 1 was allocated but cleaned up
+        #expect(stream.id == 1) // ID 0 was allocated but cleaned up
 
         try await connection.close()
     }
@@ -268,27 +243,24 @@ struct MplexConnectionTests {
         try await connection.close()
     }
 
-    @Test("Invalid stream ID parity rejected with Reset", .timeLimit(.minutes(1)))
-    func invalidStreamIDParityRejectedWithReset() async throws {
+    @Test("Any stream ID accepted from remote (no parity check)", .timeLimit(.minutes(1)))
+    func anyStreamIDAcceptedFromRemote() async throws {
         let (connection, mock) = createTestConnection(isInitiator: true)
         connection.start()
 
-        // Wait for readLoop to start
+        // Start accepting
+        let acceptTask = Task {
+            try await connection.acceptStream()
+        }
+
         try await Task.sleep(for: .milliseconds(50))
 
-        // Inject NewStream with wrong parity (odd ID from responder is invalid)
-        let invalidFrame = MplexFrame.newStream(id: 3)
-        injectFrame(mock, invalidFrame)
+        // Inject NewStream with any ID - Mplex has no parity rule
+        let newStreamFrame = MplexFrame.newStream(id: 3)
+        injectFrame(mock, newStreamFrame)
 
-        try await Task.sleep(for: .milliseconds(100))
-
-        // Should have sent Reset frame
-        let outbound = mock.captureOutbound()
-        let hasReset = outbound.contains { data in
-            guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
-            return frame.flag == .resetReceiver && frame.streamID == 3
-        }
-        #expect(hasReset)
+        let stream = try await acceptTask.value
+        #expect(stream.id == 3)
 
         try await connection.close()
     }
@@ -338,8 +310,8 @@ struct MplexConnectionTests {
         try await Task.sleep(for: .milliseconds(50))
 
         // Create max streams from our side
+        _ = try await connection.newStream() // ID 0
         _ = try await connection.newStream() // ID 1
-        _ = try await connection.newStream() // ID 3
 
         mock.clearOutbound()
 
@@ -417,7 +389,7 @@ struct MplexConnectionTests {
         mock.clearOutbound()
 
         // Inject Message for this stream (from remote, so Receiver flag)
-        let messageFrame = MplexFrame.message(id: 1, isInitiator: false, data: Data("hello".utf8))
+        let messageFrame = MplexFrame.message(id: 0, isInitiator: false, data: Data("hello".utf8))
         injectFrame(mock, messageFrame)
 
         // Read from stream
@@ -462,8 +434,8 @@ struct MplexConnectionTests {
 
         try await Task.sleep(for: .milliseconds(50))
 
-        // Inject Close from remote
-        let closeFrame = MplexFrame.close(id: 1, isInitiator: false)
+        // Inject Close from remote (Receiver flag = local initiated)
+        let closeFrame = MplexFrame.close(id: 0, isInitiator: false)
         injectFrame(mock, closeFrame)
 
         // Read should fail
@@ -489,8 +461,8 @@ struct MplexConnectionTests {
 
         try await Task.sleep(for: .milliseconds(50))
 
-        // Inject Reset from remote
-        let resetFrame = MplexFrame.reset(id: 1, isInitiator: false)
+        // Inject Reset from remote (Receiver flag = local initiated)
+        let resetFrame = MplexFrame.reset(id: 0, isInitiator: false)
         injectFrame(mock, resetFrame)
 
         // Read should fail
@@ -518,7 +490,7 @@ struct MplexConnectionTests {
         let outbound = mock.captureOutbound()
         let hasMessageInitiator = outbound.contains { data in
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
-            return frame.flag == .messageInitiator && frame.streamID == 1
+            return frame.flag == .messageInitiator && frame.streamID == 0
         }
         #expect(hasMessageInitiator)
 
@@ -540,7 +512,7 @@ struct MplexConnectionTests {
         let outbound = mock.captureOutbound()
         let hasCloseInitiator = outbound.contains { data in
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
-            return frame.flag == .closeInitiator && frame.streamID == 1
+            return frame.flag == .closeInitiator && frame.streamID == 0
         }
         #expect(hasCloseInitiator)
 

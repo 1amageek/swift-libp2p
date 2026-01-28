@@ -43,16 +43,16 @@ public final class QUICListener: Listener, Sendable {
 
     /// Accepts the next incoming connection.
     ///
-    /// - Note: QUIC connections don't fit the RawConnection model well.
-    ///   This method throws `TransportError.listenerClosed` to indicate
-    ///   that callers should use `QUICSecuredListener` instead.
+    /// QUIC connections are already secured and multiplexed, so they don't
+    /// fit the `RawConnection` model. Use `QUICSecuredListener` instead,
+    /// which returns `MuxedConnection` directly via the `SecuredTransport` path.
     ///
     /// - Returns: Never returns a connection
-    /// - Throws: `TransportError.listenerClosed`
+    /// - Throws: `TransportError.unsupportedOperation`
     public func accept() async throws -> any RawConnection {
-        // QUIC connections are already secured and multiplexed.
-        // The standard accept() -> RawConnection model doesn't apply.
-        throw TransportError.listenerClosed
+        throw TransportError.unsupportedOperation(
+            "QUIC connections are already secured/muxed. Use QUICSecuredListener instead."
+        )
     }
 
     /// Closes the listener.
@@ -157,7 +157,7 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                 // Extract remote PeerID from TLS certificate
                 let remotePeer: PeerID
                 do {
-                    remotePeer = try self.extractPeerID(from: quicConnection)
+                    remotePeer = try extractPeerIDFromQUIC(quicConnection)
                 } catch {
                     #if DEBUG
                     print("Rejecting connection: failed to extract PeerID - \(error)")
@@ -271,27 +271,4 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
         }
     }
 
-    /// Extracts PeerID from a QUIC connection using the TLS provider.
-    ///
-    /// The PeerID is extracted from the X.509 certificate extension
-    /// (OID 1.3.6.1.4.1.53594.1.1) that was verified during the TLS handshake.
-    ///
-    /// - Parameter connection: The QUIC connection
-    /// - Returns: The remote peer's PeerID
-    /// - Throws: `QUICTransportError.certificateInvalid` if PeerID extraction fails
-    private func extractPeerID(from connection: any QUICConnectionProtocol) throws -> PeerID {
-        guard let managedConnection = connection as? ManagedConnection else {
-            throw QUICTransportError.certificateInvalid("Unexpected connection type")
-        }
-
-        guard let swiftQUICProvider = managedConnection.underlyingTLSProvider as? SwiftQUICTLSProvider else {
-            throw QUICTransportError.certificateInvalid("Unexpected TLS provider type")
-        }
-
-        guard let remotePeerID = swiftQUICProvider.remotePeerID else {
-            throw QUICTransportError.certificateInvalid("Remote PeerID not available after handshake")
-        }
-
-        return remotePeerID
-    }
 }

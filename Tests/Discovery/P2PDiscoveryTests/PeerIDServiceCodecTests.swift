@@ -150,13 +150,12 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
+        let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        #expect(candidate != nil)
-        #expect(candidate?.peerID == peerID)
+        #expect(candidate.peerID == peerID)
     }
 
-    @Test("Decode service with invalid PeerID name returns nil")
+    @Test("Decode service with invalid PeerID name throws invalidPeerID")
     func decodeInvalidPeerID() {
         let observer = KeyPair.generateEd25519().peerID
 
@@ -170,9 +169,9 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
-
-        #expect(candidate == nil)
+        #expect(throws: MDNSDiscoveryError.self) {
+            try PeerIDServiceCodec.decode(service: service, observer: observer)
+        }
     }
 
     @Test("Decode builds addresses from IPv4")
@@ -191,11 +190,10 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
+        let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        #expect(candidate != nil)
         // Each IPv4 generates both UDP and TCP addresses
-        #expect(candidate!.addresses.count == 4)
+        #expect(candidate.addresses.count == 4)
     }
 
     @Test("Decode builds addresses from IPv6")
@@ -214,11 +212,10 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
+        let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        #expect(candidate != nil)
         // IPv6 generates both UDP and TCP addresses
-        #expect(candidate!.addresses.count == 2)
+        #expect(candidate.addresses.count == 2)
     }
 
     @Test("Decode with no port returns empty addresses")
@@ -237,10 +234,9 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
+        let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        #expect(candidate != nil)
-        #expect(candidate!.addresses.isEmpty)
+        #expect(candidate.addresses.isEmpty)
     }
 
     // MARK: - Score Calculation Tests
@@ -261,10 +257,9 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
+        let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        #expect(candidate != nil)
-        #expect(candidate!.score >= 0.5)
+        #expect(candidate.score >= 0.5)
     }
 
     @Test("Score increases with addresses")
@@ -293,10 +288,10 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidateNoAddr = PeerIDServiceCodec.decode(service: serviceNoAddr, observer: observer)
-        let candidateWithAddr = PeerIDServiceCodec.decode(service: serviceWithAddr, observer: observer)
+        let candidateNoAddr = try PeerIDServiceCodec.decode(service: serviceNoAddr, observer: observer)
+        let candidateWithAddr = try PeerIDServiceCodec.decode(service: serviceWithAddr, observer: observer)
 
-        #expect(candidateWithAddr!.score > candidateNoAddr!.score)
+        #expect(candidateWithAddr.score > candidateNoAddr.score)
     }
 
     @Test("Score increases with both IPv4 and IPv6")
@@ -325,10 +320,10 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidateIPv4 = PeerIDServiceCodec.decode(service: serviceIPv4Only, observer: observer)
-        let candidateDual = PeerIDServiceCodec.decode(service: serviceDualStack, observer: observer)
+        let candidateIPv4 = try PeerIDServiceCodec.decode(service: serviceIPv4Only, observer: observer)
+        let candidateDual = try PeerIDServiceCodec.decode(service: serviceDualStack, observer: observer)
 
-        #expect(candidateDual!.score > candidateIPv4!.score)
+        #expect(candidateDual.score > candidateIPv4.score)
     }
 
     @Test("Score capped at 1.0")
@@ -348,10 +343,9 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let candidate = PeerIDServiceCodec.decode(service: service, observer: observer)
+        let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        #expect(candidate != nil)
-        #expect(candidate!.score <= 1.0)
+        #expect(candidate.score <= 1.0)
     }
 
     // MARK: - Observation Conversion Tests
@@ -372,21 +366,20 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let observation = PeerIDServiceCodec.toObservation(
+        let observation = try PeerIDServiceCodec.toObservation(
             service: service,
             kind: .announcement,
             observer: observer,
             sequenceNumber: 42
         )
 
-        #expect(observation != nil)
-        #expect(observation?.subject == peerID)
-        #expect(observation?.observer == observer)
-        #expect(observation?.kind == .announcement)
-        #expect(observation?.sequenceNumber == 42)
+        #expect(observation.subject == peerID)
+        #expect(observation.observer == observer)
+        #expect(observation.kind == .announcement)
+        #expect(observation.sequenceNumber == 42)
     }
 
-    @Test("toObservation with invalid PeerID returns nil")
+    @Test("toObservation with invalid PeerID throws invalidPeerID")
     func toObservationInvalidPeerID() {
         let observer = KeyPair.generateEd25519().peerID
 
@@ -400,14 +393,14 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let observation = PeerIDServiceCodec.toObservation(
-            service: service,
-            kind: .reachable,
-            observer: observer,
-            sequenceNumber: 1
-        )
-
-        #expect(observation == nil)
+        #expect(throws: MDNSDiscoveryError.self) {
+            try PeerIDServiceCodec.toObservation(
+                service: service,
+                kind: .reachable,
+                observer: observer,
+                sequenceNumber: 1
+            )
+        }
     }
 
     @Test("toObservation includes address hints")
@@ -426,16 +419,15 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let observation = PeerIDServiceCodec.toObservation(
+        let observation = try PeerIDServiceCodec.toObservation(
             service: service,
             kind: .reachable,
             observer: observer,
             sequenceNumber: 1
         )
 
-        #expect(observation != nil)
         // Should have UDP addresses for each IP
-        #expect(observation!.hints.count == 3)
+        #expect(observation.hints.count == 3)
     }
 
     @Test("toObservation with unreachable kind")
@@ -454,15 +446,14 @@ struct PeerIDServiceCodecTests {
             txtRecord: TXTRecord()
         )
 
-        let observation = PeerIDServiceCodec.toObservation(
+        let observation = try PeerIDServiceCodec.toObservation(
             service: service,
             kind: .unreachable,
             observer: observer,
             sequenceNumber: 99
         )
 
-        #expect(observation != nil)
-        #expect(observation?.kind == .unreachable)
+        #expect(observation.kind == .unreachable)
     }
 }
 

@@ -4,6 +4,7 @@ import P2PCore
 import P2PDiscovery
 import SWIM
 import NIOUDPTransport
+import Synchronization
 
 /// Configuration for SWIM-based membership.
 public struct SWIMMembershipConfiguration: Sendable {
@@ -70,8 +71,7 @@ public actor SWIMMembership: DiscoveryService {
     private var localAddress: Multiaddr?
     private var forwardTask: Task<Void, Never>?
 
-    private var eventContinuation: AsyncStream<Observation>.Continuation?
-    private nonisolated let eventStream: AsyncStream<Observation>
+    private nonisolated let broadcaster = EventBroadcaster<Observation>()
 
     // MARK: - Initialization
 
@@ -86,17 +86,10 @@ public actor SWIMMembership: DiscoveryService {
     ) {
         self.localPeerID = localPeerID
         self.configuration = configuration
-
-        // Create event stream
-        var continuation: AsyncStream<Observation>.Continuation!
-        self.eventStream = AsyncStream { cont in
-            continuation = cont
-        }
-        self.eventContinuation = continuation
     }
 
     deinit {
-        eventContinuation?.finish()
+        broadcaster.shutdown()
     }
 
     // MARK: - Lifecycle
@@ -139,7 +132,7 @@ public actor SWIMMembership: DiscoveryService {
         isStarted = true
 
         // Store local address (advertised, not bind)
-        self.localAddress = try? Multiaddr("/ip4/\(advertisedHost)/udp/\(configuration.port)")
+        self.localAddress = try Multiaddr("/ip4/\(advertisedHost)/udp/\(configuration.port)")
 
         // Start event forwarding
         forwardTask = Task { [weak self] in
@@ -239,7 +232,7 @@ public actor SWIMMembership: DiscoveryService {
         swim = nil
         transport = nil
         isStarted = false
-        eventContinuation?.finish()
+        broadcaster.shutdown()
     }
 
     // MARK: - SWIM-specific Methods
@@ -333,8 +326,9 @@ public actor SWIMMembership: DiscoveryService {
     }
 
     /// Returns all observations as a stream.
+    /// Each call returns an independent stream (multi-consumer safe).
     public nonisolated var observations: AsyncStream<Observation> {
-        eventStream
+        broadcaster.subscribe()
     }
 
     // MARK: - Private Methods
@@ -351,7 +345,7 @@ public actor SWIMMembership: DiscoveryService {
                 observer: localPeerID,
                 sequenceNumber: sequenceNumber
             ) {
-                eventContinuation?.yield(observation)
+                broadcaster.emit(observation)
             }
         }
     }

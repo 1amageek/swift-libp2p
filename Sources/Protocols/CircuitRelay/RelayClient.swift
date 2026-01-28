@@ -101,7 +101,7 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     /// - The reservation expires
     /// - The reservation is cancelled via `cancelReservation(on:)`
     /// - The client is shut down
-    private final class OpenerRef: @unchecked Sendable {
+    private final class OpenerRef: Sendable {
         let opener: any StreamOpener
         init(_ opener: any StreamOpener) {
             self.opener = opener
@@ -109,10 +109,20 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     }
 
     /// Weak reference to listener for routing without retain cycles.
-    private final class WeakListenerRef: @unchecked Sendable {
-        weak var listener: RelayListener?
+    /// Uses Mutex to safely wrap the mutable weak reference.
+    private final class WeakListenerRef: Sendable {
+        private let ref: Mutex<WeakRef>
+
+        private struct WeakRef: Sendable {
+            weak var value: RelayListener?
+        }
+
         init(_ listener: RelayListener) {
-            self.listener = listener
+            self.ref = Mutex(WeakRef(value: listener))
+        }
+
+        var listener: RelayListener? {
+            ref.withLock { $0.value }
         }
     }
 
@@ -120,7 +130,7 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
         let id: UInt64
     }
 
-    private struct ConnectionWaiter: @unchecked Sendable {
+    private struct ConnectionWaiter: Sendable {
         let relay: PeerID?
         let remote: PeerID?
         let continuation: CheckedContinuation<RelayedConnection, any Error>

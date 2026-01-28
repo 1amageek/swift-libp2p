@@ -13,77 +13,118 @@ struct TLSCertificateTests {
     func generateCertificate() throws {
         let keyPair = KeyPair.generateEd25519()
 
-        let result = try TLSCertificate.generate(keyPair: keyPair)
+        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+
+        // Certificate chain should have exactly one certificate (self-signed)
+        #expect(result.certificateChain.count == 1)
+
+        let certDER = result.certificateChain[0]
 
         // Certificate should be non-empty
-        #expect(!result.certificateDER.isEmpty)
+        #expect(!certDER.isEmpty)
 
         // Should start with SEQUENCE tag (0x30)
-        #expect(result.certificateDER[0] == 0x30)
+        #expect(certDER[certDER.startIndex] == 0x30)
     }
 
-    @Test("Generated certificate contains libp2p extension")
+    @Test("Generated certificate contains libp2p extension and valid PeerID")
     func certificateContainsExtension() throws {
         let keyPair = KeyPair.generateEd25519()
 
-        let result = try TLSCertificate.generate(keyPair: keyPair)
+        let result = try LibP2PCertificate.generate(keyPair: keyPair)
 
-        // Should be able to extract identity
-        let identity = try TLSCertificate.extractIdentity(from: result.certificateDER)
+        // Should be able to extract PeerID
+        let peerID = try LibP2PCertificate.extractPeerID(from: result.certificateChain[0])
 
-        // Public key should match
-        #expect(identity.publicKey == keyPair.publicKey.protobufEncoded)
-
-        // Signature should be non-empty
-        #expect(!identity.signature.isEmpty)
+        // PeerID should match the generating key pair
+        #expect(peerID == keyPair.peerID)
     }
 
     @Test("Certificate roundtrip preserves PeerID")
     func certificateRoundtrip() throws {
         let keyPair = KeyPair.generateEd25519()
 
-        let result = try TLSCertificate.generate(keyPair: keyPair)
+        let result = try LibP2PCertificate.generate(keyPair: keyPair)
 
-        // Extract SPKI from certificate
-        // For this test, we'll verify the identity extraction works
-        let identity = try TLSCertificate.extractIdentity(from: result.certificateDER)
+        let extractedPeerID = try LibP2PCertificate.extractPeerID(from: result.certificateChain[0])
 
-        // Decode the public key
-        let extractedPublicKey = try PublicKey(protobufEncoded: identity.publicKey)
+        #expect(extractedPeerID == keyPair.peerID)
+    }
 
-        // PeerID should match
-        #expect(extractedPublicKey.peerID == keyPair.peerID)
+    // MARK: - CertificateValidator Tests
+
+    @Test("CertificateValidator extracts PeerID")
+    func certificateValidatorExtractsPeerID() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+
+        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: nil)
+        let peerInfo = try validator(result.certificateChain)
+
+        let peerID = peerInfo as? PeerID
+        #expect(peerID == keyPair.peerID)
+    }
+
+    @Test("CertificateValidator succeeds with matching expected peer")
+    func certificateValidatorMatchingPeer() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+
+        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: keyPair.peerID)
+        let peerInfo = try validator(result.certificateChain)
+
+        let peerID = peerInfo as? PeerID
+        #expect(peerID == keyPair.peerID)
+    }
+
+    @Test("CertificateValidator rejects mismatched expected peer")
+    func certificateValidatorMismatchedPeer() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let otherKeyPair = KeyPair.generateEd25519()
+        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+
+        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: otherKeyPair.peerID)
+
+        #expect(throws: TLSError.self) {
+            _ = try validator(result.certificateChain)
+        }
     }
 
     // MARK: - Configuration Tests
 
-    @Test("Default TLS configuration values")
+    @Test("Default TLS upgrader configuration values")
     func defaultConfiguration() {
-        let config = TLSConfiguration.default
+        let config = TLSUpgraderConfiguration.default
 
         #expect(config.handshakeTimeout == .seconds(30))
-        #expect(config.alpnProtocols == ["libp2p"])
     }
 
-    @Test("Custom TLS configuration")
+    @Test("Custom TLS upgrader configuration")
     func customConfiguration() {
-        let config = TLSConfiguration(
-            handshakeTimeout: .seconds(60),
-            alpnProtocols: ["libp2p", "custom"]
+        let config = TLSUpgraderConfiguration(
+            handshakeTimeout: .seconds(60)
         )
 
         #expect(config.handshakeTimeout == .seconds(60))
-        #expect(config.alpnProtocols == ["libp2p", "custom"])
     }
 
     // MARK: - Error Tests
 
-    @Test("Extract identity from invalid certificate throws")
+    @Test("Extract PeerID from invalid certificate throws")
     func invalidCertificateThrows() {
         let invalidData = Data([0x00, 0x01, 0x02, 0x03])
 
+        #expect(throws: (any Error).self) {
+            _ = try LibP2PCertificate.extractPeerID(from: invalidData)
+        }
+    }
+
+    @Test("Extract PeerID from empty certificate chain throws")
+    func emptyCertificateChainThrows() throws {
+        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: nil)
+
         #expect(throws: TLSError.self) {
-            _ = try TLSCertificate.extractIdentity(from: invalidData)
+            _ = try validator([])
         }
     }
 
@@ -104,7 +145,7 @@ struct TLSCertificateTests {
 
     @Test("TLSUpgrader with custom configuration")
     func upgraderWithConfig() {
-        let config = TLSConfiguration(handshakeTimeout: .seconds(10))
+        let config = TLSUpgraderConfiguration(handshakeTimeout: .seconds(10))
         let upgrader = TLSUpgrader(configuration: config)
         #expect(upgrader.protocolID == "/tls/1.0.0")
     }

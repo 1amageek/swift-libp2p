@@ -7,12 +7,13 @@
 /// header = (streamID << 3) | flag
 /// ```
 import Foundation
+import P2PCore
 
 /// Mplex protocol identifier.
 public let mplexProtocolID = "/mplex/6.7.0"
 
 /// Maximum allowed frame data size (1MB) to prevent memory exhaustion attacks.
-let mplexMaxFrameSize: UInt64 = 1024 * 1024
+public let mplexMaxFrameSize: UInt64 = 1024 * 1024
 
 /// Maximum read buffer size (8MB)
 let mplexMaxReadBufferSize = 8 * 1024 * 1024
@@ -116,10 +117,10 @@ public struct MplexFrame: Sendable, Equatable {
 
         // Encode header: (streamID << 3) | flag
         let header = (streamID << 3) | UInt64(flag.rawValue)
-        result.append(contentsOf: encodeVarint(header))
+        result.append(Varint.encode(header))
 
         // Encode length
-        result.append(contentsOf: encodeVarint(UInt64(data.count)))
+        result.append(Varint.encode(UInt64(data.count)))
 
         // Append data
         result.append(data)
@@ -131,27 +132,32 @@ public struct MplexFrame: Sendable, Equatable {
 
     /// Decodes a frame from bytes.
     ///
-    /// - Parameter buffer: The buffer to decode from
+    /// - Parameters:
+    ///   - buffer: The buffer to decode from
+    ///   - maxFrameSize: Maximum allowed frame data size (default: global limit)
     /// - Returns: The decoded frame and bytes consumed, or nil if more data is needed
     /// - Throws: `MplexError` if the frame is malformed
-    public static func decode(from buffer: Data) throws -> (frame: MplexFrame, bytesConsumed: Int)? {
+    public static func decode(
+        from buffer: Data,
+        maxFrameSize: UInt64 = mplexMaxFrameSize
+    ) throws -> (frame: MplexFrame, bytesConsumed: Int)? {
         var offset = 0
 
         // Decode header
-        guard let (header, headerSize) = decodeVarint(from: buffer, at: offset) else {
+        guard let (header, headerSize) = try decodeVarintAt(buffer, offset: offset) else {
             return nil
         }
         offset += headerSize
 
         // Decode length
-        guard let (length, lengthSize) = decodeVarint(from: buffer, at: offset) else {
+        guard let (length, lengthSize) = try decodeVarintAt(buffer, offset: offset) else {
             return nil
         }
         offset += lengthSize
 
         // Validate frame size
-        if length > mplexMaxFrameSize {
-            throw MplexError.frameTooLarge(size: length, max: mplexMaxFrameSize)
+        if length > maxFrameSize {
+            throw MplexError.frameTooLarge(size: length, max: maxFrameSize)
         }
 
         // Check if we have enough data
@@ -174,53 +180,20 @@ public struct MplexFrame: Sendable, Equatable {
         let frame = MplexFrame(streamID: streamID, flag: flag, data: data)
         return (frame, offset)
     }
-}
 
-// MARK: - Varint Encoding/Decoding
-
-/// Encodes a value as a varint.
-func encodeVarint(_ value: UInt64) -> [UInt8] {
-    var result: [UInt8] = []
-    var v = value
-    while v >= 0x80 {
-        result.append(UInt8(v & 0x7F) | 0x80)
-        v >>= 7
-    }
-    result.append(UInt8(v))
-    return result
-}
-
-/// Decodes a varint from data.
-///
-/// Uses `startIndex`-relative addressing so it works correctly with Data slices.
-///
-/// - Parameters:
-///   - data: The data to decode from (may be a slice with non-zero startIndex)
-///   - offset: The logical offset from the start of the data
-/// - Returns: The decoded value and number of bytes consumed, or nil if incomplete
-func decodeVarint(from data: Data, at offset: Int) -> (value: UInt64, size: Int)? {
-    var value: UInt64 = 0
-    var shift: UInt64 = 0
-    var index = data.startIndex + offset
-
-    while index < data.endIndex {
-        let byte = data[index]
-        value |= UInt64(byte & 0x7F) << shift
-        index += 1
-
-        if byte & 0x80 == 0 {
-            return (value, index - data.startIndex - offset)
-        }
-        shift += 7
-
-        // Overflow protection: varint should not exceed 10 bytes for UInt64
-        if shift > 63 {
+    /// Decodes a varint from data at the given offset using P2PCore.Varint.
+    ///
+    /// Returns nil if the data is incomplete (needs more bytes).
+    /// Throws on malformed varint (overflow) to trigger connection shutdown.
+    private static func decodeVarintAt(_ data: Data, offset: Int) throws -> (value: UInt64, size: Int)? {
+        do {
+            let (value, bytesRead) = try Varint.decode(from: data, at: offset)
+            return (value, bytesRead)
+        } catch VarintError.insufficientData {
             return nil
         }
+        // VarintError.overflow propagates → readLoop shuts down connection
     }
-
-    // Incomplete varint
-    return nil
 }
 
 // MARK: - Errors
@@ -237,10 +210,6 @@ public enum MplexError: Error, Sendable {
     case connectionClosed
     /// Protocol error
     case protocolError(String)
-    /// Maximum concurrent streams exceeded
-    case maxStreamsExceeded(current: Int, max: Int)
-    /// Stream ID reused
-    case streamIDReused(UInt64)
     /// Read buffer overflow (DoS protection)
     case readBufferOverflow
     /// Stream ID exhausted

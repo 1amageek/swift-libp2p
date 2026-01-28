@@ -8,13 +8,41 @@ UPnP IGD と NAT-PMP の両方をサポートし、AutoNAT と統合。
 ## アーキテクチャ
 
 ```
-NATPortMapper (統合サービス)
-├── UPnPClient (UPnP IGD プロトコル)
-│   ├── UPnPDiscovery (SSDP 発見)
-│   └── UPnPSOAP (SOAP リクエスト)
-└── NATPMPClient (NAT-PMP プロトコル)
-    └── NATPMPMessage (メッセージ構造体)
+NATPortMapper (facade, EventEmitting)
+├── NATProtocolHandler (protocol)
+│   ├── UPnPHandler (UPnP IGD)
+│   │   ├── SSDP 発見 (UDPSocket)
+│   │   ├── デバイス記述取得 (HTTP)
+│   │   └── SOAP リクエスト
+│   └── NATPMPHandler (NAT-PMP)
+│       └── UDP リクエスト (UDPSocket)
+├── UDPSocket (~Copyable, RAII)
+├── NetworkUtils (gateway, local IP, XML)
+└── 公開型
+    ├── NATTransportProtocol
+    ├── NATGatewayType
+    ├── PortMapping
+    ├── NATPortMapperEvent
+    ├── NATPortMapperError
+    └── NATPortMapperConfiguration
 ```
+
+## ファイル構成
+
+| ファイル | 責務 |
+|---------|------|
+| `NATPortMapper.swift` | Facade (~270行): ライフサイクル、キャッシュ、イベント、performMapping |
+| `NATProtocolHandler.swift` | プロトコルハンドラのインターフェース |
+| `UPnPHandler.swift` | UPnP IGD 実装 |
+| `NATPMPHandler.swift` | NAT-PMP (RFC 6886) 実装 |
+| `UDPSocket.swift` | RAII UDPソケット + fd_setヘルパー |
+| `NetworkUtils.swift` | gateway取得, ローカルIP, XML抽出 |
+| `NATTransportProtocol.swift` | TCP/UDP enum |
+| `NATGatewayType.swift` | ゲートウェイ種別 |
+| `PortMapping.swift` | マッピング結果 |
+| `NATPortMapperEvent.swift` | イベント定義 |
+| `NATPortMapperError.swift` | エラー定義 |
+| `NATPortMapperConfiguration.swift` | 設定 |
 
 ## プロトコル詳細
 
@@ -37,85 +65,19 @@ let mapping = try await mapper.requestMapping(
     internalPort: 4001,
     protocol: .tcp
 )
+let addr = try mapping.multiaddr()
 ```
 
 ## 設計原則
 
-1. **EventEmitting**: マッピングイベントを公開
+1. **EventEmitting**: `NATPortMapper` は `EventEmitting` プロトコルに準拠
 2. **自動更新**: 期限前に自動更新
-3. **フォールバック**: UPnP → NAT-PMP の順で試行
+3. **フォールバック**: UPnP → NAT-PMP の順で試行（handler順序）
+4. **単一責任**: 各ファイルが1つの責務を持つ
+5. **重複排除**: `UDPSocket` と `extractXMLTagValue()` で共通コードを統合
 
 ## Known Issues
 
-### HIGH: UDP ソケット操作の重複
-
-同一パターンのソケット操作が3箇所で重複している。
-
-**場所**:
-- `NATPortMapper.swift:639-670` (`getExternalAddressNATPMP`)
-- `NATPortMapper.swift:697-740` (`requestMappingNATPMP`)
-- `NATPortMapper.swift:418-450` (`discoverUPnPGateway`)
-
-**対応**: ヘルパー関数を抽出
-
-```swift
-private func sendUDPRequest(
-    to address: String,
-    port: UInt16,
-    data: [UInt8],
-    expectedResponseSize: Int,
-    timeout: Int = 3
-) async throws -> [UInt8]
-```
-
-### HIGH: discoverGateway() でエラーを握りつぶしている
-
-**場所**: `NATPortMapper.swift:200-215`
-
-```swift
-// BAD
-if let gateway = try? await discoverUPnPGateway() { ... }
-if let gateway = try? await discoverNATPMPGateway() { ... }
-```
-
-**対応**: エラーを保持し、両方失敗した場合に最後のエラーを throw
-
-### MEDIUM: XML 抽出ロジックの重複
-
-**場所**:
-- `NATPortMapper.swift:503-510` (`extractControlURL`)
-- `NATPortMapper.swift:530-537` (`getExternalAddressUPnP`)
-
-**対応**: `extractXMLTag(named:from:)` ヘルパーを抽出
-
-### MEDIUM: タイムアウトのハードコード
-
-**場所**:
-- `NATPortMapper.swift:665` - `timeval(tv_sec: 3, ...)`
-- `NATPortMapper.swift:734` - 同上
-
-**対応**: `configuration.discoveryTimeout` を使用
-
-### LOW: PortMapping.multiaddr で try? 使用
-
-**場所**: `NATPortMapper.swift:49-56`
-
-```swift
-public var multiaddr: Multiaddr? {
-    return try? Multiaddr("/ip4/\(externalAddress)/tcp/\(externalPort)")
-}
-```
-
-**対応**: `func multiaddr() throws -> Multiaddr` に変更
-
-### HIGH: 単一責任原則違反
-
-`NATPortMapper` が876行で3つの責務を持つ。
-
-**対応**: プロトコルハンドラを分離
-
-```
-NATPortMapper (facade)
-├── UPnPPortMapper
-└── NATPMPPortMapper
-```
+- `shutdown()` はゲートウェイ上のマッピングを解放しない（リース期限で自然消滅）
+- ゲートウェイキャッシュに TTL がない（ネットワーク変更時はインスタンスを再作成）
+- `getDefaultGateway()` は macOS 専用（`/usr/sbin/netstat` に依存）

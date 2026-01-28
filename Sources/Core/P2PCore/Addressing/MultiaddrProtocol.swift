@@ -88,9 +88,15 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     public var valueBytes: Data {
         switch self {
         case .ip4(let addr):
-            return Self.encodeIPv4(addr) ?? Data()
+            guard let bytes = Self.encodeIPv4(addr) else {
+                preconditionFailure("Invalid IPv4 address stored in MultiaddrProtocol.ip4: \(addr)")
+            }
+            return bytes
         case .ip6(let addr):
-            return Self.encodeIPv6(addr) ?? Data()
+            guard let bytes = Self.encodeIPv6(addr) else {
+                preconditionFailure("Invalid IPv6 address stored in MultiaddrProtocol.ip6: \(addr)")
+            }
+            return bytes
         case .tcp(let port), .udp(let port):
             return Self.encodePort(port)
         case .quic, .quicV1, .ws, .wss, .p2pCircuit:
@@ -316,6 +322,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         switch name {
         case "ip4":
             guard let v = value else { throw MultiaddrError.missingValue }
+            guard encodeIPv4(v) != nil else { throw MultiaddrError.invalidAddress }
             return .ip4(v)
         case "ip6":
             guard let v = value else { throw MultiaddrError.missingValue }

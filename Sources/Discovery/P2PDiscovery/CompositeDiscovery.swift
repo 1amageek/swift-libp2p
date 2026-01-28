@@ -21,8 +21,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
         var isShutdown: Bool = false
     }
 
-    private let eventContinuation: AsyncStream<Observation>.Continuation
-    private let eventStream: AsyncStream<Observation>
+    private let broadcaster = EventBroadcaster<Observation>()
 
     // MARK: - Initialization
 
@@ -33,11 +32,6 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     public init(services: [(service: any DiscoveryService, weight: Double)]) {
         self.services = services
         self.state = Mutex(State())
-
-        // Create merged event stream
-        let (stream, continuation) = AsyncStream<Observation>.makeStream()
-        self.eventStream = stream
-        self.eventContinuation = continuation
     }
 
     /// Creates a composite discovery service with equal weights.
@@ -46,11 +40,6 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     public init(services: [any DiscoveryService]) {
         self.services = services.map { ($0, 1.0) }
         self.state = Mutex(State())
-
-        // Create merged event stream
-        let (stream, continuation) = AsyncStream<Observation>.makeStream()
-        self.eventStream = stream
-        self.eventContinuation = continuation
     }
 
     deinit {
@@ -65,7 +54,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
             return true
         }
         if shouldFinish {
-            eventContinuation.finish()
+            broadcaster.shutdown()
         }
     }
 
@@ -105,33 +94,56 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
             return true
         }
         if shouldFinish {
-            eventContinuation.finish()
+            broadcaster.shutdown()
         }
     }
 
     // MARK: - DiscoveryService Protocol
 
     /// Announces to all underlying services.
+    ///
+    /// Attempts to announce to every service, collecting errors.
+    /// Throws only if all services fail.
     public func announce(addresses: [Multiaddr]) async throws {
+        var errors: [Error] = []
         for (service, _) in services {
-            try await service.announce(addresses: addresses)
+            do {
+                try await service.announce(addresses: addresses)
+            } catch {
+                errors.append(error)
+            }
+        }
+        if errors.count == services.count, let first = errors.first {
+            throw first
         }
     }
 
     /// Finds candidates from all services and merges results.
+    ///
+    /// Collects results from all services, tolerating partial failures.
+    /// Throws only if all services fail.
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
         var allCandidates: [ScoredCandidate] = []
+        var errors: [Error] = []
 
         for (service, weight) in services {
-            let candidates = try await service.find(peer: peer)
-            for candidate in candidates {
-                let weightedCandidate = ScoredCandidate(
-                    peerID: candidate.peerID,
-                    addresses: candidate.addresses,
-                    score: candidate.score * weight
-                )
-                allCandidates.append(weightedCandidate)
+            do {
+                let candidates = try await service.find(peer: peer)
+                for candidate in candidates {
+                    let weightedCandidate = ScoredCandidate(
+                        peerID: candidate.peerID,
+                        addresses: candidate.addresses,
+                        score: candidate.score * weight
+                    )
+                    allCandidates.append(weightedCandidate)
+                }
+            } catch {
+                errors.append(error)
             }
+        }
+
+        if allCandidates.isEmpty, let first = errors.first {
+            throw first
         }
 
         return mergeCandidates(allCandidates)
@@ -146,7 +158,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
                     return
                 }
 
-                for await observation in self.eventStream {
+                for await observation in self.observations {
                     if observation.subject == peer {
                         continuation.yield(observation)
                     }
@@ -169,8 +181,9 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     }
 
     /// Returns all observations as a stream.
+    /// Each call returns an independent stream (multi-consumer safe).
     public var observations: AsyncStream<Observation> {
-        eventStream
+        broadcaster.subscribe()
     }
 
     // MARK: - Private Methods
@@ -197,7 +210,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
                 timestamp: observation.timestamp,
                 sequenceNumber: newSeq
             )
-            eventContinuation.yield(forwarded)
+            broadcaster.emit(forwarded)
         }
     }
 
