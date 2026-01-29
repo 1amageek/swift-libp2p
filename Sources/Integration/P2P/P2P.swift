@@ -101,6 +101,9 @@ public struct NodeConfiguration: Sendable {
     /// KeyBook for per-peer public key storage (nil for default MemoryKeyBook).
     public let keyBook: (any KeyBook)?
 
+    /// Resource manager for system-wide resource accounting (nil for no limits).
+    public let resourceManager: (any ResourceManager)?
+
     public init(
         keyPair: KeyPair = .generateEd25519(),
         listenAddresses: [Multiaddr] = [],
@@ -115,7 +118,8 @@ public struct NodeConfiguration: Sendable {
         addressBookConfig: AddressBookConfiguration? = nil,
         bootstrap: BootstrapConfiguration? = nil,
         protoBook: (any ProtoBook)? = nil,
-        keyBook: (any KeyBook)? = nil
+        keyBook: (any KeyBook)? = nil,
+        resourceManager: (any ResourceManager)? = nil
     ) {
         self.keyPair = keyPair
         self.listenAddresses = listenAddresses
@@ -131,6 +135,7 @@ public struct NodeConfiguration: Sendable {
         self.bootstrap = bootstrap
         self.protoBook = protoBook
         self.keyBook = keyBook
+        self.resourceManager = resourceManager
     }
 }
 
@@ -423,14 +428,19 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Close all connections
         for peer in pool.connectedPeers {
-            if let connection = pool.connection(to: peer) {
+            let removed = pool.remove(forPeer: peer)
+            for managed in removed {
                 do {
-                    try await connection.close()
+                    try await managed.connection?.close()
                 } catch {
                     logger.debug("Failed to close connection to \(peer): \(error)")
                 }
+                // Release connection resource only for entries with active reservations.
+                // Entries in .disconnected/.failed were already released by handleConnectionClosed.
+                if managed.state.isConnected {
+                    configuration.resourceManager?.releaseConnection(peer: peer, direction: managed.direction)
+                }
             }
-            _ = pool.remove(forPeer: peer)
             emit(.peerDisconnected(peer))
         }
 
@@ -559,6 +569,19 @@ public actor Node: StreamOpener, HandlerRegistry {
             throw NodeError.connectionLimitReached
         }
 
+        // Reserve outbound connection resource
+        if let rm = configuration.resourceManager {
+            do {
+                try rm.reserveOutboundConnection(to: remotePeer)
+            } catch let error as ResourceError {
+                try? await result.connection.close()
+                switch error {
+                case .limitExceeded(let scope, let resource):
+                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
+                }
+            }
+        }
+
         // Transition connecting entry to connected, or create new entry
         let connID: ConnectionID
         if let cid = connectingID {
@@ -642,6 +665,19 @@ public actor Node: StreamOpener, HandlerRegistry {
             throw NodeError.connectionLimitReached
         }
 
+        // Reserve outbound connection resource
+        if let rm = configuration.resourceManager {
+            do {
+                try rm.reserveOutboundConnection(to: remotePeer)
+            } catch let error as ResourceError {
+                try? await muxedConnection.close()
+                switch error {
+                case .limitExceeded(let scope, let resource):
+                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
+                }
+            }
+        }
+
         // Transition connecting entry to connected, or create new entry
         let connID: ConnectionID
         if let cid = connectingID {
@@ -692,6 +728,11 @@ public actor Node: StreamOpener, HandlerRegistry {
         let removed = pool.remove(forPeer: peer)
         for managed in removed {
             try? await managed.connection?.close()
+            // Release connection resource only for entries with active reservations.
+            // Entries in .disconnected/.failed were already released by handleConnectionClosed.
+            if managed.state.isConnected {
+                configuration.resourceManager?.releaseConnection(peer: peer, direction: managed.direction)
+            }
         }
 
         if !removed.isEmpty {
@@ -712,21 +753,57 @@ public actor Node: StreamOpener, HandlerRegistry {
             throw NodeError.notConnected(peer)
         }
 
-        let stream = try await connection.newStream()
+        // Reserve outbound stream resource
+        if let rm = configuration.resourceManager {
+            do {
+                try rm.reserveOutboundStream(to: peer)
+            } catch let error as ResourceError {
+                switch error {
+                case .limitExceeded(let scope, let resource):
+                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
+                }
+            }
+        }
+
+        let stream: MuxedStream
+        do {
+            stream = try await connection.newStream()
+        } catch {
+            // Release on failure
+            configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
+            throw error
+        }
 
         // Negotiate protocol using multistream-select
         let reader = BufferedStreamReader(stream: stream)
-        let result = try await MultistreamSelect.negotiate(
-            protocols: [protocolID],
-            read: { try await reader.readMessage() },
-            write: { try await stream.write($0) }
-        )
+        let result: NegotiationResult
+        do {
+            result = try await MultistreamSelect.negotiate(
+                protocols: [protocolID],
+                read: { try await reader.readMessage() },
+                write: { try await stream.write($0) }
+            )
+        } catch {
+            configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
+            try? await stream.close()
+            throw error
+        }
 
         if result.protocolID != protocolID {
+            configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
             try? await stream.close()
             throw NodeError.protocolNegotiationFailed
         }
 
+        // Wrap stream with resource tracking if resource manager is configured
+        if let rm = configuration.resourceManager {
+            return ResourceTrackedStream(
+                stream: stream,
+                peer: peer,
+                direction: .outbound,
+                resourceManager: rm
+            )
+        }
         return stream
     }
 
@@ -807,6 +884,11 @@ public actor Node: StreamOpener, HandlerRegistry {
             return
         }
 
+        // Release connection resource
+        if let direction = managed?.direction {
+            configuration.resourceManager?.releaseConnection(peer: peer, direction: direction)
+        }
+
         // Update state
         pool.updateState(id, to: .disconnected(reason: .remoteClose))
 
@@ -881,6 +963,19 @@ public actor Node: StreamOpener, HandlerRegistry {
                     }
                 }
 
+                // Reserve outbound connection resource for the reconnected connection
+                if let rm = configuration.resourceManager {
+                    do {
+                        try rm.reserveOutboundConnection(to: peer)
+                    } catch let error as ResourceError {
+                        try? await muxedConnection.close()
+                        switch error {
+                        case .limitExceeded(let scope, let resource):
+                            throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
+                        }
+                    }
+                }
+
                 pool.updateConnection(id, connection: muxedConnection)
                 pool.resetRetryCount(id)
 
@@ -926,6 +1021,19 @@ public actor Node: StreamOpener, HandlerRegistry {
                     try? await result.connection.close()
                     emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                     throw NodeError.connectionGated(stage: .secured)
+                }
+            }
+
+            // Reserve outbound connection resource for the reconnected connection
+            if let rm = configuration.resourceManager {
+                do {
+                    try rm.reserveOutboundConnection(to: peer)
+                } catch let error as ResourceError {
+                    try? await result.connection.close()
+                    switch error {
+                    case .limitExceeded(let scope, let resource):
+                        throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
+                    }
                 }
             }
 
@@ -1071,6 +1179,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         // 1. Close idle connections
         let idleConnections = pool.idleConnections(threshold: idleTimeout)
         for managed in idleConnections {
+            configuration.resourceManager?.releaseConnection(peer: managed.peer, direction: managed.direction)
             try? await managed.connection?.close()
             _ = pool.remove(managed.id)
             emit(.peerDisconnected(managed.peer))
@@ -1080,6 +1189,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         // 2. Trim if over limits
         let trimmed = pool.trimIfNeeded()
         for managed in trimmed {
+            configuration.resourceManager?.releaseConnection(peer: managed.peer, direction: managed.direction)
             try? await managed.connection?.close()
             emit(.peerDisconnected(managed.peer))
             emitConnectionEvent(.trimmed(peer: managed.peer, reason: "Connection limit exceeded"))
@@ -1157,6 +1267,16 @@ public actor Node: StreamOpener, HandlerRegistry {
                 return
             }
 
+            // Reserve inbound connection resource
+            if let rm = configuration.resourceManager {
+                do {
+                    try rm.reserveInboundConnection(from: remotePeer)
+                } catch {
+                    try? await result.connection.close()
+                    return
+                }
+            }
+
             // Add to pool
             let connID = pool.add(
                 result.connection,
@@ -1232,6 +1352,16 @@ public actor Node: StreamOpener, HandlerRegistry {
             return
         }
 
+        // Reserve inbound connection resource
+        if let rm = configuration.resourceManager {
+            do {
+                try rm.reserveInboundConnection(from: remotePeer)
+            } catch {
+                try? await muxedConnection.close()
+                return
+            }
+        }
+
         // Add to pool
         let connID = pool.add(
             muxedConnection,
@@ -1255,6 +1385,7 @@ public actor Node: StreamOpener, HandlerRegistry {
     private func handleInboundStreams(connection: MuxedConnection) async {
         let supportedProtocols = Array(handlers.keys)
         let localPeer = configuration.keyPair.peerID
+        let rm = configuration.resourceManager
 
         for await stream in connection.inboundStreams {
             let capturedHandlers = handlers
@@ -1265,6 +1396,21 @@ public actor Node: StreamOpener, HandlerRegistry {
             let localAddress = connection.localAddress
 
             Task {
+                // Reserve inbound stream resource
+                if let rm = rm {
+                    do {
+                        try rm.reserveInboundStream(from: remotePeer)
+                    } catch {
+                        try? await stream.close()
+                        return
+                    }
+                }
+
+                defer {
+                    // Release inbound stream resource when handler completes
+                    rm?.releaseStream(peer: remotePeer, direction: .inbound)
+                }
+
                 do {
                     // Negotiate protocol using multistream-select
                     let reader = BufferedStreamReader(stream: stream)
@@ -1419,6 +1565,7 @@ public enum NodeError: Error, Sendable {
     case connectionGated(stage: GateStage)
     case nodeNotRunning
     case messageTooLarge(size: Int, max: Int)
+    case resourceLimitExceeded(scope: String, resource: String)
 }
 
 // MARK: - NodeConnectionProvider
