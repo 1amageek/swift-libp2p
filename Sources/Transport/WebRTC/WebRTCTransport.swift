@@ -14,6 +14,7 @@ import Foundation
 import P2PCore
 import P2PTransport
 import P2PMux
+import P2PCertificate
 import WebRTC
 import DTLSCore
 
@@ -71,6 +72,13 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
     // MARK: - SecuredTransport
 
     /// Dials a WebRTC Direct address and returns a secured, multiplexed connection.
+    ///
+    /// Generates a libp2p certificate (X.509 with OID 1.3.6.1.4.1.53594.1.1)
+    /// for mutual authentication during the DTLS handshake.
+    ///
+    /// The remote PeerID is initially set to a placeholder. Once the DTLS
+    /// handshake completes and the remote certificate is available, call
+    /// `WebRTCMuxedConnection.tryExtractRemotePeerID()` to update it.
     public func dialSecured(
         _ address: Multiaddr,
         localKeyPair: KeyPair
@@ -79,7 +87,12 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             throw TransportError.unsupportedAddress(address)
         }
 
-        let certificate = try DTLSCertificate.generateSelfSigned()
+        // Generate a certificate with the libp2p extension (OID 1.3.6.1.4.1.53594.1.1)
+        let generated = try LibP2PCertificate.generate(keyPair: localKeyPair)
+        let certificate = try DTLSCertificate(
+            derEncoded: generated.certificateDER,
+            privateKey: generated.privateKey
+        )
         let endpoint = WebRTCEndpoint(certificate: certificate)
 
         // sendHandler requires UDP socket integration.
@@ -99,13 +112,16 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
         return WebRTCMuxedConnection(
             webrtcConnection: connection,
             localPeer: localKeyPair.peerID,
-            remotePeer: localKeyPair.peerID, // TODO: resolve from remote DTLS certificate
+            remotePeer: localKeyPair.peerID, // Updated via tryExtractRemotePeerID() after DTLS handshake
             localAddress: nil,
             remoteAddress: address
         )
     }
 
     /// Listens on a WebRTC Direct address.
+    ///
+    /// Generates a libp2p certificate (X.509 with OID 1.3.6.1.4.1.53594.1.1)
+    /// for mutual authentication during DTLS handshakes with connecting peers.
     public func listenSecured(
         _ address: Multiaddr,
         localKeyPair: KeyPair
@@ -114,7 +130,12 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             throw TransportError.unsupportedAddress(address)
         }
 
-        let certificate = try DTLSCertificate.generateSelfSigned()
+        // Generate a certificate with the libp2p extension (OID 1.3.6.1.4.1.53594.1.1)
+        let generated = try LibP2PCertificate.generate(keyPair: localKeyPair)
+        let certificate = try DTLSCertificate(
+            derEncoded: generated.certificateDER,
+            privateKey: generated.privateKey
+        )
         let endpoint = WebRTCEndpoint(certificate: certificate)
         let listener = try endpoint.listen()
 

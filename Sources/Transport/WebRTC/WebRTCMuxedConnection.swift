@@ -11,6 +11,7 @@ import Synchronization
 import P2PCore
 import P2PTransport
 import P2PMux
+import P2PCertificate
 import WebRTC
 import DataChannel
 
@@ -77,6 +78,25 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
     /// Update the remote address (e.g., after learning the peer's actual address).
     public func updateRemoteAddress(_ address: Multiaddr) {
         connectionState.withLock { $0.remoteAddress = address }
+    }
+
+    /// Attempts to extract the remote PeerID from the DTLS certificate.
+    ///
+    /// After the DTLS handshake completes, the remote peer's DER-encoded
+    /// certificate becomes available. This method extracts the libp2p
+    /// public key from the certificate's extension (OID 1.3.6.1.4.1.53594.1.1)
+    /// and derives the PeerID, updating `remotePeer` if successful.
+    ///
+    /// - Returns: The extracted PeerID, or `nil` if the handshake has not completed yet.
+    /// - Throws: `LibP2PCertificateError` if the certificate is available but invalid.
+    @discardableResult
+    public func tryExtractRemotePeerID() throws -> PeerID? {
+        guard let certDER = webrtcConnection.remoteCertificateDER else {
+            return nil
+        }
+        let peerID = try LibP2PCertificate.extractPeerID(from: certDER)
+        updateRemotePeer(peerID)
+        return peerID
     }
 
     // MARK: - MuxedConnection

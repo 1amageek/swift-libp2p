@@ -127,7 +127,7 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
         muxerProtocols: [String]
     ) async throws -> (connection: any SecuredConnection, negotiatedMuxer: String?) {
         // 1. Generate self-signed certificate with libp2p extension
-        let (certChain, signingKey) = try LibP2PCertificate.generate(keyPair: localKeyPair)
+        let (certChain, signingKey) = try TLSCertificateHelper.generate(keyPair: localKeyPair)
 
         // 2. Build ALPN list with optional muxer hints
         let alpnProtocols = Self.buildALPNProtocols(muxerProtocols: muxerProtocols)
@@ -140,7 +140,7 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
         tlsConfig.allowSelfSigned = true
         tlsConfig.verifyPeer = true
         tlsConfig.requireClientCertificate = true
-        tlsConfig.certificateValidator = LibP2PCertificate.makeCertificateValidator(
+        tlsConfig.certificateValidator = TLSCertificateHelper.makeCertificateValidator(
             expectedPeer: expectedPeer
         )
 

@@ -2,6 +2,7 @@
 import Testing
 import Foundation
 import P2PCore
+import P2PCertificate
 import P2PSecurity
 @testable import P2PSecurityTLS
 
@@ -14,7 +15,7 @@ struct TLSCertificateTests {
     func generateCertificate() throws {
         let keyPair = KeyPair.generateEd25519()
 
-        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+        let result = try TLSCertificateHelper.generate(keyPair: keyPair)
 
         // Certificate chain should have exactly one certificate (self-signed)
         #expect(result.certificateChain.count == 1)
@@ -32,7 +33,7 @@ struct TLSCertificateTests {
     func certificateContainsExtension() throws {
         let keyPair = KeyPair.generateEd25519()
 
-        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+        let result = try TLSCertificateHelper.generate(keyPair: keyPair)
 
         // Should be able to extract PeerID
         let peerID = try LibP2PCertificate.extractPeerID(from: result.certificateChain[0])
@@ -45,7 +46,7 @@ struct TLSCertificateTests {
     func certificateRoundtrip() throws {
         let keyPair = KeyPair.generateEd25519()
 
-        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+        let result = try TLSCertificateHelper.generate(keyPair: keyPair)
 
         let extractedPeerID = try LibP2PCertificate.extractPeerID(from: result.certificateChain[0])
 
@@ -57,9 +58,9 @@ struct TLSCertificateTests {
     @Test("CertificateValidator extracts PeerID")
     func certificateValidatorExtractsPeerID() throws {
         let keyPair = KeyPair.generateEd25519()
-        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+        let result = try TLSCertificateHelper.generate(keyPair: keyPair)
 
-        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: nil)
+        let validator = TLSCertificateHelper.makeCertificateValidator(expectedPeer: nil)
         let peerInfo = try validator(result.certificateChain)
 
         let peerID = peerInfo as? PeerID
@@ -69,9 +70,9 @@ struct TLSCertificateTests {
     @Test("CertificateValidator succeeds with matching expected peer")
     func certificateValidatorMatchingPeer() throws {
         let keyPair = KeyPair.generateEd25519()
-        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+        let result = try TLSCertificateHelper.generate(keyPair: keyPair)
 
-        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: keyPair.peerID)
+        let validator = TLSCertificateHelper.makeCertificateValidator(expectedPeer: keyPair.peerID)
         let peerInfo = try validator(result.certificateChain)
 
         let peerID = peerInfo as? PeerID
@@ -82,9 +83,9 @@ struct TLSCertificateTests {
     func certificateValidatorMismatchedPeer() throws {
         let keyPair = KeyPair.generateEd25519()
         let otherKeyPair = KeyPair.generateEd25519()
-        let result = try LibP2PCertificate.generate(keyPair: keyPair)
+        let result = try TLSCertificateHelper.generate(keyPair: keyPair)
 
-        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: otherKeyPair.peerID)
+        let validator = TLSCertificateHelper.makeCertificateValidator(expectedPeer: otherKeyPair.peerID)
 
         #expect(throws: TLSError.self) {
             _ = try validator(result.certificateChain)
@@ -122,7 +123,7 @@ struct TLSCertificateTests {
 
     @Test("Extract PeerID from empty certificate chain throws")
     func emptyCertificateChainThrows() throws {
-        let validator = LibP2PCertificate.makeCertificateValidator(expectedPeer: nil)
+        let validator = TLSCertificateHelper.makeCertificateValidator(expectedPeer: nil)
 
         #expect(throws: TLSError.self) {
             _ = try validator([])

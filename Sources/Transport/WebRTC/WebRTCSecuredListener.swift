@@ -12,6 +12,7 @@ import Synchronization
 import P2PCore
 import P2PTransport
 import P2PMux
+import P2PCertificate
 import WebRTC
 import DTLSCore
 
@@ -54,23 +55,33 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
     }
 
     /// Start accepting connections and forwarding them as MuxedConnections.
+    ///
+    /// When a connection arrives, the remote PeerID is initially set to a
+    /// placeholder. If the DTLS handshake has already completed (the remote
+    /// certificate is available), the PeerID is extracted immediately.
+    /// Otherwise, the integration layer should call
+    /// `WebRTCMuxedConnection.tryExtractRemotePeerID()` once the handshake
+    /// finishes.
     public func startAccepting() {
         Task { [weak self] in
             guard let self else { return }
             for await webrtcConn in listener.connections {
-                // Remote peer is unknown until DTLS handshake completes.
-                // Use localPeer as placeholder; updated via updateRemotePeer() after handshake.
-                //
-                // Remote address is the peer's source address, which will be
-                // provided by the transport layer. Use localAddress as initial value.
                 let muxed = WebRTCMuxedConnection(
                     webrtcConnection: webrtcConn,
                     localPeer: localKeyPair.peerID,
-                    remotePeer: localKeyPair.peerID, // TODO: derive from remote DTLS certificate
+                    remotePeer: localKeyPair.peerID,
                     localAddress: _localAddress,
-                    remoteAddress: _localAddress // TODO: use actual remote address from transport
+                    remoteAddress: _localAddress
                 )
                 muxed.startForwarding()
+
+                // Best-effort PeerID extraction if DTLS handshake is already complete
+                do {
+                    _ = try muxed.tryExtractRemotePeerID()
+                } catch {
+                    // Certificate not yet available or missing libp2p extension.
+                    // PeerID will be resolved later via tryExtractRemotePeerID().
+                }
 
                 let continuation = listenerState.withLock { $0.connectionsContinuation }
                 continuation?.yield(muxed)

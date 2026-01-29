@@ -24,6 +24,7 @@ let package = Package(
 
         // MARK: - Security
         .library(name: "P2PSecurity", targets: ["P2PSecurity"]),
+        .library(name: "P2PCertificate", targets: ["P2PCertificate"]),
         .library(name: "P2PSecurityNoise", targets: ["P2PSecurityNoise"]),
         .library(name: "P2PSecurityPlaintext", targets: ["P2PSecurityPlaintext"]),
         .library(name: "P2PSecurityTLS", targets: ["P2PSecurityTLS"]),
@@ -123,6 +124,7 @@ let package = Package(
                 "P2PTransport",
                 "P2PCore",
                 "P2PMux",
+                "P2PCertificate",
                 .product(name: "WebRTC", package: "swift-webrtc"),
                 .product(name: "DTLSCore", package: "swift-tls"),
             ],
@@ -171,6 +173,16 @@ let package = Package(
             path: "Sources/Security/P2PSecurity"
         ),
         .target(
+            name: "P2PCertificate",
+            dependencies: [
+                "P2PCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
+            ],
+            path: "Sources/Security/Certificate"
+        ),
+        .target(
             name: "P2PSecurityNoise",
             dependencies: [
                 "P2PSecurity",
@@ -189,11 +201,10 @@ let package = Package(
             name: "P2PSecurityTLS",
             dependencies: [
                 "P2PSecurity",
+                "P2PCertificate",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "TLSCore", package: "swift-tls"),
                 .product(name: "TLSRecord", package: "swift-tls"),
-                .product(name: "X509", package: "swift-certificates"),
-                .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
             path: "Sources/Security/TLS",
             exclude: ["CONTEXT.md"]
@@ -214,9 +225,18 @@ let package = Package(
             path: "Tests/Security/PlaintextTests"
         ),
         .testTarget(
+            name: "P2PCertificateTests",
+            dependencies: [
+                "P2PCertificate",
+                "P2PCore",
+            ],
+            path: "Tests/Security/CertificateTests"
+        ),
+        .testTarget(
             name: "P2PSecurityTLSTests",
             dependencies: [
                 "P2PSecurityTLS",
+                "P2PCertificate",
                 "P2PCore",
             ],
             path: "Tests/Security/TLSTests"
