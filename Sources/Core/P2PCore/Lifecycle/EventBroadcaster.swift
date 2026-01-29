@@ -67,7 +67,7 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
             return id
         }
         continuation.onTermination = { [weak self] _ in
-            self?.state.withLock { $0.continuations.removeValue(forKey: id) }
+            _ = self?.state.withLock { $0.continuations.removeValue(forKey: id) }
         }
         return stream
     }

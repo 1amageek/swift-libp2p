@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-log.git",
       "state" : {
-        "revision" : "7ee16e465622412764b0ff0c1301801dc71b8f61",
-        "version" : "1.9.0"
+        "revision" : "2778fd4e5a12a8aaa30a3ee8285f4ce54c5f3181",
+        "version" : "1.9.1"
       }
     },
     {
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "4a9a97111099376854a7f8f0f9f88b9d61f52eff",
-        "version" : "2.92.2"
+        "revision" : "5e72fc102906ebe75a3487595a653e6f43725552",
+        "version" : "2.94.0"
       }
     },
     {
@@ -115,7 +115,7 @@
       "location" : "https://github.com/1amageek/swift-tls.git",
       "state" : {
         "branch" : "main",
-        "revision" : "903a9d0370ccf2462788c99a508c29fd7e6ca36d"
+        "revision" : "94ccd68736c703fa36595ac7e076a6e7624abe0b"
       }
     },
     {
@@ -124,7 +124,7 @@
       "location" : "https://github.com/1amageek/swift-webrtc.git",
       "state" : {
         "branch" : "main",
-        "revision" : "284641c8dd208d9892da3e69f0204ab01c8d3618"
+        "revision" : "acf51f0e4fc7bf825612f39e55600fa07c29b11d"
       }
     }
   ],
