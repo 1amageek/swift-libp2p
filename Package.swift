@@ -127,6 +127,8 @@ let package = Package(
                 "P2PCertificate",
                 .product(name: "WebRTC", package: "swift-webrtc"),
                 .product(name: "DTLSCore", package: "swift-tls"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
             ],
             path: "Sources/Transport/WebRTC"
         ),

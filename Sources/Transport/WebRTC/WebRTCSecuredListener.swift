@@ -20,6 +20,7 @@ import DTLSCore
 public final class WebRTCSecuredListener: SecuredListener, Sendable {
 
     private let listener: WebRTCListener
+    private let socket: WebRTCUDPSocket
     private let _localAddress: Multiaddr
     private let localKeyPair: KeyPair
     private let listenerState: Mutex<ListenerState>
@@ -45,10 +46,12 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
 
     init(
         listener: WebRTCListener,
+        socket: WebRTCUDPSocket,
         localAddress: Multiaddr,
         localKeyPair: KeyPair
     ) {
         self.listener = listener
+        self.socket = socket
         self._localAddress = localAddress
         self.localKeyPair = localKeyPair
         self.listenerState = Mutex(ListenerState())
@@ -71,7 +74,12 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
                     localPeer: localKeyPair.peerID,
                     remotePeer: localKeyPair.peerID,
                     localAddress: _localAddress,
-                    remoteAddress: _localAddress
+                    remoteAddress: _localAddress,
+                    udpSocket: nil,
+                    onClose: { [weak self] in
+                        // Clean up route table entry when connection closes
+                        self?.socket.removeRoute(for: webrtcConn)
+                    }
                 )
                 muxed.startForwarding()
 
@@ -89,7 +97,7 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
         }
     }
 
-    /// Closes the listener.
+    /// Closes the listener and its UDP socket.
     public func close() async throws {
         listenerState.withLock { state in
             state.isClosed = true
@@ -97,6 +105,7 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
             state.connectionsContinuation = nil
             state.connectionsStream = nil
         }
+        socket.close()
         listener.close()
     }
 }

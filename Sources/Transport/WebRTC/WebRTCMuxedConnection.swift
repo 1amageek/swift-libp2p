@@ -24,6 +24,15 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
     /// The underlying WebRTC connection
     private let webrtcConnection: WebRTCConnection
 
+    /// UDP socket for dial-mode connections (1:1 socket per connection).
+    /// Nil for listen-mode connections where the socket is shared and
+    /// owned by WebRTCSecuredListener.
+    private let udpSocket: WebRTCUDPSocket?
+
+    /// Callback invoked when the connection closes.
+    /// Used by listen-mode to clean up the route table entry in the shared socket.
+    private let onClose: (@Sendable () -> Void)?
+
     public let localPeer: PeerID
 
     /// Remote peer ID. Updated after DTLS handshake completes.
@@ -60,6 +69,34 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
         remoteAddress: Multiaddr
     ) {
         self.webrtcConnection = webrtcConnection
+        self.udpSocket = nil
+        self.onClose = nil
+        self.localPeer = localPeer
+        self.localAddress = localAddress
+        self.connectionState = Mutex(ConnectionState(
+            remotePeer: remotePeer,
+            remoteAddress: remoteAddress
+        ))
+    }
+
+    /// Internal initializer with optional UDP socket ownership and close callback.
+    ///
+    /// - Parameters:
+    ///   - udpSocket: Dial-mode connections own their socket (1:1). Nil for listen-mode.
+    ///   - onClose: Called when the connection closes. Listen-mode uses this to
+    ///     clean up the route table entry in the shared socket.
+    init(
+        webrtcConnection: WebRTCConnection,
+        localPeer: PeerID,
+        remotePeer: PeerID,
+        localAddress: Multiaddr?,
+        remoteAddress: Multiaddr,
+        udpSocket: WebRTCUDPSocket?,
+        onClose: (@Sendable () -> Void)? = nil
+    ) {
+        self.webrtcConnection = webrtcConnection
+        self.udpSocket = udpSocket
+        self.onClose = onClose
         self.localPeer = localPeer
         self.localAddress = localAddress
         self.connectionState = Mutex(ConnectionState(
@@ -209,5 +246,7 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
         }
 
         webrtcConnection.close()
+        udpSocket?.close()
+        onClose?()
     }
 }
