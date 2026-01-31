@@ -286,7 +286,7 @@ let package = Package(
             name: "P2PMuxYamux",
             dependencies: ["P2PMux"],
             path: "Sources/Mux/Yamux",
-            exclude: ["CONTEXT.md", "DESIGN_STREAM_LIMITS.md", "README.md"]
+            exclude: ["CONTEXT.md", "README.md"]
         ),
         .target(
             name: "P2PMuxMplex",
@@ -470,7 +470,7 @@ let package = Package(
             name: "P2PKademlia",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
             path: "Sources/Protocols/Kademlia",
-            exclude: ["CONTEXT.md", "DESIGN_KEY_VALIDATION.md", "README.md"]
+            exclude: ["CONTEXT.md", "README.md"]
         ),
         .testTarget(
             name: "P2PKademliaTests",
