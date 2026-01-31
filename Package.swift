@@ -84,9 +84,11 @@ let package = Package(
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOFoundationCompat", package: "swift-nio"),
             ],
             path: "Sources/Core/P2PCore",
-            exclude: ["CONTEXT.md"]
+            exclude: ["CONTEXT.md", "README.md"]
         ),
         .testTarget(
             name: "P2PCoreTests",
@@ -218,7 +220,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/Security/Noise",
-            exclude: ["CONTEXT.md"]
+            exclude: ["CONTEXT.md", "README.md"]
         ),
         .target(
             name: "P2PSecurityPlaintext",
@@ -274,14 +276,17 @@ let package = Package(
         // MARK: - Mux
         .target(
             name: "P2PMux",
-            dependencies: ["P2PCore"],
+            dependencies: [
+                "P2PCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+            ],
             path: "Sources/Mux/P2PMux"
         ),
         .target(
             name: "P2PMuxYamux",
             dependencies: ["P2PMux"],
             path: "Sources/Mux/Yamux",
-            exclude: ["CONTEXT.md", "DESIGN_STREAM_LIMITS.md"]
+            exclude: ["CONTEXT.md", "DESIGN_STREAM_LIMITS.md", "README.md"]
         ),
         .target(
             name: "P2PMuxMplex",
@@ -421,7 +426,7 @@ let package = Package(
             name: "P2PGossipSub",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
             path: "Sources/Protocols/GossipSub",
-            exclude: ["CONTEXT.md"]
+            exclude: ["CONTEXT.md", "README.md"]
         ),
         .testTarget(
             name: "P2PGossipSubTests",
@@ -465,7 +470,7 @@ let package = Package(
             name: "P2PKademlia",
             dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
             path: "Sources/Protocols/Kademlia",
-            exclude: ["CONTEXT.md", "DESIGN_KEY_VALIDATION.md"]
+            exclude: ["CONTEXT.md", "DESIGN_KEY_VALIDATION.md", "README.md"]
         ),
         .testTarget(
             name: "P2PKademliaTests",
@@ -526,6 +531,21 @@ let package = Package(
                 .product(name: "QUIC", package: "swift-quic"),
             ],
             path: "Tests/Interop"
+        ),
+
+        // MARK: - Benchmarks
+        .testTarget(
+            name: "P2PBenchmarks",
+            dependencies: [
+                "P2PCore",
+                "P2PKademlia",
+                "P2PGossipSub",
+                "P2PMuxYamux",
+                "P2PSecurityNoise",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Benchmarks/P2PBenchmarks"
         ),
 
         // MARK: - Examples
