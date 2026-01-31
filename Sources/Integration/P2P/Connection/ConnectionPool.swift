@@ -107,6 +107,9 @@ internal final class ConnectionPool: Sendable {
 
         /// Connections marked for auto-reconnect.
         var autoReconnect: [PeerID: Multiaddr] = [:]
+
+        /// Cache of peers with at least one `.connected` connection.
+        var connectedPeerCache: Set<PeerID> = []
     }
 
     /// Creates a new connection pool.
@@ -196,6 +199,7 @@ internal final class ConnectionPool: Sendable {
         state.withLock { state in
             state.connections[id] = managed
             state.peerConnections[peer, default: []].insert(id)
+            state.connectedPeerCache.insert(peer)
         }
 
         return id
@@ -214,6 +218,10 @@ internal final class ConnectionPool: Sendable {
             state.peerConnections[managed.peer]?.remove(id)
             if state.peerConnections[managed.peer]?.isEmpty == true {
                 state.peerConnections.removeValue(forKey: managed.peer)
+                state.connectedPeerCache.remove(managed.peer)
+            } else {
+                // Check if peer still has any connected connections
+                Self.refreshConnectedPeerCache(&state, for: managed.peer)
             }
             return managed
         }
@@ -229,6 +237,7 @@ internal final class ConnectionPool: Sendable {
             guard let ids = state.peerConnections.removeValue(forKey: peer) else {
                 return []
             }
+            state.connectedPeerCache.remove(peer)
             return ids.compactMap { state.connections.removeValue(forKey: $0) }
         }
     }
@@ -249,6 +258,15 @@ internal final class ConnectionPool: Sendable {
             if newState.isDisconnected {
                 state.connections[id]?.lastActivity = ContinuousClock.now
             }
+
+            // Update connected peer cache
+            if let peer = state.connections[id]?.peer {
+                if newState.isConnected {
+                    state.connectedPeerCache.insert(peer)
+                } else {
+                    Self.refreshConnectedPeerCache(&state, for: peer)
+                }
+            }
         }
     }
 
@@ -264,6 +282,9 @@ internal final class ConnectionPool: Sendable {
             state.connections[id]?.state = .connected
             state.connections[id]?.lastActivity = now
             state.connections[id]?.connectedAt = now
+            if let peer = state.connections[id]?.peer {
+                state.connectedPeerCache.insert(peer)
+            }
         }
     }
 
@@ -354,13 +375,7 @@ internal final class ConnectionPool: Sendable {
 
     /// All currently connected peers.
     var connectedPeers: [PeerID] {
-        state.withLock { state in
-            state.peerConnections.keys.filter { peer in
-                state.peerConnections[peer]?.contains(where: { id in
-                    state.connections[id]?.state.isConnected == true
-                }) == true
-            }
-        }
+        state.withLock { Array($0.connectedPeerCache) }
     }
 
     /// Total number of active (connected) connections.
@@ -535,6 +550,9 @@ internal final class ConnectionPool: Sendable {
                 state.peerConnections[managed.peer]?.remove(managed.id)
                 if state.peerConnections[managed.peer]?.isEmpty == true {
                     state.peerConnections.removeValue(forKey: managed.peer)
+                    state.connectedPeerCache.remove(managed.peer)
+                } else {
+                    Self.refreshConnectedPeerCache(&state, for: managed.peer)
                 }
             }
 
@@ -587,6 +605,9 @@ internal final class ConnectionPool: Sendable {
                     state.peerConnections[managed.peer]?.remove(id)
                     if state.peerConnections[managed.peer]?.isEmpty == true {
                         state.peerConnections.removeValue(forKey: managed.peer)
+                        state.connectedPeerCache.remove(managed.peer)
+                    } else {
+                        Self.refreshConnectedPeerCache(&state, for: managed.peer)
                     }
                     removed.append(managed)
                 }
@@ -798,5 +819,23 @@ internal final class ConnectionPool: Sendable {
             }.count
         }
         return activeCount < configuration.limits.maxConnectionsPerPeer
+    }
+
+    // MARK: - Private Helpers
+
+    /// Refreshes the connected peer cache for a specific peer.
+    ///
+    /// Checks if the peer still has at least one `.connected` connection.
+    /// Must be called within `state.withLock`.
+    private static func refreshConnectedPeerCache(_ state: inout PoolState, for peer: PeerID) {
+        let hasConnected = state.peerConnections[peer]?.contains { id in
+            state.connections[id]?.state.isConnected == true
+        } ?? false
+
+        if hasConnected {
+            state.connectedPeerCache.insert(peer)
+        } else {
+            state.connectedPeerCache.remove(peer)
+        }
     }
 }

@@ -11,11 +11,29 @@ private struct SendState: Sendable {
     var isClosed: Bool = false
 }
 
+/// Threshold for compacting the receive buffer (64KB)
+private let noiseRecvBufferCompactThreshold = 64 * 1024
+
 /// Receive-only state for read operations.
 private struct RecvState: Sendable {
     var cipher: NoiseCipherState
     var buffer: Data = Data()
+    var bufferOffset: Int = 0
     var isClosed: Bool = false
+
+    /// Returns the unprocessed portion of the buffer.
+    var unprocessedBuffer: Data {
+        buffer[bufferOffset...]
+    }
+
+    /// Advances the buffer offset and compacts if needed.
+    mutating func advanceBuffer(by n: Int) {
+        bufferOffset += n
+        if bufferOffset > noiseRecvBufferCompactThreshold {
+            buffer = Data(buffer[bufferOffset...])
+            bufferOffset = 0
+        }
+    }
 }
 
 // MARK: - NoiseConnection
@@ -80,8 +98,8 @@ public final class NoiseConnection: SecuredConnection, Sendable {
                     return .failure(NoiseError.connectionClosed)
                 }
                 do {
-                    if let (message, consumed) = try readNoiseMessage(from: state.buffer) {
-                        state.buffer = Data(state.buffer.dropFirst(consumed))
+                    if let (message, consumed) = try readNoiseMessage(from: state.unprocessedBuffer) {
+                        state.advanceBuffer(by: consumed)
 
                         // Decrypt the message
                         let plaintext = try state.cipher.decryptWithAD(Data(), ciphertext: message)
@@ -90,6 +108,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
                 } catch {
                     // Frame parsing or decryption failed - clear buffer to prevent infinite retry
                     state.buffer = Data()
+                    state.bufferOffset = 0
                     state.isClosed = true
                     return .failure(error)
                 }

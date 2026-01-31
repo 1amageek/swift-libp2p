@@ -102,7 +102,8 @@ public enum MultistreamSelect {
         let firstProtocol = protocols[0]
 
         // V1Lazy: Send header + first protocol in one batch
-        let batch = encode(protocolID) + encode(firstProtocol)
+        var batch = encode(protocolID)
+        batch.append(encode(firstProtocol))
         try await write(batch)
 
         // Read response — may contain header + protocol response coalesced
@@ -197,7 +198,8 @@ public enum MultistreamSelect {
                 // List supported protocols per multistream-select spec:
                 // Format: <outer-length> <proto1-len>/proto1\n <proto2-len>/proto2\n ... \n
                 // Each protocol is an embedded multistream message with its own varint length
-                var inner = Data()
+                // Estimate: each proto ~40 bytes + varint overhead
+                var inner = Data(capacity: supported.count * 48 + 1)
                 for proto in supported {
                     let protoMessage = Data((proto + "\n").utf8)
                     inner.append(contentsOf: Varint.encode(UInt64(protoMessage.count)))
@@ -206,7 +208,8 @@ public enum MultistreamSelect {
                 // Final terminating newline
                 inner.append(UInt8(ascii: "\n"))
 
-                let outer = Varint.encode(UInt64(inner.count)) + inner
+                var outer = Varint.encode(UInt64(inner.count))
+                outer.append(inner)
                 try await write(outer)
             } else {
                 try await write(encode("na"))

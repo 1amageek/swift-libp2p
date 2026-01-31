@@ -228,7 +228,7 @@ public final class MemoryPeerStore: PeerStore, Sendable {
 
     private struct State: Sendable {
         var peers: [PeerID: PeerRecord] = [:]
-        var accessOrder: [PeerID] = []
+        var accessOrder = LRUOrder<PeerID>()
         var gcTask: Task<Void, Never>?
     }
 
@@ -327,7 +327,7 @@ public final class MemoryPeerStore: PeerStore, Sendable {
                     events.append(.addressAdded(peer, address))
                 }
                 s.peers[peer] = newRecord
-                s.accessOrder.append(peer)
+                s.accessOrder.insert(peer)
             }
             return events
         }
@@ -344,7 +344,7 @@ public final class MemoryPeerStore: PeerStore, Sendable {
                 events.append(.addressRemoved(peer, address))
                 if record.addresses.isEmpty {
                     s.peers.removeValue(forKey: peer)
-                    s.accessOrder.removeAll { $0 == peer }
+                    s.accessOrder.remove(peer)
                     events.append(.peerRemoved(peer))
                 } else {
                     s.peers[peer] = record
@@ -360,7 +360,7 @@ public final class MemoryPeerStore: PeerStore, Sendable {
     public func removePeer(_ peer: PeerID) async {
         let pendingEvents = state.withLock { s -> [PeerStoreEvent] in
             guard let record = s.peers.removeValue(forKey: peer) else { return [] }
-            s.accessOrder.removeAll { $0 == peer }
+            s.accessOrder.remove(peer)
             var events: [PeerStoreEvent] = []
             for address in record.addresses.keys {
                 events.append(.addressRemoved(peer, address))
@@ -448,7 +448,7 @@ public final class MemoryPeerStore: PeerStore, Sendable {
 
             for peerID in peersToRemove {
                 s.peers.removeValue(forKey: peerID)
-                s.accessOrder.removeAll { $0 == peerID }
+                s.accessOrder.remove(peerID)
                 events.append(.peerRemoved(peerID))
             }
             return (totalRemoved, events)
@@ -488,17 +488,13 @@ public final class MemoryPeerStore: PeerStore, Sendable {
     // MARK: - Private
 
     private func touchPeer(_ peer: PeerID, state s: inout State) {
-        if let index = s.accessOrder.firstIndex(of: peer) {
-            s.accessOrder.remove(at: index)
-            s.accessOrder.append(peer)
-        }
+        s.accessOrder.touch(peer)
     }
 
     private func evictPeersIfNeeded(state s: inout State) -> [PeerStoreEvent] {
         var events: [PeerStoreEvent] = []
-        while s.peers.count >= configuration.maxPeers, let oldest = s.accessOrder.first {
+        while s.peers.count >= configuration.maxPeers, let oldest = s.accessOrder.removeOldest() {
             if let record = s.peers.removeValue(forKey: oldest) {
-                s.accessOrder.removeFirst()
                 for address in record.addresses.keys {
                     events.append(.addressRemoved(oldest, address))
                 }

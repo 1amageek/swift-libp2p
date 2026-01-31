@@ -260,12 +260,22 @@ public final class PlumtreeRouter: Sendable {
             ))
 
             // Forward to eager peers (excluding sender)
-            let eagerSet = s.eagerPeers[gossip.topic] ?? []
-            let forwardTo = Array(eagerSet.subtracting([peer]))
+            var forwardTo: [PeerID] = []
+            if let eagerSet = s.eagerPeers[gossip.topic] {
+                forwardTo.reserveCapacity(eagerSet.count)
+                for p in eagerSet where p != peer {
+                    forwardTo.append(p)
+                }
+            }
 
             // Notify lazy peers (excluding sender)
-            let lazySet = s.lazyPeers[gossip.topic] ?? []
-            let lazyNotify = Array(lazySet.subtracting([peer]))
+            var lazyNotify: [PeerID] = []
+            if let lazySet = s.lazyPeers[gossip.topic] {
+                lazyNotify.reserveCapacity(lazySet.count)
+                for p in lazySet where p != peer {
+                    lazyNotify.append(p)
+                }
+            }
 
             return HandleGossipResult(
                 events: events,

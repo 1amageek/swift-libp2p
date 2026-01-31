@@ -35,9 +35,13 @@ final class MeshState: Sendable {
         /// Mesh state per topic.
         var meshes: [Topic: TopicMesh]
 
+        /// Cached union of all mesh peers. Invalidated on mesh changes.
+        var allMeshPeersCache: Set<PeerID>?
+
         init() {
             self.subscriptions = []
             self.meshes = [:]
+            self.allMeshPeersCache = nil
         }
     }
 
@@ -104,6 +108,7 @@ final class MeshState: Sendable {
             state.subscriptions.remove(topic)
             // Get and clear mesh peers (we're leaving the mesh)
             let meshPeers = state.meshes[topic]?.meshPeers ?? []
+            if !meshPeers.isEmpty { state.allMeshPeersCache = nil }
             state.meshes[topic]?.meshPeers.removeAll()
             // Keep fanout for potential future publishing
             return meshPeers
@@ -132,6 +137,7 @@ final class MeshState: Sendable {
                 state.meshes[topic] = TopicMesh()
             }
             let (inserted, _) = state.meshes[topic]!.meshPeers.insert(peer)
+            if inserted { state.allMeshPeersCache = nil }
             // Remove from fanout if present
             state.meshes[topic]!.fanoutPeers.remove(peer)
             return inserted
@@ -146,6 +152,7 @@ final class MeshState: Sendable {
         state.withLock { state in
             guard var mesh = state.meshes[topic] else { return false }
             let removed = mesh.meshPeers.remove(peer) != nil
+            if removed { state.allMeshPeersCache = nil }
             state.meshes[topic] = mesh
             return removed
         }
@@ -169,10 +176,14 @@ final class MeshState: Sendable {
     /// Returns all mesh peers across all topics.
     var allMeshPeers: Set<PeerID> {
         state.withLock { state in
+            if let cached = state.allMeshPeersCache {
+                return cached
+            }
             var all = Set<PeerID>()
             for mesh in state.meshes.values {
                 all.formUnion(mesh.meshPeers)
             }
+            state.allMeshPeersCache = all
             return all
         }
     }
@@ -246,10 +257,14 @@ final class MeshState: Sendable {
     /// Removes a peer from all meshes and fanouts.
     func removePeerFromAll(_ peer: PeerID) {
         state.withLock { state in
+            var meshChanged = false
             for topic in state.meshes.keys {
-                state.meshes[topic]?.meshPeers.remove(peer)
+                if state.meshes[topic]?.meshPeers.remove(peer) != nil {
+                    meshChanged = true
+                }
                 state.meshes[topic]?.fanoutPeers.remove(peer)
             }
+            if meshChanged { state.allMeshPeersCache = nil }
         }
     }
 
@@ -361,6 +376,7 @@ final class MeshState: Sendable {
         state.withLock { state in
             state.subscriptions.removeAll()
             state.meshes.removeAll()
+            state.allMeshPeersCache = nil
         }
     }
 }

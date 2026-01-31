@@ -41,6 +41,27 @@ public enum PlumtreeProtobuf {
 
     private static let tagPruneTopic: UInt8 = 0x0A       // field 1, wire type 2
 
+    // MARK: - Encoding Helpers
+
+    /// Writes a varint directly into the buffer, avoiding intermediate Data allocation.
+    @inline(__always)
+    private static func appendVarint(_ value: UInt64, to data: inout Data) {
+        var n = value
+        while n >= 0x80 {
+            data.append(UInt8(n & 0x7F) | 0x80)
+            n >>= 7
+        }
+        data.append(UInt8(n))
+    }
+
+    /// Writes a tag + length-delimited field into the buffer.
+    @inline(__always)
+    private static func appendLengthDelimited(tag: UInt8, bytes: Data, to data: inout Data) {
+        data.append(tag)
+        appendVarint(UInt64(bytes.count), to: &data)
+        data.append(bytes)
+    }
+
     // MARK: - Encoding
 
     /// Encodes a PlumtreeRPC to protobuf wire format.
@@ -50,28 +71,28 @@ public enum PlumtreeProtobuf {
         for gossip in rpc.gossipMessages {
             let data = encodeGossip(gossip)
             result.append(tagRPCGossip)
-            result.append(contentsOf: Varint.encode(UInt64(data.count)))
+            appendVarint(UInt64(data.count), to: &result)
             result.append(data)
         }
 
         for ihave in rpc.ihaveEntries {
             let data = encodeIHave(ihave)
             result.append(tagRPCIHave)
-            result.append(contentsOf: Varint.encode(UInt64(data.count)))
+            appendVarint(UInt64(data.count), to: &result)
             result.append(data)
         }
 
         for graft in rpc.graftRequests {
             let data = encodeGraft(graft)
             result.append(tagRPCGraft)
-            result.append(contentsOf: Varint.encode(UInt64(data.count)))
+            appendVarint(UInt64(data.count), to: &result)
             result.append(data)
         }
 
         for prune in rpc.pruneRequests {
             let data = encodePrune(prune)
             result.append(tagRPCPrune)
-            result.append(contentsOf: Varint.encode(UInt64(data.count)))
+            appendVarint(UInt64(data.count), to: &result)
             result.append(data)
         }
 
@@ -79,80 +100,56 @@ public enum PlumtreeProtobuf {
     }
 
     private static func encodeGossip(_ gossip: PlumtreeGossip) -> Data {
-        var result = Data()
-
-        // Field 1: message_id
-        result.append(tagGossipMessageID)
-        result.append(contentsOf: Varint.encode(UInt64(gossip.messageID.bytes.count)))
-        result.append(gossip.messageID.bytes)
-
-        // Field 2: topic
         let topicBytes = Data(gossip.topic.utf8)
-        result.append(tagGossipTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
-        result.append(topicBytes)
+        var result = Data()
+        result.reserveCapacity(
+            gossip.messageID.bytes.count + topicBytes.count +
+            gossip.data.count + gossip.source.bytes.count + 20
+        )
 
-        // Field 3: data
-        result.append(tagGossipData)
-        result.append(contentsOf: Varint.encode(UInt64(gossip.data.count)))
-        result.append(gossip.data)
+        appendLengthDelimited(tag: tagGossipMessageID, bytes: gossip.messageID.bytes, to: &result)
+        appendLengthDelimited(tag: tagGossipTopic, bytes: topicBytes, to: &result)
+        appendLengthDelimited(tag: tagGossipData, bytes: gossip.data, to: &result)
+        appendLengthDelimited(tag: tagGossipSource, bytes: gossip.source.bytes, to: &result)
 
-        // Field 4: source
-        result.append(tagGossipSource)
-        result.append(contentsOf: Varint.encode(UInt64(gossip.source.bytes.count)))
-        result.append(gossip.source.bytes)
-
-        // Field 5: hop_count
+        // Field 5: hop_count (varint)
         result.append(tagGossipHopCount)
-        result.append(contentsOf: Varint.encode(UInt64(gossip.hopCount)))
+        appendVarint(UInt64(gossip.hopCount), to: &result)
 
         return result
     }
 
     private static func encodeIHave(_ ihave: PlumtreeIHaveEntry) -> Data {
-        var result = Data()
-
-        // Field 1: message_id
-        result.append(tagIHaveMessageID)
-        result.append(contentsOf: Varint.encode(UInt64(ihave.messageID.bytes.count)))
-        result.append(ihave.messageID.bytes)
-
-        // Field 2: topic
         let topicBytes = Data(ihave.topic.utf8)
-        result.append(tagIHaveTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
-        result.append(topicBytes)
+        var result = Data()
+        result.reserveCapacity(ihave.messageID.bytes.count + topicBytes.count + 6)
+
+        appendLengthDelimited(tag: tagIHaveMessageID, bytes: ihave.messageID.bytes, to: &result)
+        appendLengthDelimited(tag: tagIHaveTopic, bytes: topicBytes, to: &result)
 
         return result
     }
 
     private static func encodeGraft(_ graft: PlumtreeGraftRequest) -> Data {
-        var result = Data()
-
-        // Field 1: topic
         let topicBytes = Data(graft.topic.utf8)
-        result.append(tagGraftTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
-        result.append(topicBytes)
+        var result = Data()
+        result.reserveCapacity(topicBytes.count + (graft.messageID?.bytes.count ?? 0) + 6)
 
-        // Field 2: message_id (optional)
+        appendLengthDelimited(tag: tagGraftTopic, bytes: topicBytes, to: &result)
+
         if let msgID = graft.messageID {
-            result.append(tagGraftMessageID)
-            result.append(contentsOf: Varint.encode(UInt64(msgID.bytes.count)))
-            result.append(msgID.bytes)
+            appendLengthDelimited(tag: tagGraftMessageID, bytes: msgID.bytes, to: &result)
         }
 
         return result
     }
 
     private static func encodePrune(_ prune: PlumtreePruneRequest) -> Data {
-        var result = Data()
-
-        // Field 1: topic
         let topicBytes = Data(prune.topic.utf8)
-        result.append(tagPruneTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
-        result.append(topicBytes)
+        var result = Data()
+        result.reserveCapacity(topicBytes.count + 3)
+
+        appendLengthDelimited(tag: tagPruneTopic, bytes: topicBytes, to: &result)
 
         return result
     }
@@ -160,6 +157,10 @@ public enum PlumtreeProtobuf {
     // MARK: - Decoding
 
     /// Decodes a PlumtreeRPC from protobuf wire format.
+    ///
+    /// Uses zero-copy varint decoding via `Varint.decode(from:at:)` and
+    /// passes the original data buffer through to sub-decoders to avoid
+    /// per-field Data copies on the hot path.
     public static func decode(_ data: Data) throws -> PlumtreeRPC {
         guard !data.isEmpty else {
             throw PlumtreeError.decodingFailed("Empty data")
@@ -170,10 +171,10 @@ public enum PlumtreeProtobuf {
         var graftRequests: [PlumtreeGraftRequest] = []
         var pruneRequests: [PlumtreePruneRequest] = []
 
-        var offset = data.startIndex
+        var offset = 0
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+        while offset < data.count {
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -184,33 +185,32 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
 
             let fieldEnd = offset + Int(length)
-            guard fieldEnd <= data.endIndex else {
+            guard fieldEnd <= data.count else {
                 throw PlumtreeError.decodingFailed("Field truncated")
             }
 
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
             switch fieldNumber {
             case 1:
-                let gossip = try decodeGossip(fieldData)
+                let gossip = try decodeGossip(data, from: offset, to: fieldEnd)
                 gossipMessages.append(gossip)
             case 2:
-                let ihave = try decodeIHave(fieldData)
+                let ihave = try decodeIHave(data, from: offset, to: fieldEnd)
                 ihaveEntries.append(ihave)
             case 3:
-                let graft = try decodeGraft(fieldData)
+                let graft = try decodeGraft(data, from: offset, to: fieldEnd)
                 graftRequests.append(graft)
             case 4:
-                let prune = try decodePrune(fieldData)
+                let prune = try decodePrune(data, from: offset, to: fieldEnd)
                 pruneRequests.append(prune)
             default:
                 break
             }
+
+            offset = fieldEnd
         }
 
         return PlumtreeRPC(
@@ -221,17 +221,17 @@ public enum PlumtreeProtobuf {
         )
     }
 
-    private static func decodeGossip(_ data: Data) throws -> PlumtreeGossip {
+    private static func decodeGossip(_ data: Data, from start: Int, to end: Int) throws -> PlumtreeGossip {
         var messageID: PlumtreeMessageID?
         var topic: String?
         var payload = Data()
         var source: PeerID?
         var hopCount: UInt32 = 0
 
-        var offset = data.startIndex
+        var offset = start
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+        while offset < end {
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -243,13 +243,15 @@ public enum PlumtreeProtobuf {
                     offset = try skipField(in: data, at: offset, wireType: wireType)
                     continue
                 }
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= end else {
                     throw PlumtreeError.decodingFailed("Gossip field truncated")
                 }
-                let fieldData = Data(data[offset..<fieldEnd])
+
+                let base = data.startIndex
+                let fieldData = Data(data[(base + offset)..<(base + fieldEnd)])
                 offset = fieldEnd
 
                 switch fieldNumber {
@@ -269,7 +271,7 @@ public enum PlumtreeProtobuf {
                     offset = try skipField(in: data, at: offset, wireType: wireType)
                     continue
                 }
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
+                let (value, valueBytes) = try Varint.decode(from: data, at: offset)
                 offset += valueBytes
                 hopCount = UInt32(value)
 
@@ -297,14 +299,14 @@ public enum PlumtreeProtobuf {
         )
     }
 
-    private static func decodeIHave(_ data: Data) throws -> PlumtreeIHaveEntry {
+    private static func decodeIHave(_ data: Data, from start: Int, to end: Int) throws -> PlumtreeIHaveEntry {
         var messageID: PlumtreeMessageID?
         var topic: String?
 
-        var offset = data.startIndex
+        var offset = start
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+        while offset < end {
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -315,13 +317,15 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
             let fieldEnd = offset + Int(length)
-            guard fieldEnd <= data.endIndex else {
+            guard fieldEnd <= end else {
                 throw PlumtreeError.decodingFailed("IHave field truncated")
             }
-            let fieldData = Data(data[offset..<fieldEnd])
+
+            let base = data.startIndex
+            let fieldData = Data(data[(base + offset)..<(base + fieldEnd)])
             offset = fieldEnd
 
             switch fieldNumber {
@@ -345,14 +349,14 @@ public enum PlumtreeProtobuf {
         return PlumtreeIHaveEntry(messageID: messageID, topic: topic)
     }
 
-    private static func decodeGraft(_ data: Data) throws -> PlumtreeGraftRequest {
+    private static func decodeGraft(_ data: Data, from start: Int, to end: Int) throws -> PlumtreeGraftRequest {
         var topic: String?
         var messageID: PlumtreeMessageID?
 
-        var offset = data.startIndex
+        var offset = start
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+        while offset < end {
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -363,13 +367,15 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
             let fieldEnd = offset + Int(length)
-            guard fieldEnd <= data.endIndex else {
+            guard fieldEnd <= end else {
                 throw PlumtreeError.decodingFailed("Graft field truncated")
             }
-            let fieldData = Data(data[offset..<fieldEnd])
+
+            let base = data.startIndex
+            let fieldData = Data(data[(base + offset)..<(base + fieldEnd)])
             offset = fieldEnd
 
             switch fieldNumber {
@@ -390,13 +396,13 @@ public enum PlumtreeProtobuf {
         return PlumtreeGraftRequest(topic: topic, messageID: messageID)
     }
 
-    private static func decodePrune(_ data: Data) throws -> PlumtreePruneRequest {
+    private static func decodePrune(_ data: Data, from start: Int, to end: Int) throws -> PlumtreePruneRequest {
         var topic: String?
 
-        var offset = data.startIndex
+        var offset = start
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+        while offset < end {
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -407,21 +413,23 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
             let fieldEnd = offset + Int(length)
-            guard fieldEnd <= data.endIndex else {
+            guard fieldEnd <= end else {
                 throw PlumtreeError.decodingFailed("Prune field truncated")
             }
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
 
             if fieldNumber == 1 {
+                let base = data.startIndex
+                let fieldData = Data(data[(base + offset)..<(base + fieldEnd)])
                 guard let str = String(data: fieldData, encoding: .utf8) else {
                     throw PlumtreeError.decodingFailed("Invalid topic UTF-8")
                 }
                 topic = str
             }
+
+            offset = fieldEnd
         }
 
         guard let topic else {
@@ -434,21 +442,19 @@ public enum PlumtreeProtobuf {
     // MARK: - Helpers
 
     private static func skipField(in data: Data, at offset: Int, wireType: UInt64) throws -> Int {
-        var newOffset = offset
         switch wireType {
         case 0: // Varint
-            let (_, bytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += bytes
+            let (_, bytes) = try Varint.decode(from: data, at: offset)
+            return offset + bytes
         case 1: // 64-bit
-            newOffset += 8
+            return offset + 8
         case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += lengthBytes + Int(length)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+            return offset + lengthBytes + Int(length)
         case 5: // 32-bit
-            newOffset += 4
+            return offset + 4
         default:
             throw PlumtreeError.decodingFailed("Unknown wire type \(wireType)")
         }
-        return newOffset
     }
 }

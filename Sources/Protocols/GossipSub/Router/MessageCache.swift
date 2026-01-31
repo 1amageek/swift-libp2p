@@ -1,5 +1,6 @@
 /// MessageCache - Message caching for GossipSub IHAVE/IWANT
 import Foundation
+import P2PCore
 import Synchronization
 
 /// A time-based cache for GossipSub messages.
@@ -24,9 +25,13 @@ final class MessageCache: Sendable {
         /// All cached messages by ID.
         var messages: [MessageID: CachedMessage]
 
+        /// Topic-based index for fast gossip ID lookup.
+        var topicIndex: [Topic: Set<MessageID>]
+
         init(windowCount: Int) {
             self.windows = Array(repeating: [], count: windowCount)
             self.messages = [:]
+            self.topicIndex = [:]
         }
     }
 
@@ -69,6 +74,9 @@ final class MessageCache: Sendable {
             // Add to current window (index 0)
             state.windows[0].append(id)
 
+            // Update topic index
+            state.topicIndex[message.topic, default: []].insert(id)
+
             // Store message
             state.messages[id] = CachedMessage(
                 message: message,
@@ -107,13 +115,16 @@ final class MessageCache: Sendable {
     /// - Returns: Array of message IDs
     func getGossipIDs(for topic: Topic) -> [MessageID] {
         state.withLock { state in
+            guard let topicIDs = state.topicIndex[topic], !topicIDs.isEmpty else {
+                return []
+            }
+
             var ids: [MessageID] = []
 
-            // Collect IDs from gossip windows
+            // Collect IDs from gossip windows that belong to this topic
             for i in 0..<gossipWindowCount where i < state.windows.count {
                 for id in state.windows[i] {
-                    // Check if message belongs to topic
-                    if let cached = state.messages[id], cached.message.topic == topic {
+                    if topicIDs.contains(id) {
                         ids.append(id)
                     }
                 }
@@ -140,9 +151,14 @@ final class MessageCache: Sendable {
             if state.windows.count > 0 {
                 let oldestWindow = state.windows.removeLast()
 
-                // Remove messages from oldest window
+                // Remove messages from oldest window and update topic index
                 for id in oldestWindow {
-                    state.messages.removeValue(forKey: id)
+                    if let cached = state.messages.removeValue(forKey: id) {
+                        state.topicIndex[cached.message.topic]?.remove(id)
+                        if state.topicIndex[cached.message.topic]?.isEmpty == true {
+                            state.topicIndex.removeValue(forKey: cached.message.topic)
+                        }
+                    }
                 }
 
                 // Add new empty window at front
@@ -166,6 +182,7 @@ final class MessageCache: Sendable {
         state.withLock { state in
             state.windows = Array(repeating: [], count: windowCount)
             state.messages.removeAll()
+            state.topicIndex.removeAll()
         }
     }
 }
@@ -185,7 +202,7 @@ final class SeenCache: Sendable {
     /// Internal state.
     private struct State: Sendable {
         var entries: [MessageID: Entry]
-        var order: [MessageID]  // For LRU eviction
+        var order: LRUOrder<MessageID>
     }
 
     /// Maximum number of entries.
@@ -205,7 +222,7 @@ final class SeenCache: Sendable {
     init(maxSize: Int = 10000, ttl: Duration = .seconds(120)) {
         self.maxSize = maxSize
         self.ttl = ttl
-        self.state = Mutex(State(entries: [:], order: []))
+        self.state = Mutex(State(entries: [:], order: LRUOrder<MessageID>()))
     }
 
     /// Marks a message as seen.
@@ -222,11 +239,8 @@ final class SeenCache: Sendable {
                 // Check if expired
                 if now - existing.seenAt > ttl {
                     state.entries[id] = Entry(seenAt: now)
-                    // Move to end of order
-                    if let index = state.order.firstIndex(of: id) {
-                        state.order.remove(at: index)
-                        state.order.append(id)
-                    }
+                    // Move to most recent position
+                    state.order.touch(id)
                     return true  // Treated as new (expired)
                 }
                 return false  // Already seen
@@ -234,11 +248,10 @@ final class SeenCache: Sendable {
 
             // New entry
             state.entries[id] = Entry(seenAt: now)
-            state.order.append(id)
+            state.order.insert(id)
 
             // Evict if over capacity
-            while state.entries.count > maxSize, !state.order.isEmpty {
-                let oldestID = state.order.removeFirst()
+            while state.entries.count > maxSize, let oldestID = state.order.removeOldest() {
                 state.entries.removeValue(forKey: oldestID)
             }
 
@@ -264,19 +277,17 @@ final class SeenCache: Sendable {
     func cleanup() {
         state.withLock { state in
             let now = ContinuousClock.now
-            var newOrder: [MessageID] = []
-
-            for id in state.order {
-                if let entry = state.entries[id] {
-                    if now - entry.seenAt <= ttl {
-                        newOrder.append(id)
-                    } else {
-                        state.entries.removeValue(forKey: id)
-                    }
+            // Collect expired IDs, then remove them
+            var expiredIDs: [MessageID] = []
+            for (id, entry) in state.entries {
+                if now - entry.seenAt > ttl {
+                    expiredIDs.append(id)
                 }
             }
-
-            state.order = newOrder
+            for id in expiredIDs {
+                state.entries.removeValue(forKey: id)
+                state.order.remove(id)
+            }
         }
     }
 
@@ -292,4 +303,5 @@ final class SeenCache: Sendable {
             state.order.removeAll()
         }
     }
+
 }

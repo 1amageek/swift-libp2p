@@ -63,7 +63,9 @@ public enum GossipSubProtobuf {
 
     /// Encodes a GossipSubRPC to protobuf wire format.
     public static func encode(_ rpc: GossipSubRPC) -> Data {
-        var result = Data()
+        // Estimate: subscriptions + messages + control overhead
+        let estimatedSize = rpc.subscriptions.count * 32 + rpc.messages.count * 128 + 64
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: subscriptions (repeated SubOpts)
         for sub in rpc.subscriptions {
@@ -109,7 +111,10 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeMessage(_ message: GossipSubMessage) -> Data {
-        var result = Data()
+        // Estimate: tag+varint overhead per field + actual data sizes
+        let estimatedSize = 32 + message.data.count + message.sequenceNumber.count
+            + message.topic.value.utf8.count + (message.signature?.count ?? 0) + (message.key?.count ?? 0)
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: from (optional bytes)
         if let source = message.source {

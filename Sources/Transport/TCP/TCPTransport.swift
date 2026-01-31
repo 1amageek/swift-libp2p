@@ -49,6 +49,8 @@ public final class TCPTransport: Transport, Sendable {
 
         let bootstrap = ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
+            .channelOption(.socketOption(.tcp_nodelay), value: 1)
+            .channelOption(.socketOption(.so_keepalive), value: 1)
             .channelInitializer { channel in
                 channel.eventLoop.makeSucceededVoidFuture()
             }

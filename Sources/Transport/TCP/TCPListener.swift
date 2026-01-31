@@ -59,6 +59,8 @@ public final class TCPListener: Listener, Sendable {
                 return channel.pipeline.addHandler(handler)
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(.socketOption(.tcp_nodelay), value: 1)
+            .childChannelOption(.socketOption(.so_keepalive), value: 1)
             .childChannelOption(.autoRead, value: true)
 
         let serverChannel = try await bootstrap.bind(host: host, port: Int(port)).get()

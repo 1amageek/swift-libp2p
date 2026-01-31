@@ -101,10 +101,12 @@ public struct Envelope: Sendable, Equatable {
 
     /// Serializes the envelope to bytes.
     public func marshal() throws -> Data {
-        var result = Data()
+        let publicKeyBytes = publicKey.protobufEncoded
+        // Estimate: 4 varint prefixes (max 10 bytes each) + field data
+        let estimatedSize = 40 + publicKeyBytes.count + payloadType.count + payload.count + signature.count
+        var result = Data(capacity: estimatedSize)
 
         // Public key (length-prefixed protobuf)
-        let publicKeyBytes = publicKey.protobufEncoded
         result.append(contentsOf: Varint.encode(UInt64(publicKeyBytes.count)))
         result.append(publicKeyBytes)
 
@@ -213,8 +215,9 @@ public struct Envelope: Sendable, Equatable {
         payloadType: Data,
         payload: Data
     ) -> Data {
-        var data = Data()
         let domainBytes = Data(domain.utf8)
+        // Estimate: 3 varint prefixes (max 10 bytes each) + field data
+        var data = Data(capacity: 30 + domainBytes.count + payloadType.count + payload.count)
 
         // Domain length (varint) + domain
         data.append(contentsOf: Varint.encode(UInt64(domainBytes.count)))

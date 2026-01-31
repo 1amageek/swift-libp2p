@@ -113,7 +113,8 @@ public struct MplexFrame: Sendable, Equatable {
 
     /// Encodes the frame to bytes.
     public func encode() -> Data {
-        var result = Data()
+        // Estimate: 2 varints (max 10 bytes each) + data
+        var result = Data(capacity: 20 + data.count)
 
         // Encode header: (streamID << 3) | flag
         let header = (streamID << 3) | UInt64(flag.rawValue)

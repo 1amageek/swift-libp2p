@@ -63,12 +63,20 @@ final class CYCLONPartialView: Sendable {
     /// Returns a random subset of entries, optionally excluding a peer.
     func randomSubset(count: Int, excluding: PeerID? = nil) -> [CYCLONEntry] {
         state.withLock { s in
-            var candidates = Array(s.entries.values)
+            let values: any Collection<CYCLONEntry>
             if let excluded = excluding {
-                candidates.removeAll { $0.peerID == excluded }
+                values = s.entries.values.lazy.filter { $0.peerID != excluded }
+            } else {
+                values = s.entries.values
             }
-            candidates.shuffle()
-            return Array(candidates.prefix(count))
+            // Use Fisher-Yates partial shuffle on array to avoid full shuffle
+            var candidates = Array(values)
+            let n = min(count, candidates.count)
+            for i in 0..<n {
+                let j = Int.random(in: i..<candidates.count)
+                if i != j { candidates.swapAt(i, j) }
+            }
+            return Array(candidates.prefix(n))
         }
     }
 
@@ -138,12 +146,12 @@ final class CYCLONPartialView: Sendable {
     // MARK: - Private
 
     private func evictIfNeeded(_ s: inout ViewState) {
-        while s.entries.count > cacheSize {
-            if let oldest = s.entries.values.max(by: { $0.age < $1.age }) {
-                s.entries.removeValue(forKey: oldest.peerID)
-            } else {
-                break
-            }
+        let excess = s.entries.count - cacheSize
+        guard excess > 0 else { return }
+        // Sort once O(n log n) instead of repeated max() scans O(n²)
+        let sorted = s.entries.values.sorted { $0.age > $1.age }
+        for entry in sorted.prefix(excess) {
+            s.entries.removeValue(forKey: entry.peerID)
         }
     }
 }

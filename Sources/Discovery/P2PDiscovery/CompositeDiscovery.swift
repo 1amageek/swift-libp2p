@@ -123,21 +123,41 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     /// Collects results from all services, tolerating partial failures.
     /// Throws only if all services fail.
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        let results = await withTaskGroup(
+            of: Result<[(ScoredCandidate)], Error>.self
+        ) { group in
+            for (service, weight) in services {
+                group.addTask {
+                    do {
+                        let candidates = try await service.find(peer: peer)
+                        return .success(candidates.map { candidate in
+                            ScoredCandidate(
+                                peerID: candidate.peerID,
+                                addresses: candidate.addresses,
+                                score: candidate.score * weight
+                            )
+                        })
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+
+            var allResults: [Result<[ScoredCandidate], Error>] = []
+            for await result in group {
+                allResults.append(result)
+            }
+            return allResults
+        }
+
         var allCandidates: [ScoredCandidate] = []
         var errors: [Error] = []
 
-        for (service, weight) in services {
-            do {
-                let candidates = try await service.find(peer: peer)
-                for candidate in candidates {
-                    let weightedCandidate = ScoredCandidate(
-                        peerID: candidate.peerID,
-                        addresses: candidate.addresses,
-                        score: candidate.score * weight
-                    )
-                    allCandidates.append(weightedCandidate)
-                }
-            } catch {
+        for result in results {
+            switch result {
+            case .success(let candidates):
+                allCandidates.append(contentsOf: candidates)
+            case .failure(let error):
                 errors.append(error)
             }
         }

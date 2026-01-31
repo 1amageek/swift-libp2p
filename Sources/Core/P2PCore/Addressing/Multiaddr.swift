@@ -125,7 +125,11 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
     /// The binary representation of this address.
     public var bytes: Data {
-        protocols.reduce(Data()) { $0 + $1.bytes }
+        var result = Data()
+        for proto in protocols {
+            result.append(contentsOf: proto.bytes)
+        }
+        return result
     }
 
     /// The string representation of this address.

@@ -92,15 +92,16 @@ public enum Base58 {
 
             for byte in bytes.reversed() {
                 let product = UInt(byte) * base + carry
-                newBytes.insert(UInt8(product & 0xFF), at: 0)
+                newBytes.append(UInt8(product & 0xFF))
                 carry = product >> 8
             }
 
             while carry > 0 {
-                newBytes.insert(UInt8(carry & 0xFF), at: 0)
+                newBytes.append(UInt8(carry & 0xFF))
                 carry >>= 8
             }
 
+            newBytes.reverse()
             bytes = newBytes
         }
 

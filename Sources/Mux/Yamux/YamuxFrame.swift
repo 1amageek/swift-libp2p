@@ -87,27 +87,22 @@ struct YamuxFrame: Sendable {
     func encode() -> Data {
         var result = Data(capacity: yamuxHeaderSize + Int(length))
 
-        // Version (1 byte)
-        result.append(yamuxVersion)
-
-        // Type (1 byte)
-        result.append(type.rawValue)
-
-        // Flags (2 bytes, big-endian)
-        result.append(UInt8(flags.rawValue >> 8))
-        result.append(UInt8(flags.rawValue & 0xFF))
-
-        // Stream ID (4 bytes, big-endian)
-        result.append(UInt8((streamID >> 24) & 0xFF))
-        result.append(UInt8((streamID >> 16) & 0xFF))
-        result.append(UInt8((streamID >> 8) & 0xFF))
-        result.append(UInt8(streamID & 0xFF))
-
-        // Length (4 bytes, big-endian)
-        result.append(UInt8((length >> 24) & 0xFF))
-        result.append(UInt8((length >> 16) & 0xFF))
-        result.append(UInt8((length >> 8) & 0xFF))
-        result.append(UInt8(length & 0xFF))
+        // Build 12-byte header in one batch
+        let header: [UInt8] = [
+            yamuxVersion,
+            type.rawValue,
+            UInt8(flags.rawValue >> 8),
+            UInt8(flags.rawValue & 0xFF),
+            UInt8((streamID >> 24) & 0xFF),
+            UInt8((streamID >> 16) & 0xFF),
+            UInt8((streamID >> 8) & 0xFF),
+            UInt8(streamID & 0xFF),
+            UInt8((length >> 24) & 0xFF),
+            UInt8((length >> 16) & 0xFF),
+            UInt8((length >> 8) & 0xFF),
+            UInt8(length & 0xFF),
+        ]
+        result.append(contentsOf: header)
 
         // Data (if present)
         if let data = data {
@@ -126,32 +121,25 @@ struct YamuxFrame: Sendable {
             return nil
         }
 
-        let version = data[data.startIndex]
+        // Parse header using pointer access to avoid repeated bounds checks
+        let (version, typeRaw, flags, streamID, length): (UInt8, UInt8, YamuxFlags, UInt32, UInt32) =
+            data.withUnsafeBytes { ptr in
+                let b = ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                let v = b[0]
+                let t = b[1]
+                let f = YamuxFlags(rawValue: (UInt16(b[2]) << 8) | UInt16(b[3]))
+                let s = (UInt32(b[4]) << 24) | (UInt32(b[5]) << 16) | (UInt32(b[6]) << 8) | UInt32(b[7])
+                let l = (UInt32(b[8]) << 24) | (UInt32(b[9]) << 16) | (UInt32(b[10]) << 8) | UInt32(b[11])
+                return (v, t, f, s, l)
+            }
+
         guard version == yamuxVersion else {
             throw YamuxError.invalidVersion(version)
         }
 
-        let typeRaw = data[data.startIndex + 1]
         guard let type = YamuxFrameType(rawValue: typeRaw) else {
             throw YamuxError.invalidFrameType(typeRaw)
         }
-
-        let flags = YamuxFlags(rawValue:
-            (UInt16(data[data.startIndex + 2]) << 8) |
-             UInt16(data[data.startIndex + 3])
-        )
-
-        let streamID =
-            (UInt32(data[data.startIndex + 4]) << 24) |
-            (UInt32(data[data.startIndex + 5]) << 16) |
-            (UInt32(data[data.startIndex + 6]) << 8) |
-             UInt32(data[data.startIndex + 7])
-
-        let length =
-            (UInt32(data[data.startIndex + 8]) << 24) |
-            (UInt32(data[data.startIndex + 9]) << 16) |
-            (UInt32(data[data.startIndex + 10]) << 8) |
-             UInt32(data[data.startIndex + 11])
 
         // Only Data frames have actual payload data.
         // For WindowUpdate, Ping, and GoAway, the length field stores

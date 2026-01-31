@@ -153,9 +153,10 @@ struct NoiseSymmetricState: Sendable {
     /// Mixes data into the handshake hash.
     /// h = SHA256(h || data)
     mutating func mixHash(_ data: Data) {
-        var combined = handshakeHash
-        combined.append(data)
-        handshakeHash = Data(SHA256.hash(data: combined))
+        var hasher = SHA256()
+        hasher.update(data: handshakeHash)
+        hasher.update(data: data)
+        handshakeHash = Data(hasher.finalize())
     }
 
     /// Mixes key material into the chaining key and cipher key.
@@ -231,23 +232,28 @@ struct NoiseSymmetricState: Sendable {
         info: Data,
         outputLength: Int
     ) -> Data {
+        let saltKey = SymmetricKey(data: salt)
         let prk = HMAC<SHA256>.authenticationCode(
             for: ikm.withUnsafeBytes { Data($0) },
-            using: SymmetricKey(data: salt)
+            using: saltKey
         )
 
-        var output = Data()
+        // Pre-convert PRK to SymmetricKey once, reuse across iterations
+        let prkKey = SymmetricKey(data: Data(prk))
+
+        var output = Data(capacity: outputLength)
         var t = Data()
         var counter: UInt8 = 1
 
         while output.count < outputLength {
-            var input = t
+            var input = Data(capacity: t.count + info.count + 1)
+            input.append(t)
             input.append(info)
             input.append(counter)
 
             let block = HMAC<SHA256>.authenticationCode(
                 for: input,
-                using: SymmetricKey(data: Data(prk))
+                using: prkKey
             )
             t = Data(block)
             output.append(t)
