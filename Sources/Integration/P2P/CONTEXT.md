@@ -28,14 +28,21 @@ swift-libp2pの統合エントリーポイント。Protocol依存のみ、実装
 ```
 Sources/Integration/P2P/
 ├── P2P.swift                 # Node, NodeConfiguration, NodeEvent, DiscoveryConfiguration
-├── ConnectionUpgrader.swift  # 接続アップグレードパイプライン
-└── Connection/               # 接続管理コンポーネント
-    ├── ConnectionPool.swift      # 接続プール（内部）
-    ├── ConnectionState.swift     # 接続状態マシン
-    ├── ConnectionLimits.swift    # 接続制限設定
-    ├── ConnectionGater.swift     # 接続フィルタリング
-    ├── HealthMonitor.swift       # ヘルスモニタリング
-    └── ...
+├── ConnectionUpgrader.swift  # 接続アップグレードパイプライン (V1 Lazy対応)
+├── Connection/               # 接続管理コンポーネント
+│   ├── ConnectionPool.swift      # 接続プール（内部）
+│   ├── ConnectionState.swift     # 接続状態マシン
+│   ├── ConnectionLimits.swift    # 接続制限設定
+│   ├── ConnectionGater.swift     # 接続フィルタリング
+│   ├── HealthMonitor.swift       # ヘルスモニタリング
+│   └── ...
+└── Resource/                 # リソース管理 (GAP-9)
+    ├── ResourceManager.swift             # ResourceManager プロトコル
+    ├── DefaultResourceManager.swift      # デフォルト実装 (system/peer/protocol 3スコープ)
+    ├── ResourceLimitsConfiguration.swift # リソース制限設定
+    ├── ResourceSnapshot.swift            # スナップショット型
+    ├── ResourceTrackedStream.swift       # 自動リソース解放ストリーム
+    └── ScopeLimits.swift                 # スコープ別制限値
 ```
 
 ## 主要な型
@@ -346,7 +353,8 @@ Tests/Integration/P2PTests/
 | 機能 | 説明 |
 |------|------|
 | ~~Early Muxer Negotiation~~ | ✅ 実装済み — `EarlyMuxerNegotiating` プロトコルで TLS ALPN にmuxerヒントを含め、muxerネゴシエーション RTT を省略 |
-| Resource Manager (multi-scope) | 接続・ストリーム・メモリのスコープ別リソース制限。Go 実装の `rcmgr` 相当 |
+| ~~Resource Manager (multi-scope)~~ | ✅ 実装済み — `ResourceManager` プロトコル + `DefaultResourceManager` (system/peer/protocol 3スコープ)。`ResourceTrackedStream` でストリーム解放を自動追跡。51テスト |
+| ~~V1 Lazy Negotiation~~ | ✅ 実装済み — `ConnectionUpgrader` の initiator 側で `negotiateLazy()` を使用。1 RTT 削減 |
 
 ## 品質向上TODO
 
@@ -356,13 +364,29 @@ Tests/Integration/P2PTests/
 - [ ] **再接続ロジックのユニットテスト** - ポリシーとバックオフのテスト
 
 ### 中優先度
-- [ ] **Resource Manager** - マルチスコープのリソース制限
+- [x] **Resource Manager** - マルチスコープのリソース制限 ✅ 2026-01-30 (GAP-9)
 - [ ] **接続トリムアルゴリズムの検証テスト** - タグ、保護、優先度のテスト
 - [ ] **イベントストリームの挙動ドキュメント化** - 最初のアクセスでストリーム作成
 
 ### 低優先度
 - [ ] **グレース期間の強制確認** - 現在未検証
 - [ ] **トリムアルゴリズム検査API** - デバッグ/監視用
+
+## Fixes Applied
+
+### ResourceTrackedStream 3スコープ解放修正 (2026-01-31)
+
+**問題**: `ResourceTrackedStream` が 2スコープ（system + peer）の `releaseStream(peer:direction:)` のみ呼んでいた。Protocol スコープのリソース解放が漏れていた
+
+**解決策**: `negotiatedProtocolID` パラメータを追加。Protocol ID が設定されている場合は 3スコープ（system + peer + protocol）の `releaseStream(protocolID:peer:direction:)` を呼び出す
+
+**修正ファイル**: `Resource/ResourceTrackedStream.swift`
+
+### V1 Lazy Negotiation 有効化 (2026-01-30)
+
+**変更**: `ConnectionUpgrader` の initiator 側で `MultistreamSelect.negotiate()` を `MultistreamSelect.negotiateLazy()` に変更。Security negotiation と Muxer negotiation の2箇所。Responder 側は変更不要（V1 Lazy は V1 と後方互換）
+
+**修正ファイル**: `ConnectionUpgrader.swift`
 
 ## Codex Review (2026-01-18) - UPDATED 2026-01-22
 

@@ -109,7 +109,6 @@ final class WebRTCUDPSocket: Sendable {
             do {
                 try connection.receive(data)
             } catch {
-                // Connection closed -- remove stale route
                 routingState.withLock { _ = $0.routes.removeValue(forKey: key) }
             }
             return

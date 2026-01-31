@@ -69,6 +69,17 @@ public struct ScopeLimits: Sendable, Equatable {
         maxMemory: 16 * 1024 * 1024  // 16 MB
     )
 
+    /// Default per-protocol limits.
+    public static let defaultProtocol = ScopeLimits(
+        maxTotalStreams: 4096,
+        maxMemory: 64 * 1024 * 1024  // 64 MB
+    )
+
+    /// Default per-service limits.
+    public static let defaultService = ScopeLimits(
+        maxMemory: 32 * 1024 * 1024  // 32 MB
+    )
+
     /// No limits (unlimited).
     public static let unlimited = ScopeLimits()
 }

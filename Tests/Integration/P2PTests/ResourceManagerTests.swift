@@ -795,6 +795,219 @@ struct ResourceManagerTests {
         }
     }
 
+    // MARK: - Protocol Scope
+
+    @Test("Protocol stream reserve and release")
+    func testProtocolStreamReserveRelease() throws {
+        let rm = makeManager(system: .unlimited, peer: .unlimited)
+        let peer = makePeer()
+
+        try rm.reserveStream(protocolID: "/kad/1.0.0", peer: peer, direction: .inbound)
+
+        let snap = rm.snapshot()
+        #expect(snap.system.inboundStreams == 1)
+        #expect(snap.peers[peer]?.inboundStreams == 1)
+        #expect(snap.protocols["/kad/1.0.0"]?.inboundStreams == 1)
+
+        rm.releaseStream(protocolID: "/kad/1.0.0", peer: peer, direction: .inbound)
+
+        let snap2 = rm.snapshot()
+        #expect(snap2.system.inboundStreams == 0)
+        #expect(snap2.peers[peer] == nil)
+        #expect(snap2.protocols["/kad/1.0.0"] == nil)
+    }
+
+    @Test("Protocol stream limit enforced")
+    func testProtocolStreamLimit() throws {
+        let rm = DefaultResourceManager(
+            configuration: ResourceLimitsConfiguration(
+                system: .unlimited,
+                peer: .unlimited,
+                protocolLimits: ScopeLimits(maxTotalStreams: 2)
+            )
+        )
+        let peer1 = makePeer()
+        let peer2 = makePeer()
+        let peer3 = makePeer()
+
+        try rm.reserveStream(protocolID: "/test/1.0", peer: peer1, direction: .inbound)
+        try rm.reserveStream(protocolID: "/test/1.0", peer: peer2, direction: .outbound)
+
+        #expect(throws: ResourceError.self) {
+            try rm.reserveStream(protocolID: "/test/1.0", peer: peer3, direction: .inbound)
+        }
+
+        // Different protocol should still work
+        try rm.reserveStream(protocolID: "/other/1.0", peer: peer3, direction: .inbound)
+    }
+
+    @Test("Protocol limit hit does not mutate system/peer counters")
+    func testProtocolAtomicReservation() throws {
+        let rm = DefaultResourceManager(
+            configuration: ResourceLimitsConfiguration(
+                system: .unlimited,
+                peer: .unlimited,
+                protocolLimits: ScopeLimits(maxTotalStreams: 1)
+            )
+        )
+        let peer1 = makePeer()
+        let peer2 = makePeer()
+
+        try rm.reserveStream(protocolID: "/test/1.0", peer: peer1, direction: .inbound)
+        let systemBefore = rm.snapshot().system.inboundStreams
+
+        #expect(throws: ResourceError.self) {
+            try rm.reserveStream(protocolID: "/test/1.0", peer: peer2, direction: .inbound)
+        }
+
+        // System counter must NOT have been incremented
+        #expect(rm.snapshot().system.inboundStreams == systemBefore)
+        // Peer2 must NOT have been created
+        #expect(rm.snapshot().peers[peer2] == nil)
+    }
+
+    @Test("Protocol cleanup removes zero-count entries")
+    func testProtocolCleanup() throws {
+        let rm = makeManager(system: .unlimited, peer: .unlimited)
+        let peer = makePeer()
+
+        try rm.reserveStream(protocolID: "/test/1.0", peer: peer, direction: .outbound)
+        #expect(rm.snapshot().protocols["/test/1.0"] != nil)
+
+        rm.releaseStream(protocolID: "/test/1.0", peer: peer, direction: .outbound)
+        #expect(rm.snapshot().protocols["/test/1.0"] == nil)
+    }
+
+    @Test("Per-protocol overrides apply custom limits")
+    func testPerProtocolOverrides() throws {
+        let rm = DefaultResourceManager(
+            configuration: ResourceLimitsConfiguration(
+                system: .unlimited,
+                peer: .unlimited,
+                protocolLimits: ScopeLimits(maxTotalStreams: 1),
+                protocolOverrides: ["/special/1.0": ScopeLimits(maxTotalStreams: 3)]
+            )
+        )
+        let peer = makePeer()
+
+        // Normal protocol: limit is 1
+        try rm.reserveStream(protocolID: "/normal/1.0", peer: peer, direction: .inbound)
+        #expect(throws: ResourceError.self) {
+            try rm.reserveStream(protocolID: "/normal/1.0", peer: peer, direction: .inbound)
+        }
+
+        // Special protocol: limit is 3
+        try rm.reserveStream(protocolID: "/special/1.0", peer: peer, direction: .inbound)
+        try rm.reserveStream(protocolID: "/special/1.0", peer: peer, direction: .inbound)
+        try rm.reserveStream(protocolID: "/special/1.0", peer: peer, direction: .inbound)
+        #expect(throws: ResourceError.self) {
+            try rm.reserveStream(protocolID: "/special/1.0", peer: peer, direction: .inbound)
+        }
+    }
+
+    @Test("Protocol scope returns current stats and limits")
+    func testProtocolScope() throws {
+        let rm = DefaultResourceManager(
+            configuration: ResourceLimitsConfiguration(
+                system: .unlimited,
+                peer: .unlimited,
+                protocolLimits: ScopeLimits(maxTotalStreams: 42)
+            )
+        )
+        let peer = makePeer()
+        try rm.reserveStream(protocolID: "/test/1.0", peer: peer, direction: .inbound)
+
+        let scope = rm.protocolScope(for: "/test/1.0")
+        #expect(scope.name == "protocol:/test/1.0")
+        #expect(scope.stat.inboundStreams == 1)
+        #expect(scope.limits.maxTotalStreams == 42)
+    }
+
+    // MARK: - Service Scope
+
+    @Test("Service memory reserve and release")
+    func testServiceMemoryReserveRelease() throws {
+        let rm = makeManager(system: .unlimited, peer: .unlimited)
+
+        try rm.reserveServiceMemory(1024, service: "dht")
+
+        let snap = rm.snapshot()
+        #expect(snap.system.memory == 1024)
+        #expect(snap.services["dht"]?.memory == 1024)
+
+        rm.releaseServiceMemory(1024, service: "dht")
+
+        let snap2 = rm.snapshot()
+        #expect(snap2.system.memory == 0)
+        #expect(snap2.services["dht"] == nil)
+    }
+
+    @Test("Service memory limit enforced")
+    func testServiceMemoryLimit() throws {
+        let rm = DefaultResourceManager(
+            configuration: ResourceLimitsConfiguration(
+                system: .unlimited,
+                peer: .unlimited,
+                serviceLimits: ScopeLimits(maxMemory: 1000)
+            )
+        )
+
+        try rm.reserveServiceMemory(800, service: "dht")
+
+        #expect(throws: ResourceError.self) {
+            try rm.reserveServiceMemory(300, service: "dht")
+        }
+
+        // Memory unchanged after failed reservation
+        #expect(rm.snapshot().services["dht"]?.memory == 800)
+    }
+
+    @Test("Service cleanup removes zero-count entries")
+    func testServiceCleanup() throws {
+        let rm = makeManager(system: .unlimited, peer: .unlimited)
+
+        try rm.reserveServiceMemory(512, service: "relay")
+        #expect(rm.snapshot().services["relay"] != nil)
+
+        rm.releaseServiceMemory(512, service: "relay")
+        #expect(rm.snapshot().services["relay"] == nil)
+    }
+
+    @Test("Service scope returns current stats and limits")
+    func testServiceScope() throws {
+        let rm = DefaultResourceManager(
+            configuration: ResourceLimitsConfiguration(
+                system: .unlimited,
+                peer: .unlimited,
+                serviceLimits: ScopeLimits(maxMemory: 5000)
+            )
+        )
+        try rm.reserveServiceMemory(100, service: "dht")
+
+        let scope = rm.serviceScope(for: "dht")
+        #expect(scope.name == "service:dht")
+        #expect(scope.stat.memory == 100)
+        #expect(scope.limits.maxMemory == 5000)
+    }
+
+    @Test("Snapshot includes all scopes")
+    func testSnapshotAllScopes() throws {
+        let rm = makeManager(system: .unlimited, peer: .unlimited)
+        let peer = makePeer()
+
+        try rm.reserveInboundConnection(from: peer)
+        try rm.reserveStream(protocolID: "/test/1.0", peer: peer, direction: .inbound)
+        try rm.reserveServiceMemory(256, service: "relay")
+
+        let snap = rm.snapshot()
+        #expect(snap.system.inboundConnections == 1)
+        #expect(snap.system.inboundStreams == 1)
+        #expect(snap.system.memory == 256)
+        #expect(snap.peers[peer] != nil)
+        #expect(snap.protocols["/test/1.0"]?.inboundStreams == 1)
+        #expect(snap.services["relay"]?.memory == 256)
+    }
+
     // MARK: - ResourceLimitsConfiguration
 
     @Test("ResourceLimitsConfiguration effective peer limits")

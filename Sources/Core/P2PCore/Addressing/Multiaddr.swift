@@ -305,6 +305,19 @@ extension Multiaddr {
         Multiaddr(uncheckedProtocols: [.memory(id)])
     }
 
+    /// Creates a WebSocket address.
+    ///
+    /// - Note: Factory methods don't validate size since they create known-small addresses.
+    /// - Note: IPv6 addresses are normalized to expanded form.
+    public static func ws(host: String, port: UInt16) -> Multiaddr {
+        if host.contains(":") {
+            let normalized = MultiaddrProtocol.normalizeIPv6(host) ?? host
+            return Multiaddr(uncheckedProtocols: [.ip6(normalized), .tcp(port), .ws])
+        } else {
+            return Multiaddr(uncheckedProtocols: [.ip4(host), .tcp(port), .ws])
+        }
+    }
+
     /// Creates a WebRTC Direct address.
     ///
     /// - Parameters:

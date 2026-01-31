@@ -635,7 +635,8 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
                 alpha: configuration.alphaValue,
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
-            )
+            ),
+            validator: configuration.recordValidator
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)

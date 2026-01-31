@@ -100,7 +100,11 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             ttl: configuration.seenTTL
         )
         self.subscriptions = SubscriptionSet()
-        self.peerScorer = PeerScorer(config: peerScorerConfig)
+        self.peerScorer = PeerScorer(
+            config: peerScorerConfig,
+            topicParams: configuration.topicScoreParams,
+            defaultTopicParams: configuration.defaultTopicScoreParams
+        )
         self.eventState = Mutex(EventState())
     }
 
@@ -291,6 +295,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         } else {
             // Remove from mesh if present
             if meshState.removeFromMesh(peerID, for: sub.topic) {
+                peerScorer.peerLeftMesh(peerID, topic: sub.topic)
                 emit(.peerLeftMesh(peer: peerID, topic: sub.topic))
             }
             emit(.peerUnsubscribed(peer: peerID, topic: sub.topic))
@@ -328,6 +333,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         guard message.validateStructure() else {
             // Invalid message structure - record penalty
             peerScorer.recordInvalidMessage(from: peerID)
+            peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
             emit(.messageValidated(messageID: message.id, result: .reject))
             return []
         }
@@ -339,6 +345,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 // Strict mode: require signature
                 guard message.signature != nil, message.source != nil else {
                     peerScorer.recordInvalidMessage(from: peerID)
+                    peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
                     emit(.messageValidated(messageID: message.id, result: .reject))
                     return []
                 }
@@ -349,6 +356,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 guard message.verifySignature() else {
                     // Invalid signature - record penalty
                     peerScorer.recordInvalidMessage(from: peerID)
+                    peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
                     emit(.messageValidated(messageID: message.id, result: .reject))
                     return []
                 }
@@ -359,6 +367,14 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         // Track message delivery AFTER validation succeeds
         // This prevents attackers from gaining first-delivery bonus with invalid messages
         peerScorer.recordMessageDelivery(from: peerID, isFirst: true)
+
+        // Per-topic scoring: record first message delivery
+        peerScorer.recordFirstMessageDelivery(from: peerID, topic: message.topic)
+
+        // Per-topic scoring: record mesh message delivery if peer is in the mesh
+        if meshState.meshPeers(for: message.topic).contains(peerID) {
+            peerScorer.recordMeshMessageDelivery(from: peerID, topic: message.topic)
+        }
 
         // === Delivery Phase ===
         // Cache the message
@@ -595,6 +611,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
             // Add to mesh
             if meshState.addToMesh(peerID, for: topic) {
+                peerScorer.peerJoinedMesh(peerID, topic: topic)
                 emit(.peerJoinedMesh(peer: peerID, topic: topic))
             }
         }
@@ -612,6 +629,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
             // Remove from mesh
             if meshState.removeFromMesh(peerID, for: topic) {
+                peerScorer.peerLeftMesh(peerID, topic: topic)
                 emit(.peerLeftMesh(peer: peerID, topic: topic))
             }
 
@@ -761,6 +779,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
                 for peer in toGraft {
                     meshState.addToMesh(peer, for: topic)
+                    peerScorer.peerJoinedMesh(peer, topic: topic)
                     emit(.peerJoinedMesh(peer: peer, topic: topic))
 
                     var batch = ControlMessageBatch()
@@ -783,6 +802,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
                 for peer in toPrune {
                     meshState.removeFromMesh(peer, for: topic)
+                    peerScorer.peerLeftMesh(peer, topic: topic)
                     emit(.peerLeftMesh(peer: peer, topic: topic))
 
                     // Set local backoff so we don't accept GRAFT from this peer

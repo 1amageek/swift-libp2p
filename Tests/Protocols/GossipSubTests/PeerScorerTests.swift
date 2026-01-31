@@ -393,4 +393,405 @@ struct PeerScorerTests {
         #expect(selected[1] == peer3)  // Second highest
         #expect(selected[2] == peer1)  // Lowest score
     }
+
+    // MARK: - Per-Topic Scoring Tests
+
+    @Test("Time in mesh scoring")
+    func testTimeInMeshScoring() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 1.0,
+            timeInMeshQuantum: .seconds(1),
+            timeInMeshCap: 3600,
+            firstMessageDeliveriesWeight: 0,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Peer joins mesh
+        scorer.peerJoinedMesh(peerID, topic: topic)
+
+        // Immediately after joining, time in mesh is very small but non-negative
+        let score = scorer.computeScore(for: peerID)
+        // P1 = timeInMeshWeight * min(timeInMesh / quantum, cap) >= 0
+        #expect(score >= 0.0)
+    }
+
+    @Test("First message delivery bonus")
+    func testFirstMessageDeliveryBonus() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 5.0,
+            firstMessageDeliveriesDecay: 1.0,  // no decay
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Record 3 first message deliveries
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+
+        let score = scorer.computeScore(for: peerID)
+        // P2 = firstMessageDeliveriesWeight * min(3, cap) = 5.0 * 3 = 15.0
+        // topicWeight * topicScore = 1.0 * 15.0 = 15.0
+        #expect(score == 15.0)
+    }
+
+    @Test("Mesh message delivery deficit penalty")
+    func testMeshMessageDeliveryDeficit() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 0,
+            meshMessageDeliveriesWeight: -1.0,
+            meshMessageDeliveriesDecay: 1.0,  // no decay
+            meshMessageDeliveriesThreshold: 10,
+            meshMessageDeliveriesCap: 100,
+            meshMessageDeliveriesActivation: .zero,  // activate immediately
+            meshMessageDeliveriesWindow: .seconds(5),
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Join mesh (activation is immediate with .zero)
+        scorer.peerJoinedMesh(peerID, topic: topic)
+
+        // Deliver only 3 messages (deficit = 10 - 3 = 7)
+        scorer.recordMeshMessageDelivery(from: peerID, topic: topic)
+        scorer.recordMeshMessageDelivery(from: peerID, topic: topic)
+        scorer.recordMeshMessageDelivery(from: peerID, topic: topic)
+
+        let score = scorer.computeScore(for: peerID)
+        // P3 = meshMessageDeliveriesWeight * (threshold - delivered)^2
+        //    = -1.0 * (10 - 3)^2 = -1.0 * 49 = -49.0
+        #expect(score == -49.0)
+    }
+
+    @Test("Mesh failure penalty")
+    func testMeshFailurePenalty() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 0,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: -2.0,
+            meshFailurePenaltyDecay: 1.0,  // no decay
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Record mesh failure directly
+        scorer.recordMeshFailure(peer: peerID, topic: topic)
+
+        let score = scorer.computeScore(for: peerID)
+        // P3b = meshFailurePenaltyWeight * meshFailurePenalty = -2.0 * 1 = -2.0
+        #expect(score == -2.0)
+    }
+
+    @Test("Invalid message per-topic penalty")
+    func testInvalidMessagePerTopicPenalty() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 0,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: -10.0,
+            invalidMessageDeliveriesDecay: 1.0  // no decay
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Record 2 invalid messages
+        scorer.recordInvalidMessageDelivery(from: peerID, topic: topic)
+        scorer.recordInvalidMessageDelivery(from: peerID, topic: topic)
+
+        let score = scorer.computeScore(for: peerID)
+        // P4 = invalidMessageDeliveriesWeight * invalidMessageDeliveries^2
+        //    = -10.0 * 2^2 = -10.0 * 4 = -40.0
+        #expect(score == -40.0)
+    }
+
+    @Test("Topic weights in overall score")
+    func testTopicWeights() {
+        let topic1: Topic = "topic-1"
+        let topic2: Topic = "topic-2"
+
+        let params1 = TopicScoreParams(
+            topicWeight: 2.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 1.0,
+            firstMessageDeliveriesDecay: 1.0,
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let params2 = TopicScoreParams(
+            topicWeight: 3.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 1.0,
+            firstMessageDeliveriesDecay: 1.0,
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+
+        let scorer = PeerScorer(
+            topicParams: [topic1: params1, topic2: params2]
+        )
+        let peerID = makePeerID()
+
+        // 1 first delivery in topic1, 1 in topic2
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic1)
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic2)
+
+        let score = scorer.computeScore(for: peerID)
+        // topic1: topicWeight * P2 = 2.0 * (1.0 * 1) = 2.0
+        // topic2: topicWeight * P2 = 3.0 * (1.0 * 1) = 3.0
+        // total = 2.0 + 3.0 = 5.0
+        #expect(score == 5.0)
+    }
+
+    @Test("Per-topic decay")
+    func testPerTopicDecay() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 1.0,
+            firstMessageDeliveriesDecay: 0.5,  // halve each decay
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Record 10 first deliveries
+        for _ in 0..<10 {
+            scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+        }
+
+        let scoreBefore = scorer.computeScore(for: peerID)
+        // P2 = 1.0 * 10 = 10.0
+        #expect(scoreBefore == 10.0)
+
+        // Apply decay
+        scorer.applyDecayToAll()
+
+        let scoreAfter = scorer.computeScore(for: peerID)
+        // After decay: firstMessageDeliveries = 10 * 0.5 = 5
+        // P2 = 1.0 * 5.0 = 5.0
+        #expect(scoreAfter == 5.0)
+    }
+
+    @Test("Activation window delays deficit penalty")
+    func testActivationWindow() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 0,
+            meshMessageDeliveriesWeight: -1.0,
+            meshMessageDeliveriesDecay: 1.0,
+            meshMessageDeliveriesThreshold: 10,
+            meshMessageDeliveriesCap: 100,
+            meshMessageDeliveriesActivation: .seconds(3600),  // very long activation
+            meshMessageDeliveriesWindow: .seconds(5),
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Join mesh
+        scorer.peerJoinedMesh(peerID, topic: topic)
+
+        // Deliver no messages at all
+
+        let score = scorer.computeScore(for: peerID)
+        // Activation window is 3600 seconds, so P3 = 0 (not yet active)
+        // No other contributions, so score = 0
+        #expect(score == 0.0)
+    }
+
+    @Test("computeScore combines global and per-topic scores")
+    func testComputeScoreCombinesGlobalAndPerTopic() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 1.0,
+            firstMessageDeliveriesDecay: 1.0,
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        // Apply global penalty
+        scorer.applyPenalty(to: peerID, amount: -5.0)
+
+        // Record per-topic first delivery
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+
+        // Global score: -5.0
+        // Per-topic score: 1.0 * (1.0 * 1) = 1.0
+        // Combined: -5.0 + 1.0 = -4.0
+        let combined = scorer.computeScore(for: peerID)
+        #expect(combined == -4.0)
+
+        // score(for:) only returns global
+        let globalOnly = scorer.score(for: peerID)
+        #expect(globalOnly == -5.0)
+    }
+
+    @Test("Default topic params used for unconfigured topics")
+    func testDefaultTopicParams() {
+        let defaultParams = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 2.0,
+            firstMessageDeliveriesDecay: 1.0,
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            defaultTopicParams: defaultParams
+        )
+        let peerID = makePeerID()
+        let unconfiguredTopic: Topic = "unconfigured"
+
+        scorer.recordFirstMessageDelivery(from: peerID, topic: unconfiguredTopic)
+
+        let score = scorer.computeScore(for: peerID)
+        // Using default params: P2 = 2.0 * 1 = 2.0
+        #expect(score == 2.0)
+    }
+
+    @Test("Mesh message deliveries above threshold gives no penalty")
+    func testMeshMessageDeliveriesAboveThreshold() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 0,
+            meshMessageDeliveriesWeight: -1.0,
+            meshMessageDeliveriesDecay: 1.0,
+            meshMessageDeliveriesThreshold: 5,
+            meshMessageDeliveriesCap: 100,
+            meshMessageDeliveriesActivation: .zero,
+            meshMessageDeliveriesWindow: .seconds(5),
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        scorer.peerJoinedMesh(peerID, topic: topic)
+
+        // Deliver more than threshold
+        for _ in 0..<10 {
+            scorer.recordMeshMessageDelivery(from: peerID, topic: topic)
+        }
+
+        let score = scorer.computeScore(for: peerID)
+        // deficit = threshold - delivered = 5 - 10 = -5 (negative, so P3 = 0)
+        #expect(score == 0.0)
+    }
+
+    @Test("removePeer clears per-topic state")
+    func testRemovePeerClearsTopicState() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 1.0,
+            firstMessageDeliveriesDecay: 1.0,
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+        #expect(scorer.computeScore(for: peerID) == 1.0)
+
+        scorer.removePeer(peerID)
+
+        // After removal, score should be 0
+        #expect(scorer.computeScore(for: peerID) == 0.0)
+    }
+
+    @Test("clear clears per-topic state")
+    func testClearClearsTopicState() {
+        let topic: Topic = "test-topic"
+        let params = TopicScoreParams(
+            topicWeight: 1.0,
+            timeInMeshWeight: 0,
+            firstMessageDeliveriesWeight: 1.0,
+            firstMessageDeliveriesDecay: 1.0,
+            firstMessageDeliveriesCap: 100,
+            meshMessageDeliveriesWeight: 0,
+            meshFailurePenaltyWeight: 0,
+            invalidMessageDeliveriesWeight: 0
+        )
+        let scorer = PeerScorer(
+            topicParams: [topic: params]
+        )
+        let peerID = makePeerID()
+
+        scorer.recordFirstMessageDelivery(from: peerID, topic: topic)
+        #expect(scorer.computeScore(for: peerID) == 1.0)
+
+        scorer.clear()
+
+        #expect(scorer.computeScore(for: peerID) == 0.0)
+    }
 }

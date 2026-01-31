@@ -387,16 +387,6 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
     }
 }
 
-// MARK: - TransportError extension
-
-extension TransportError {
-    static let connectionClosed = TransportError.connectionFailed(underlying: ConnectionClosedError())
-}
-
-struct ConnectionClosedError: Error, CustomStringConvertible {
-    var description: String { "Connection closed" }
-}
-
 // MARK: - Multiaddr conversion helpers
 
 extension SocketAddress {

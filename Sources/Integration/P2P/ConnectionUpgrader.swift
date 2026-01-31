@@ -201,7 +201,7 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
 
         let negotiatedProtocol: String
         if role == .initiator {
-            let result = try await MultistreamSelect.negotiate(
+            let result = try await MultistreamSelect.negotiateLazy(
                 protocols: protocolIDs,
                 read: { try await self.readBuffered(from: raw, buffer: &buffer) },
                 write: { try await raw.write($0) }
@@ -267,7 +267,7 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
 
         let negotiatedProtocol: String
         if role == .initiator {
-            let result = try await MultistreamSelect.negotiate(
+            let result = try await MultistreamSelect.negotiateLazy(
                 protocols: protocolIDs,
                 read: { try await self.readBufferedSecured(from: secured, buffer: &buffer) },
                 write: { try await secured.write($0) }

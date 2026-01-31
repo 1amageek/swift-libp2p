@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "P2PTransportTCP", targets: ["P2PTransportTCP"]),
         .library(name: "P2PTransportQUIC", targets: ["P2PTransportQUIC"]),
         .library(name: "P2PTransportWebRTC", targets: ["P2PTransportWebRTC"]),
+        .library(name: "P2PTransportWebSocket", targets: ["P2PTransportWebSocket"]),
         .library(name: "P2PTransportMemory", targets: ["P2PTransportMemory"]),
 
         // MARK: - Security
@@ -70,7 +71,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
         .package(url: "https://github.com/1amageek/swift-quic.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-tls.git", branch: "main"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", branch: "main"),
+        .package(path: "../swift-webrtc"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -130,7 +131,20 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
-            path: "Sources/Transport/WebRTC"
+            path: "Sources/Transport/WebRTC",
+            exclude: ["CONTEXT.md"]
+        ),
+        .target(
+            name: "P2PTransportWebSocket",
+            dependencies: [
+                "P2PTransport",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
+            ],
+            path: "Sources/Transport/WebSocket",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PTransportMemory",
@@ -163,9 +177,20 @@ let package = Package(
             name: "P2PTransportWebRTCTests",
             dependencies: [
                 "P2PTransportWebRTC",
+                "P2PTransport",
+                "P2PMux",
                 "P2PCore",
             ],
             path: "Tests/Transport/WebRTCTests"
+        ),
+        .testTarget(
+            name: "P2PTransportWebSocketTests",
+            dependencies: [
+                "P2PTransportWebSocket",
+                "P2PTransport",
+                "P2PCore",
+            ],
+            path: "Tests/Transport/WebSocketTests"
         ),
 
         // MARK: - Security

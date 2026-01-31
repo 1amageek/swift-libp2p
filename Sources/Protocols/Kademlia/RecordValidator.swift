@@ -35,6 +35,39 @@ public protocol RecordValidator: Sendable {
     /// - Returns: `true` if the record is valid and should be stored, `false` otherwise.
     /// - Throws: Any error during validation (will be treated as validation failure).
     func validate(record: KademliaRecord, from: PeerID) async throws -> Bool
+
+    /// Selects the best record from multiple records for the same key.
+    ///
+    /// When a GET_VALUE query receives records from multiple peers, this method
+    /// determines which record is the "best" one to return. This corresponds to
+    /// Go's `Select(key string, vals [][]byte) (int, error)`.
+    ///
+    /// - Parameters:
+    ///   - key: The record key.
+    ///   - records: The candidate records (non-empty).
+    /// - Returns: The index (0-based) of the best record.
+    /// - Throws: `RecordSelectionError` if no valid selection can be made.
+    func select(key: Data, records: [KademliaRecord]) async throws -> Int
+}
+
+// MARK: - Default select implementation
+
+extension RecordValidator {
+    /// Default implementation: selects the first record (backward compatible).
+    public func select(key: Data, records: [KademliaRecord]) async throws -> Int {
+        guard !records.isEmpty else {
+            throw RecordSelectionError.noRecords
+        }
+        return 0
+    }
+}
+
+/// Errors from record selection.
+public enum RecordSelectionError: Error, Sendable {
+    /// No records were provided.
+    case noRecords
+    /// All candidate records were invalid.
+    case allRecordsInvalid
 }
 
 /// Reasons for rejecting a record.
@@ -136,6 +169,21 @@ public final class NamespacedValidator: RecordValidator, Sendable {
         }
 
         return try await validator.validate(record: record, from: from)
+    }
+
+    public func select(key: Data, records: [KademliaRecord]) async throws -> Int {
+        guard !records.isEmpty else {
+            throw RecordSelectionError.noRecords
+        }
+
+        let namespace = extractNamespace(from: key)
+
+        guard let validator = validators[namespace] else {
+            // Unknown namespace — default to first record
+            return 0
+        }
+
+        return try await validator.select(key: key, records: records)
     }
 
     /// Extracts the namespace prefix from a key.

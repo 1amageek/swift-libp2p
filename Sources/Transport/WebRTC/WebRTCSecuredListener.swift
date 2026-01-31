@@ -59,37 +59,50 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
 
     /// Start accepting connections and forwarding them as MuxedConnections.
     ///
-    /// When a connection arrives, the remote PeerID is initially set to a
-    /// placeholder. If the DTLS handshake has already completed (the remote
-    /// certificate is available), the PeerID is extracted immediately.
-    /// Otherwise, the integration layer should call
-    /// `WebRTCMuxedConnection.tryExtractRemotePeerID()` once the handshake
-    /// finishes.
+    /// For each incoming connection, waits for the DTLS + SCTP handshake
+    /// to complete (up to 30s), then extracts the verified remote PeerID
+    /// from the certificate before yielding the connection.
+    ///
+    /// Connections that fail the handshake or certificate extraction are
+    /// closed and skipped.
     public func startAccepting() {
         Task { [weak self] in
             guard let self else { return }
             for await webrtcConn in listener.connections {
+                // Wait for DTLS + SCTP handshake to complete
+                do {
+                    try await webrtcConn.waitForConnected()
+                } catch {
+                    // Handshake failed or timed out — skip this connection
+                    webrtcConn.close()
+                    continue
+                }
+
+                // Extract PeerID from certificate (guaranteed available after handshake)
+                let remotePeerID: PeerID
+                do {
+                    guard let certDER = webrtcConn.remoteCertificateDER else {
+                        webrtcConn.close()
+                        continue
+                    }
+                    remotePeerID = try LibP2PCertificate.extractPeerID(from: certDER)
+                } catch {
+                    webrtcConn.close()
+                    continue
+                }
+
                 let muxed = WebRTCMuxedConnection(
                     webrtcConnection: webrtcConn,
                     localPeer: localKeyPair.peerID,
-                    remotePeer: localKeyPair.peerID,
+                    remotePeer: remotePeerID,
                     localAddress: _localAddress,
                     remoteAddress: _localAddress,
                     udpSocket: nil,
                     onClose: { [weak self] in
-                        // Clean up route table entry when connection closes
                         self?.socket.removeRoute(for: webrtcConn)
                     }
                 )
                 muxed.startForwarding()
-
-                // Best-effort PeerID extraction if DTLS handshake is already complete
-                do {
-                    _ = try muxed.tryExtractRemotePeerID()
-                } catch {
-                    // Certificate not yet available or missing libp2p extension.
-                    // PeerID will be resolved later via tryExtractRemotePeerID().
-                }
 
                 let continuation = listenerState.withLock { $0.connectionsContinuation }
                 continuation?.yield(muxed)

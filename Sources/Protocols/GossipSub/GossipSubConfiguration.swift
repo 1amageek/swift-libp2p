@@ -107,6 +107,20 @@ public struct GossipSubConfiguration: Sendable {
     /// Set to 0 to disable IDONTWANT sending.
     public var idontwantThreshold: Int
 
+    // MARK: - Per-Topic Scoring (v1.1)
+
+    /// Per-topic scoring parameters keyed by topic.
+    ///
+    /// Topics with explicit parameters will use these for per-topic scoring.
+    /// Topics without explicit parameters fall back to `defaultTopicScoreParams`.
+    public var topicScoreParams: [Topic: TopicScoreParams]
+
+    /// Default topic scoring parameters for topics without explicit config.
+    ///
+    /// When a topic does not have an entry in `topicScoreParams`, these
+    /// parameters are used. If nil, the static `TopicScoreParams.default` is used.
+    public var defaultTopicScoreParams: TopicScoreParams?
+
     // MARK: - Flood Publish
 
     /// Whether to flood publish to all peers (not just mesh).
@@ -144,6 +158,8 @@ public struct GossipSubConfiguration: Sendable {
         maxIWantMessages: Int = 5000,
         idontwantTTL: Duration = .seconds(3),
         idontwantThreshold: Int = 1024,  // 1KB - send IDONTWANT for messages >= 1KB
+        topicScoreParams: [Topic: TopicScoreParams] = [:],
+        defaultTopicScoreParams: TopicScoreParams? = nil,
         floodPublish: Bool = true,
         floodPublishMaxPeers: Int = 25
     ) {
@@ -172,6 +188,8 @@ public struct GossipSubConfiguration: Sendable {
         self.maxIWantMessages = maxIWantMessages
         self.idontwantTTL = idontwantTTL
         self.idontwantThreshold = idontwantThreshold
+        self.topicScoreParams = topicScoreParams
+        self.defaultTopicScoreParams = defaultTopicScoreParams
         self.floodPublish = floodPublish
         self.floodPublishMaxPeers = floodPublishMaxPeers
     }

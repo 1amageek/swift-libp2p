@@ -1,5 +1,5 @@
 {
-  "originHash" : "67b433fd0c7b4bfa5218584baffcf74f2b7dbcb37f0df53112209842a0632d56",
+  "originHash" : "c0a6a56dd912f2e87f8bea177254aa4171b3f7e0cad0f12480aaf4c5b2fdada3",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -116,15 +116,6 @@
       "state" : {
         "branch" : "main",
         "revision" : "4730feda741ac16b42d2e047d4026c494578750f"
-      }
-    },
-    {
-      "identity" : "swift-webrtc",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/1amageek/swift-webrtc.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "54dde56904a910b1696f4090bfb3f91c3a8fcfba"
       }
     }
   ],

@@ -11,8 +11,21 @@ public struct ResourceSnapshot: Sendable {
     /// Per-peer resource usage.
     public let peers: [PeerID: ResourceStat]
 
-    public init(system: ResourceStat, peers: [PeerID: ResourceStat]) {
+    /// Per-protocol resource usage.
+    public let protocols: [String: ResourceStat]
+
+    /// Per-service resource usage.
+    public let services: [String: ResourceStat]
+
+    public init(
+        system: ResourceStat,
+        peers: [PeerID: ResourceStat],
+        protocols: [String: ResourceStat] = [:],
+        services: [String: ResourceStat] = [:]
+    ) {
         self.system = system
         self.peers = peers
+        self.protocols = protocols
+        self.services = services
     }
 }

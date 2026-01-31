@@ -4,9 +4,9 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 
 ## Features
 
-- **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), Memory for testing
-- **Security Layer**: TLS 1.3 (libp2p spec, via swift-tls), Noise Protocol (XX pattern), QUIC TLS 1.3, Plaintext for testing
-- **Multiplexing**: Yamux stream multiplexer, Mplex, QUIC native multiplexing
+- **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), WebRTC Direct (DTLS 1.2 + SCTP), Memory for testing
+- **Security Layer**: TLS 1.3 (libp2p spec, via swift-tls), Noise Protocol (XX pattern), QUIC TLS 1.3, DTLS 1.2 (WebRTC), Plaintext for testing
+- **Multiplexing**: Yamux stream multiplexer, Mplex, QUIC native multiplexing, SCTP data channels (WebRTC)
 - **Protocol Negotiation**: multistream-select 1.0
 - **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
@@ -35,8 +35,8 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | QUIC (swift-quic) | ✅ Implemented | 0-RTT, connection migration pending |
 | Memory (testing) | ✅ Implemented | |
 | Circuit Relay v2 Transport | ✅ Implemented | |
+| WebRTC Direct (swift-webrtc) | ✅ Implemented | DTLS 1.2 + SCTP, 25 tests |
 | WebSocket | ❌ Not implemented | Browser interop |
-| WebRTC | ❌ Not implemented | |
 
 ### Security
 
@@ -72,9 +72,9 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | PeerStore (basic, in-memory, LRU) | ✅ Implemented | |
 | AddressBook (scoring, priority) | ✅ Implemented | |
 | Bootstrap (seed peers) | ✅ Implemented | |
-| PeerStore TTL-based garbage collection | ❌ Not implemented | `lastSeen` exists but no TTL-based GC |
-| ProtoBook (per-peer protocol tracking) | ❌ Not implemented | |
-| KeyBook (per-peer public key storage) | ❌ Not implemented | |
+| PeerStore TTL-based garbage collection | ✅ Implemented | LRU + TTL-based GC |
+| ProtoBook (per-peer protocol tracking) | ✅ Implemented | |
+| KeyBook (per-peer public key storage) | ✅ Implemented | |
 
 ### Protocols
 
@@ -198,7 +198,7 @@ try await stream.write(Data("Hello!".utf8))
 +-----------------------------------------------------------+
 |  Security Layer (TLS 1.3, Noise XX)                       |
 +-----------------------------------------------------------+
-|  Transport Layer (TCP, Memory, Circuit Relay)             |
+|  Transport Layer (TCP, QUIC, WebRTC, Memory, Circuit Relay)|
 +-----------------------------------------------------------+
 |  NAT Traversal (Circuit Relay v2, AutoNAT, DCUtR)         |
 +-----------------------------------------------------------+
@@ -214,6 +214,7 @@ try await stream.write(Data("Hello!".utf8))
 | `P2PTransport` | Transport protocol definition |
 | `P2PTransportTCP` | TCP transport implementation (SwiftNIO) |
 | `P2PTransportQUIC` | QUIC transport implementation (RFC 9000) |
+| `P2PTransportWebRTC` | WebRTC Direct transport (DTLS 1.2 + SCTP) |
 | `P2PTransportMemory` | In-memory transport for testing |
 | `P2PSecurity` | Security protocol definition |
 | `P2PSecurityTLS` | TLS 1.3 implementation (swift-tls) |
@@ -254,6 +255,7 @@ This implementation follows the official libp2p specifications for wire-protocol
 | Kademlia DHT | `/ipfs/kad/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/kad-dht/README.md) |
 | AutoNAT | `/libp2p/autonat/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/autonat/README.md) |
 | DCUtR | `/libp2p/dcutr` | [spec](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) |
+| WebRTC Direct | `/udp/<port>/webrtc-direct` | [spec](https://github.com/libp2p/specs/blob/master/webrtc/webrtc-direct.md) |
 
 ## Design Principles
 
@@ -408,6 +410,34 @@ let connection = try await quicTransport.dial(
 - Built-in TLS 1.3 security
 - Connection migration support
 
+## WebRTC Direct Transport
+
+WebRTC Direct provides UDP-based encrypted transport with native multiplexing via SCTP data channels:
+
+```swift
+import P2PTransportWebRTC
+
+let webrtcTransport = WebRTCTransport()
+
+// Listen on WebRTC Direct
+let listener = try await webrtcTransport.listenSecured(
+    Multiaddr("/ip4/0.0.0.0/udp/4001/webrtc-direct")!,
+    localKeyPair: keyPair
+)
+
+// Dial with WebRTC Direct (certhash from listener's address)
+let connection = try await webrtcTransport.dialSecured(
+    Multiaddr("/ip4/127.0.0.1/udp/4001/webrtc-direct/certhash/<hash>")!,
+    localKeyPair: keyPair
+)
+```
+
+**Benefits of WebRTC Direct**:
+- UDP-based (NAT traversal friendly)
+- Built-in DTLS 1.2 security
+- SCTP data channel multiplexing (no Yamux needed)
+- Browser-compatible transport path
+
 ## NAT Traversal with Circuit Relay
 
 Circuit Relay v2 enables peers behind NATs to communicate through public relay nodes.
@@ -499,6 +529,7 @@ swift run swift-libp2p-example dial /ip4/127.0.0.1/tcp/4001/p2p/<peer-id>
 - [swift-certificates](https://github.com/apple/swift-certificates) - X.509 certificate handling
 - [swift-asn1](https://github.com/apple/swift-asn1) - ASN.1 DER encoding/decoding
 - [swift-quic](https://github.com/example/swift-quic) - QUIC protocol (RFC 9000)
+- [swift-webrtc](https://github.com/1amageek/swift-webrtc) - WebRTC Direct (DTLS 1.2 + SCTP)
 - [swift-SWIM](https://github.com/example/swift-SWIM) - SWIM membership protocol
 - [swift-mDNS](https://github.com/example/swift-mDNS) - mDNS/DNS-SD discovery
 

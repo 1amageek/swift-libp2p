@@ -1,18 +1,17 @@
-/// RecordStore - Storage for DHT records.
+/// RecordStore - Storage for DHT records with pluggable backends.
 
 import Foundation
 import Synchronization
 
 /// Storage for DHT records with TTL support.
+///
+/// Delegates all storage operations to a `RecordStorage` backend.
+/// By default uses `InMemoryRecordStorage`. Pass a custom backend
+/// (e.g., `FileRecordStorage`) for persistent storage.
 public final class RecordStore: Sendable {
-    /// Internal record with metadata.
-    private struct StoredRecord: Sendable {
-        let record: KademliaRecord
-        let expiresAt: ContinuousClock.Instant
-    }
 
-    /// The stored records.
-    private let records: Mutex<[Data: StoredRecord]>
+    /// The storage backend.
+    private let backend: any RecordStorage
 
     /// Maximum number of records to store.
     public let maxRecords: Int
@@ -20,7 +19,7 @@ public final class RecordStore: Sendable {
     /// Default TTL for records.
     public let defaultTTL: Duration
 
-    /// Creates a new record store.
+    /// Creates a new record store with the default in-memory backend.
     ///
     /// - Parameters:
     ///   - maxRecords: Maximum number of records (default: 1024).
@@ -31,7 +30,21 @@ public final class RecordStore: Sendable {
     ) {
         self.maxRecords = maxRecords
         self.defaultTTL = defaultTTL
-        self.records = Mutex([:])
+        self.backend = InMemoryRecordStorage(maxRecords: maxRecords)
+    }
+
+    /// Creates a new record store with a custom storage backend.
+    ///
+    /// - Parameters:
+    ///   - backend: The storage backend to use.
+    ///   - defaultTTL: Default TTL for records (default: 36 hours).
+    public init(
+        backend: any RecordStorage,
+        defaultTTL: Duration = KademliaProtocol.recordTTL
+    ) {
+        self.backend = backend
+        self.maxRecords = 0  // Managed by backend
+        self.defaultTTL = defaultTTL
     }
 
     /// Stores a record.
@@ -43,29 +56,11 @@ public final class RecordStore: Sendable {
     @discardableResult
     public func put(_ record: KademliaRecord, ttl: Duration? = nil) -> Bool {
         let effectiveTTL = ttl ?? defaultTTL
-        let expiresAt = ContinuousClock.now.advanced(by: effectiveTTL)
-
-        return records.withLock { records in
-            // If already exists, update it
-            if records[record.key] != nil {
-                records[record.key] = StoredRecord(record: record, expiresAt: expiresAt)
-                return true
-            }
-
-            // Check capacity
-            if records.count >= maxRecords {
-                // Try to evict expired records first
-                let now = ContinuousClock.now
-                records = records.filter { $0.value.expiresAt > now }
-
-                // If still full, reject
-                if records.count >= maxRecords {
-                    return false
-                }
-            }
-
-            records[record.key] = StoredRecord(record: record, expiresAt: expiresAt)
+        do {
+            try backend.put(record, ttl: effectiveTTL)
             return true
+        } catch {
+            return false
         }
     }
 
@@ -74,16 +69,10 @@ public final class RecordStore: Sendable {
     /// - Parameter key: The record key.
     /// - Returns: The record if found and not expired.
     public func get(_ key: Data) -> KademliaRecord? {
-        records.withLock { records in
-            guard let stored = records[key] else { return nil }
-
-            // Check expiration
-            if stored.expiresAt <= ContinuousClock.now {
-                records.removeValue(forKey: key)
-                return nil
-            }
-
-            return stored.record
+        do {
+            return try backend.get(key)
+        } catch {
+            return nil
         }
     }
 
@@ -93,8 +82,12 @@ public final class RecordStore: Sendable {
     /// - Returns: The removed record, if found.
     @discardableResult
     public func remove(_ key: Data) -> KademliaRecord? {
-        records.withLock { records in
-            records.removeValue(forKey: key)?.record
+        do {
+            let existing = try backend.get(key)
+            try backend.remove(key)
+            return existing
+        } catch {
+            return nil
         }
     }
 
@@ -108,20 +101,16 @@ public final class RecordStore: Sendable {
 
     /// Returns all non-expired records.
     public var allRecords: [KademliaRecord] {
-        let now = ContinuousClock.now
-        return records.withLock { records in
-            records.values
-                .filter { $0.expiresAt > now }
-                .map { $0.record }
+        do {
+            return try backend.allRecords()
+        } catch {
+            return []
         }
     }
 
     /// Returns the number of non-expired records.
     public var count: Int {
-        let now = ContinuousClock.now
-        return records.withLock { records in
-            records.values.filter { $0.expiresAt > now }.count
-        }
+        backend.count
     }
 
     /// Removes all expired records.
@@ -129,18 +118,22 @@ public final class RecordStore: Sendable {
     /// - Returns: Number of records removed.
     @discardableResult
     public func cleanup() -> Int {
-        let now = ContinuousClock.now
-        return records.withLock { records in
-            let before = records.count
-            records = records.filter { $0.value.expiresAt > now }
-            return before - records.count
+        do {
+            return try backend.cleanup()
+        } catch {
+            return 0
         }
     }
 
     /// Removes all records.
     public func clear() {
-        records.withLock { records in
-            records.removeAll()
+        do {
+            let records = try backend.allRecords()
+            for record in records {
+                try backend.remove(record.key)
+            }
+        } catch {
+            // Best effort
         }
     }
 
@@ -151,18 +144,10 @@ public final class RecordStore: Sendable {
     public func recordsNeedingRepublish(
         threshold: Duration = KademliaProtocol.recordRepublishInterval
     ) -> [KademliaRecord] {
-        let cutoff = ContinuousClock.now - threshold
-        let now = ContinuousClock.now
-        let ttl = self.defaultTTL
-
-        return records.withLock { records in
-            records.values
-                .filter { stored in
-                    // Not expired and needs republish
-                    stored.expiresAt > now &&
-                    (stored.expiresAt - ttl) < cutoff
-                }
-                .map { $0.record }
+        do {
+            return try backend.recordsNeedingRepublish(threshold: threshold)
+        } catch {
+            return []
         }
     }
 }

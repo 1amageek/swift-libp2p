@@ -50,14 +50,16 @@ extension SocketAddress {
     /// Stable string key for routing table lookup.
     ///
     /// Format: `"192.168.1.1:4001"` (IPv4) or `"[::1]:4001"` (IPv6).
+    ///
+    /// Uses `ipAddress` (derived from the sockaddr struct) rather than `host`
+    /// because `SocketAddress(ipAddress:port:)` sets `host` to empty string
+    /// while NIO-received addresses populate it from the kernel.
     var addressKey: String {
-        switch self {
-        case .v4(let addr):
-            return "\(addr.host):\(self.port ?? 0)"
-        case .v6(let addr):
-            return "[\(addr.host)]:\(self.port ?? 0)"
-        case .unixDomainSocket:
-            return "unix"
+        let ip = self.ipAddress ?? ""
+        let port = self.port ?? 0
+        if ip.contains(":") {
+            return "[\(ip)]:\(port)"
         }
+        return "\(ip):\(port)"
     }
 }

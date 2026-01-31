@@ -9,7 +9,9 @@ Transport/
 ├── P2PTransport/     # Protocol定義のみ（NIO依存なし）
 ├── TCP/              # P2PTransportTCP（SwiftNIO使用）
 ├── Memory/           # P2PTransportMemory（テスト用）
-└── QUIC/             # P2PTransportQUIC（swift-quic使用）
+├── QUIC/             # P2PTransportQUIC（swift-quic使用）
+├── WebRTC/           # P2PTransportWebRTC（swift-webrtc使用）
+└── WebSocket/        # P2PTransportWebSocket（NIOWebSocket使用）
 ```
 
 ## 設計原則
@@ -23,6 +25,9 @@ Transport/
 |-----------|------|----------|
 | `P2PTransport` | Transport/Listenerプロトコル定義 | P2PCore |
 | `P2PTransportTCP` | SwiftNIOを使用したTCP実装 | P2PTransport, NIO |
+| `P2PTransportQUIC` | swift-quic使用のQUIC実装 | P2PTransport, P2PMux, QUIC |
+| `P2PTransportWebRTC` | swift-webrtc使用のWebRTC Direct実装 | P2PTransport, P2PMux, WebRTC |
+| `P2PTransportWebSocket` | NIOWebSocket使用のWebSocket実装 | P2PTransport, NIO, NIOHTTP1, NIOWebSocket |
 | `P2PTransportMemory` | テスト用インメモリ実装 | P2PTransport |
 
 ## 主要なプロトコル
@@ -51,8 +56,8 @@ public protocol Listener: Sendable {
 | MemoryTransport | ✅ 実装済み | テスト用インメモリ実装 |
 | RelayTransport | ✅ 実装済み | Circuit Relay v2ラッパー |
 | QUICTransport | ✅ 実装済み | swift-quic使用（TLS 1.3 + libp2p証明書） |
-| WebSocketTransport | ❌ 未実装 | ブラウザ互換性向上に必要 |
-| WebRTCTransport | ❌ 未実装 | |
+| WebRTCTransport | ✅ 実装済み | swift-webrtc使用（DTLS 1.2 + SCTP）、25テスト |
+| WebSocketTransport | ✅ 実装済み | NIOWebSocket使用（HTTP/1.1 Upgrade）、15テスト |
 
 ## 実装ガイドライン
 - `RawConnection`を返す（SecuredConnectionはSecurity層で処理）
@@ -113,10 +118,11 @@ MemoryConnection.ConnectionError
 ### 中優先度
 - [ ] **接続タイムアウトの統一** - Transport共通の設定オプション化
 - [ ] **バックプレッシャー処理のドキュメント化** - 各実装での挙動を明確化
-- [ ] **WebSocketTransportの実装** - ブラウザ互換性向上
+- [x] **WebSocketTransportの実装** - ✅ NIOWebSocket使用で実装完了 (2026-01-30)
 
 ### 低優先度
 - [x] **QUICTransportの実装** - ✅ swift-quic使用で実装完了
+- [x] **WebRTCTransportの実装** - ✅ swift-webrtc使用で実装完了 (2026-01-30)
 - [ ] **レイテンシシミュレーション** - MemoryTransportへの追加（テスト用）
 
 ## テスト実装状況
@@ -128,6 +134,8 @@ MemoryConnection.ConnectionError
 | TCPTransportTests | ✅ 実装済み | 接続、リッスン、双方向通信 |
 | RelayTransportTests | ✅ 実装済み | アドレス解析、RelayListener、RawConnection (18テスト) |
 | QUICTransportTests | ✅ 実装済み | TLS、マルチストリーム、接続管理 (55テスト) |
+| WebRTCTransportTests | ✅ 実装済み | アドレス、接続、E2E (25テスト) |
+| WebSocketTransportTests | ✅ 実装済み | 接続、通信、close挙動、アドレス (15テスト) |
 
 **推奨**: TCPTransportのエラーハンドリングテスト追加
 

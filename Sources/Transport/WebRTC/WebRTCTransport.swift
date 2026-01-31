@@ -106,8 +106,12 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
     /// 1. Generate libp2p certificate with OID extension
     /// 2. Bind ephemeral UDP socket (port 0)
     /// 3. Create WebRTCConnection with send handler wired to socket
-    /// 4. Start DTLS handshake
-    /// 5. Extract remote PeerID from certificate
+    /// 4. Start DTLS handshake and wait for connection (DTLS + SCTP)
+    /// 5. Extract verified remote PeerID from certificate
+    ///
+    /// The method blocks until the DTLS handshake and SCTP association
+    /// complete (up to 30s timeout), ensuring the returned connection
+    /// has a verified remote PeerID.
     ///
     /// Error handling: If any step after socket bind fails, the channel is
     /// closed to prevent resource leaks.
@@ -169,6 +173,15 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             // Start DTLS handshake
             try connection.start()
 
+            // Wait for DTLS + SCTP to complete (polls state, 30s timeout)
+            try await connection.waitForConnected()
+
+            // Extract PeerID from certificate (guaranteed available after handshake)
+            guard let certDER = connection.remoteCertificateDER else {
+                throw WebRTCTransportError.certificateInvalid("No certificate after handshake")
+            }
+            let remotePeerID = try LibP2PCertificate.extractPeerID(from: certDER)
+
             // Build local address from bound socket
             let localAddress = channel.localAddress?.toWebRTCDirectMultiaddr(
                 certhash: certificate.fingerprint.multihash
@@ -177,19 +190,12 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             let muxed = WebRTCMuxedConnection(
                 webrtcConnection: connection,
                 localPeer: localKeyPair.peerID,
-                remotePeer: localKeyPair.peerID, // Updated via tryExtractRemotePeerID() after DTLS
+                remotePeer: remotePeerID,
                 localAddress: localAddress,
                 remoteAddress: address,
                 udpSocket: socket // Dial mode: connection owns the socket
             )
             muxed.startForwarding()
-
-            // Best-effort PeerID extraction if DTLS handshake is already complete
-            do {
-                _ = try muxed.tryExtractRemotePeerID()
-            } catch {
-                // Certificate not yet available -- PeerID will be resolved later
-            }
 
             return muxed
         } catch {
@@ -333,6 +339,43 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
         }
 
         return WebRTCAddressComponents(host: ip, port: port, fingerprint: fingerprint)
+    }
+}
+
+// MARK: - Handshake Wait
+
+extension WebRTCConnection {
+    /// Waits for the connection to reach `.connected` state (DTLS + SCTP).
+    ///
+    /// Polls `connection.state` with 10ms intervals. Uses TaskGroup for timeout.
+    /// Follows the same pattern as `QUICEndpoint.dial()` and
+    /// `QUICSecuredListener.waitForHandshake()`.
+    func waitForConnected(timeout: Duration = .seconds(30)) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw WebRTCTransportError.handshakeTimeout
+            }
+            group.addTask {
+                while true {
+                    switch self.state {
+                    case .connected:
+                        return
+                    case .failed(let reason):
+                        throw WebRTCTransportError.dtlsHandshakeFailed(
+                            underlying: WebRTCError.connectionFailed(reason)
+                        )
+                    case .closed:
+                        throw WebRTCTransportError.connectionClosed
+                    default:
+                        try Task.checkCancellation()
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                }
+            }
+            try await group.next()
+            group.cancelAll()
+        }
     }
 }
 

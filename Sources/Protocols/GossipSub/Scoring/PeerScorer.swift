@@ -120,6 +120,7 @@ public struct PeerScorerConfig: Sendable {
 /// - Excessive IWANT requests: Medium penalty
 /// - Low delivery rate: Penalty based on rate
 /// - IP colocation (Sybil defense): Penalty for multiple peers on same IP
+/// - Per-topic scoring (v1.1): Time-in-mesh, first deliveries, mesh deliveries, invalid messages
 ///
 /// Scores decay over time, allowing peers to recover from penalties.
 /// Peers below the graylist threshold are excluded from mesh selection.
@@ -142,9 +143,32 @@ public final class PeerScorer: Sendable {
     /// IP colocation tracking state.
     private let ipColocation: Mutex<IPColocationState>
 
+    /// Per-topic per-peer state for v1.1 topic scoring.
+    private let topicState: Mutex<[PeerID: [Topic: TopicPeerState]]>
+
+    /// Per-topic scoring parameters (topic -> params).
+    private let topicParams: [Topic: TopicScoreParams]
+
+    /// Default topic scoring parameters for topics without explicit config.
+    private let defaultTopicParams: TopicScoreParams?
+
     private struct PeerScore: Sendable {
         var score: Double = 0.0
         var lastDecay: ContinuousClock.Instant = .now
+    }
+
+    /// Per-topic state tracked for each peer.
+    private struct TopicPeerState: Sendable {
+        /// When the peer joined the mesh for this topic (nil if not in mesh).
+        var meshJoinedAt: ContinuousClock.Instant?
+        /// Counter for first message deliveries in this topic.
+        var firstMessageDeliveries: Double = 0
+        /// Counter for mesh message deliveries in this topic.
+        var meshMessageDeliveries: Double = 0
+        /// Accumulated mesh failure penalty for this topic.
+        var meshFailurePenalty: Double = 0
+        /// Counter for invalid message deliveries in this topic.
+        var invalidMessageDeliveries: Double = 0
     }
 
     /// State for tracking IWANT requests per peer per message.
@@ -203,13 +227,23 @@ public final class PeerScorer: Sendable {
 
     /// Creates a new peer scorer.
     ///
-    /// - Parameter config: Scoring configuration.
-    public init(config: PeerScorerConfig = .default) {
+    /// - Parameters:
+    ///   - config: Scoring configuration.
+    ///   - topicParams: Per-topic scoring parameters keyed by topic.
+    ///   - defaultTopicParams: Default topic scoring parameters for topics without explicit config.
+    public init(
+        config: PeerScorerConfig = .default,
+        topicParams: [Topic: TopicScoreParams] = [:],
+        defaultTopicParams: TopicScoreParams? = nil
+    ) {
         self.config = config
+        self.topicParams = topicParams
+        self.defaultTopicParams = defaultTopicParams
         self.scores = Mutex([:])
         self.iwantTracking = Mutex(IWantTrackingState())
         self.deliveryTracking = Mutex(DeliveryTrackingState())
         self.ipColocation = Mutex(IPColocationState())
+        self.topicState = Mutex([:])
     }
 
     // MARK: - Penalty Recording
@@ -388,6 +422,7 @@ public final class PeerScorer: Sendable {
     @discardableResult
     public func applyDeliveryRatePenalties() -> [PeerID: Double] {
         var penalizedPeers: [PeerID: Double] = [:]
+        var penalties: [(PeerID, Double)] = []
 
         deliveryTracking.withLock { state in
             for (peer, stats) in state.stats {
@@ -398,12 +433,18 @@ public final class PeerScorer: Sendable {
                     let deficit = config.minDeliveryRate - deliveryRate
                     let penalty = config.lowDeliveryPenalty * deficit
                     penalizedPeers[peer] = deliveryRate
-                    // Apply penalty outside this lock to avoid deadlock
-                    scores.withLock { scores in
-                        var peerScore = scores[peer] ?? PeerScore()
-                        peerScore.score += penalty
-                        scores[peer] = peerScore
-                    }
+                    penalties.append((peer, penalty))
+                }
+            }
+        }
+
+        // Apply penalties outside of deliveryTracking lock to avoid nested locks
+        if !penalties.isEmpty {
+            scores.withLock { scores in
+                for (peer, penalty) in penalties {
+                    var peerScore = scores[peer] ?? PeerScore()
+                    peerScore.score += penalty
+                    scores[peer] = peerScore
                 }
             }
         }
@@ -440,7 +481,7 @@ public final class PeerScorer: Sendable {
 
         let normalizedIP = normalizeIP(ip)
 
-        return ipColocation.withLock { state in
+        let (result, pendingPenalties) = ipColocation.withLock { state -> (IPColocationCheckResult, [(PeerID, Double)]?) in
             // Remove from old IP if exists
             if let oldIP = state.ipByPeer[peer] {
                 state.peersByIP[oldIP]?.remove(peer)
@@ -460,29 +501,42 @@ public final class PeerScorer: Sendable {
                 let excessPeers = peerCount - config.ipColocationThreshold
                 let penalty = config.ipColocationPenalty * Double(excessPeers)
 
-                // Apply penalty to all peers on this IP
+                // Collect penalties to apply outside of lock
                 let affectedPeers = state.peersByIP[normalizedIP] ?? []
-                scores.withLock { scores in
-                    for affectedPeer in affectedPeers {
-                        var peerScore = scores[affectedPeer] ?? PeerScore()
-                        peerScore.score += penalty
-                        scores[affectedPeer] = peerScore
-                    }
-                }
+                let penalties = affectedPeers.map { ($0, penalty) }
 
-                return IPColocationCheckResult(
-                    penaltyApplied: true,
-                    peerCount: peerCount,
-                    ipAddress: normalizedIP
+                return (
+                    IPColocationCheckResult(
+                        penaltyApplied: true,
+                        peerCount: peerCount,
+                        ipAddress: normalizedIP
+                    ),
+                    penalties
                 )
             }
 
-            return IPColocationCheckResult(
-                penaltyApplied: false,
-                peerCount: peerCount,
-                ipAddress: normalizedIP
+            return (
+                IPColocationCheckResult(
+                    penaltyApplied: false,
+                    peerCount: peerCount,
+                    ipAddress: normalizedIP
+                ),
+                nil
             )
         }
+
+        // Apply penalties outside of ipColocation lock to avoid nested locks
+        if let penalties = pendingPenalties {
+            scores.withLock { scores in
+                for (affectedPeer, penalty) in penalties {
+                    var peerScore = scores[affectedPeer] ?? PeerScore()
+                    peerScore.score += penalty
+                    scores[affectedPeer] = peerScore
+                }
+            }
+        }
+
+        return result
     }
 
     /// Returns the number of peers sharing the same IP as the given peer.
@@ -537,7 +591,7 @@ public final class PeerScorer: Sendable {
     /// - Parameter peer: The peer ID.
     /// - Returns: `true` if the peer is graylisted.
     public func isGraylisted(_ peer: PeerID) -> Bool {
-        score(for: peer) < config.graylistThreshold
+        computeScore(for: peer) < config.graylistThreshold
     }
 
     /// Returns all peers with their current scores.
@@ -554,6 +608,233 @@ public final class PeerScorer: Sendable {
         }
     }
 
+    // MARK: - Per-Topic Scoring
+
+    /// Records that a peer has joined the mesh for a topic.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that joined the mesh.
+    ///   - topic: The topic the peer joined.
+    public func peerJoinedMesh(_ peer: PeerID, topic: Topic) {
+        topicState.withLock { states in
+            var peerTopics = states[peer] ?? [:]
+            var ts = peerTopics[topic] ?? TopicPeerState()
+            ts.meshJoinedAt = ContinuousClock.now
+            peerTopics[topic] = ts
+            states[peer] = peerTopics
+        }
+    }
+
+    /// Records that a peer has left the mesh for a topic.
+    ///
+    /// If the peer had a mesh message delivery deficit at the time of leaving,
+    /// the deficit is recorded as a mesh failure penalty.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that left the mesh.
+    ///   - topic: The topic the peer left.
+    public func peerLeftMesh(_ peer: PeerID, topic: Topic) {
+        let params = resolveTopicParams(topic)
+
+        topicState.withLock { states in
+            var peerTopics = states[peer] ?? [:]
+            var ts = peerTopics[topic] ?? TopicPeerState()
+
+            // Check if we should apply mesh failure penalty (P3b).
+            // If the peer had a delivery deficit when leaving, record it.
+            if let joinedAt = ts.meshJoinedAt {
+                let timeInMesh = ContinuousClock.now - joinedAt
+                if timeInMesh >= params.meshMessageDeliveriesActivation {
+                    let deficit = params.meshMessageDeliveriesThreshold - ts.meshMessageDeliveries
+                    if deficit > 0 {
+                        ts.meshFailurePenalty += deficit * deficit
+                    }
+                }
+            }
+
+            ts.meshJoinedAt = nil
+            peerTopics[topic] = ts
+            states[peer] = peerTopics
+        }
+    }
+
+    /// Records a first message delivery from a peer in a topic.
+    ///
+    /// This increments the P2 (first message deliveries) counter for the topic,
+    /// capped at the configured maximum.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that delivered the message first.
+    ///   - topic: The topic the message was delivered in.
+    public func recordFirstMessageDelivery(from peer: PeerID, topic: Topic) {
+        let params = resolveTopicParams(topic)
+
+        topicState.withLock { states in
+            var peerTopics = states[peer] ?? [:]
+            var ts = peerTopics[topic] ?? TopicPeerState()
+            ts.firstMessageDeliveries = min(
+                ts.firstMessageDeliveries + 1,
+                params.firstMessageDeliveriesCap
+            )
+            peerTopics[topic] = ts
+            states[peer] = peerTopics
+        }
+    }
+
+    /// Records a mesh message delivery from a peer in a topic.
+    ///
+    /// This increments the P3 (mesh message deliveries) counter for the topic,
+    /// capped at the configured maximum.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that delivered the message in the mesh.
+    ///   - topic: The topic the message was delivered in.
+    public func recordMeshMessageDelivery(from peer: PeerID, topic: Topic) {
+        let params = resolveTopicParams(topic)
+
+        topicState.withLock { states in
+            var peerTopics = states[peer] ?? [:]
+            var ts = peerTopics[topic] ?? TopicPeerState()
+            ts.meshMessageDeliveries = min(
+                ts.meshMessageDeliveries + 1,
+                params.meshMessageDeliveriesCap
+            )
+            peerTopics[topic] = ts
+            states[peer] = peerTopics
+        }
+    }
+
+    /// Records an invalid message delivery from a peer in a topic.
+    ///
+    /// This increments the P4 (invalid message deliveries) counter for the topic.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that delivered the invalid message.
+    ///   - topic: The topic the invalid message was in.
+    public func recordInvalidMessageDelivery(from peer: PeerID, topic: Topic) {
+        topicState.withLock { states in
+            var peerTopics = states[peer] ?? [:]
+            var ts = peerTopics[topic] ?? TopicPeerState()
+            ts.invalidMessageDeliveries += 1
+            peerTopics[topic] = ts
+            states[peer] = peerTopics
+        }
+    }
+
+    /// Records a mesh failure for a peer in a topic.
+    ///
+    /// This directly adds to the P3b (mesh failure penalty) counter.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that had a mesh failure.
+    ///   - topic: The topic the failure occurred in.
+    public func recordMeshFailure(peer: PeerID, topic: Topic) {
+        topicState.withLock { states in
+            var peerTopics = states[peer] ?? [:]
+            var ts = peerTopics[topic] ?? TopicPeerState()
+            ts.meshFailurePenalty += 1
+            peerTopics[topic] = ts
+            states[peer] = peerTopics
+        }
+    }
+
+    /// Computes the combined score for a peer (global + per-topic).
+    ///
+    /// The total score is: globalScore + sum(topicWeight_i * topicScore_i)
+    ///
+    /// Per-topic score components (per GossipSub v1.1 spec):
+    /// - P1: Time in mesh bonus
+    /// - P2: First message deliveries bonus
+    /// - P3: Mesh message delivery deficit penalty (after activation window)
+    /// - P3b: Mesh failure penalty
+    /// - P4: Invalid message deliveries penalty
+    ///
+    /// - Parameter peer: The peer to compute the score for.
+    /// - Returns: The combined global and per-topic score.
+    public func computeScore(for peer: PeerID) -> Double {
+        let globalScore = score(for: peer)
+        let now = ContinuousClock.now
+
+        let topicScore = topicState.withLock { states -> Double in
+            guard let peerTopics = states[peer] else { return 0.0 }
+
+            var total = 0.0
+
+            for (topic, ts) in peerTopics {
+                let params = resolveTopicParams(topic)
+
+                // P1: Time in Mesh
+                let p1: Double
+                if let joinedAt = ts.meshJoinedAt {
+                    let timeInMesh = now - joinedAt
+                    let quantumSeconds = Self.durationToSeconds(params.timeInMeshQuantum)
+                    let timeInMeshSeconds = Self.durationToSeconds(timeInMesh)
+                    let quanta = quantumSeconds > 0 ? timeInMeshSeconds / quantumSeconds : 0
+                    p1 = params.timeInMeshWeight * min(quanta, params.timeInMeshCap)
+                } else {
+                    p1 = 0
+                }
+
+                // P2: First Message Deliveries
+                let p2 = params.firstMessageDeliveriesWeight * min(
+                    ts.firstMessageDeliveries,
+                    params.firstMessageDeliveriesCap
+                )
+
+                // P3: Mesh Message Delivery Deficit
+                let p3: Double
+                if let joinedAt = ts.meshJoinedAt {
+                    let timeInMesh = now - joinedAt
+                    if timeInMesh >= params.meshMessageDeliveriesActivation {
+                        let deficit = params.meshMessageDeliveriesThreshold - ts.meshMessageDeliveries
+                        if deficit > 0 {
+                            p3 = params.meshMessageDeliveriesWeight * deficit * deficit
+                        } else {
+                            p3 = 0
+                        }
+                    } else {
+                        p3 = 0
+                    }
+                } else {
+                    p3 = 0
+                }
+
+                // P3b: Mesh Failure Penalty
+                let p3b = params.meshFailurePenaltyWeight * ts.meshFailurePenalty
+
+                // P4: Invalid Messages
+                let p4 = params.invalidMessageDeliveriesWeight * ts.invalidMessageDeliveries * ts.invalidMessageDeliveries
+
+                let topicScoreValue = p1 + p2 + p3 + p3b + p4
+                total += params.topicWeight * topicScoreValue
+            }
+
+            return total
+        }
+
+        return globalScore + topicScore
+    }
+
+    /// Resolves topic scoring parameters for a given topic.
+    ///
+    /// Returns the explicit params for the topic if configured,
+    /// otherwise the default topic params, otherwise the static default.
+    ///
+    /// - Parameter topic: The topic to resolve parameters for.
+    /// - Returns: The resolved topic scoring parameters.
+    private func resolveTopicParams(_ topic: Topic) -> TopicScoreParams {
+        topicParams[topic] ?? defaultTopicParams ?? .default
+    }
+
+    /// Converts a Duration to seconds as a Double.
+    ///
+    /// - Parameter duration: The duration to convert.
+    /// - Returns: The duration in seconds.
+    private static func durationToSeconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
     // MARK: - Peer Selection
 
     /// Sorts peers by score (highest first).
@@ -561,7 +842,7 @@ public final class PeerScorer: Sendable {
     /// - Parameter peers: The peers to sort.
     /// - Returns: Peers sorted by descending score.
     public func sortByScore(_ peers: [PeerID]) -> [PeerID] {
-        let peerScores = peers.map { (peer: $0, score: score(for: $0)) }
+        let peerScores = peers.map { (peer: $0, score: computeScore(for: $0)) }
         return peerScores.sorted { $0.score > $1.score }.map(\.peer)
     }
 
@@ -587,13 +868,28 @@ public final class PeerScorer: Sendable {
 
     // MARK: - Decay
 
-    /// Applies decay to all peer scores.
+    /// Applies decay to all peer scores including per-topic counters.
     ///
     /// Called periodically (e.g., by heartbeat) to allow peers to recover.
     public func applyDecayToAll() {
         scores.withLock { scores in
             for peer in scores.keys {
                 applyDecayIfNeeded(for: peer, in: &scores)
+            }
+        }
+
+        // Apply per-topic decay
+        topicState.withLock { states in
+            for (peer, var peerTopics) in states {
+                for (topic, var ts) in peerTopics {
+                    let params = resolveTopicParams(topic)
+                    ts.firstMessageDeliveries *= params.firstMessageDeliveriesDecay
+                    ts.meshMessageDeliveries *= params.meshMessageDeliveriesDecay
+                    ts.meshFailurePenalty *= params.meshFailurePenaltyDecay
+                    ts.invalidMessageDeliveries *= params.invalidMessageDeliveriesDecay
+                    peerTopics[topic] = ts
+                }
+                states[peer] = peerTopics
             }
         }
     }
@@ -646,6 +942,10 @@ public final class PeerScorer: Sendable {
                 }
             }
         }
+
+        _ = topicState.withLock { states in
+            states.removeValue(forKey: peer)
+        }
     }
 
     /// Clears all scores and tracking state.
@@ -665,6 +965,10 @@ public final class PeerScorer: Sendable {
         ipColocation.withLock { state in
             state.peersByIP.removeAll()
             state.ipByPeer.removeAll()
+        }
+
+        topicState.withLock { states in
+            states.removeAll()
         }
     }
 }

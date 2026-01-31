@@ -118,14 +118,23 @@ public struct KademliaQuery: Sendable {
     /// Query configuration.
     public let config: KademliaQueryConfig
 
+    /// Record validator for selecting the best record from multiple responses.
+    public let validator: (any RecordValidator)?
+
     /// Creates a query.
     ///
     /// - Parameters:
     ///   - type: The query type.
     ///   - config: Query configuration.
-    public init(type: KademliaQueryType, config: KademliaQueryConfig = .default) {
+    ///   - validator: Record validator for GET_VALUE selection (optional).
+    public init(
+        type: KademliaQueryType,
+        config: KademliaQueryConfig = .default,
+        validator: (any RecordValidator)? = nil
+    ) {
         self.queryType = type
         self.config = config
+        self.validator = validator
 
         switch type {
         case .findNode(let key):
@@ -194,8 +203,8 @@ public struct KademliaQuery: Sendable {
             seenPeers[peer.id] = queryPeer
         }
 
-        // For GET_VALUE and GET_PROVIDERS, track any found results
-        var foundRecord: (record: KademliaRecord, from: PeerID)?
+        // For GET_VALUE, collect all records for selection
+        var collectedRecords: [(record: KademliaRecord, from: PeerID)] = []
         var foundProviders: [KademliaPeer] = []
 
         // Iterative query loop
@@ -234,9 +243,9 @@ public struct KademliaQuery: Sendable {
                         }
 
                     case .getValue(let record, let closerPeers):
-                        // If found a record, return immediately
+                        // Collect records for later selection
                         if let record = record {
-                            foundRecord = (record, peerID)
+                            collectedRecords.append((record, peerID))
                         }
                         // Add closer peers regardless
                         for newPeer in closerPeers {
@@ -265,8 +274,10 @@ public struct KademliaQuery: Sendable {
                 }
             }
 
-            // For GET_VALUE, return if we found the record
-            if case .getValue = queryType, let found = foundRecord {
+            // For GET_VALUE without a validator, return as soon as we have a record.
+            // With a validator, continue collecting to select the best.
+            if case .getValue = queryType, !collectedRecords.isEmpty, validator == nil {
+                let found = collectedRecords[0]
                 return .value(found.record, from: found.from)
             }
         }
@@ -279,8 +290,9 @@ public struct KademliaQuery: Sendable {
             return .nodes(closestPeers)
 
         case .getValue:
-            if let found = foundRecord {
-                return .value(found.record, from: found.from)
+            if !collectedRecords.isEmpty {
+                let best = try await selectBestRecord(from: collectedRecords)
+                return .value(best.record, from: best.from)
             }
             return .noValue(closestPeers)
 
@@ -290,6 +302,33 @@ public struct KademliaQuery: Sendable {
     }
 
     // MARK: - Private Helpers
+
+    /// Selects the best record from collected responses using the validator.
+    private func selectBestRecord(
+        from collectedRecords: [(record: KademliaRecord, from: PeerID)]
+    ) async throws -> (record: KademliaRecord, from: PeerID) {
+        guard !collectedRecords.isEmpty else {
+            throw KademliaError.recordNotFound
+        }
+
+        if let validator = validator, collectedRecords.count > 1 {
+            let records = collectedRecords.map(\.record)
+            let rawKey: Data
+            switch queryType {
+            case .getValue(let key):
+                rawKey = key
+            default:
+                rawKey = records[0].key
+            }
+            let bestIndex = try await validator.select(key: rawKey, records: records)
+            guard bestIndex >= 0, bestIndex < collectedRecords.count else {
+                return collectedRecords[0]
+            }
+            return collectedRecords[bestIndex]
+        }
+
+        return collectedRecords[0]
+    }
 
     private enum QueryResponse: Sendable {
         case findNode([KademliaPeer])

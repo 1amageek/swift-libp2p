@@ -49,7 +49,8 @@ Sources/Protocols/GossipSub/
 │   └── MessageCache.swift        # メッセージキャッシュ (IHAVE/IWANT用)
 │
 ├── Scoring/
-│   └── PeerScorer.swift          # ピアスコアリング (Sybil/スパム防御)
+│   ├── PeerScorer.swift          # ピアスコアリング (Sybil/スパム防御)
+│   └── TopicScoreParams.swift    # Per-topic スコアリングパラメータ (v1.1)
 │
 ├── Heartbeat/
 │   └── HeartbeatManager.swift    # 定期メンテナンス処理
@@ -71,6 +72,7 @@ Sources/Protocols/GossipSub/
 | `GossipSubRouter` | コア状態管理 (class + Mutex) |
 | `PeerScorer` | ピアスコアリング (スパム/Sybil防御) |
 | `PeerScorerConfig` | スコアリング設定 |
+| `TopicScoreParams` | Per-topicスコアリングパラメータ (v1.1) |
 | `Topic` | トピック識別子 |
 | `Message` | Pub/Subメッセージ |
 | `MessageID` | メッセージ一意識別子 |
@@ -324,7 +326,7 @@ Tests/Protocols/GossipSubTests/
 │   ├── MeshStateTests.swift
 │   └── MessageCacheTests.swift
 ├── Scoring/
-│   └── PeerScorerTests.swift        # スコアリングテスト (21テスト)
+│   └── PeerScorerTests.swift        # スコアリングテスト (34テスト: グローバル21 + Per-topic13)
 ├── Wire/
 │   ├── GossipSubProtobufTests.swift
 │   └── ControlMessageTests.swift
@@ -345,7 +347,7 @@ Tests/Protocols/GossipSubTests/
 - ~~概要では言及されているが完全未実装~~ ✅ 2026-01-23 実装
 - バックオフ追跡実装済み
 - 各種ペナルティ追跡実装済み（詳細は下記）
-- ❌ **per-topic scoring は未実装** — 現在はグローバルスコアリングのみ
+- ✅ **per-topic scoring 実装済み** — P1(Time in Mesh), P2(First Message Deliveries), P3(Mesh Message Delivery Deficit), P3b(Mesh Failure Penalty), P4(Invalid Messages) ✅ 2026-01-30
 
 ### IDONTWANT (v1.2)
 - ✅ データモデル（`ControlMessage.IDontWant`）
@@ -387,7 +389,7 @@ Tests/Protocols/GossipSubTests/
 
 ### 中優先度
 - [x] **IDONTWANT protobuf encode/decode** - ControlIDontWant のワイヤーフォーマット実装（v1.2 完全サポート）
-- [ ] **Per-topic scoring** - トピックごとのスコアリングパラメータ（v1.1 仕様準拠）
+- [x] **Per-topic scoring** - トピックごとのスコアリングパラメータ（v1.1 仕様準拠）✅ 2026-01-30
 - [ ] **Peer Exchange検証** - PRUNEメッセージのピア情報交換テスト
 - [ ] **バックオフ期間の強制テスト** - PRUNE後の再GRAFT防止
 - [ ] **ハートビートタイミングテスト** - 1秒間隔の正確性検証
@@ -489,7 +491,56 @@ router.registerPeerIP(peerID, ip: "192.0.2.1")
 router.performScoringMaintenance()
 ```
 
-**テスト**: `Tests/Protocols/GossipSubTests/PeerScorerTests.swift` (21テスト)
+**テスト**: `Tests/Protocols/GossipSubTests/PeerScorerTests.swift` (34テスト: グローバル21 + Per-topic13)
+
+### Per-topic スコアリング実装 (2026-01-30)
+
+**新機能**: GossipSub v1.1 仕様に準拠した per-topic スコアリング
+
+**実装内容**:
+
+1. **TopicScoreParams** (`Scoring/TopicScoreParams.swift`)
+   - P1: Time in Mesh (mesh参加時間ボーナス)
+   - P2: First Message Deliveries (最初の配信ボーナス)
+   - P3: Mesh Message Delivery Deficit (配信不足ペナルティ)
+   - P3b: Mesh Failure Penalty (mesh障害ペナルティ)
+   - P4: Invalid Messages (無効メッセージペナルティ)
+   - トピック重み (`topicWeight`) で全体スコアへの寄与度を制御
+
+2. **PeerScorer 拡張**
+   - `peerJoinedMesh()` / `peerLeftMesh()` — mesh参加/離脱追跡
+   - `recordFirstMessageDelivery()` / `recordMeshMessageDelivery()` — 配信追跡
+   - `recordInvalidMessageDelivery()` / `recordMeshFailure()` — ペナルティ追跡
+   - `computeScore(for:)` — グローバル + per-topic の総合スコア計算
+   - per-topic カウンタへの減衰 (`applyDecayToAll()`)
+
+3. **GossipSubRouter 統合**
+   - GRAFT 時: `peerJoinedMesh()`
+   - PRUNE 時: `peerLeftMesh()` + delivery deficit があれば `recordMeshFailure()`
+   - メッセージ受信時: `recordFirstMessageDelivery()` / `recordMeshMessageDelivery()`
+   - 無効メッセージ時: `recordInvalidMessageDelivery()`
+
+4. **GossipSubConfiguration 拡張**
+   - `topicScoreParams: [String: TopicScoreParams]` — per-topic 設定
+   - `defaultTopicScoreParams: TopicScoreParams?` — デフォルト設定
+
+**テスト**: 13 per-topic テスト追加（合計34テスト）
+
+### Per-topic スコアリング mesh 管理修正 (2026-01-31)
+
+**問題**: `isGraylisted()` と `sortByScore()` がグローバルスコア (`score(for:)`) のみを使用し、per-topic スコアが mesh 管理判断に反映されていなかった
+
+**解決策**: `isGraylisted()` と `sortByScore()` を `computeScore(for:)` 経由に変更。`selectBestPeers()` と `filterGraylisted()` も per-topic スコアを考慮するようになった
+
+**修正ファイル**: `Scoring/PeerScorer.swift`
+
+### PeerScorer ネストロック解消 (2026-01-31)
+
+**問題**: `applyDeliveryRatePenalties()` と `registerPeerIP()` で `deliveryTracking`/`ipColocation` ロック内から `scores` ロックを取得するネストパターンがあった
+
+**解決策**: ロック内でデータを収集し、ロック外でスコア変更を適用するパターンに修正。デッドロックリスクを排除
+
+**修正ファイル**: `Scoring/PeerScorer.swift`
 
 ---
 

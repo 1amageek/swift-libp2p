@@ -16,7 +16,7 @@ Full codebase review findings. 154 issues across 8 modules.
 
 **Resolved: 77 issues** (34 HIGH + 19 CRITICAL + 15 MEDIUM + 3 LOW + 6 non-issues confirmed)
 
-**Implementation Gaps: 10** (~~2~~ **0** P0 + 4 P1 + 6 P2) — see bottom of this file
+**Implementation Gaps: 10** (~~2~~ **0** P0 + ~~4~~ **0** P1 + ~~6~~ **1** P2) — see bottom of this file
 
 ---
 
@@ -775,33 +775,33 @@ Gap analysis vs Go/Rust implementations (2026-01-28).
 
 ### P2 (Nice to have)
 
-#### GAP-7: GossipSub Per-Topic Scoring
+#### ✅ GAP-7: GossipSub Per-Topic Scoring
 - **Module:** GossipSub
-- **Status:** ❌ Not implemented
+- **Status:** ✅ Resolved
 - **Description:** Current scoring is global only. GossipSub v1.1 spec defines per-topic scoring parameters (topic weight, time-in-mesh, first-message-delivery, mesh-message-delivery, etc.). Go/Rust implementations support per-topic score functions.
-- **Impact:** Cannot fine-tune scoring behavior for different topics
-- **Files:** `Sources/Protocols/GossipSub/Scoring/PeerScorer.swift`
+- **Resolution:** Implemented per-topic scoring with P1 (Time in Mesh), P2 (First Message Deliveries), P3 (Mesh Message Delivery Deficit), P3b (Mesh Failure Penalty), P4 (Invalid Messages). `TopicScoreParams` struct follows Go spec. `computeScore(for:)` combines global + per-topic scores. Mesh management (`isGraylisted`, `sortByScore`, `selectBestPeers`) uses `computeScore()`. Per-topic decay integrated into `applyDecayToAll()`. 13 per-topic tests added.
+- **Files:** `Sources/Protocols/GossipSub/Scoring/PeerScorer.swift`, `Sources/Protocols/GossipSub/Scoring/TopicScoreParams.swift`, `Sources/Protocols/GossipSub/GossipSubConfiguration.swift`, `Sources/Protocols/GossipSub/Router/GossipSubRouter.swift`
 
-#### GAP-8: Kademlia RecordValidator.Select
+#### ✅ GAP-8: Kademlia RecordValidator.Select
 - **Module:** Kademlia
-- **Status:** ❌ Not implemented
+- **Status:** ✅ Resolved
 - **Description:** `RecordValidator` protocol has `validate(key:value:)` but no `select(key:records:)` method. When multiple records exist for the same key, there is no way to determine the "best" record. Go implementation defines `Select(key, []Record) (int, error)`.
-- **Impact:** Cannot resolve conflicts when multiple values exist for a key
-- **Files:** `Sources/Protocols/Kademlia/RecordStore.swift`
+- **Resolution:** Added `select(key:records:)` method to `RecordValidator` protocol with default implementation (returns index 0). `RecordSelectionError` error type added. `KademliaQuery` collects multiple records during GET_VALUE and uses `select()` to choose the best. `NamespacedValidator` delegates to per-namespace validators. `SignedRecordValidator` selects by most recent timestamp.
+- **Files:** `Sources/Protocols/Kademlia/RecordValidator.swift`, `Sources/Protocols/Kademlia/KademliaQuery.swift`
 
-#### GAP-9: Resource Manager (Multi-Scope)
+#### ✅ GAP-9: Resource Manager (Multi-Scope)
 - **Module:** Integration
-- **Status:** ❌ Not implemented
+- **Status:** ✅ Resolved
 - **Description:** No multi-scope resource limiter. Go's `rcmgr` provides limits at system, transient, service, protocol, peer, and connection scopes. Current implementation only has connection-level limits via `ConnectionLimits`.
-- **Impact:** Cannot prevent resource exhaustion at fine-grained scopes
-- **Files:** `Sources/Integration/P2P/Connection/ConnectionLimits.swift`
+- **Resolution:** Implemented `ResourceManager` protocol with system, peer, and protocol scopes. `DefaultResourceManager` enforces limits at all 3 scopes with atomic multi-scope reservation (rollback on failure). `ResourceLimitsConfiguration` supports per-peer and per-protocol overrides. `ResourceSnapshot` exposes all scope stats. `ResourceTrackedStream` wraps `MuxedStream` with automatic 3-scope release. 51 tests added.
+- **Files:** `Sources/Integration/P2P/Resource/ResourceManager.swift`, `Sources/Integration/P2P/Resource/DefaultResourceManager.swift`, `Sources/Integration/P2P/Resource/ResourceLimitsConfiguration.swift`, `Sources/Integration/P2P/Resource/ResourceSnapshot.swift`, `Sources/Integration/P2P/Resource/ResourceTrackedStream.swift`
 
-#### GAP-10: multistream-select V1 Lazy
+#### ✅ GAP-10: multistream-select V1 Lazy
 - **Module:** Negotiation
-- **Status:** ❌ Not implemented
+- **Status:** ✅ Resolved
 - **Description:** V1 Lazy optimization allows the dialer to send the protocol header and selection in a single message when only one protocol is offered, saving one RTT. The function `negotiateLazy` exists but is not wired into the connection upgrade path.
-- **Impact:** Extra RTT on every protocol negotiation with a single candidate
-- **Files:** `Sources/Negotiation/P2PNegotiation/P2PNegotiation.swift`
+- **Resolution:** Wired `negotiateLazy()` into `ConnectionUpgrader` for initiator-side security and muxer negotiation. Responder uses standard V1 `handle()` (backward compatible). Saves 1 RTT per negotiation phase.
+- **Files:** `Sources/Integration/P2P/ConnectionUpgrader.swift`
 
 #### GAP-11: WebSocket Transport
 - **Module:** Transport
@@ -809,9 +809,9 @@ Gap analysis vs Go/Rust implementations (2026-01-28).
 - **Description:** No WebSocket transport. Required for browser interoperability via js-libp2p.
 - **Impact:** Cannot connect to browser-based peers
 
-#### GAP-12: Kademlia Persistent Storage
+#### ✅ GAP-12: Kademlia Persistent Storage
 - **Module:** Kademlia
-- **Status:** ❌ Not implemented
+- **Status:** ✅ Resolved
 - **Description:** `RecordStore` and `ProviderStore` are in-memory only. All DHT records are lost on restart. Go/Rust implementations support persistent backends (LevelDB, etc.).
-- **Impact:** DHT data lost on every restart; requires full re-bootstrap
-- **Files:** `Sources/Protocols/Kademlia/RecordStore.swift`, `Sources/Protocols/Kademlia/ProviderStore.swift`
+- **Resolution:** Extracted `RecordStorage` and `ProviderStorage` protocols. `RecordStore`/`ProviderStore` now delegate to pluggable backends (default: `InMemoryRecordStorage`/`InMemoryProviderStorage`). Added `FileRecordStorage` and `FileProviderStorage` for file-based persistence using write-through cache + JSON files in `<dir>/records/<prefix>/<sha256>.json`. Wall-clock `Date` timestamps used for serialization (survives process restarts). 28 storage tests added.
+- **Files:** `Sources/Protocols/Kademlia/Storage/RecordStorage.swift`, `Sources/Protocols/Kademlia/Storage/ProviderStorage.swift`, `Sources/Protocols/Kademlia/Storage/InMemoryRecordStorage.swift`, `Sources/Protocols/Kademlia/Storage/InMemoryProviderStorage.swift`, `Sources/Protocols/Kademlia/Storage/FileRecordStorage.swift`, `Sources/Protocols/Kademlia/Storage/FileProviderStorage.swift`, `Sources/Protocols/Kademlia/RecordStore.swift`, `Sources/Protocols/Kademlia/ProviderStore.swift`

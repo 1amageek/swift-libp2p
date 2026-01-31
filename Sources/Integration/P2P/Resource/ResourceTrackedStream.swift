@@ -21,18 +21,21 @@ internal final class ResourceTrackedStream: MuxedStream, Sendable {
     private let peer: PeerID
     private let direction: ConnectionDirection
     private let resourceManager: any ResourceManager
+    private let negotiatedProtocolID: String?
     private let released: Mutex<Bool>
 
     init(
         stream: MuxedStream,
         peer: PeerID,
         direction: ConnectionDirection,
-        resourceManager: any ResourceManager
+        resourceManager: any ResourceManager,
+        negotiatedProtocolID: String? = nil
     ) {
         self.underlying = stream
         self.peer = peer
         self.direction = direction
         self.resourceManager = resourceManager
+        self.negotiatedProtocolID = negotiatedProtocolID
         self.released = Mutex(false)
     }
 
@@ -80,7 +83,11 @@ internal final class ResourceTrackedStream: MuxedStream, Sendable {
             return true
         }
         if shouldRelease {
-            resourceManager.releaseStream(peer: peer, direction: direction)
+            if let protocolID = negotiatedProtocolID {
+                resourceManager.releaseStream(protocolID: protocolID, peer: peer, direction: direction)
+            } else {
+                resourceManager.releaseStream(peer: peer, direction: direction)
+            }
         }
     }
 }

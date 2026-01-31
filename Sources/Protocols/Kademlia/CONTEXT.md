@@ -32,12 +32,17 @@ Based on the original Kademlia paper with influences from S/Kademlia, Coral, and
 | `KademliaKey.swift` | 256-bit key with XOR distance |
 | `KBucket.swift` | Single k-bucket (max K entries) |
 | `RoutingTable.swift` | 256 k-buckets indexed by distance |
-| `RecordStore.swift` | Protocol and in-memory implementation |
-| `ProviderStore.swift` | Provider record storage |
-| `KademliaRecord.swift` | DHT record type |
+| `RecordStore.swift` | Record store facade (delegates to RecordStorage backend) |
+| `ProviderStore.swift` | Provider store facade (delegates to ProviderStorage backend) |
 | `KademliaQuery.swift` | Query types and state machine |
 | `KademliaService.swift` | Main service (NetworkBehaviour equivalent) |
 | `KademliaEvent.swift` | Event types |
+| `Storage/RecordStorage.swift` | Protocol for record storage backends |
+| `Storage/ProviderStorage.swift` | Protocol for provider storage backends |
+| `Storage/InMemoryRecordStorage.swift` | In-memory record storage (default) |
+| `Storage/InMemoryProviderStorage.swift` | In-memory provider storage (default) |
+| `Storage/FileRecordStorage.swift` | File-based persistent record storage |
+| `Storage/FileProviderStorage.swift` | File-based persistent provider storage |
 
 ## Key Concepts
 
@@ -188,8 +193,8 @@ message Message {
 - Useful for resource-constrained nodes
 - Does not advertise protocol support
 
-### ⚠️ 制限事項: Client/Server モード
-設定（`KademliaConfiguration.mode`）は存在するが、現在の実装では **client モードでもクエリへの応答を制限しない**。モード設定はプロトコルの advertise 有無にのみ影響する。Go/Rust 実装では client モード時にインバウンドクエリを拒否するが、この動作は未実装。
+### Client/Server モード
+設定（`KademliaConfiguration.mode`）で client/server モードを切り替え可能。Client モード時はインバウンドクエリを拒否する（Go/Rust 互換）。✅ GAP-6 で実装済み。
 
 ## Usage
 
@@ -263,16 +268,19 @@ public enum KademliaEvent {
 ## 既知の制限事項
 
 ### レコードストレージ
-- `RecordStore`と`ProviderStore`はメモリのみ（❌ 永続化ストレージ未実装）
+- ✅ `RecordStore`と`ProviderStore`はプラグイン可能なバックエンドに対応（`RecordStorage`/`ProviderStorage`プロトコル）
+- ✅ デフォルトはインメモリ、`FileRecordStorage`/`FileProviderStorage`で永続化可能
 - ✅ TTLベースのガベージコレクションは `startMaintenance()` で実装済み
 
 ### RecordValidator.Select
-- ❌ **未実装** — 同一キーに複数のレコードがある場合の最適レコード選択機能
-- Go/Rust 実装では `Select(key, records)` で最適なレコードを選ぶが、本実装は `Validate` のみ
+- ✅ **実装済み** — `select(key:records:)` メソッドを `RecordValidator` プロトコルに追加 ✅ 2026-01-30
+- デフォルト実装は index 0 を返す（既存動作と後方互換）
+- `KademliaQuery` が GET_VALUE で複数レコードを収集し `select()` で最良を選択
+- `NamespacedValidator` は対応するネームスペースバリデータに委譲
+- `SignedRecordValidator` はタイムスタンプ比較で最新を選択
 
 ### Client/Server モード制限
-- ⚠️ Client モード設定はプロトコル advertise の有無にのみ影響
-- Client モード時のインバウンドクエリ拒否は未実装
+- ✅ Client モード時のインバウンドクエリ拒否は実装済み (GAP-6) ✅ 2026-01-28
 
 ### 署名付きレコード
 - レコード署名フィールドは存在するが検証未実装
@@ -308,9 +316,9 @@ class QueryDelegateImpl: QueryDelegate {
 - [x] **ProviderStore TTL強制** - 自動メンテナンスタスクで期限切れプロバイダを削除 ✅ 2026-01-23
 
 ### 中優先度
-- [ ] **RecordValidator.Select 実装** - 同一キーの複数レコードから最適なものを選択
-- [ ] **Client モードのインバウンドクエリ拒否** - Go/Rust 互換の動作制限
-- [ ] **永続化ストレージオプション** - SQLite/ファイルベース
+- [x] **RecordValidator.Select 実装** - 同一キーの複数レコードから最適なものを選択 ✅ 2026-01-30
+- [x] **Client モードのインバウンドクエリ拒否** - Go/Rust 互換の動作制限 ✅ 2026-01-28 (GAP-6)
+- [x] **永続化ストレージオプション** - `FileRecordStorage`/`FileProviderStorage` で実装 ✅ 2026-01-30
 - [x] **ピアごとのタイムアウト** - `peerTimeout` 設定で実装 ✅ 2026-01-23
 - [ ] **ピアレイテンシ追跡** - 過去のレスポンス時間に基づく動的タイムアウト調整
 - [ ] **クエリ並列度の動的調整** - ネットワーク状態に応じたALPHA調整
@@ -320,6 +328,24 @@ class QueryDelegateImpl: QueryDelegate {
 - [ ] **S/Kademliaの完全実装** - Sybil攻撃耐性向上
 - [ ] **レコードリパブリッシュ** - 定期的なレコード再配布
 - [ ] **プロバイダキャッシング** - 頻繁に要求されるCIDのキャッシュ
+
+## Fixes Applied
+
+### ContinuousClock → Date 永続化修正 (2026-01-31)
+
+**問題**: `FileRecordStorage` と `FileProviderStorage` が `ContinuousClock.Instant` をそのまま JSON にシリアライズしていた。`ContinuousClock.Instant` はモノトニック・プロセス固有のため、プロセス再起動後にデシリアライズしたTTLが無効になる
+
+**解決策**: ウォールクロック `Date`（`timeIntervalSinceReferenceDate`）でタイムスタンプを保存し、ロード時にモノトニック `ContinuousClock.Instant` に変換するヘルパー関数を追加
+
+**修正ファイル**: `Storage/FileRecordStorage.swift`, `Storage/FileProviderStorage.swift`
+
+### ProviderStore.clear() 修正 (2026-01-31)
+
+**問題**: `ProviderStore.clear()` が `backend.cleanup()` を呼んでいたが、`cleanup()` は期限切れレコードのみ削除する。`clear()` の意図は全レコード削除
+
+**解決策**: `ProviderStorage` プロトコルに `removeAll()` メソッドを追加。`InMemoryProviderStorage` と `FileProviderStorage` に実装。`ProviderStore.clear()` を `backend.removeAll()` に修正
+
+**修正ファイル**: `Storage/ProviderStorage.swift`, `Storage/InMemoryProviderStorage.swift`, `Storage/FileProviderStorage.swift`, `ProviderStore.swift`
 
 ## References
 
@@ -337,12 +363,17 @@ class QueryDelegateImpl: QueryDelegate {
 | `ProtobufTests` | 4 | Protobufエンコード/デコード |
 | `RecordStoreTests` | 4 | レコード保存、TTL |
 | `ProviderStoreTests` | 4 | プロバイダ保存、TTL |
+| `InMemoryRecordStorageTests` | 6 | インメモリレコードストレージ |
+| `InMemoryProviderStorageTests` | 5 | インメモリプロバイダストレージ |
+| `FileRecordStorageTests` | 6 | ファイルベースレコードストレージ |
+| `FileProviderStorageTests` | 4 | ファイルベースプロバイダストレージ |
+| `RecordStoreCustomBackendTests` | 7 | カスタムバックエンド統合 |
 | `KademliaQueryTests` | 5 | クエリ、タイムアウト |
 | `KademliaServiceTests` | 6 | サービス初期化、モード |
 | `ProtocolInputValidationTests` | 10 | 入力検証 |
 | `RecordValidatorTests` | 11 | バリデータ検証 |
 
-**合計: 65テスト** (2026-01-23時点)
+**合計: 108テスト** (2026-01-31時点)
 
 ## Codex Review (2026-01-18)
 
