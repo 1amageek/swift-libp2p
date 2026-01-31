@@ -16,7 +16,7 @@ Full codebase review findings. 154 issues across 8 modules.
 
 **Resolved: 77 issues** (34 HIGH + 19 CRITICAL + 15 MEDIUM + 3 LOW + 6 non-issues confirmed)
 
-**Implementation Gaps: 10** (~~2~~ **0** P0 + ~~4~~ **0** P1 + ~~6~~ **1** P2) — see bottom of this file
+**Implementation Gaps: 10** (~~2~~ **0** P0 + ~~4~~ **0** P1 + ~~6~~ **0** P2) — all resolved
 
 ---
 
@@ -803,11 +803,12 @@ Gap analysis vs Go/Rust implementations (2026-01-28).
 - **Resolution:** Wired `negotiateLazy()` into `ConnectionUpgrader` for initiator-side security and muxer negotiation. Responder uses standard V1 `handle()` (backward compatible). Saves 1 RTT per negotiation phase.
 - **Files:** `Sources/Integration/P2P/ConnectionUpgrader.swift`
 
-#### GAP-11: WebSocket Transport
+#### ✅ GAP-11: WebSocket Transport
 - **Module:** Transport
-- **Status:** ❌ Not implemented
-- **Description:** No WebSocket transport. Required for browser interoperability via js-libp2p.
-- **Impact:** Cannot connect to browser-based peers
+- **Status:** ✅ Resolved
+- **Description:** WebSocket transport for browser interoperability via js-libp2p.
+- **Resolution:** Full ws:// transport implementation with NIO WebSocket. Transport/Listener/RawConnection conformance, RFC 6455 compliance, DoS protection, 15 tests.
+- **Files:** `Sources/Transport/WebSocket/WebSocketTransport.swift`, `Sources/Transport/WebSocket/WebSocketConnection.swift`, `Sources/Transport/WebSocket/WebSocketListener.swift`
 
 #### ✅ GAP-12: Kademlia Persistent Storage
 - **Module:** Kademlia

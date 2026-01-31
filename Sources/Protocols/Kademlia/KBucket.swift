@@ -55,12 +55,16 @@ public struct KBucket: Sendable {
     /// Maximum pending entries.
     private let maxPending: Int
 
+    /// When the bucket was last refreshed or had activity.
+    public var lastRefreshed: ContinuousClock.Instant
+
     /// Creates a new k-bucket.
     public init(maxSize: Int = KademliaProtocol.kValue, maxPending: Int = 3) {
         self.maxSize = maxSize
         self.maxPending = maxPending
         self.entries = []
         self.pending = []
+        self.lastRefreshed = .now
     }
 
     /// Number of entries in the bucket.
@@ -108,6 +112,7 @@ public struct KBucket: Sendable {
                 entry.addAddress(addr)
             }
             entries.append(entry)
+            lastRefreshed = .now
             return .updated
         }
 
@@ -129,6 +134,7 @@ public struct KBucket: Sendable {
         // Try to insert
         if entries.count < maxSize {
             entries.append(entry)
+            lastRefreshed = .now
             return .inserted
         }
 

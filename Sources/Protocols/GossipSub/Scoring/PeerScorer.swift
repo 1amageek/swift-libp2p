@@ -152,6 +152,9 @@ public final class PeerScorer: Sendable {
     /// Default topic scoring parameters for topics without explicit config.
     private let defaultTopicParams: TopicScoreParams?
 
+    /// Protected peers exempt from scoring (e.g., direct/explicit peers).
+    private let protectedPeers: Mutex<Set<PeerID>>
+
     private struct PeerScore: Sendable {
         var score: Double = 0.0
         var lastDecay: ContinuousClock.Instant = .now
@@ -244,6 +247,43 @@ public final class PeerScorer: Sendable {
         self.deliveryTracking = Mutex(DeliveryTrackingState())
         self.ipColocation = Mutex(IPColocationState())
         self.topicState = Mutex([:])
+        self.protectedPeers = Mutex([])
+    }
+
+    // MARK: - Protected Peers
+
+    /// Whether the peer is protected from scoring.
+    public func isProtected(_ peer: PeerID) -> Bool {
+        protectedPeers.withLock { $0.contains(peer) }
+    }
+
+    /// Adds a peer to the protected set and clears any existing scoring state.
+    public func addProtectedPeer(_ peer: PeerID) {
+        protectedPeers.withLock { _ = $0.insert(peer) }
+        // Clear pre-existing scoring state to maintain the invariant:
+        // protected peers have no entries in any scoring data structure.
+        _ = scores.withLock { $0.removeValue(forKey: peer) }
+        _ = iwantTracking.withLock { $0.requests.removeValue(forKey: peer) }
+        _ = deliveryTracking.withLock { $0.stats.removeValue(forKey: peer) }
+        ipColocation.withLock { state in
+            if let ip = state.ipByPeer.removeValue(forKey: peer) {
+                state.peersByIP[ip]?.remove(peer)
+                if state.peersByIP[ip]?.isEmpty == true {
+                    state.peersByIP.removeValue(forKey: ip)
+                }
+            }
+        }
+        _ = topicState.withLock { $0.removeValue(forKey: peer) }
+    }
+
+    /// Removes a peer from the protected set.
+    public func removeProtectedPeer(_ peer: PeerID) {
+        protectedPeers.withLock { _ = $0.remove(peer) }
+    }
+
+    /// Replaces the entire protected peer set.
+    public func setProtectedPeers(_ peers: Set<PeerID>) {
+        protectedPeers.withLock { $0 = peers }
     }
 
     // MARK: - Penalty Recording
@@ -252,6 +292,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The peer that sent the invalid message.
     public func recordInvalidMessage(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.invalidMessagePenalty)
     }
 
@@ -259,6 +300,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The peer that sent the duplicate.
     public func recordDuplicateMessage(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.duplicateMessagePenalty)
     }
 
@@ -266,6 +308,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The peer that violated backoff.
     public func recordGraftDuringBackoff(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.graftBackoffPenalty)
     }
 
@@ -273,6 +316,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The peer that broke the promise.
     public func recordBrokenPromise(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.brokenPromisePenalty)
     }
 
@@ -280,6 +324,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The peer sending too many IWANTs.
     public func recordExcessiveIWant(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.excessiveIWantPenalty)
     }
 
@@ -287,6 +332,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The peer that sent a message to the wrong topic.
     public func recordTopicMismatch(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.topicMismatchPenalty)
     }
 
@@ -296,6 +342,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer to penalize.
     ///   - amount: The penalty amount (negative for penalties).
     public func applyPenalty(to peer: PeerID, amount: Double) {
+        guard !isProtected(peer) else { return }
         scores.withLock { scores in
             var peerScore = scores[peer] ?? PeerScore()
             peerScore.score += amount
@@ -316,7 +363,8 @@ public final class PeerScorer: Sendable {
     ///   - messageID: The message ID being requested.
     /// - Returns: Result indicating whether the request is acceptable or excessive.
     public func trackIWantRequest(from peer: PeerID, for messageID: MessageID) -> IWantCheckResult {
-        iwantTracking.withLock { state in
+        guard !isProtected(peer) else { return .accepted }
+        return iwantTracking.withLock { state in
             let now = ContinuousClock.now
 
             // Initialize peer's request map if needed
@@ -384,6 +432,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that delivered the message.
     ///   - isFirst: Whether this peer was the first to deliver this message.
     public func recordMessageDelivery(from peer: PeerID, isFirst: Bool) {
+        guard !isProtected(peer) else { return }
         deliveryTracking.withLock { state in
             var stats = state.stats[peer] ?? DeliveryTrackingState.DeliveryStats()
             stats.messagesDelivered += 1
@@ -406,6 +455,7 @@ public final class PeerScorer: Sendable {
     ///
     /// - Parameter peer: The mesh peer expected to deliver the message.
     public func recordExpectedMessage(from peer: PeerID) {
+        guard !isProtected(peer) else { return }
         deliveryTracking.withLock { state in
             var stats = state.stats[peer] ?? DeliveryTrackingState.DeliveryStats()
             stats.messagesExpected += 1
@@ -474,6 +524,9 @@ public final class PeerScorer: Sendable {
     /// - Returns: Result of the colocation check.
     @discardableResult
     public func registerPeerIP(_ peer: PeerID, ip: String) -> IPColocationCheckResult {
+        guard !isProtected(peer) else {
+            return IPColocationCheckResult(penaltyApplied: false, peerCount: 0, ipAddress: ip)
+        }
         // Skip if IP colocation tracking is disabled
         guard config.ipColocationThreshold > 0 else {
             return IPColocationCheckResult(penaltyApplied: false, peerCount: 0, ipAddress: ip)
@@ -578,7 +631,8 @@ public final class PeerScorer: Sendable {
     /// - Parameter peer: The peer ID.
     /// - Returns: The peer's current score (0 if no score recorded).
     public func score(for peer: PeerID) -> Double {
-        scores.withLock { scores in
+        guard !isProtected(peer) else { return 0.0 }
+        return scores.withLock { scores in
             applyDecayIfNeeded(for: peer, in: &scores)
             return scores[peer]?.score ?? 0.0
         }
@@ -591,7 +645,8 @@ public final class PeerScorer: Sendable {
     /// - Parameter peer: The peer ID.
     /// - Returns: `true` if the peer is graylisted.
     public func isGraylisted(_ peer: PeerID) -> Bool {
-        computeScore(for: peer) < config.graylistThreshold
+        guard !isProtected(peer) else { return false }
+        return computeScore(for: peer) < config.graylistThreshold
     }
 
     /// Returns all peers with their current scores.
@@ -616,6 +671,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that joined the mesh.
     ///   - topic: The topic the peer joined.
     public func peerJoinedMesh(_ peer: PeerID, topic: Topic) {
+        guard !isProtected(peer) else { return }
         topicState.withLock { states in
             var peerTopics = states[peer] ?? [:]
             var ts = peerTopics[topic] ?? TopicPeerState()
@@ -634,6 +690,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that left the mesh.
     ///   - topic: The topic the peer left.
     public func peerLeftMesh(_ peer: PeerID, topic: Topic) {
+        guard !isProtected(peer) else { return }
         let params = resolveTopicParams(topic)
 
         topicState.withLock { states in
@@ -667,6 +724,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that delivered the message first.
     ///   - topic: The topic the message was delivered in.
     public func recordFirstMessageDelivery(from peer: PeerID, topic: Topic) {
+        guard !isProtected(peer) else { return }
         let params = resolveTopicParams(topic)
 
         topicState.withLock { states in
@@ -690,6 +748,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that delivered the message in the mesh.
     ///   - topic: The topic the message was delivered in.
     public func recordMeshMessageDelivery(from peer: PeerID, topic: Topic) {
+        guard !isProtected(peer) else { return }
         let params = resolveTopicParams(topic)
 
         topicState.withLock { states in
@@ -712,6 +771,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that delivered the invalid message.
     ///   - topic: The topic the invalid message was in.
     public func recordInvalidMessageDelivery(from peer: PeerID, topic: Topic) {
+        guard !isProtected(peer) else { return }
         topicState.withLock { states in
             var peerTopics = states[peer] ?? [:]
             var ts = peerTopics[topic] ?? TopicPeerState()
@@ -729,6 +789,7 @@ public final class PeerScorer: Sendable {
     ///   - peer: The peer that had a mesh failure.
     ///   - topic: The topic the failure occurred in.
     public func recordMeshFailure(peer: PeerID, topic: Topic) {
+        guard !isProtected(peer) else { return }
         topicState.withLock { states in
             var peerTopics = states[peer] ?? [:]
             var ts = peerTopics[topic] ?? TopicPeerState()
@@ -752,6 +813,7 @@ public final class PeerScorer: Sendable {
     /// - Parameter peer: The peer to compute the score for.
     /// - Returns: The combined global and per-topic score.
     public func computeScore(for peer: PeerID) -> Double {
+        guard !isProtected(peer) else { return 0.0 }
         let globalScore = score(for: peer)
         let now = ContinuousClock.now
 

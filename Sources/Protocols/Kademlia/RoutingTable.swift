@@ -228,6 +228,80 @@ public final class RoutingTable: Sendable {
         }
     }
 
+    // MARK: - Refresh Support
+
+    /// Returns bucket indices that haven't been queried recently.
+    ///
+    /// - Parameter threshold: Duration after which a bucket is considered stale.
+    /// - Returns: Array of bucket indices that need refresh.
+    public func bucketsNeedingRefresh(threshold: Duration) -> [Int] {
+        let now = ContinuousClock.Instant.now
+        return buckets.withLock { buckets in
+            var stale: [Int] = []
+            for (index, bucket) in buckets.enumerated() {
+                // Only refresh non-empty buckets or buckets near our key
+                guard !bucket.isEmpty else { continue }
+                let elapsed = now - bucket.lastRefreshed
+                if elapsed >= threshold {
+                    stale.append(index)
+                }
+            }
+            return stale
+        }
+    }
+
+    /// Generates a random KademliaKey that falls in the given bucket.
+    ///
+    /// The generated key has the correct XOR distance prefix to land in the specified bucket.
+    /// Bucket index i means the XOR distance has (255 - i) leading zero bits.
+    ///
+    /// - Parameter bucketIndex: The target bucket index (0-255).
+    /// - Returns: A random KademliaKey that falls in that bucket.
+    public func randomKeyForBucket(_ bucketIndex: Int) -> KademliaKey {
+        precondition(bucketIndex >= 0 && bucketIndex < 256, "Bucket index must be 0-255")
+
+        // bucketIndex = 255 - leadingZeroBits
+        // So leadingZeroBits = 255 - bucketIndex
+        // The first set bit is at position (255 - bucketIndex) from MSB (0-indexed)
+        let bitPosition = 255 - bucketIndex  // position from MSB
+        let byteIndex = bitPosition / 8
+        let bitIndex = 7 - (bitPosition % 8)
+
+        var distanceBytes = Data(count: 32)
+
+        // Set the target bit
+        distanceBytes[byteIndex] = UInt8(1 << bitIndex)
+
+        // Randomize remaining lower bits
+        for i in (byteIndex + 1)..<32 {
+            distanceBytes[i] = UInt8.random(in: 0...255)
+        }
+        // Randomize lower bits in the same byte (below the set bit)
+        if bitIndex > 0 {
+            let mask = UInt8((1 << bitIndex) - 1)
+            distanceBytes[byteIndex] |= UInt8.random(in: 0...255) & mask
+        }
+
+        // XOR with local key to get the target key
+        var keyBytes = Data(count: 32)
+        let localBytes = localKey.bytes
+        for i in 0..<32 {
+            keyBytes[i] = localBytes[i] ^ distanceBytes[i]
+        }
+
+        return KademliaKey(bytes: keyBytes)
+    }
+
+    /// Marks a bucket as recently refreshed.
+    ///
+    /// - Parameter index: The bucket index (0-255).
+    public func markBucketRefreshed(_ index: Int) {
+        guard index >= 0 && index < 256 else { return }
+        buckets.withLock { buckets in
+            buckets[index].lastRefreshed = .now
+        }
+    }
+
     // MARK: - Statistics
 
     /// Returns statistics about the routing table.

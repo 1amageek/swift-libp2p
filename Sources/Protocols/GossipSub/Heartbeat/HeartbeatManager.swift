@@ -144,22 +144,33 @@ public final class HeartbeatManager: Sendable {
             await sendCallback(peer, rpc)
         }
 
-        // 4. Shift message cache
+        // 4. Opportunistic grafting (v1.1)
+        let tick = state.withLock { $0.heartbeatCount }
+        if configuration.opportunisticGraftTicks > 0 &&
+           tick % UInt64(configuration.opportunisticGraftTicks) == 0 {
+            let graftActions = router.opportunisticGraft()
+            for (peer, control) in graftActions {
+                let rpc = GossipSubRPC(control: control)
+                await sendCallback(peer, rpc)
+            }
+        }
+
+        // 5. Shift message cache
         router.shiftMessageCache()
 
-        // 5. Cleanup seen cache (less frequently)
-        let count = state.withLock { $0.heartbeatCount }
+        // 6. Cleanup seen cache (less frequently)
+        let count = tick
         if count % 10 == 0 {  // Every 10 heartbeats
             router.cleanupSeenCache()
         }
 
-        // 6. Cleanup expired backoffs
+        // 7. Cleanup expired backoffs
         router.cleanupBackoffs()
 
-        // 7. Cleanup expired IDONTWANT entries (v1.2)
+        // 8. Cleanup expired IDONTWANT entries (v1.2)
         router.cleanupIDontWants()
 
-        // 8. Decay peer scores
+        // 9. Decay peer scores
         router.decayPeerScores()
     }
 }

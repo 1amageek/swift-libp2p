@@ -299,6 +299,50 @@ public final class GossipSubService: ProtocolService, Sendable {
         try await publish(data: Data(message.utf8), to: topic)
     }
 
+    // MARK: - Validator Registration (v1.1)
+
+    /// Registers an application-level message validator for a topic.
+    ///
+    /// Only one validator per topic is supported. Setting a new validator
+    /// replaces the previous one.
+    ///
+    /// - Parameters:
+    ///   - validator: The message validator
+    ///   - topic: The topic to validate messages for
+    public func registerValidator(_ validator: any MessageValidator, for topic: Topic) {
+        router.registerValidator(validator, for: topic)
+    }
+
+    /// Unregisters the message validator for a topic.
+    ///
+    /// - Parameter topic: The topic to remove the validator for
+    public func unregisterValidator(for topic: Topic) {
+        router.unregisterValidator(for: topic)
+    }
+
+    // MARK: - Direct Peer Management (v1.1)
+
+    /// Adds a direct peer for unconditional message forwarding.
+    ///
+    /// Direct peers are always included in message forwarding and are
+    /// protected from pruning, scoring, and backoff enforcement.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer ID to add as direct
+    ///   - topic: The topic
+    public func addDirectPeer(_ peer: PeerID, for topic: Topic) {
+        router.addDirectPeer(peer, for: topic)
+    }
+
+    /// Removes a direct peer.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer ID to remove
+    ///   - topic: The topic
+    public func removeDirectPeer(_ peer: PeerID, from topic: Topic) {
+        router.removeDirectPeer(peer, from: topic)
+    }
+
     // MARK: - Peer Management
 
     /// Handles a new peer connection.

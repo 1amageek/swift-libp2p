@@ -85,6 +85,12 @@ public enum KademliaEvent: Sendable {
 
     /// Background maintenance completed.
     case maintenanceCompleted(recordsRemoved: Int, providersRemoved: Int)
+
+    /// Routing table refresh started.
+    case refreshStarted(bucketCount: Int)
+
+    /// Routing table refresh completed.
+    case refreshCompleted(bucketsRefreshed: Int)
 }
 
 /// Information about a query.
@@ -206,6 +212,10 @@ extension KademliaEvent: CustomStringConvertible {
             return "Kademlia service stopped"
         case .maintenanceCompleted(let recordsRemoved, let providersRemoved):
             return "Maintenance completed: \(recordsRemoved) records, \(providersRemoved) providers removed"
+        case .refreshStarted(let bucketCount):
+            return "Refresh started: \(bucketCount) stale buckets"
+        case .refreshCompleted(let bucketsRefreshed):
+            return "Refresh completed: \(bucketsRefreshed) buckets refreshed"
         }
     }
 }

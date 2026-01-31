@@ -60,6 +60,19 @@ public enum GossipSubEvent: Sendable {
     /// Skipped forwarding message due to IDONTWANT (v1.2).
     case messageSkippedByIdontWant(peer: PeerID, messageID: MessageID)
 
+    // MARK: - Opportunistic Grafting Events (v1.1)
+
+    /// Opportunistic graft performed.
+    case opportunisticGraft(peer: PeerID, topic: Topic, medianScore: Double)
+
+    // MARK: - Direct Peering Events (v1.1)
+
+    /// Direct peer added.
+    case directPeerAdded(peer: PeerID, topic: Topic)
+
+    /// Direct peer removed.
+    case directPeerRemoved(peer: PeerID, topic: Topic)
+
     // MARK: - Peer Events
 
     /// A peer subscribed to a topic.

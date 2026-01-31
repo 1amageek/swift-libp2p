@@ -45,6 +45,9 @@ public struct KademliaConfiguration: Sendable {
     /// Routing table refresh interval.
     public var refreshInterval: Duration
 
+    /// Number of random walk queries per refresh cycle.
+    public var randomWalkCount: Int
+
     /// Interval for automatic cleanup of expired records and providers.
     /// Set to nil to disable automatic cleanup.
     public var cleanupInterval: Duration?
@@ -88,6 +91,7 @@ public struct KademliaConfiguration: Sendable {
         recordRepublishInterval: Duration = KademliaProtocol.recordRepublishInterval,
         providerRepublishInterval: Duration = KademliaProtocol.providerRepublishInterval,
         refreshInterval: Duration = KademliaProtocol.refreshInterval,
+        randomWalkCount: Int = 1,
         cleanupInterval: Duration? = .seconds(300),
         mode: KademliaMode = .automatic,
         recordValidator: (any RecordValidator)? = DefaultRecordValidator(),
@@ -103,6 +107,7 @@ public struct KademliaConfiguration: Sendable {
         self.recordRepublishInterval = recordRepublishInterval
         self.providerRepublishInterval = providerRepublishInterval
         self.refreshInterval = refreshInterval
+        self.randomWalkCount = randomWalkCount
         self.cleanupInterval = cleanupInterval
         self.mode = mode
         self.recordValidator = recordValidator
@@ -174,10 +179,14 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
 
     private struct ServiceState: Sendable {
         var mode: KademliaMode
+        var opener: (any StreamOpener)?
     }
 
     /// Background cleanup task.
     private let cleanupTask: Mutex<Task<Void, Never>?>
+
+    /// Background refresh task.
+    private let refreshTask: Mutex<Task<Void, Never>?>
 
     // MARK: - Initialization
 
@@ -198,6 +207,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState(mode: configuration.mode))
         self.cleanupTask = Mutex(nil)
+        self.refreshTask = Mutex(nil)
     }
 
     // MARK: - Events
@@ -227,6 +237,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
         stopMaintenance()
+        stopRefresh()
         eventState.withLock { state in
             state.continuation?.yield(.stopped)
             state.continuation?.finish()
@@ -283,6 +294,79 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
                 break
             }
         }
+    }
+
+    // MARK: - Routing Table Refresh
+
+    /// Starts the routing table refresh loop.
+    ///
+    /// Periodically performs random walks in stale k-buckets to keep the
+    /// routing table populated. Requires a StreamOpener to send FIND_NODE queries.
+    ///
+    /// - Parameter opener: Stream opener for sending FIND_NODE requests.
+    public func startRefresh(using opener: any StreamOpener) {
+        serviceState.withLock { $0.opener = opener }
+
+        refreshTask.withLock { task in
+            guard task == nil else { return }
+            task = Task { [weak self] in
+                guard let self else { return }
+                await self.runRefreshLoop(interval: self.configuration.refreshInterval)
+            }
+        }
+    }
+
+    /// Stops the routing table refresh loop.
+    public func stopRefresh() {
+        refreshTask.withLock { task in
+            task?.cancel()
+            task = nil
+        }
+    }
+
+    /// Runs the refresh loop.
+    private func runRefreshLoop(interval: Duration) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: interval)
+                await performRefresh()
+            } catch {
+                // Task was cancelled
+                break
+            }
+        }
+    }
+
+    /// Performs a single routing table refresh cycle.
+    ///
+    /// Identifies stale k-buckets and performs random FIND_NODE queries
+    /// to repopulate them.
+    private func performRefresh() async {
+        let staleBuckets = routingTable.bucketsNeedingRefresh(
+            threshold: configuration.refreshInterval
+        )
+        guard !staleBuckets.isEmpty else { return }
+
+        emit(.refreshStarted(bucketCount: staleBuckets.count))
+
+        let opener = serviceState.withLock { $0.opener }
+        guard let opener else { return }
+
+        var bucketsRefreshed = 0
+
+        for bucketIndex in staleBuckets.shuffled().prefix(configuration.randomWalkCount) {
+            let randomKey = routingTable.randomKeyForBucket(bucketIndex)
+            do {
+                let _ = try await findNode(randomKey, using: opener)
+                routingTable.markBucketRefreshed(bucketIndex)
+                bucketsRefreshed += 1
+            } catch {
+                // Refresh failure is non-fatal
+                logger.debug("Refresh failed for bucket \(bucketIndex): \(error)")
+            }
+        }
+
+        emit(.refreshCompleted(bucketsRefreshed: bucketsRefreshed))
     }
 
     // MARK: - Mode

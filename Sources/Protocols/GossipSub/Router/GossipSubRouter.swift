@@ -63,6 +63,12 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// Peer scorer for tracking peer behavior.
     let peerScorer: PeerScorer
 
+    /// Per-topic message validators (v1.1).
+    private let validators: Mutex<[Topic: any MessageValidator]>
+
+    /// Direct (explicit) peer state (v1.1).
+    private let directPeerState: Mutex<[Topic: Set<PeerID>]>
+
     /// Event state.
     private let eventState: Mutex<EventState>
 
@@ -105,7 +111,94 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             topicParams: configuration.topicScoreParams,
             defaultTopicParams: configuration.defaultTopicScoreParams
         )
+        self.validators = Mutex([:])
+        self.directPeerState = Mutex(configuration.directPeers)
         self.eventState = Mutex(EventState())
+
+        // Sync protected peers from initial direct peer configuration
+        let allDirectPeers = configuration.directPeers.values
+            .reduce(into: Set<PeerID>()) { $0.formUnion($1) }
+        if !allDirectPeers.isEmpty {
+            peerScorer.setProtectedPeers(allDirectPeers)
+        }
+    }
+
+    // MARK: - Validator Registration (v1.1)
+
+    /// Registers an application-level message validator for a topic.
+    ///
+    /// Only one validator per topic is supported. Setting a new validator
+    /// replaces the previous one.
+    ///
+    /// - Parameters:
+    ///   - validator: The message validator
+    ///   - topic: The topic to validate messages for
+    public func registerValidator(_ validator: any MessageValidator, for topic: Topic) {
+        validators.withLock { $0[topic] = validator }
+    }
+
+    /// Unregisters the message validator for a topic.
+    ///
+    /// - Parameter topic: The topic to remove the validator for
+    public func unregisterValidator(for topic: Topic) {
+        validators.withLock { _ = $0.removeValue(forKey: topic) }
+    }
+
+    // MARK: - Direct Peer Management (v1.1)
+
+    /// Adds a direct peer for a topic.
+    ///
+    /// Direct peers are unconditionally included in message forwarding and
+    /// are protected from pruning, scoring penalties, and backoff enforcement.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer ID to add as direct
+    ///   - topic: The topic
+    public func addDirectPeer(_ peer: PeerID, for topic: Topic) {
+        directPeerState.withLock { state in
+            _ = state[topic, default: []].insert(peer)
+            peerScorer.addProtectedPeer(peer)
+        }
+        emit(.directPeerAdded(peer: peer, topic: topic))
+    }
+
+    /// Removes a direct peer from a topic.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer ID to remove
+    ///   - topic: The topic
+    public func removeDirectPeer(_ peer: PeerID, from topic: Topic) {
+        let removed = directPeerState.withLock { state -> Bool in
+            guard var peers = state[topic] else { return false }
+            let removed = peers.remove(peer) != nil
+            if peers.isEmpty {
+                state.removeValue(forKey: topic)
+            } else {
+                state[topic] = peers
+            }
+            if removed {
+                let stillDirect = state.values.contains { $0.contains(peer) }
+                if !stillDirect {
+                    peerScorer.removeProtectedPeer(peer)
+                }
+            }
+            return removed
+        }
+        if removed {
+            emit(.directPeerRemoved(peer: peer, topic: topic))
+        }
+    }
+
+    /// Returns whether a peer is a direct peer for any topic.
+    func isDirectPeer(_ peer: PeerID) -> Bool {
+        directPeerState.withLock { state in
+            state.values.contains { $0.contains(peer) }
+        }
+    }
+
+    /// Returns direct peers for a topic.
+    func directPeers(for topic: Topic) -> Set<PeerID> {
+        directPeerState.withLock { $0[topic] ?? [] }
     }
 
     // MARK: - Event Stream
@@ -255,7 +348,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
         // Handle messages and collect forwards
         for message in rpc.messages {
-            let forwards = handleMessage(message, from: peerID)
+            let forwards = await handleMessage(message, from: peerID)
             forwardMessages.append(contentsOf: forwards)
         }
 
@@ -308,7 +401,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     private func handleMessage(
         _ message: GossipSubMessage,
         from peerID: PeerID
-    ) -> [(peer: PeerID, rpc: GossipSubRPC)] {
+    ) async -> [(peer: PeerID, rpc: GossipSubRPC)] {
         // Reject messages from graylisted peers
         if peerScorer.isGraylisted(peerID) {
             emit(.peerPenalized(
@@ -360,6 +453,24 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                     emit(.messageValidated(messageID: message.id, result: .reject))
                     return []
                 }
+            }
+        }
+
+        // === Application Validation Phase (v1.1 Extended Validators) ===
+        let validator = validators.withLock { $0[message.topic] }
+        if let validator = validator {
+            let result = await validator.validate(message: message, from: peerID)
+            switch result {
+            case .accept:
+                break  // Continue to delivery
+            case .reject:
+                peerScorer.recordInvalidMessage(from: peerID)
+                peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
+                emit(.messageValidated(messageID: message.id, result: .reject))
+                return []
+            case .ignore:
+                emit(.messageValidated(messageID: message.id, result: .ignore))
+                return []  // No penalty, no forward
             }
         }
 
@@ -430,7 +541,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         return forwards
     }
 
-    /// Forwards a message to mesh peers.
+    /// Forwards a message to mesh peers and direct peers.
     ///
     /// - Returns: List of (peer, RPC) tuples for forwarding
     private func forwardMessage(
@@ -438,12 +549,14 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         excluding: PeerID
     ) -> [(peer: PeerID, rpc: GossipSubRPC)] {
         let topic = message.topic
-        let meshPeers = meshState.meshPeers(for: topic)
+        var targetPeers = meshState.meshPeers(for: topic)
+        // Always include direct peers (v1.1)
+        targetPeers.formUnion(directPeers(for: topic))
 
         var forwards: [(peer: PeerID, rpc: GossipSubRPC)] = []
         let rpc = GossipSubRPC(messages: [message])
 
-        for peer in meshPeers where peer != excluding {
+        for peer in targetPeers where peer != excluding {
             // Check IDONTWANT (v1.2): Skip if peer doesn't want this message
             if let state = peerState.getPeer(peer), state.doesntWant(message.id) {
                 emit(.messageSkippedByIdontWant(peer: peer, messageID: message.id))
@@ -582,7 +695,9 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             }
 
             // Check if peer is in backoff period (we previously PRUNEd them)
-            if let state = peerState.getPeer(peerID), state.isBackedOff(for: topic) {
+            // Direct peers bypass backoff enforcement (v1.1)
+            if let state = peerState.getPeer(peerID), state.isBackedOff(for: topic),
+               !isDirectPeer(peerID) {
                 // Peer violated backoff - record penalty and send PRUNE again
                 peerScorer.recordGraftDuringBackoff(from: peerID)
                 let currentScore = peerScorer.score(for: peerID)
@@ -737,6 +852,9 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             peers.formUnion(meshState.fanoutPeers(for: topic))
         }
 
+        // Always include direct peers (v1.1)
+        peers.formUnion(directPeers(for: topic))
+
         // Flood publish if enabled
         if configuration.floodPublish {
             let allSubscribed = peerState.peersSubscribedTo(topic)
@@ -792,13 +910,14 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
             // Too many peers?
             if meshCount > D_high {
+                let directPeersForTopic = directPeers(for: topic)
                 let outboundPeers = Set(peerState.outboundPeersSubscribedTo(topic))
                 let toPrune = meshState.selectPeersForPrune(
                     topic: topic,
                     count: D,
                     protectOutbound: configuration.meshOutboundMin,
                     outboundPeers: outboundPeers
-                )
+                ).filter { !directPeersForTopic.contains($0) }  // Protect direct peers
 
                 for peer in toPrune {
                     meshState.removeFromMesh(peer, for: topic)
@@ -817,6 +936,62 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                     ))
                     toSend.append((peer, batch))
                 }
+            }
+        }
+
+        return toSend
+    }
+
+    /// Opportunistically grafts high-scoring peers when mesh quality is low (v1.1).
+    ///
+    /// From GossipSub v1.1 spec: If the median score of mesh peers is below
+    /// the threshold, graft the best non-mesh peers to improve mesh quality.
+    ///
+    /// - Returns: Control messages to send (GRAFT)
+    public func opportunisticGraft() -> [(peer: PeerID, control: ControlMessageBatch)] {
+        var toSend: [(peer: PeerID, control: ControlMessageBatch)] = []
+
+        for topic in meshState.subscribedTopics {
+            let meshPeers = Array(meshState.meshPeers(for: topic))
+            guard !meshPeers.isEmpty else { continue }
+
+            // Exclude direct peers from median calculation (v1.1 spec).
+            // Protected peers always return score 0.0 which would
+            // artificially lower the median and trigger false grafts.
+            let scoredMeshPeers = meshPeers.filter { !isDirectPeer($0) }
+            guard !scoredMeshPeers.isEmpty else { continue }
+
+            // Calculate median score of non-direct mesh peers
+            let scores = scoredMeshPeers.map { peerScorer.computeScore(for: $0) }.sorted()
+            let medianScore = scores[scores.count / 2]
+
+            // Only graft if mesh quality is low
+            guard medianScore < configuration.opportunisticGraftThreshold else { continue }
+
+            // Find high-scoring non-mesh peers subscribed to this topic
+            // Also exclude direct peers from candidates (they are already forwarded to)
+            let allSubscribed = peerState.peersSubscribedTo(topic)
+            let meshSet = meshState.meshPeers(for: topic)
+            let nonMesh = allSubscribed.filter { !meshSet.contains($0) && !isDirectPeer($0) }
+            let candidates = peerScorer.selectBestPeers(
+                from: nonMesh,
+                count: configuration.opportunisticGraftPeers
+            )
+
+            for peer in candidates {
+                // Only graft peers with score above the median
+                let peerScore = peerScorer.computeScore(for: peer)
+                guard peerScore > medianScore else { continue }
+
+                meshState.addToMesh(peer, for: topic)
+                peerScorer.peerJoinedMesh(peer, topic: topic)
+                emit(.peerJoinedMesh(peer: peer, topic: topic))
+
+                var batch = ControlMessageBatch()
+                batch.grafts.append(ControlMessage.Graft(topic: topic))
+                toSend.append((peer, batch))
+
+                emit(.opportunisticGraft(peer: peer, topic: topic, medianScore: medianScore))
             }
         }
 
@@ -944,6 +1119,8 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         messageCache.clear()
         seenCache.clear()
         peerScorer.clear()
+        validators.withLock { $0.removeAll() }
+        directPeerState.withLock { $0.removeAll() }
 
         eventState.withLock { state in
             state.continuation?.finish()

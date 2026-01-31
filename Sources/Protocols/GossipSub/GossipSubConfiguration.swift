@@ -1,5 +1,6 @@
 /// GossipSubConfiguration - Configuration parameters for GossipSub
 import Foundation
+import P2PCore
 
 /// Configuration for the GossipSub protocol.
 public struct GossipSubConfiguration: Sendable {
@@ -121,6 +122,31 @@ public struct GossipSubConfiguration: Sendable {
     /// parameters are used. If nil, the static `TopicScoreParams.default` is used.
     public var defaultTopicScoreParams: TopicScoreParams?
 
+    // MARK: - Opportunistic Grafting (v1.1)
+
+    /// Heartbeat ticks between opportunistic graft attempts.
+    ///
+    /// Set to 0 to disable. Default: 60 (every 60 heartbeats = ~1 min at 1s interval).
+    public var opportunisticGraftTicks: Int
+
+    /// Number of peers to opportunistically graft per topic.
+    public var opportunisticGraftPeers: Int
+
+    /// Minimum mesh median score threshold for opportunistic grafting.
+    ///
+    /// Opportunistic graft triggers when the median score of mesh peers
+    /// in a topic is below this threshold.
+    public var opportunisticGraftThreshold: Double
+
+    // MARK: - Explicit Peering (v1.1)
+
+    /// Direct peers: unconditionally forward messages and maintain mesh connection.
+    ///
+    /// Direct peers are NOT subject to scoring, pruning, or backoff.
+    /// Messages are always forwarded to direct peers regardless of mesh state.
+    /// Key: topic, Value: set of peer IDs.
+    public var directPeers: [Topic: Set<PeerID>]
+
     // MARK: - Flood Publish
 
     /// Whether to flood publish to all peers (not just mesh).
@@ -160,6 +186,10 @@ public struct GossipSubConfiguration: Sendable {
         idontwantThreshold: Int = 1024,  // 1KB - send IDONTWANT for messages >= 1KB
         topicScoreParams: [Topic: TopicScoreParams] = [:],
         defaultTopicScoreParams: TopicScoreParams? = nil,
+        opportunisticGraftTicks: Int = 60,
+        opportunisticGraftPeers: Int = 2,
+        opportunisticGraftThreshold: Double = 1.0,
+        directPeers: [Topic: Set<PeerID>] = [:],
         floodPublish: Bool = true,
         floodPublishMaxPeers: Int = 25
     ) {
@@ -190,6 +220,10 @@ public struct GossipSubConfiguration: Sendable {
         self.idontwantThreshold = idontwantThreshold
         self.topicScoreParams = topicScoreParams
         self.defaultTopicScoreParams = defaultTopicScoreParams
+        self.opportunisticGraftTicks = opportunisticGraftTicks
+        self.opportunisticGraftPeers = opportunisticGraftPeers
+        self.opportunisticGraftThreshold = opportunisticGraftThreshold
+        self.directPeers = directPeers
         self.floodPublish = floodPublish
         self.floodPublishMaxPeers = floodPublishMaxPeers
     }
@@ -217,6 +251,20 @@ public struct GossipSubConfiguration: Sendable {
         case invalidMeshDegree(String)
         case invalidCacheConfig(String)
     }
+}
+
+// MARK: - MessageValidator
+
+/// Application-level message validator for GossipSub (v1.1).
+///
+/// Validators are called after structure and signature checks pass.
+/// Return `.accept` to continue delivery, `.reject` to penalize the sender,
+/// or `.ignore` to drop the message without penalty.
+public protocol MessageValidator: Sendable {
+    func validate(
+        message: GossipSubMessage,
+        from peer: PeerID
+    ) async -> GossipSubMessage.ValidationResult
 }
 
 // MARK: - Presets
