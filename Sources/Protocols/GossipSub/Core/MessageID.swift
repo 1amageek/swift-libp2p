@@ -7,15 +7,27 @@ import P2PCore
 ///
 /// Message IDs are used for deduplication and gossip protocol operations (IHAVE/IWANT).
 /// By default, the ID is computed from the message source and sequence number.
+///
+/// Hash value is pre-computed at initialization using FNV-1a for O(1) Dictionary/Set operations.
 public struct MessageID: Sendable, Hashable, CustomStringConvertible {
     /// The raw bytes of the message ID.
     public let bytes: Data
+
+    /// Pre-computed hash value (FNV-1a).
+    private let _hashValue: Int
 
     /// Creates a message ID from raw bytes.
     ///
     /// - Parameter bytes: The raw message ID bytes
     public init(bytes: Data) {
         self.bytes = bytes
+        // FNV-1a hash: compute once, use for every Dictionary/Set operation
+        var h: UInt64 = 14695981039346656037  // FNV offset basis
+        for byte in bytes {
+            h ^= UInt64(byte)
+            h &*= 1099511628211  // FNV prime
+        }
+        self._hashValue = Int(bitPattern: UInt(h))
     }
 
     /// Creates a message ID from a hex string.
@@ -25,7 +37,15 @@ public struct MessageID: Sendable, Hashable, CustomStringConvertible {
         guard let data = Data(hexString: hex) else {
             return nil
         }
-        self.bytes = data
+        self.init(bytes: data)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(_hashValue)
+    }
+
+    public static func == (lhs: MessageID, rhs: MessageID) -> Bool {
+        lhs._hashValue == rhs._hashValue && lhs.bytes == rhs.bytes
     }
 
     public var description: String {
@@ -75,7 +95,8 @@ extension MessageID {
 extension MessageID: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        self.bytes = try container.decode(Data.self)
+        let data = try container.decode(Data.self)
+        self.init(bytes: data)
     }
 
     public func encode(to encoder: Encoder) throws {

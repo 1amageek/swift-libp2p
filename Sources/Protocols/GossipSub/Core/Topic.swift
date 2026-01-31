@@ -5,15 +5,31 @@ import Foundation
 ///
 /// Topics are used to organize messages into logical channels.
 /// Subscribers receive messages published to topics they're subscribed to.
+///
+/// Hash value is pre-computed at initialization for O(1) Dictionary/Set operations.
 public struct Topic: Sendable, Hashable, CustomStringConvertible {
     /// The topic string.
     public let value: String
+
+    /// Pre-computed hash value.
+    private let _hashValue: Int
 
     /// Creates a topic from a string.
     ///
     /// - Parameter value: The topic identifier string
     public init(_ value: String) {
         self.value = value
+        var hasher = Hasher()
+        hasher.combine(value)
+        self._hashValue = hasher.finalize()
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(_hashValue)
+    }
+
+    public static func == (lhs: Topic, rhs: Topic) -> Bool {
+        lhs._hashValue == rhs._hashValue && lhs.value == rhs.value
     }
 
     public var description: String {
@@ -25,7 +41,7 @@ public struct Topic: Sendable, Hashable, CustomStringConvertible {
 
 extension Topic: ExpressibleByStringLiteral {
     public init(stringLiteral value: StringLiteralType) {
-        self.value = value
+        self.init(value)
     }
 }
 
@@ -34,7 +50,8 @@ extension Topic: ExpressibleByStringLiteral {
 extension Topic: Codable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        self.value = try container.decode(String.self)
+        let value = try container.decode(String.self)
+        self.init(value)
     }
 
     public func encode(to encoder: Encoder) throws {

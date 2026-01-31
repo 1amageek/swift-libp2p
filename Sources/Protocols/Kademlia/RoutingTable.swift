@@ -284,35 +284,51 @@ public final class RoutingTable: Sendable {
         precondition(bucketIndex >= 0 && bucketIndex < 256, "Bucket index must be 0-255")
 
         // bucketIndex = 255 - leadingZeroBits
-        // So leadingZeroBits = 255 - bucketIndex
-        // The first set bit is at position (255 - bucketIndex) from MSB (0-indexed)
-        let bitPosition = 255 - bucketIndex  // position from MSB
-        let byteIndex = bitPosition / 8
-        let bitIndex = 7 - (bitPosition % 8)
+        // The first set bit is at position (255 - bucketIndex) from MSB
+        let bitPosition = 255 - bucketIndex
 
-        var distanceBytes = Data(count: 32)
+        // Build distance as 4 × UInt64 directly (zero heap allocation)
+        let wordIndex = bitPosition / 64
+        let bitInWord = 63 - (bitPosition % 64)
 
-        // Set the target bit
-        distanceBytes[byteIndex] = UInt8(1 << bitIndex)
+        // Start with random words for the lower portion
+        var d0: UInt64 = 0, d1: UInt64 = 0, d2: UInt64 = 0, d3: UInt64 = 0
 
-        // Randomize remaining lower bits
-        for i in (byteIndex + 1)..<32 {
-            distanceBytes[i] = UInt8.random(in: 0...255)
-        }
-        // Randomize lower bits in the same byte (below the set bit)
-        if bitIndex > 0 {
-            let mask = UInt8((1 << bitIndex) - 1)
-            distanceBytes[byteIndex] |= UInt8.random(in: 0...255) & mask
-        }
-
-        // XOR with local key to get the target key
-        var keyBytes = Data(count: 32)
-        let localBytes = localKey.bytes
-        for i in 0..<32 {
-            keyBytes[i] = localBytes[i] ^ distanceBytes[i]
+        // Fill words below the target word with random data
+        switch wordIndex {
+        case 0:
+            d1 = UInt64.random(in: 0...UInt64.max)
+            d2 = UInt64.random(in: 0...UInt64.max)
+            d3 = UInt64.random(in: 0...UInt64.max)
+        case 1:
+            d2 = UInt64.random(in: 0...UInt64.max)
+            d3 = UInt64.random(in: 0...UInt64.max)
+        case 2:
+            d3 = UInt64.random(in: 0...UInt64.max)
+        default:
+            break
         }
 
-        return KademliaKey(bytes: keyBytes)
+        // Set the target bit and randomize lower bits in the target word
+        let targetBit: UInt64 = 1 << bitInWord
+        let lowerMask: UInt64 = targetBit > 0 ? targetBit - 1 : 0
+        let randomLower = UInt64.random(in: 0...UInt64.max) & lowerMask
+
+        switch wordIndex {
+        case 0: d0 = targetBit | randomLower
+        case 1: d1 = targetBit | randomLower
+        case 2: d2 = targetBit | randomLower
+        case 3: d3 = targetBit | randomLower
+        default: break
+        }
+
+        // XOR distance with local key to get the target key
+        return KademliaKey(
+            w0: localKey.w0 ^ d0,
+            w1: localKey.w1 ^ d1,
+            w2: localKey.w2 ^ d2,
+            w3: localKey.w3 ^ d3
+        )
     }
 
     /// Marks a bucket as recently refreshed.
