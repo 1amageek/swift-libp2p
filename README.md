@@ -10,9 +10,9 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 - **Protocol Negotiation**: multistream-select 1.0
 - **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
-- **Discovery**: SWIM membership, mDNS local discovery
+- **Discovery**: SWIM membership, mDNS local discovery, CYCLON random peer sampling
 - **NAT Traversal**: Circuit Relay v2, AutoNAT, DCUtR hole punching
-- **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT
+- **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT, Plumtree
 
 ## Implementation Status
 
@@ -75,6 +75,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | PeerStore TTL-based garbage collection | ✅ Implemented | LRU + TTL-based GC |
 | ProtoBook (per-peer protocol tracking) | ✅ Implemented | |
 | KeyBook (per-peer public key storage) | ✅ Implemented | |
+| CYCLON random peer sampling | ✅ Implemented | 27 tests |
 
 ### Protocols
 
@@ -92,6 +93,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | Kademlia client/server mode restriction | ⚠️ Partial | Config exists but doesn't restrict behavior |
 | Kademlia RecordValidator.Select | ❌ Not implemented | Best record selection missing |
 | Kademlia persistent storage | ❌ Not implemented | In-memory only |
+| Plumtree (Epidemic Broadcast Trees) | ✅ Implemented | 50 tests |
 
 ### NAT Traversal
 
@@ -112,7 +114,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | ConnectionGater | ✅ Implemented | |
 | HealthMonitor | ✅ Implemented | |
 | ReconnectionPolicy | ✅ Implemented | |
-| Resource Manager (multi-scope) | ❌ Not implemented | |
+| Resource Manager (multi-scope) | ✅ Implemented | System-wide and per-peer resource accounting |
 
 ## Requirements
 
@@ -188,22 +190,22 @@ try await stream.write(Data("Hello!".utf8))
 ## Architecture
 
 ```
-+-----------------------------------------------------------+
-|  Application Layer                                         |
-|  (Your protocols, GossipSub, Kademlia DHT, SWIM Discovery)|
-+-----------------------------------------------------------+
-|  Protocol Negotiation (multistream-select)                |
-+-----------------------------------------------------------+
-|  Stream Multiplexing (Yamux, Mplex)                       |
-+-----------------------------------------------------------+
-|  Security Layer (TLS 1.3, Noise XX)                       |
-+-----------------------------------------------------------+
-|  Transport Layer (TCP, QUIC, WebRTC, Memory, Circuit Relay)|
-+-----------------------------------------------------------+
-|  NAT Traversal (Circuit Relay v2, AutoNAT, DCUtR)         |
-+-----------------------------------------------------------+
-|  Core Types (PeerID, Multiaddr, KeyPair)                  |
-+-----------------------------------------------------------+
++----------------------------------------------------------------------+
+|  Application Layer                                                    |
+|  (Your protocols, GossipSub, Plumtree, Kademlia DHT, SWIM, CYCLON)  |
++----------------------------------------------------------------------+
+|  Protocol Negotiation (multistream-select)                            |
++----------------------------------------------------------------------+
+|  Stream Multiplexing (Yamux, Mplex)                                   |
++----------------------------------------------------------------------+
+|  Security Layer (TLS 1.3, Noise XX)                                   |
++----------------------------------------------------------------------+
+|  Transport Layer (TCP, QUIC, WebRTC, Memory, Circuit Relay)           |
++----------------------------------------------------------------------+
+|  NAT Traversal (Circuit Relay v2, AutoNAT, DCUtR)                     |
++----------------------------------------------------------------------+
+|  Core Types (PeerID, Multiaddr, KeyPair)                              |
++----------------------------------------------------------------------+
 ```
 
 ## Module Structure
@@ -227,6 +229,7 @@ try await stream.write(Data("Hello!".utf8))
 | `P2PDiscovery` | Discovery protocol definition |
 | `P2PDiscoverySWIM` | SWIM membership protocol |
 | `P2PDiscoveryMDNS` | mDNS local network discovery |
+| `P2PDiscoveryCYCLON` | CYCLON random peer sampling |
 | `P2P` | Integration layer (Node, ConnectionPool) |
 | `P2PProtocols` | Protocol service definitions |
 | `P2PIdentify` | Identify protocol |
@@ -236,6 +239,7 @@ try await stream.write(Data("Hello!".utf8))
 | `P2PKademlia` | Kademlia DHT implementation |
 | `P2PAutoNAT` | AutoNAT protocol for NAT detection |
 | `P2PDCUtR` | Direct Connection Upgrade through Relay |
+| `P2PPlumtree` | Plumtree epidemic broadcast trees |
 
 ## Wire Protocol Compatibility
 
@@ -256,6 +260,8 @@ This implementation follows the official libp2p specifications for wire-protocol
 | AutoNAT | `/libp2p/autonat/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/autonat/README.md) |
 | DCUtR | `/libp2p/dcutr` | [spec](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) |
 | WebRTC Direct | `/udp/<port>/webrtc-direct` | [spec](https://github.com/libp2p/specs/blob/master/webrtc/webrtc-direct.md) |
+| Plumtree | `/plumtree/1.0.0` | [paper](https://asc.di.fct.unl.pt/~jleitao/pdf/srds07-leitao.pdf) |
+| CYCLON | `/cyclon/1.0.0` | [paper](https://link.springer.com/article/10.1007/s10922-005-4441-x) |
 
 ## Design Principles
 
@@ -543,6 +549,8 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 - [rust-libp2p](https://github.com/libp2p/rust-libp2p) - Reference implementation
 - [go-libp2p](https://github.com/libp2p/go-libp2p)
 - [SWIM Paper](https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf)
+- [Plumtree Paper](https://asc.di.fct.unl.pt/~jleitao/pdf/srds07-leitao.pdf) - Epidemic Broadcast Trees
+- [CYCLON Paper](https://link.springer.com/article/10.1007/s10922-005-4441-x) - Inexpensive Membership Management
 
 ## License
 

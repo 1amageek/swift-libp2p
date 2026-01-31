@@ -42,6 +42,7 @@ let package = Package(
         .library(name: "P2PDiscovery", targets: ["P2PDiscovery"]),
         .library(name: "P2PDiscoveryMDNS", targets: ["P2PDiscoveryMDNS"]),
         .library(name: "P2PDiscoverySWIM", targets: ["P2PDiscoverySWIM"]),
+        .library(name: "P2PDiscoveryCYCLON", targets: ["P2PDiscoveryCYCLON"]),
 
         // MARK: - NAT
         .library(name: "P2PNAT", targets: ["P2PNAT"]),
@@ -55,6 +56,7 @@ let package = Package(
         .library(name: "P2PDCUtR", targets: ["P2PDCUtR"]),
         .library(name: "P2PAutoNAT", targets: ["P2PAutoNAT"]),
         .library(name: "P2PKademlia", targets: ["P2PKademlia"]),
+        .library(name: "P2PPlumtree", targets: ["P2PPlumtree"]),
 
         // MARK: - Integration
         .library(name: "P2P", targets: ["P2P"]),
@@ -341,10 +343,21 @@ let package = Package(
             ],
             path: "Sources/Discovery/SWIM"
         ),
+        .target(
+            name: "P2PDiscoveryCYCLON",
+            dependencies: ["P2PDiscovery", "P2PCore", "P2PMux", "P2PProtocols"],
+            path: "Sources/Discovery/CYCLON",
+            exclude: ["CONTEXT.md"]
+        ),
         .testTarget(
             name: "P2PDiscoveryTests",
             dependencies: ["P2PDiscovery", "P2PDiscoverySWIM", "P2PDiscoveryMDNS"],
             path: "Tests/Discovery/P2PDiscoveryTests"
+        ),
+        .testTarget(
+            name: "P2PDiscoveryCYCLONTests",
+            dependencies: ["P2PDiscoveryCYCLON", "P2PCore"],
+            path: "Tests/Discovery/CYCLONTests"
         ),
 
         // MARK: - NAT
@@ -458,6 +471,17 @@ let package = Package(
             name: "P2PKademliaTests",
             dependencies: ["P2PKademlia"],
             path: "Tests/Protocols/KademliaTests"
+        ),
+        .target(
+            name: "P2PPlumtree",
+            dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
+            path: "Sources/Protocols/Plumtree",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PPlumtreeTests",
+            dependencies: ["P2PPlumtree", "P2PCore", "P2PMux", "P2PProtocols"],
+            path: "Tests/Protocols/PlumtreeTests"
         ),
 
         // MARK: - Integration (depends only on protocols, not implementations)
