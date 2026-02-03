@@ -180,7 +180,16 @@ let composite = CompositeDiscovery(services: [
     (swimService, weight: 1.0),
     (mdnsService, weight: 0.8)
 ])
+await composite.start()
+// ... 使用 ...
+await composite.stop()  // 必須: 内部サービスも停止
 ```
+
+**重要な制約**:
+- CompositeDiscoveryは提供されたサービスの所有権を取得する
+- 各サービスインスタンスは1つのCompositeDiscoveryのみが使用すること
+- CompositeDiscoveryに追加後は、サービスを直接使用しないこと
+- `stop()`は必ず呼び出すこと（内部サービスも停止される）
 
 ### SWIMの追加型
 - `SWIMMembership` - DiscoveryService実装
@@ -250,6 +259,38 @@ let composite = CompositeDiscovery(services: [
 - [ ] **CYCLON実装** - ランダムピアサンプリング
 - [ ] **Plumtree実装** - 効率的なブロードキャスト
 - [ ] **サーキットブレーカー** - 失敗サービスの一時停止
+
+## 並行処理とイベントパターン
+
+### Actor vs Class+Mutex
+
+| サービス | パターン | 理由 |
+|---------|---------|------|
+| SWIMMembership | `actor` | 低頻度、ユーザー向けAPI |
+| MDNSDiscovery | `actor` | 低頻度、ユーザー向けAPI |
+| CYCLONDiscovery | `actor` | 低頻度、ユーザー向けAPI |
+| CompositeDiscovery | `final class + Mutex` | イベント転送のみ、内部は軽量処理 |
+
+### イベントパターン
+
+Discovery層のすべてのサービスは **EventBroadcaster（多消費者）** を使用。
+
+- **理由**: 複数の消費者が異なるピアを監視する（`subscribe(to: PeerID)`）
+- **実装**: `nonisolated let broadcaster = EventBroadcaster<Observation>()`
+- **ライフサイクル**: `deinit` で `broadcaster.shutdown()` 呼び出し
+
+### ライフサイクルメソッド統一
+
+すべてのDiscoveryServiceは `func stop() async` を実装すること。
+
+| サービス | 現状 | 修正状況 |
+|---------|------|----------|
+| SWIMMembership | `func stop() async` | ✅ そのまま |
+| MDNSDiscovery | `func stop() async` | ✅ そのまま |
+| CYCLONDiscovery | `func stop() async` | ✅ `async` 追加完了 |
+| CompositeDiscovery | `func stop() async` | ✅ `async` 追加、内部サービス停止を実装完了 |
+
+**理由**: 内部で非同期リソース（`await transport.stop()`, `await browser.stop()`）を停止する必要がある。
 
 ## Codex Review (2026-01-18)
 

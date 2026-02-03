@@ -30,14 +30,46 @@
 
 #### パターン選択基準
 
+パターンは**プロトコルの性質**で決定する。同じレイヤー内でも性質が異なれば異なるパターンを使う。
+
 | 基準 | EventEmitting（単一消費者） | EventBroadcaster（多消費者） |
 |-----|--------------------------|---------------------------|
 | 消費者数 | 1つの `for await` ループ | 複数の独立した `for await` ループ |
 | `events` の意味 | 同じストリームを返す | 呼出しごとに新しいストリームを返す |
 | プロトコル準拠 | `EventEmitting` | なし（プロトコル不要） |
-| 使用層 | Protocols層（Ping, Identify, Kademlia等） | Discovery層（CompositeDiscovery, SWIM, mDNS等） |
 
 **重要**: 2つのパターンは排他的。1つの型が両方に準拠してはならない。
+
+#### プロトコル性質による分類
+
+##### 1. リクエスト/レスポンス型 → EventEmitting
+
+- **判断基準**: 単一機能、トピック/チャンネル概念なし、全イベントを1消費者が処理
+- **イベント特性**: サービス全体の状態変化（接続、切断、エラー等）
+- **実装例**: Ping, Identify, AutoNAT, DCUtR, Kademlia, RelayClient, RelayServer
+
+##### 2. Pub/Sub型 → EventBroadcaster
+
+- **判断基準**: 複数トピック、トピック別サブスクリプション、トピックごとに独立した消費者
+- **イベント特性**: トピックごとのメッセージ配信（`subscribe(to: Topic)`）
+- **実装例**: GossipSub, Plumtree
+
+##### 3. Discovery型 → EventBroadcaster
+
+- **判断基準**: ピア観察、ピア別フィルタ、異なる消費者が異なるピアを監視
+- **イベント特性**: ピアごとの観察イベント（`subscribe(to: PeerID)`）
+- **実装例**: SWIM, mDNS, CYCLON, CompositeDiscovery
+
+##### 判断フロー
+
+```
+1. Discovery層のDiscoveryServiceか？
+   YES → EventBroadcaster
+
+2. Protocols層で複数トピック/チャンネルを持つか？
+   YES → EventBroadcaster (Pub/Sub型)
+   NO  → EventEmitting (リクエスト/レスポンス型)
+```
 
 #### パターンA: EventEmitting（単一消費者）
 
@@ -151,9 +183,34 @@ func doWork() {
 
 - **並行処理モデル**: Actor か Class+Mutex か（ルール1の基準で判定）
 - **イベントパターン**: EventEmitting か EventBroadcaster か（ルール2の基準で判定）
-- **ライフサイクルメソッド名**: `shutdown()` / `stop()` / `close()` を混在させない
+- **ライフサイクルメソッド**: レイヤーごとに統一（下記参照）
 
 新しい型を追加する際は、まずそのモジュール内の既存の型を確認し、同じパターンに従うこと。
+
+#### ライフサイクルメソッド統一
+
+| レイヤー | メソッド | シグネチャ | 理由 |
+|---------|---------|-----------|------|
+| Protocols層 | `shutdown()` | `func shutdown()` | EventEmittingプロトコル準拠 |
+| Discovery層 | `stop()` | `func stop() async` | 非同期リソース（トランスポート/ブラウザ）のクリーンアップ |
+| Transport/Mux/Security層 | `close()` | `func close() async throws` | I/O完了待ち |
+
+**Discovery層の統一ルール**:
+- すべてのDiscoveryServiceは `func stop() async` を実装
+- 理由: 内部で非同期リソース（`await transport.stop()`, `await browser.stop()`）を停止する必要がある
+- `deinit` では `await` 不可のため、`stop()` で明示的に停止
+
+**実装状況** (2026-02-03更新):
+- ✅ `SWIMMembership` - `func stop() async` 実装済み
+- ✅ `MDNSDiscovery` - `func stop() async` 実装済み
+- ✅ `CYCLONDiscovery` - `func stop() async` 実装済み
+- ✅ `CompositeDiscovery` - `func stop() async` 実装済み（内部サービスも停止）
+
+**CompositeDiscoveryの重要な制約**:
+- CompositeDiscoveryは提供されたサービスの所有権を取得する
+- 各サービスインスタンスは1つのCompositeDiscoveryのみが使用すること
+- CompositeDiscoveryに追加後は、サービスを直接使用しないこと
+- `stop()`は必ず呼び出すこと（内部サービスも停止される）
 
 ### 4. エラーハンドリング
 

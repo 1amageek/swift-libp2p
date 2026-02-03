@@ -7,6 +7,27 @@ import Synchronization
 ///
 /// Results are merged and deduplicated by peer ID, with scores combined
 /// using a weighted average based on each service's reliability.
+///
+/// ## Ownership and Lifecycle
+///
+/// - **Ownership**: CompositeDiscovery takes ownership of the provided services.
+/// - **Exclusive Use**: Each service instance should only be used by one CompositeDiscovery.
+/// - **No Direct Access**: Services should not be used directly after being added to CompositeDiscovery.
+/// - **Explicit Cleanup**: `stop()` must be called before the instance is deallocated.
+///
+/// Example:
+/// ```swift
+/// let mdns = MDNSDiscovery(...)
+/// let swim = SWIMMembership(...)
+/// let composite = CompositeDiscovery(services: [mdns, swim])
+///
+/// await composite.start()
+/// // ... use composite ...
+/// await composite.stop()  // Required: stops internal services
+/// ```
+///
+/// **Warning**: Do not share services between multiple CompositeDiscovery instances
+/// or use services directly after adding them to CompositeDiscovery.
 public final class CompositeDiscovery: DiscoveryService, Sendable {
 
     // MARK: - Properties
@@ -80,22 +101,40 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
         }
     }
 
-    /// Stops forwarding events and cancels all tasks.
-    public func stop() {
-        let shouldFinish = state.withLock { state -> Bool in
-            guard !state.isShutdown else { return false }  // 二重呼び出し防止
+    /// Stops forwarding events, cancels all tasks, and stops all internal services.
+    ///
+    /// This method performs cleanup in the following order:
+    /// 1. Cancels all event forwarding tasks
+    /// 2. Stops all internal discovery services (calls `stop()` on each)
+    /// 3. Shuts down the event broadcaster
+    ///
+    /// This method is idempotent and safe to call multiple times.
+    ///
+    /// - Important: After calling `stop()`, the internal services will no longer
+    ///   be usable, even if accessed directly from outside CompositeDiscovery.
+    public func stop() async {
+        let (tasks, servicesToStop) = state.withLock { state -> ([Task<Void, Never>], [(any DiscoveryService, Double)]) in
+            guard !state.isShutdown else { return ([], []) }
             state.isShutdown = true
 
-            for task in state.forwardingTasks {
-                task.cancel()
-            }
+            let t = state.forwardingTasks
             state.forwardingTasks.removeAll()
             state.isRunning = false
-            return true
+            return (t, services)
         }
-        if shouldFinish {
-            broadcaster.shutdown()
+
+        // 1. Taskキャンセル
+        for task in tasks {
+            task.cancel()
         }
+
+        // 2. 内部サービス停止
+        for (service, _) in servicesToStop {
+            await service.stop()
+        }
+
+        // 3. Broadcasterシャットダウン
+        broadcaster.shutdown()
     }
 
     // MARK: - DiscoveryService Protocol

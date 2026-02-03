@@ -19,6 +19,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
     private struct MockState: Sendable {
         var announcedAddresses: [Multiaddr] = []
         var findCalls: [PeerID] = []
+        var stopCalled: Bool = false
     }
 
     var announcedAddresses: [Multiaddr] {
@@ -27,6 +28,10 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
 
     var findCalls: [PeerID] {
         state.withLock { $0.findCalls }
+    }
+
+    var stopCalled: Bool {
+        state.withLock { $0.stopCalled }
     }
 
     init(
@@ -74,6 +79,11 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
 
     var observations: AsyncStream<Observation> {
         eventStream
+    }
+
+    func stop() async {
+        state.withLock { $0.stopCalled = true }
+        eventContinuation.finish()
     }
 
     /// Emit an observation for testing.
@@ -455,6 +465,19 @@ struct CompositeDiscoveryTests {
         #expect(results[2].score == 0.3)
     }
 
+    @Test("CompositeDiscovery stops child services")
+    func compositeStopsChildServices() async {
+        let mock1 = MockDiscoveryService()
+        let mock2 = MockDiscoveryService()
+        let composite = CompositeDiscovery(services: [mock1, mock2])
+
+        await composite.start()
+        await composite.stop()
+
+        #expect(mock1.stopCalled == true)
+        #expect(mock2.stopCalled == true)
+    }
+
     @Test("Stop is idempotent (double stop does not crash)")
     func stopIsIdempotent() async {
         let service = MockDiscoveryService()
@@ -464,9 +487,9 @@ struct CompositeDiscoveryTests {
         await composite.start()
 
         // Multiple stops should not crash
-        composite.stop()
-        composite.stop()
-        composite.stop()
+        await composite.stop()
+        await composite.stop()
+        await composite.stop()
 
         // Service should still be usable for read operations
         let peers = await composite.knownPeers()
@@ -497,7 +520,7 @@ struct CompositeDiscoveryTests {
         try? await Task.sleep(for: .milliseconds(50))
 
         // Stop should terminate the stream
-        composite.stop()
+        await composite.stop()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value

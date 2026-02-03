@@ -67,7 +67,7 @@ public actor CYCLONDiscovery: DiscoveryService {
     }
 
     /// Stops the shuffle loop and cleans up.
-    public func stop() {
+    public func stop() async {
         guard isStarted else { return }
         shuffleTask?.cancel()
         shuffleTask = nil
@@ -181,12 +181,12 @@ public actor CYCLONDiscovery: DiscoveryService {
             defer { Task { try await stream.close() } }
 
             let requestData = CYCLONProtobuf.encode(.shuffleRequest(entries: subset))
-            try await stream.writeLengthPrefixedMessage(requestData)
+            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
 
-            let responseData = try await stream.readLengthPrefixedMessage(
+            let responseBuffer = try await stream.readLengthPrefixedMessage(
                 maxSize: 256 * 1024
             )
-            let response = try CYCLONProtobuf.decode(responseData)
+            let response = try CYCLONProtobuf.decode(Data(buffer: responseBuffer))
 
             guard case .shuffleResponse(let receivedEntries) = response else {
                 throw CYCLONError.invalidMessage
@@ -223,10 +223,10 @@ public actor CYCLONDiscovery: DiscoveryService {
 
     private func handleIncomingStream(context: StreamContext) async {
         do {
-            let requestData = try await context.stream.readLengthPrefixedMessage(
+            let requestBuffer = try await context.stream.readLengthPrefixedMessage(
                 maxSize: 256 * 1024
             )
-            let request = try CYCLONProtobuf.decode(requestData)
+            let request = try CYCLONProtobuf.decode(Data(buffer: requestBuffer))
 
             guard case .shuffleRequest(let receivedEntries) = request else {
                 throw CYCLONError.invalidMessage
@@ -241,7 +241,7 @@ public actor CYCLONDiscovery: DiscoveryService {
             let responseData = CYCLONProtobuf.encode(
                 .shuffleResponse(entries: responseSubset)
             )
-            try await context.stream.writeLengthPrefixedMessage(responseData)
+            try await context.stream.writeLengthPrefixedMessage(ByteBuffer(bytes: responseData))
             try await context.stream.close()
 
             // Merge received entries into our view
