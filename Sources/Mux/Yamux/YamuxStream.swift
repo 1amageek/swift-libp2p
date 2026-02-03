@@ -1,5 +1,6 @@
 /// YamuxStream - MuxedStream implementation for Yamux
 import Foundation
+import NIOCore
 import P2PCore
 import P2PMux
 import Synchronization
@@ -22,9 +23,9 @@ import Synchronization
 private struct YamuxStreamState: Sendable {
     /// Initial window size from configuration (immutable after creation)
     let initialWindowSize: UInt32
-    var readBuffer: Data = Data()
+    var readBuffer: ByteBuffer = ByteBuffer()
     /// Queue of readers waiting for data (supports concurrent reads)
-    var readContinuations: [CheckedContinuation<Data, Error>] = []
+    var readContinuations: [CheckedContinuation<ByteBuffer, Error>] = []
     /// Queue of writers waiting for window space (supports concurrent writes)
     var windowWaitContinuations: [CheckedContinuation<Void, Error>] = []
     var sendWindow: UInt32
@@ -75,7 +76,7 @@ public final class YamuxStream: MuxedStream, Sendable {
         self.state = Mutex(YamuxStreamState(initialWindowSize: initialWindowSize))
     }
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { state in
                 // Reset state - immediate failure
@@ -91,9 +92,9 @@ public final class YamuxStream: MuxedStream, Sendable {
                 }
 
                 // Return buffered data if available
-                if !state.readBuffer.isEmpty {
+                if state.readBuffer.readableBytes > 0 {
                     let data = state.readBuffer
-                    state.readBuffer = Data()
+                    state.readBuffer = ByteBuffer()
                     continuation.resume(returning: data)
                 } else if state.remoteWriteClosed {
                     // Remote closed write side and buffer is empty - no more data coming
@@ -116,7 +117,7 @@ public final class YamuxStream: MuxedStream, Sendable {
         case closed
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { state in state.localWriteClosed || state.isReset }
         if isClosed {
             throw YamuxError.streamClosed
@@ -125,7 +126,7 @@ public final class YamuxStream: MuxedStream, Sendable {
         // Send data in chunks based on available send window
         // Use index tracking to avoid O(n) copies on each iteration
         var offset = 0
-        let dataCount = data.count
+        let dataCount = data.readableBytes
 
         while offset < dataCount {
             // Check for task cancellation
@@ -153,8 +154,9 @@ public final class YamuxStream: MuxedStream, Sendable {
 
             switch reserveResult {
             case .reserved(let chunkSize):
-                // Create Data slice only when sending (single copy for the frame)
-                let chunk = Data(data[offset..<(offset + chunkSize)])
+                // Create Data slice only when sending
+                let readerOffset = data.readerIndex + offset
+                let chunk = data.getSlice(at: readerOffset, length: chunkSize)!
                 offset += chunkSize
 
                 let frame = YamuxFrame.data(
@@ -237,11 +239,11 @@ public final class YamuxStream: MuxedStream, Sendable {
         // We mark the read side as closed locally, which will cause subsequent reads to fail.
         // The peer will continue sending until their window is exhausted or they close.
         // Received data after closeRead() will be discarded in dataReceived().
-        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let readConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             if state.localReadClosed || state.isReset { return [] }
             state.localReadClosed = true
             // Clear buffer - we're no longer interested in any data
-            state.readBuffer = Data()
+            state.readBuffer = ByteBuffer()
             let r = state.readContinuations
             state.readContinuations = []
             return r
@@ -253,19 +255,27 @@ public final class YamuxStream: MuxedStream, Sendable {
     }
 
     public func close() async throws {
-        // Close both directions
-        try await closeWrite()
+        // Close both directions - ensure closeRead runs even if closeWrite fails
+        // (e.g. when connection is already closed, FIN send fails but we still
+        // need to cancel read continuations to prevent hangs)
+        var writeError: (any Error)?
+        do {
+            try await closeWrite()
+        } catch {
+            writeError = error
+        }
         try await closeRead()
         connection.removeStream(id)
+        if let writeError { throw writeError }
     }
 
     public func reset() async throws {
-        let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<Data, Error>], [CheckedContinuation<Void, Error>]) in
+        let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<ByteBuffer, Error>], [CheckedContinuation<Void, Error>]) in
             state.isReset = true
             state.localWriteClosed = true
             state.localReadClosed = true
             state.remoteWriteClosed = true
-            state.readBuffer = Data()
+            state.readBuffer = ByteBuffer()
             let r = state.readContinuations
             let w = state.windowWaitContinuations
             state.readContinuations = []
@@ -297,16 +307,16 @@ public final class YamuxStream: MuxedStream, Sendable {
     ///
     /// - Returns: `true` if the data was accepted, `false` if it exceeded
     ///   the receive window (protocol violation).
-    func dataReceived(_ data: Data) -> Bool {
+    func dataReceived(_ data: ByteBuffer) -> Bool {
         enum DataReceivedResult {
-            case accepted(continuation: CheckedContinuation<Data, Error>?)
+            case accepted(continuation: CheckedContinuation<ByteBuffer, Error>?)
             case discarded  // localReadClosed - data discarded
-            case windowViolation(errorConts: [CheckedContinuation<Data, Error>])
+            case windowViolation(errorConts: [CheckedContinuation<ByteBuffer, Error>])
         }
 
         let result: DataReceivedResult = state.withLock { state in
             // Guard against data exceeding UInt32 range (Yamux uses 32-bit lengths)
-            guard data.count <= UInt32.max else {
+            guard data.readableBytes <= UInt32.max else {
                 state.isReset = true
                 state.localWriteClosed = true
                 state.localReadClosed = true
@@ -315,7 +325,7 @@ public final class YamuxStream: MuxedStream, Sendable {
                 state.readContinuations = []
                 return .windowViolation(errorConts: conts)
             }
-            let dataSize = UInt32(data.count)
+            let dataSize = UInt32(data.readableBytes)
 
             // Check for receive window violation (protocol error)
             if dataSize > state.recvWindow {
@@ -342,7 +352,8 @@ public final class YamuxStream: MuxedStream, Sendable {
                 let cont = state.readContinuations.removeFirst()
                 return .accepted(continuation: cont)
             } else {
-                state.readBuffer.append(data)
+                var mutableData = data
+                state.readBuffer.writeBuffer(&mutableData)
                 return .accepted(continuation: nil)
             }
         }
@@ -398,7 +409,7 @@ public final class YamuxStream: MuxedStream, Sendable {
     /// This is a half-close: remote stopped sending, but we can still write.
     /// Only read waiters are cancelled; write waiters continue normally.
     func remoteClose() {
-        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let readConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             state.remoteWriteClosed = true
             // Only cancel read waiters - write side is unaffected (half-close)
             let r = state.readContinuations
@@ -416,12 +427,12 @@ public final class YamuxStream: MuxedStream, Sendable {
     ///
     /// This is an abrupt close: both directions are immediately terminated.
     func remoteReset() {
-        let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<Data, Error>], [CheckedContinuation<Void, Error>]) in
+        let (readConts, windowConts) = state.withLock { state -> ([CheckedContinuation<ByteBuffer, Error>], [CheckedContinuation<Void, Error>]) in
             state.isReset = true
             state.localWriteClosed = true
             state.localReadClosed = true
             state.remoteWriteClosed = true
-            state.readBuffer = Data()
+            state.readBuffer = ByteBuffer()
             let r = state.readContinuations
             let w = state.windowWaitContinuations
             state.readContinuations = []

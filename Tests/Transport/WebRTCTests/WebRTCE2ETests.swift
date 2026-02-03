@@ -6,6 +6,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PTransportWebRTC
 @testable import P2PTransport
 @testable import P2PCore
@@ -143,7 +144,9 @@ struct WebRTCE2ETests {
                 let received = try await stream.read()
 
                 // Echo back with modification
-                try await stream.write(received + Data(" - echoed".utf8))
+                var echoBuffer = received
+                echoBuffer.writeBytes(Data(" - echoed".utf8))
+                try await stream.write(echoBuffer)
 
                 // Close write side
                 try await stream.closeWrite()
@@ -164,12 +167,12 @@ struct WebRTCE2ETests {
 
         // Send data
         let testData = Data("Hello WebRTC".utf8)
-        try await clientStream.write(testData)
+        try await clientStream.write(ByteBuffer(bytes: testData))
         try await clientStream.closeWrite()
 
         // Read response
         let response = try await clientStream.read()
-        #expect(response == Data("Hello WebRTC - echoed".utf8))
+        #expect(Data(buffer: response) == Data("Hello WebRTC - echoed".utf8))
 
         // Cleanup
         let serverConnection = try await serverTask.value
@@ -216,11 +219,11 @@ struct WebRTCE2ETests {
         for i in 0..<3 {
             let stream = try await clientConnection.newStream()
             let testData = Data("Stream \(i)".utf8)
-            try await stream.write(testData)
+            try await stream.write(ByteBuffer(bytes: testData))
             try await stream.closeWrite()
 
             let response = try await stream.read()
-            #expect(response == testData)
+            #expect(Data(buffer: response) == testData)
             try await stream.close()
         }
 
@@ -302,7 +305,7 @@ struct WebRTCE2ETests {
                 // Open 3 streams to client
                 for i in 0..<3 {
                     let stream = try await serverConnection.newStream()
-                    try await stream.write(Data("Server stream \(i)".utf8))
+                    try await stream.write(ByteBuffer(bytes: Data("Server stream \(i)".utf8)))
                     try await stream.closeWrite()
                 }
                 return serverConnection
@@ -322,7 +325,7 @@ struct WebRTCE2ETests {
             var count = 0
             for await stream in clientConnection.inboundStreams {
                 let data = try await stream.read()
-                messages.append(data)
+                messages.append(Data(buffer: data))
                 try await stream.close()
                 count += 1
                 if count >= 3 {

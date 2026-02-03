@@ -51,11 +51,11 @@ struct PingPongDemo {
             do {
                 while true {
                     let data = try await context.stream.read()
-                    let message = String(decoding: data, as: UTF8.self)
+                    let message = String(buffer: data)
                     print("  Received: \(message)")
 
                     if message == "ping" {
-                        try await context.stream.write(Data("pong".utf8))
+                        try await context.stream.write(ByteBuffer(string: "pong"))
                         print("  Sent: pong")
                     }
                 }
@@ -105,10 +105,10 @@ struct PingPongDemo {
         // Send pings
         for i in 1...5 {
             print("Sending ping \(i)...")
-            try await stream.write(Data("ping".utf8))
+            try await stream.write(ByteBuffer(string: "ping"))
 
             let response = try await stream.read()
-            let message = String(decoding: response, as: UTF8.self)
+            let message = String(buffer: response)
             print("Received: \(message)")
 
             try await Task.sleep(for: .seconds(1))

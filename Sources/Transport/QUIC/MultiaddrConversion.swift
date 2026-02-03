@@ -28,19 +28,19 @@ extension Multiaddr {
     /// - A QUIC protocol (quic or quic-v1)
     ///
     /// - Returns: The SocketAddress, or nil if conversion is not possible.
-    public func toQUICSocketAddress() -> SocketAddress? {
+    public func toQUICSocketAddress() -> QUIC.SocketAddress? {
         guard let ip = ipAddress,
               let port = udpPort,
               hasQUICProtocol else {
             return nil
         }
-        return SocketAddress(ipAddress: ip, port: port)
+        return QUIC.SocketAddress(ipAddress: ip, port: port)
     }
 }
 
 // MARK: - SocketAddress Extensions
 
-extension SocketAddress {
+extension QUIC.SocketAddress {
 
     /// Converts this SocketAddress to a QUIC Multiaddr.
     ///

@@ -1,8 +1,15 @@
 /// YamuxStreamTests - Tests for YamuxStream flow control and state management
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PMuxYamux
 @testable import P2PCore
+
+/// Helper to decode a YamuxFrame from Data (used when reading from mock outbound).
+private func decodeFrame(from data: Data) throws -> YamuxFrame? {
+    var buffer = ByteBuffer(bytes: data)
+    return try YamuxFrame.decode(from: &buffer)
+}
 
 @Suite("YamuxStream Tests")
 struct YamuxStreamTests {
@@ -34,12 +41,12 @@ struct YamuxStreamTests {
 
         // Simulate data received
         let testData = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F]) // "Hello"
-        let accepted = stream.dataReceived(testData)
+        let accepted = stream.dataReceived(ByteBuffer(bytes: testData))
         #expect(accepted == true)
 
         // Read should return immediately
         let result = try await stream.read()
-        #expect(result == testData)
+        #expect(Data(buffer: result) == testData)
     }
 
     @Test("Read waits for data when buffer is empty")
@@ -58,11 +65,11 @@ struct YamuxStreamTests {
         try await Task.sleep(for: .milliseconds(50))
 
         // Inject data
-        _ = stream.dataReceived(testData)
+        _ = stream.dataReceived(ByteBuffer(bytes: testData))
 
         // Read should complete
         let result = try await readTask.value
-        #expect(result == testData)
+        #expect(Data(buffer: result) == testData)
     }
 
     @Test("Concurrent reads are queued FIFO")
@@ -85,18 +92,18 @@ struct YamuxStreamTests {
         try await Task.sleep(for: .milliseconds(50))
 
         // Inject data in order
-        _ = stream.dataReceived(data1)
-        _ = stream.dataReceived(data2)
-        _ = stream.dataReceived(data3)
+        _ = stream.dataReceived(ByteBuffer(bytes: data1))
+        _ = stream.dataReceived(ByteBuffer(bytes: data2))
+        _ = stream.dataReceived(ByteBuffer(bytes: data3))
 
         // Verify FIFO order
         let result1 = try await readTask1.value
         let result2 = try await readTask2.value
         let result3 = try await readTask3.value
 
-        #expect(result1 == data1)
-        #expect(result2 == data2)
-        #expect(result3 == data3)
+        #expect(Data(buffer: result1) == data1)
+        #expect(Data(buffer: result2) == data2)
+        #expect(Data(buffer: result3) == data3)
     }
 
     @Test("Read throws when stream is reset")
@@ -132,17 +139,17 @@ struct YamuxStreamTests {
         let stream = YamuxStream(id: 1, connection: connection)
 
         let testData = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F]) // "Hello"
-        try await stream.write(testData)
+        try await stream.write(ByteBuffer(bytes: testData))
 
         // Verify frame was sent
         let outbound = mock.captureOutbound()
         #expect(outbound.count == 1)
 
         // Decode the frame
-        let frame = try YamuxFrame.decode(from: outbound[0])
-        #expect(frame?.frame.type == .data)
-        #expect(frame?.frame.streamID == 1)
-        #expect(frame?.frame.data == testData)
+        let frame = try decodeFrame(from: outbound[0])
+        #expect(frame?.type == .data)
+        #expect(frame?.streamID == 1)
+        #expect(frame?.data == ByteBuffer(bytes: testData))
     }
 
     @Test("Write throws when stream is closed")
@@ -153,7 +160,7 @@ struct YamuxStreamTests {
         try await stream.closeWrite()
 
         await #expect(throws: YamuxError.self) {
-            try await stream.write(Data([0x01]))
+            try await stream.write(ByteBuffer(bytes: Data([0x01])))
         }
     }
 
@@ -169,12 +176,12 @@ struct YamuxStreamTests {
         let stream = YamuxStream(id: 1, connection: connection, initialWindowSize: smallWindow)
 
         // Exhaust the window
-        try await stream.write(Data(repeating: 0x42, count: Int(smallWindow)))
+        try await stream.write(ByteBuffer(bytes: Data(repeating: 0x42, count: Int(smallWindow))))
         mock.clearOutbound()
 
         // Start another write (will block due to no window)
         let writeTask = Task {
-            try await stream.write(Data([0x01]))
+            try await stream.write(ByteBuffer(bytes: Data([0x01])))
         }
 
         // Wait for write to block
@@ -190,8 +197,8 @@ struct YamuxStreamTests {
         let outbound = mock.captureOutbound()
         #expect(outbound.count >= 1)
 
-        let decoded = try YamuxFrame.decode(from: outbound[0])
-        #expect(decoded?.frame.data == Data([0x01]))
+        let decoded = try decodeFrame(from: outbound[0])
+        #expect(decoded?.data == ByteBuffer(bytes: [0x01] as [UInt8]))
     }
 
     @Test("Window overflow protection caps at max")
@@ -208,9 +215,9 @@ struct YamuxStreamTests {
 
         // Stream should still be functional (no crash from overflow)
         let testData = Data([0x01])
-        _ = stream.dataReceived(testData)
+        _ = stream.dataReceived(ByteBuffer(bytes: testData))
         let result = try await stream.read()
-        #expect(result == testData)
+        #expect(Data(buffer: result) == testData)
     }
 
     // MARK: - Data Received Tests
@@ -222,7 +229,7 @@ struct YamuxStreamTests {
 
         // Default window is 256KB, try to send more
         let oversizedData = Data(repeating: 0xFF, count: Int(yamuxDefaultWindowSize) + 1)
-        let accepted = stream.dataReceived(oversizedData)
+        let accepted = stream.dataReceived(ByteBuffer(bytes: oversizedData))
 
         #expect(accepted == false)
     }
@@ -233,7 +240,7 @@ struct YamuxStreamTests {
         let stream = YamuxStream(id: 1, connection: connection)
 
         let normalData = Data(repeating: 0x42, count: 1000)
-        let accepted = stream.dataReceived(normalData)
+        let accepted = stream.dataReceived(ByteBuffer(bytes: normalData))
 
         #expect(accepted == true)
     }
@@ -251,12 +258,11 @@ struct YamuxStreamTests {
         let outbound = mock.captureOutbound()
         #expect(outbound.count == 1)
 
-        let decoded = try YamuxFrame.decode(from: outbound[0])
+        let decoded = try decodeFrame(from: outbound[0])
         #expect(decoded != nil)
-        let frame = decoded!.frame
-        #expect(frame.type == .data)
-        #expect(frame.flags.contains(.fin))
-        #expect(frame.streamID == 1)
+        #expect(decoded!.type == .data)
+        #expect(decoded!.flags.contains(.fin))
+        #expect(decoded!.streamID == 1)
     }
 
     @Test("Remote close resumes waiting readers with error")

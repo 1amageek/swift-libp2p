@@ -4,6 +4,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PIdentify
 @testable import P2PTransportQUIC
 @testable import P2PTransport
@@ -37,7 +38,9 @@ struct IdentifyE2ETests {
                 let received = try await stream.read()
 
                 // Echo back with modification
-                try await stream.write(received + Data(" - echoed".utf8))
+                var echoBuffer = received
+                echoBuffer.writeBytes(Data(" - echoed".utf8))
+                try await stream.write(echoBuffer)
 
                 // Close write side
                 try await stream.closeWrite()
@@ -58,12 +61,12 @@ struct IdentifyE2ETests {
 
         // Send data
         let testData = Data("Hello QUIC".utf8)
-        try await clientStream.write(testData)
+        try await clientStream.write(ByteBuffer(bytes: testData))
         try await clientStream.closeWrite()
 
         // Read response
         let response = try await clientStream.read()
-        #expect(response == Data("Hello QUIC - echoed".utf8))
+        #expect(Data(buffer: response) == Data("Hello QUIC - echoed".utf8))
 
         // Cleanup
         let serverConnection = try? await serverTask.value
@@ -141,7 +144,7 @@ struct IdentifyE2ETests {
 
                 // Encode and send response
                 let data = try IdentifyProtobuf.encode(serverInfo)
-                try await stream.write(data)
+                try await stream.write(ByteBuffer(bytes: data))
                 try await stream.closeWrite()
 
                 return serverConnection
@@ -159,14 +162,14 @@ struct IdentifyE2ETests {
         let stream = try await clientConn.newStream()
 
         // Send empty request to trigger server-side stream accept
-        try await stream.write(Data())
+        try await stream.write(ByteBuffer())
         try await stream.closeWrite()
 
         // Read server's identify response
         let receivedData = try await stream.read()
 
         // Decode the response
-        let receivedInfo = try IdentifyProtobuf.decode(receivedData)
+        let receivedInfo = try IdentifyProtobuf.decode(Data(buffer: receivedData))
 
         // Verify the received info
         #expect(receivedInfo.publicKey == serverKeyPair.publicKey)
@@ -208,7 +211,7 @@ struct IdentifyE2ETests {
                     agentVersion: nil,
                     signedPeerRecord: nil
                 )
-                try await stream.write(try IdentifyProtobuf.encode(info))
+                try await stream.write(ByteBuffer(bytes: try IdentifyProtobuf.encode(info)))
                 try await stream.closeWrite()
 
                 return serverConnection
@@ -225,11 +228,11 @@ struct IdentifyE2ETests {
         let stream = try await clientConn.newStream()
 
         // Send empty request to trigger server-side stream accept
-        try await stream.write(Data())
+        try await stream.write(ByteBuffer())
         try await stream.closeWrite()
 
         let data = try await stream.read()
-        let info = try IdentifyProtobuf.decode(data)
+        let info = try IdentifyProtobuf.decode(Data(buffer: data))
 
         // Verify public key matches and derives correct PeerID
         #expect(info.publicKey == serverKeyPair.publicKey)
@@ -277,7 +280,7 @@ struct IdentifyE2ETests {
                     agentVersion: "swift-libp2p/0.1.0",
                     signedPeerRecord: nil
                 )
-                try await stream.write(try IdentifyProtobuf.encode(info))
+                try await stream.write(ByteBuffer(bytes: try IdentifyProtobuf.encode(info)))
                 try await stream.closeWrite()
 
                 return serverConnection
@@ -294,11 +297,11 @@ struct IdentifyE2ETests {
         let stream = try await clientConn.newStream()
 
         // Send empty request to trigger server-side stream accept
-        try await stream.write(Data())
+        try await stream.write(ByteBuffer())
         try await stream.closeWrite()
 
         let data = try await stream.read()
-        let info = try IdentifyProtobuf.decode(data)
+        let info = try IdentifyProtobuf.decode(Data(buffer: data))
 
         // Verify all listen addresses are present
         #expect(info.listenAddresses.count == 3)

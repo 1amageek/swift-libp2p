@@ -1,11 +1,18 @@
 /// YamuxConnectionTests - Tests for YamuxConnection lifecycle and security
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PMuxYamux
 @testable import P2PCore
 @testable import P2PMux
 
-@Suite("YamuxConnection Tests")
+/// Helper to decode a YamuxFrame from Data (used when reading from mock outbound).
+private func decodeFrame(from data: Data) throws -> YamuxFrame? {
+    var buffer = ByteBuffer(bytes: data)
+    return try YamuxFrame.decode(from: &buffer)
+}
+
+@Suite("YamuxConnection Tests", .serialized)
 struct YamuxConnectionTests {
 
     // MARK: - Test Fixtures
@@ -91,9 +98,9 @@ struct YamuxConnectionTests {
         // Parse the SYN frame to verify stream ID
         let outbound = mock.captureOutbound()
         #expect(outbound.count >= 1)
-        let decoded = try YamuxFrame.decode(from: outbound[0])
+        let decoded = try decodeFrame(from: outbound[0])
         #expect(decoded != nil)
-        #expect(decoded!.frame.streamID % 2 == 1)
+        #expect(decoded!.streamID % 2 == 1)
     }
 
     @Test("Responder assigns even stream IDs")
@@ -108,9 +115,9 @@ struct YamuxConnectionTests {
         // Parse the SYN frame to verify stream ID
         let outbound = mock.captureOutbound()
         #expect(outbound.count >= 1)
-        let decoded = try YamuxFrame.decode(from: outbound[0])
+        let decoded = try decodeFrame(from: outbound[0])
         #expect(decoded != nil)
-        #expect(decoded!.frame.streamID % 2 == 0)
+        #expect(decoded!.streamID % 2 == 0)
     }
 
     @Test("Stream IDs increment by 2")
@@ -123,9 +130,9 @@ struct YamuxConnectionTests {
 
         _ = try await connection.newStream() // ID 3
         let outbound = mock.captureOutbound()
-        let decoded = try YamuxFrame.decode(from: outbound[0])
+        let decoded = try decodeFrame(from: outbound[0])
         #expect(decoded != nil)
-        #expect(decoded!.frame.streamID == 3)
+        #expect(decoded!.streamID == 3)
     }
 
     // MARK: - newStream Tests
@@ -140,11 +147,10 @@ struct YamuxConnectionTests {
         let outbound = mock.captureOutbound()
         #expect(outbound.count == 1)
 
-        let decoded = try YamuxFrame.decode(from: outbound[0])
+        let decoded = try decodeFrame(from: outbound[0])
         #expect(decoded != nil)
-        let frame = decoded!.frame
-        #expect(frame.type == .data)
-        #expect(frame.flags.contains(.syn))
+        #expect(decoded!.type == .data)
+        #expect(decoded!.flags.contains(.syn))
     }
 
     @Test("newStream throws when connection is closed")
@@ -198,8 +204,8 @@ struct YamuxConnectionTests {
         // Check ACK was sent
         let outbound = mock.captureOutbound()
         let hasACK = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.flags.contains(.ack) && frame.frame.streamID == 2
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.flags.contains(.ack) && frame.streamID == 2
         }
         #expect(hasACK)
     }
@@ -225,8 +231,8 @@ struct YamuxConnectionTests {
         // Check RST was sent
         let outbound = mock.captureOutbound()
         let hasRST = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.flags.contains(.rst) && frame.frame.streamID == 3
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.flags.contains(.rst) && frame.streamID == 3
         }
         #expect(hasRST)
     }
@@ -252,8 +258,8 @@ struct YamuxConnectionTests {
         // Check RST was sent
         let outbound = mock.captureOutbound()
         let hasRST = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.flags.contains(.rst) && frame.frame.streamID == 0
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.flags.contains(.rst) && frame.streamID == 0
         }
         #expect(hasRST)
     }
@@ -292,8 +298,8 @@ struct YamuxConnectionTests {
         // all 3 inbound SYN attempts should be rejected with RST
         let outbound = mock.captureOutbound()
         let rstCount = outbound.filter { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.flags.contains(.rst)
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.flags.contains(.rst)
         }.count
 
         #expect(rstCount > 0)
@@ -394,10 +400,10 @@ struct YamuxConnectionTests {
         // Check pong was sent
         let outbound = mock.captureOutbound()
         let hasPong = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.type == .ping &&
-                   frame.frame.flags.contains(.ack) &&
-                   frame.frame.length == 12345
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.type == .ping &&
+                   frame.flags.contains(.ack) &&
+                   frame.length == 12345
         }
         #expect(hasPong)
     }
@@ -413,8 +419,8 @@ struct YamuxConnectionTests {
 
         let outbound = mock.captureOutbound()
         let hasGoAway = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.type == .goAway
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.type == .goAway
         }
         #expect(hasGoAway)
     }
@@ -524,7 +530,7 @@ struct YamuxConnectionTests {
         try await Task.sleep(for: .milliseconds(100))
 
         // Stream should still be usable
-        let testData = Data([0x01, 0x02])
+        let testData = ByteBuffer(bytes: [0x01, 0x02])
         try await stream.write(testData)
 
         let outbound = mock.captureOutbound()
@@ -545,8 +551,8 @@ struct YamuxConnectionTests {
         // No ping frames should be sent
         let outbound = mock.captureOutbound()
         let hasPing = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.type == .ping && !frame.frame.flags.contains(.ack)
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.type == .ping && !frame.flags.contains(.ack)
         }
         #expect(!hasPing)
 
@@ -570,8 +576,8 @@ struct YamuxConnectionTests {
         // Check that ping was sent
         let outbound = mock.captureOutbound()
         let hasPing = outbound.contains { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.type == .ping && !frame.frame.flags.contains(.ack)
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.type == .ping && !frame.flags.contains(.ack)
         }
         #expect(hasPing)
 
@@ -595,9 +601,9 @@ struct YamuxConnectionTests {
         let outbound = mock.captureOutbound()
         var pingID: UInt32?
         for data in outbound {
-            if let decoded = try? YamuxFrame.decode(from: data),
-               decoded.frame.type == .ping && !decoded.frame.flags.contains(.ack) {
-                pingID = decoded.frame.length
+            if let decoded = try? decodeFrame(from: data),
+               decoded.type == .ping && !decoded.flags.contains(.ack) {
+                pingID = decoded.length
                 break
             }
         }
@@ -684,8 +690,8 @@ struct YamuxConnectionTests {
         // Count ping frames
         let outbound = mock.captureOutbound()
         let pingCount = outbound.filter { data in
-            guard let frame = try? YamuxFrame.decode(from: data) else { return false }
-            return frame.frame.type == .ping && !frame.frame.flags.contains(.ack)
+            guard let frame = try? decodeFrame(from: data) else { return false }
+            return frame.type == .ping && !frame.flags.contains(.ack)
         }.count
 
         // Should have multiple pings (at least 3 with 30ms interval over 150ms)
@@ -693,9 +699,9 @@ struct YamuxConnectionTests {
 
         // Respond to all pings
         for data in outbound {
-            if let decoded = try? YamuxFrame.decode(from: data),
-               decoded.frame.type == .ping && !decoded.frame.flags.contains(.ack) {
-                let pongFrame = YamuxFrame.ping(opaque: decoded.frame.length, ack: true)
+            if let decoded = try? decodeFrame(from: data),
+               decoded.type == .ping && !decoded.flags.contains(.ack) {
+                let pongFrame = YamuxFrame.ping(opaque: decoded.length, ack: true)
                 mock.injectInbound(pongFrame.encode())
             }
         }

@@ -44,7 +44,7 @@ struct MplexStreamTests {
 
         // Read should return immediately with buffered data
         let data = try await stream.read()
-        #expect(String(data: data, encoding: .utf8) == "hello")
+        #expect(String(buffer: data) == "hello")
 
         try await connection.close()
     }
@@ -68,7 +68,7 @@ struct MplexStreamTests {
         injectFrame(mock, messageFrame)
 
         let data = try await readTask.value
-        #expect(String(data: data, encoding: .utf8) == "delayed")
+        #expect(String(buffer: data) == "delayed")
 
         try await connection.close()
     }
@@ -97,7 +97,7 @@ struct MplexStreamTests {
 
         // Read returns buffered data
         let data = try await stream.read()
-        let str = String(data: data, encoding: .utf8)
+        let str = String(buffer: data)
         #expect(str == "helloworld")
 
         try await connection.close()
@@ -170,7 +170,7 @@ struct MplexStreamTests {
         let stream = try await connection.newStream()
         mock.clearOutbound()
 
-        try await stream.write(Data("test data".utf8))
+        try await stream.write(ByteBuffer(bytes: Data("test data".utf8)))
 
         try await Task.sleep(for: .milliseconds(50))
 
@@ -198,7 +198,7 @@ struct MplexStreamTests {
 
         // Write should throw
         await #expect(throws: MplexError.self) {
-            try await stream.write(Data("test".utf8))
+            try await stream.write(ByteBuffer(bytes: Data("test".utf8)))
         }
 
         try await connection.close()
@@ -216,7 +216,7 @@ struct MplexStreamTests {
 
         // Write should throw
         await #expect(throws: MplexError.self) {
-            try await stream.write(Data("test".utf8))
+            try await stream.write(ByteBuffer(bytes: Data("test".utf8)))
         }
 
         try await connection.close()
@@ -313,7 +313,7 @@ struct MplexStreamTests {
         try await Task.sleep(for: .milliseconds(50))
 
         let data = try await stream.read()
-        #expect(String(data: data, encoding: .utf8) == "can still read")
+        #expect(String(buffer: data) == "can still read")
 
         try await connection.close()
     }

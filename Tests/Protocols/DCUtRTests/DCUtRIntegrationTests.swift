@@ -2,6 +2,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PDCUtR
 @testable import P2PCore
@@ -19,8 +20,8 @@ final class DCUtRMockStream: MuxedStream, Sendable {
     private let partner: Mutex<DCUtRMockStream?>
 
     private struct StreamState: Sendable {
-        var readBuffer: [Data] = []
-        var readContinuation: CheckedContinuation<Data, any Error>?
+        var readBuffer: [ByteBuffer] = []
+        var readContinuation: CheckedContinuation<ByteBuffer, any Error>?
         var isClosed: Bool = false
         var isWriteClosed: Bool = false
         var partnerClosed: Bool = false
@@ -41,7 +42,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
         return (client, server)
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // All state checks and continuation installation must happen atomically
         // to avoid race conditions with close() and partner notifications.
         return try await withCheckedThrowingContinuation { continuation in
@@ -50,7 +51,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
                     continuation.resume(returning: s.readBuffer.removeFirst())
                 } else if s.isClosed || s.partnerClosed {
                     // Return empty data to signal EOF
-                    continuation.resume(returning: Data())
+                    continuation.resume(returning: ByteBuffer())
                 } else {
                     // No data available, wait for data or close
                     s.readContinuation = continuation
@@ -59,7 +60,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         let closed = state.withLock { $0.isWriteClosed || $0.isClosed }
         if closed {
             throw DCUtRTestError.streamClosed
@@ -70,7 +71,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
         }
     }
 
-    private func receive(_ data: Data) {
+    private func receive(_ data: ByteBuffer) {
         state.withLock { s in
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
@@ -90,7 +91,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
             s.isClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -101,7 +102,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
             s.isWriteClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
         // Also notify partner that we're closed
@@ -117,7 +118,7 @@ final class DCUtRMockStream: MuxedStream, Sendable {
             // If we're waiting for a read, return empty data to signal EOF
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -409,16 +410,16 @@ struct DCUtRIntegrationTests {
         let responderTask = Task<Void, any Error> {
             // Read initiator's CONNECT
             let connectData = try await responderStream.readLengthPrefixedMessage()
-            let connect = try DCUtRProtobuf.decode(connectData)
+            let connect = try DCUtRProtobuf.decode(Data(buffer: connectData))
             #expect(connect.type == .connect)
 
             // Send back CONNECT with our addresses
             let response = DCUtRMessage.connect(addresses: [try Multiaddr("/ip4/192.168.1.2/tcp/4001")])
-            try await responderStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(response))
+            try await responderStream.writeLengthPrefixedMessage(ByteBuffer(bytes: DCUtRProtobuf.encode(response)))
 
             // Read SYNC
             let syncData = try await responderStream.readLengthPrefixedMessage()
-            let sync = try DCUtRProtobuf.decode(syncData)
+            let sync = try DCUtRProtobuf.decode(Data(buffer: syncData))
             #expect(sync.type == .sync)
         }
 
@@ -467,17 +468,17 @@ struct DCUtRIntegrationTests {
         let initiatorTask = Task<Void, any Error> {
             // Send CONNECT
             let connect = DCUtRMessage.connect(addresses: [try Multiaddr("/ip4/192.168.1.1/tcp/4001")])
-            try await initiatorStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(connect))
+            try await initiatorStream.writeLengthPrefixedMessage(ByteBuffer(bytes: DCUtRProtobuf.encode(connect)))
 
             // Read CONNECT response
             let responseData = try await initiatorStream.readLengthPrefixedMessage()
-            let response = try DCUtRProtobuf.decode(responseData)
+            let response = try DCUtRProtobuf.decode(Data(buffer: responseData))
             #expect(response.type == .connect)
             #expect(response.observedAddresses.count > 0)
 
             // Send SYNC
             let sync = DCUtRMessage.sync()
-            try await initiatorStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(sync))
+            try await initiatorStream.writeLengthPrefixedMessage(ByteBuffer(bytes: DCUtRProtobuf.encode(sync)))
         }
 
         // Run responder handler
@@ -520,15 +521,15 @@ struct DCUtRIntegrationTests {
         // Simulate responder
         let responderTask = Task<Void, any Error> {
             let connectData = try await responderStream.readLengthPrefixedMessage()
-            _ = try DCUtRProtobuf.decode(connectData)
+            _ = try DCUtRProtobuf.decode(Data(buffer: connectData))
 
             // Send back CONNECT with unreachable addresses
             let response = DCUtRMessage.connect(addresses: [try Multiaddr("/ip4/10.255.255.1/tcp/4001")])
-            try await responderStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(response))
+            try await responderStream.writeLengthPrefixedMessage(ByteBuffer(bytes: DCUtRProtobuf.encode(response)))
 
             // Read SYNC
             let syncData = try await responderStream.readLengthPrefixedMessage()
-            _ = try DCUtRProtobuf.decode(syncData)
+            _ = try DCUtRProtobuf.decode(Data(buffer: syncData))
         }
 
         // All dials should fail
@@ -619,13 +620,13 @@ struct DCUtRIntegrationTests {
         // Simulate responder
         let responderTask = Task<Void, any Error> {
             let connectData = try await responderStream.readLengthPrefixedMessage()
-            _ = try DCUtRProtobuf.decode(connectData)
+            _ = try DCUtRProtobuf.decode(Data(buffer: connectData))
 
             let response = DCUtRMessage.connect(addresses: responderAddresses)
-            try await responderStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(response))
+            try await responderStream.writeLengthPrefixedMessage(ByteBuffer(bytes: DCUtRProtobuf.encode(response)))
 
             let syncData = try await responderStream.readLengthPrefixedMessage()
-            _ = try DCUtRProtobuf.decode(syncData)
+            _ = try DCUtRProtobuf.decode(Data(buffer: syncData))
         }
 
         try await initiator.upgradeToDirectConnection(
@@ -678,7 +679,7 @@ struct DCUtRIntegrationTests {
 
             // Send SYNC instead of CONNECT (protocol violation)
             let wrongMessage = DCUtRMessage.sync()
-            try await responderStream.writeLengthPrefixedMessage(DCUtRProtobuf.encode(wrongMessage))
+            try await responderStream.writeLengthPrefixedMessage(ByteBuffer(bytes: DCUtRProtobuf.encode(wrongMessage)))
         }
 
         // Initiator should detect the violation or handle gracefully
@@ -809,7 +810,7 @@ struct DCUtRIntegrationTests {
             var malformedData = Data()
             malformedData.append(contentsOf: Varint.encode(UInt64(100)))  // claims 100 bytes
             malformedData.append(contentsOf: [0x01, 0x02, 0x03])  // only 3 bytes
-            try await initiatorStream.write(malformedData)
+            try await initiatorStream.write(ByteBuffer(bytes: malformedData))
             try await initiatorStream.close()
         }
 

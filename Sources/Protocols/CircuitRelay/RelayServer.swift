@@ -3,6 +3,7 @@
 /// Accepts reservations and routes circuits between peers.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PMux
@@ -488,12 +489,12 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
 
                 // Read and forward
                 let data = try await source.read()
-                if data.isEmpty {
+                if data.readableBytes == 0 {
                     break
                 }
 
                 try await target.write(data)
-                localBytesTransferred += UInt64(data.count)
+                localBytesTransferred += UInt64(data.readableBytes)
             }
         } catch {
             // Stream closed or error
@@ -546,7 +547,8 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
 
     private func readMessage(from stream: MuxedStream) async throws -> Data {
         do {
-            return try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
+            let buffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
+            return Data(buffer: buffer)
         } catch let error as StreamMessageError {
             switch error {
             case .streamClosed, .emptyMessage:
@@ -558,7 +560,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
     }
 
     private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
-        try await stream.writeLengthPrefixedMessage(data)
+        try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
     }
 
     private func emit(_ event: CircuitRelayEvent) {

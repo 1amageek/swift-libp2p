@@ -49,11 +49,11 @@ private final class PingStreamReader: Sendable {
 
             // Need more data
             let chunk = try await stream.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 throw PingError.streamError("Stream closed before receiving complete ping response")
             }
 
-            buffer.withLock { $0.append(chunk) }
+            buffer.withLock { $0.append(Data(buffer: chunk)) }
         }
     }
 }
@@ -177,7 +177,7 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
             let startTime = ContinuousClock.now
 
             // Send payload
-            try await stream.write(payload)
+            try await stream.write(ByteBuffer(bytes: payload))
 
             // Create buffered reader for exact byte reading
             let reader = PingStreamReader(stream: stream)
@@ -294,7 +294,7 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
                 let payload = try await reader.readExact(pingPayloadSize)
 
                 // Echo back
-                try await stream.write(payload)
+                try await stream.write(ByteBuffer(bytes: payload))
             }
         } catch {
             // Stream closed or error - normal termination

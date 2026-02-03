@@ -304,6 +304,65 @@ class QueryDelegateImpl: QueryDelegate {
 ### addPeer自動更新
 レスポンス受信時にルーティングテーブルを自動更新
 
+## S/Kademlia (Secure Kademlia)
+
+S/Kademliaは、標準Kademliaにセキュリティ機能を追加したものです。SybilattackやEclipse攻撃への耐性を向上させます。
+
+### 実装済み機能
+
+#### ノードID暗号学的検証 ✅
+
+ノードIDが公開鍵から正しく派生しているかを検証します。攻撃者が任意のノードIDを選択してDHT内の戦略的な位置に配置することを防ぎます。
+
+- `SKademliaValidator.validateNodeID()` - ピアIDと公開鍵の整合性を検証
+- `SKademliaConfig.validateNodeIDs` - 検証の有効化/無効化
+
+#### 設定
+
+```swift
+// S/Kademlia無効（デフォルト）
+let kad = KademliaService(
+    localPeerID: myPeerID,
+    configuration: .default
+)
+
+// S/Kademlia有効（すべてのセキュリティ機能）
+let kad = KademliaService(
+    localPeerID: myPeerID,
+    configuration: .secure
+)
+
+// カスタム設定
+let skademlia = SKademliaConfig(
+    enabled: true,
+    validateNodeIDs: true,
+    useSiblingBroadcast: true,
+    siblingCount: 2,
+    useDisjointPaths: true,
+    disjointPathCount: 2
+)
+let kad = KademliaService(
+    localPeerID: myPeerID,
+    configuration: KademliaConfiguration(skademlia: skademlia)
+)
+```
+
+### 計画中の機能
+
+#### Sibling Broadcast（兄弟ブロードキャスト）⏳
+
+同じk-bucket内の複数のピア（兄弟ノード）に同時にクエリを送信します。冗長性を提供し、悪意のあるノードに対する耐性を向上させます。
+
+- 実装状況: 設定のみ実装、クエリロジック未実装
+- 優先度: 中
+
+#### Disjoint Paths（独立経路）⏳
+
+複数の独立した経路でクエリを実行します。Eclipse攻撃（攻撃者がクエリ経路を制御）への耐性を向上させます。
+
+- 実装状況: 設定のみ実装、クエリロジック未実装
+- 優先度: 中
+
 ## 品質向上TODO
 
 ### 高優先度
@@ -325,7 +384,12 @@ class QueryDelegateImpl: QueryDelegate {
 - [ ] **Envelope 統合バリデータ** - P2PCore の Envelope/SignedRecord と統合した署名検証
 
 ### 低優先度
-- [ ] **S/Kademliaの完全実装** - Sybil攻撃耐性向上
+- [x] **S/Kademlia基本実装** - ノードID検証、設定フレームワーク ✅ 2026-02-03
+  - `SKademliaConfig` - 設定オプション
+  - `SKademliaValidator` - ノードID検証ユーティリティ
+  - 11個のテストすべてパス
+- [ ] **S/Kademlia Sibling Broadcast実装** - クエリロジックへの統合
+- [ ] **S/Kademlia Disjoint Paths実装** - 複数経路クエリ
 - [ ] **レコードリパブリッシュ** - 定期的なレコード再配布
 - [ ] **プロバイダキャッシング** - 頻繁に要求されるCIDのキャッシュ
 

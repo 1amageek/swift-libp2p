@@ -3,6 +3,7 @@
 /// A connection that transfers data via an in-memory channel.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PTransport
@@ -72,10 +73,10 @@ public final class MemoryConnection: RawConnection, Sendable {
 
     /// Reads data from the connection.
     ///
-    /// - Returns: The data read, or empty Data on EOF from remote
+    /// - Returns: The data read, or empty ByteBuffer on EOF from remote
     /// - Throws: `ConnectionError.closed` if the local side has called close(),
     ///           `ConnectionError.concurrentReadNotSupported` if another read is already in progress
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
             throw ConnectionError.closed
@@ -97,7 +98,7 @@ public final class MemoryConnection: RawConnection, Sendable {
     ///
     /// - Parameter data: The data to write
     /// - Throws: `ConnectionError.closed` if the connection is closed (locally or remotely)
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
             throw ConnectionError.closed

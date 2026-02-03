@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PCore
 @testable import P2PTransport
 @testable import P2PTransportWebSocket
@@ -51,15 +52,15 @@ struct WebSocketTransportTests {
 
         // Client sends to server
         let clientMessage = Data("hello from client".utf8)
-        try await clientConn.write(clientMessage)
+        try await clientConn.write(ByteBuffer(bytes: clientMessage))
         let receivedAtServer = try await serverConn.read()
-        #expect(receivedAtServer == clientMessage)
+        #expect(Data(buffer: receivedAtServer) == clientMessage)
 
         // Server sends to client
         let serverMessage = Data("hello from server".utf8)
-        try await serverConn.write(serverMessage)
+        try await serverConn.write(ByteBuffer(bytes: serverMessage))
         let receivedAtClient = try await clientConn.read()
-        #expect(receivedAtClient == serverMessage)
+        #expect(Data(buffer: receivedAtClient) == serverMessage)
 
         // Clean up
         try await clientConn.close()
@@ -81,9 +82,9 @@ struct WebSocketTransportTests {
         // Send 5 sequential messages
         for i in 1...5 {
             let message = Data("message \(i)".utf8)
-            try await clientConn.write(message)
+            try await clientConn.write(ByteBuffer(bytes: message))
             let received = try await serverConn.read()
-            #expect(String(decoding: received, as: UTF8.self) == "message \(i)")
+            #expect(String(buffer: received) == "message \(i)")
         }
 
         // Clean up
@@ -105,11 +106,11 @@ struct WebSocketTransportTests {
 
         // Send a large message (64KB)
         let largeMessage = Data(repeating: 0xAB, count: 64 * 1024)
-        try await clientConn.write(largeMessage)
+        try await clientConn.write(ByteBuffer(bytes: largeMessage))
 
         // WebSocket delivers full frames, so a single read should return all data
         let received = try await serverConn.read()
-        #expect(received == largeMessage)
+        #expect(Data(buffer: received) == largeMessage)
 
         // Clean up
         try await clientConn.close()
@@ -140,9 +141,9 @@ struct WebSocketTransportTests {
 
             // Verify each connection works
             let message = Data("conn \(i)".utf8)
-            try await clientConn.write(message)
+            try await clientConn.write(ByteBuffer(bytes: message))
             let received = try await serverConn.read()
-            #expect(String(decoding: received, as: UTF8.self) == "conn \(i)")
+            #expect(String(buffer: received) == "conn \(i)")
         }
 
         // Clean up
@@ -239,7 +240,7 @@ struct WebSocketTransportTests {
         try await clientConn.close()
 
         await #expect(throws: Error.self) {
-            try await clientConn.write(Data("should fail".utf8))
+            try await clientConn.write(ByteBuffer(bytes: Data("should fail".utf8)))
         }
 
         try await listener.close()
@@ -281,14 +282,14 @@ struct WebSocketTransportTests {
 
         // Client sends data
         let message = Data("buffered message".utf8)
-        try await clientConn.write(message)
+        try await clientConn.write(ByteBuffer(bytes: message))
 
         // Small delay to ensure data is buffered on server side
         try await Task.sleep(for: .milliseconds(50))
 
         // Server should receive the data
         let received = try await serverConn.read()
-        #expect(received == message)
+        #expect(Data(buffer: received) == message)
 
         // Clean up
         try await clientConn.close()

@@ -59,8 +59,11 @@ struct NoiseCipherState: Sendable {
 
         nonce += 1
 
-        // Return ciphertext + tag (combined is what seal returns)
-        return sealedBox.ciphertext + sealedBox.tag
+        // Write ciphertext + tag into a single pre-allocated buffer (avoids concatenation copy)
+        var result = Data(capacity: sealedBox.ciphertext.count + noiseAuthTagSize)
+        result.append(contentsOf: sealedBox.ciphertext)
+        result.append(contentsOf: sealedBox.tag)
+        return result
     }
 
     /// Decrypts ciphertext with associated data.
@@ -104,10 +107,18 @@ struct NoiseCipherState: Sendable {
     /// Creates a 12-byte nonce from a counter.
     /// Format: 4 bytes zero + 8 bytes little-endian counter
     private func makeNonce(_ n: UInt64) -> Data {
-        var data = Data(repeating: 0, count: 4)
-        var counter = n.littleEndian
-        data.append(contentsOf: withUnsafeBytes(of: &counter) { Array($0) })
-        return data
+        // Build 12-byte nonce on stack using fixed-size tuple (avoids heap allocation)
+        var buf: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        withUnsafeMutableBytes(of: &buf) { ptr in
+            // First 4 bytes are zero (already initialized)
+            // Bytes 4..11 = little-endian counter
+            var le = n.littleEndian
+            withUnsafeBytes(of: &le) { src in
+                ptr.baseAddress!.advanced(by: 4).copyMemory(from: src.baseAddress!, byteCount: 8)
+            }
+        }
+        return withUnsafeBytes(of: &buf) { Data($0) }
     }
 }
 

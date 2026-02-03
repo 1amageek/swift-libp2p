@@ -1,5 +1,6 @@
 /// MockSecuredConnection - Test infrastructure for Mplex tests
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PCore
 
@@ -18,9 +19,9 @@ final class MockSecuredConnection: SecuredConnection, Sendable {
     private let state = Mutex<MockState>(MockState())
 
     private struct MockState: Sendable {
-        var inboundQueue: [Data] = []
+        var inboundQueue: [ByteBuffer] = []
         var outboundData: [Data] = []
-        var readContinuation: CheckedContinuation<Data, any Error>?
+        var readContinuation: CheckedContinuation<ByteBuffer, any Error>?
         var isClosed = false
         var shouldFailWrite = false
         var writeError: (any Error & Sendable)?
@@ -40,12 +41,13 @@ final class MockSecuredConnection: SecuredConnection, Sendable {
 
     /// Inject data to be read by the connection (simulates receiving data from network).
     func injectInbound(_ data: Data) {
+        let buffer = ByteBuffer(bytes: data)
         state.withLock { s in
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: data)
+                continuation.resume(returning: buffer)
             } else {
-                s.inboundQueue.append(data)
+                s.inboundQueue.append(buffer)
             }
         }
     }
@@ -93,7 +95,7 @@ final class MockSecuredConnection: SecuredConnection, Sendable {
 
     // MARK: - SecuredConnection
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { s in
                 if s.isClosed {
@@ -108,7 +110,7 @@ final class MockSecuredConnection: SecuredConnection, Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try state.withLock { s in
             if s.isClosed {
                 throw MockConnectionError.connectionClosed
@@ -121,12 +123,12 @@ final class MockSecuredConnection: SecuredConnection, Sendable {
                 }
                 throw MockConnectionError.writeFailed
             }
-            s.outboundData.append(data)
+            s.outboundData.append(Data(buffer: data))
         }
     }
 
     func close() async throws {
-        let continuation = state.withLock { s -> CheckedContinuation<Data, any Error>? in
+        let continuation = state.withLock { s -> CheckedContinuation<ByteBuffer, any Error>? in
             s.isClosed = true
             let cont = s.readContinuation
             s.readContinuation = nil

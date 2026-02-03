@@ -2,6 +2,7 @@
 ///
 /// WARNING: This provides NO encryption. For testing only.
 import Foundation
+import NIOCore
 import P2PCore
 import P2PSecurity
 
@@ -29,7 +30,7 @@ public final class PlaintextUpgrader: SecurityUpgrader, Sendable {
 
         // Send our exchange message
         let localMessage = localExchange.encode()
-        try await connection.write(localMessage)
+        try await connection.write(ByteBuffer(bytes: localMessage))
 
         // Read remote exchange message with proper buffering
         let (remoteData, remainder) = try await readLengthPrefixedMessage(from: connection)
@@ -58,7 +59,7 @@ public final class PlaintextUpgrader: SecurityUpgrader, Sendable {
             underlying: connection,
             localPeer: localPeer,
             remotePeer: remoteExchange.peerID,
-            initialBuffer: remainder
+            initialBuffer: ByteBuffer(bytes: remainder)
         )
     }
 }
@@ -153,14 +154,15 @@ private let maxPlaintextHandshakeSize = 64 * 1024
 ///
 /// - Returns: A tuple of (message data, remainder data)
 private func readLengthPrefixedMessage(from connection: any RawConnection) async throws -> (message: Data, remainder: Data) {
-    var buffer = Data()
+    var buffer = ByteBuffer()
 
     // Read until we have the complete message
     while true {
         // Try to decode varint length
-        if !buffer.isEmpty {
+        if buffer.readableBytes > 0 {
             do {
-                let (length, lengthBytes) = try Varint.decode(buffer)
+                let data = Data(buffer: buffer)
+                let (length, lengthBytes) = try Varint.decode(data)
 
                 // Validate message size to prevent memory exhaustion
                 guard length <= UInt64(maxPlaintextHandshakeSize) else {
@@ -170,9 +172,9 @@ private func readLengthPrefixedMessage(from connection: any RawConnection) async
                 let totalNeeded = lengthBytes + Int(length)
 
                 // Check if we have enough data
-                if buffer.count >= totalNeeded {
-                    let message = Data(buffer.prefix(totalNeeded))
-                    let remainder = Data(buffer.dropFirst(totalNeeded))
+                if buffer.readableBytes >= totalNeeded {
+                    let message = Data(data.prefix(totalNeeded))
+                    let remainder = Data(data.dropFirst(totalNeeded))
                     return (message, remainder)
                 }
             } catch VarintError.insufficientData {
@@ -181,10 +183,10 @@ private func readLengthPrefixedMessage(from connection: any RawConnection) async
         }
 
         // Read more data
-        let chunk = try await connection.read()
-        if chunk.isEmpty {
+        var chunk = try await connection.read()
+        if chunk.readableBytes == 0 {
             throw PlaintextError.insufficientData
         }
-        buffer.append(chunk)
+        buffer.writeBuffer(&chunk)
     }
 }

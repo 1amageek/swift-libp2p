@@ -1,5 +1,6 @@
 /// MplexConnection - MuxedConnection implementation for Mplex
 import Foundation
+import NIOCore
 import P2PCore
 import P2PMux
 import Synchronization
@@ -15,7 +16,7 @@ private actor MplexFrameWriter {
         self.connection = connection
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try await connection.write(data)
     }
 }
@@ -36,23 +37,20 @@ private struct MplexConnectionState: Sendable {
     var pendingAccepts: [CheckedContinuation<MuxedStream, Error>] = []
     var isClosed = false
     var isStarted = false
-    var readBuffer = Data()
-    /// Offset into readBuffer for the next unprocessed byte
-    var readBufferOffset = 0
+    var readBuffer = ByteBuffer()
     var inboundContinuation: AsyncStream<MuxedStream>.Continuation?
 
-    /// Returns a slice of the unprocessed portion of the read buffer
+    /// Returns a slice of the unprocessed portion of the read buffer as Data.
     var unprocessedBuffer: Data {
-        readBuffer[readBufferOffset...]
+        Data(buffer: readBuffer)
     }
 
-    /// Advances the read offset and compacts the buffer if needed
+    /// Advances the read offset and compacts the buffer if needed.
     mutating func advanceReadBuffer(by bytesRead: Int) {
-        readBufferOffset += bytesRead
+        readBuffer.moveReaderIndex(forwardBy: bytesRead)
         // Compact when consumed portion exceeds threshold
-        if readBufferOffset > mplexReadBufferCompactThreshold {
-            readBuffer = Data(readBuffer[readBufferOffset...])
-            readBufferOffset = 0
+        if readBuffer.readerIndex > mplexReadBufferCompactThreshold {
+            readBuffer.discardReadBytes()
         }
     }
 }
@@ -222,7 +220,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
         if isClosed {
             throw MplexError.connectionClosed
         }
-        try await frameWriter.write(frame.encode())
+        try await frameWriter.write(ByteBuffer(bytes: frame.encode()))
     }
 
     func removeStream(id: UInt64, initiatedLocally: Bool) {
@@ -237,17 +235,17 @@ public final class MplexConnection: MuxedConnection, Sendable {
     private func readLoop() async {
         do {
             while !Task.isCancelled {
-                let data = try await underlying.read()
+                var data = try await underlying.read()
 
                 // Empty read indicates connection closed
-                if data.isEmpty {
+                if data.readableBytes == 0 {
                     throw MplexError.connectionClosed
                 }
 
                 // Append data and check buffer size limit
                 let bufferOverflow = state.withLock { state -> Bool in
-                    state.readBuffer.append(data)
-                    return state.readBuffer.count > configuration.maxReadBufferSize
+                    state.readBuffer.writeBuffer(&data)
+                    return state.readBuffer.readableBytes > configuration.maxReadBufferSize
                 }
 
                 if bufferOverflow {

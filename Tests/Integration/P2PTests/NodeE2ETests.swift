@@ -4,6 +4,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2P
 @testable import P2PCore
@@ -177,7 +178,7 @@ struct NodeE2ETests {
             do {
                 // Read message
                 let data = try await context.stream.read()
-                let message = String(data: data, encoding: .utf8) ?? ""
+                let message = String(buffer: data)
                 receivedMessages.withLock { $0.append(message) }
 
                 // Echo back
@@ -197,11 +198,11 @@ struct NodeE2ETests {
         // Open stream and send message
         let stream = try await client.newStream(to: serverPeerID, protocol: "/test/echo/1.0.0")
         let testMessage = "Hello, libp2p!"
-        try await stream.write(Data(testMessage.utf8))
+        try await stream.write(ByteBuffer(string: testMessage))
 
         // Read echo response
         let response = try await stream.read()
-        let responseString = String(data: response, encoding: .utf8)
+        let responseString = String(buffer: response)
 
         #expect(responseString == testMessage)
 
@@ -240,8 +241,8 @@ struct NodeE2ETests {
         await server.handle("/test/reverse/1.0.0") { context in
             reverseCount.withLock { $0 += 1 }
             if let data = try? await context.stream.read() {
-                let reversed = Data(data.reversed())
-                try? await context.stream.write(reversed)
+                let reversedBytes = Array(Data(buffer: data).reversed())
+                try? await context.stream.write(ByteBuffer(bytes: reversedBytes))
             }
             try? await context.stream.close()
         }
@@ -254,16 +255,16 @@ struct NodeE2ETests {
 
         // Test echo
         let echoStream = try await client.newStream(to: serverPeerID, protocol: "/test/echo/1.0.0")
-        try await echoStream.write(Data("test".utf8))
+        try await echoStream.write(ByteBuffer(string: "test"))
         let echoResponse = try await echoStream.read()
-        #expect(String(data: echoResponse, encoding: .utf8) == "test")
+        #expect(String(buffer: echoResponse) == "test")
         try await echoStream.close()
 
         // Test reverse
         let reverseStream = try await client.newStream(to: serverPeerID, protocol: "/test/reverse/1.0.0")
-        try await reverseStream.write(Data("hello".utf8))
+        try await reverseStream.write(ByteBuffer(string: "hello"))
         let reverseResponse = try await reverseStream.read()
-        #expect(String(data: reverseResponse, encoding: .utf8) == "olleh")
+        #expect(String(buffer: reverseResponse) == "olleh")
         try await reverseStream.close()
 
         try await Task.sleep(for: .milliseconds(50))
@@ -633,17 +634,17 @@ struct NodeE2ETests {
             do {
                 // Read greeting
                 let greeting = try await context.stream.read()
-                let greetingStr = String(data: greeting, encoding: .utf8) ?? ""
+                let greetingStr = String(buffer: greeting)
 
                 // Send response
-                try await context.stream.write(Data("Hello, \(greetingStr)!".utf8))
+                try await context.stream.write(ByteBuffer(string: "Hello, \(greetingStr)!"))
 
                 // Read follow-up
                 let followUp = try await context.stream.read()
-                let followUpStr = String(data: followUp, encoding: .utf8) ?? ""
+                let followUpStr = String(buffer: followUp)
 
                 // Send final response
-                try await context.stream.write(Data("Goodbye, \(followUpStr)!".utf8))
+                try await context.stream.write(ByteBuffer(string: "Goodbye, \(followUpStr)!"))
 
                 try await context.stream.close()
             } catch {
@@ -660,18 +661,18 @@ struct NodeE2ETests {
         let stream = try await client.newStream(to: serverPeerID, protocol: "/test/chat/1.0.0")
 
         // Send greeting
-        try await stream.write(Data("Alice".utf8))
+        try await stream.write(ByteBuffer(string: "Alice"))
 
         // Read response
         let response1 = try await stream.read()
-        #expect(String(data: response1, encoding: .utf8) == "Hello, Alice!")
+        #expect(String(buffer: response1) == "Hello, Alice!")
 
         // Send follow-up
-        try await stream.write(Data("Bob".utf8))
+        try await stream.write(ByteBuffer(string: "Bob"))
 
         // Read final response
         let response2 = try await stream.read()
-        #expect(String(data: response2, encoding: .utf8) == "Goodbye, Bob!")
+        #expect(String(buffer: response2) == "Goodbye, Bob!")
 
         try await stream.close()
         await client.stop()
@@ -712,10 +713,10 @@ struct NodeE2ETests {
                 group.addTask {
                     let stream = try await client.newStream(to: serverPeerID, protocol: "/test/concurrent/1.0.0")
                     let message = "Message \(i)"
-                    try await stream.write(Data(message.utf8))
+                    try await stream.write(ByteBuffer(string: message))
                     let response = try await stream.read()
                     try await stream.close()
-                    return String(data: response, encoding: .utf8) ?? ""
+                    return String(buffer: response)
                 }
             }
 

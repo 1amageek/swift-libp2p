@@ -4,6 +4,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
@@ -233,7 +234,7 @@ struct StreamDebugTests {
         // Write data
         print("[Client] Writing data...")
         let testData = Data("Hello QUIC".utf8)
-        try await stream.write(testData)
+        try await stream.write(ByteBuffer(bytes: testData))
         print("[Client] Data written")
 
         // Close write
@@ -287,7 +288,7 @@ struct StreamDebugTests {
         print("[Client] Stream opened, writing data...")
 
         // Write some data to trigger the stream to be visible on server
-        try await clientStream.write(Data("Hello".utf8))
+        try await clientStream.write(ByteBuffer(bytes: Data("Hello".utf8)))
         print("[Client] Data written")
 
         // Wait for server to accept stream
@@ -333,10 +334,12 @@ struct StreamDebugTests {
                     print("[Server] Got stream, reading data...")
 
                     let data = try await stream.read()
-                    print("[Server] Read \(data.count) bytes: \(String(data: data, encoding: .utf8) ?? "?")")
+                    print("[Server] Read \(data.readableBytes) bytes: \(String(buffer: data))")
 
                     print("[Server] Echoing back...")
-                    try await stream.write(data + Data(" - echoed".utf8))
+                    var echoBuffer = data
+                    echoBuffer.writeBytes(Data(" - echoed".utf8))
+                    try await stream.write(echoBuffer)
 
                     print("[Server] Closing write side...")
                     try await stream.closeWrite()
@@ -363,16 +366,16 @@ struct StreamDebugTests {
         print("[Client] Stream opened, writing data...")
 
         let testData = Data("Hello QUIC".utf8)
-        try await clientStream.write(testData)
+        try await clientStream.write(ByteBuffer(bytes: testData))
         print("[Client] Data written, closing write side...")
 
         try await clientStream.closeWrite()
         print("[Client] Write side closed, reading response...")
 
         let response = try await clientStream.read()
-        print("[Client] Got response: \(String(data: response, encoding: .utf8) ?? "?")")
+        print("[Client] Got response: \(String(buffer: response))")
 
-        #expect(response == Data("Hello QUIC - echoed".utf8))
+        #expect(Data(buffer: response) == Data("Hello QUIC - echoed".utf8))
 
         // Wait for server
         let serverConnection = try? await serverTask.value
@@ -413,7 +416,7 @@ struct StreamDebugTests {
                         print("[Server] Got stream \(i), reading...")
 
                         let data = try await stream.read()
-                        print("[Server] Stream \(i): Read '\(String(data: data, encoding: .utf8) ?? "?")'")
+                        print("[Server] Stream \(i): Read '\(String(buffer: data))'")
 
                         try await stream.write(data)
                         print("[Server] Stream \(i): Echoed back")
@@ -446,16 +449,16 @@ struct StreamDebugTests {
             print("[Client] Stream \(i) opened")
 
             let testData = Data("Stream \(i)".utf8)
-            try await stream.write(testData)
+            try await stream.write(ByteBuffer(bytes: testData))
             print("[Client] Stream \(i): Wrote data")
 
             try await stream.closeWrite()
             print("[Client] Stream \(i): Closed write")
 
             let response = try await stream.read()
-            print("[Client] Stream \(i): Got response '\(String(data: response, encoding: .utf8) ?? "?")'")
+            print("[Client] Stream \(i): Got response '\(String(buffer: response))'")
 
-            #expect(response == testData)
+            #expect(Data(buffer: response) == testData)
 
             try await stream.close()
             print("[Client] Stream \(i): Closed")

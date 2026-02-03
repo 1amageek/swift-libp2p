@@ -5,6 +5,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
@@ -41,7 +42,7 @@ struct PingE2ETests {
                 let data = try await stream.read()
 
                 // Echo back if correct size
-                if data.count == pingPayloadSize {
+                if data.readableBytes == pingPayloadSize {
                     try await stream.write(data)
                 }
 
@@ -65,7 +66,7 @@ struct PingE2ETests {
         let stream = try await clientConn.newStream()
         let startTime = ContinuousClock.now
 
-        try await stream.write(payload)
+        try await stream.write(ByteBuffer(bytes: payload))
         try await stream.closeWrite()
 
         // Read response
@@ -75,7 +76,7 @@ struct PingE2ETests {
         let rtt = endTime - startTime
 
         // Verify response matches payload
-        #expect(response == payload)
+        #expect(Data(buffer: response) == payload)
         #expect(rtt < .seconds(1), "RTT should be less than 1 second for localhost")
 
         // Cleanup
@@ -104,7 +105,7 @@ struct PingE2ETests {
 
                 let data = try await stream.read()
 
-                if data.count == pingPayloadSize {
+                if data.readableBytes == pingPayloadSize {
                     // Add small delay to make RTT measurable
                     try await Task.sleep(for: .milliseconds(10))
                     try await stream.write(data)
@@ -127,7 +128,7 @@ struct PingE2ETests {
         let stream = try await clientConn.newStream()
         let startTime = ContinuousClock.now
 
-        try await stream.write(payload)
+        try await stream.write(ByteBuffer(bytes: payload))
         try await stream.closeWrite()
 
         let response = try await stream.read()
@@ -137,7 +138,7 @@ struct PingE2ETests {
         // RTT should be at least 10ms due to server delay
         #expect(rtt >= .milliseconds(10))
         #expect(rtt < .seconds(1))
-        #expect(response == payload)
+        #expect(Data(buffer: response) == payload)
 
         // Cleanup
         let serverConn = try? await serverTask.value
@@ -189,7 +190,7 @@ struct PingE2ETests {
             let stream = try await clientConn.newStream()
             let startTime = ContinuousClock.now
 
-            try await stream.write(payload)
+            try await stream.write(ByteBuffer(bytes: payload))
             try await stream.closeWrite()
 
             let response = try await stream.read()
@@ -197,7 +198,7 @@ struct PingE2ETests {
             let rtt = ContinuousClock.now - startTime
             rtts.append(rtt)
 
-            #expect(response == payload)
+            #expect(Data(buffer: response) == payload)
 
             try await stream.close()
         }
@@ -237,7 +238,7 @@ struct PingE2ETests {
                 let data = try await stream.read()
 
                 // Only echo if exactly 32 bytes
-                if data.count == 32 {
+                if data.readableBytes == 32 {
                     try await stream.write(data)
                 }
 
@@ -258,12 +259,12 @@ struct PingE2ETests {
         #expect(payload.count == 32)
 
         let stream = try await clientConn.newStream()
-        try await stream.write(payload)
+        try await stream.write(ByteBuffer(bytes: payload))
         try await stream.closeWrite()
 
         let response = try await stream.read()
 
-        #expect(response == payload)
+        #expect(Data(buffer: response) == payload)
 
         // Cleanup
         let serverConn = try? await serverTask.value
@@ -290,11 +291,11 @@ struct PingE2ETests {
                 let stream = try await serverConn.acceptStream()
                 let data = try await stream.read()
 
-                if data.count == pingPayloadSize {
+                if data.readableBytes == pingPayloadSize {
                     // Corrupt the response
-                    var corrupted = data
-                    corrupted[0] = ~corrupted[0]
-                    try await stream.write(corrupted)
+                    var corruptedData = Data(buffer: data)
+                    corruptedData[0] = ~corruptedData[0]
+                    try await stream.write(ByteBuffer(bytes: corruptedData))
                 }
 
                 try await stream.closeWrite()
@@ -312,13 +313,13 @@ struct PingE2ETests {
         let payload = Data((0..<pingPayloadSize).map { _ in UInt8.random(in: 0...255) })
 
         let stream = try await clientConn.newStream()
-        try await stream.write(payload)
+        try await stream.write(ByteBuffer(bytes: payload))
         try await stream.closeWrite()
 
         let response = try await stream.read()
 
         // Response should NOT match (simulating error detection)
-        #expect(response != payload)
+        #expect(Data(buffer: response) != payload)
 
         // Cleanup
         let serverConn = try? await serverTask.value

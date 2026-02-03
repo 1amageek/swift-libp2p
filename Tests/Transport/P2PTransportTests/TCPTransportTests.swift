@@ -49,13 +49,13 @@ struct TCPTransportTests {
         let serverConn = try await acceptTask
 
         // Client sends to server
-        let clientMessage = Data("hello from client".utf8)
+        let clientMessage = ByteBuffer(string: "hello from client")
         try await clientConn.write(clientMessage)
         let receivedAtServer = try await serverConn.read()
         #expect(receivedAtServer == clientMessage)
 
         // Server sends to client
-        let serverMessage = Data("hello from server".utf8)
+        let serverMessage = ByteBuffer(string: "hello from server")
         try await serverConn.write(serverMessage)
         let receivedAtClient = try await clientConn.read()
         #expect(receivedAtClient == serverMessage)
@@ -79,10 +79,10 @@ struct TCPTransportTests {
 
         // Send multiple messages
         for i in 1...5 {
-            let message = Data("message \(i)".utf8)
+            let message = ByteBuffer(string: "message \(i)")
             try await clientConn.write(message)
             let received = try await serverConn.read()
-            #expect(String(decoding: received, as: UTF8.self) == "message \(i)")
+            #expect(String(buffer: received) == "message \(i)")
         }
 
         // Clean up
@@ -103,14 +103,14 @@ struct TCPTransportTests {
         let serverConn = try await acceptTask
 
         // Send a large message (64KB)
-        let largeMessage = Data(repeating: 0xAB, count: 64 * 1024)
+        let largeMessage = ByteBuffer(repeating: 0xAB, count: 64 * 1024)
         try await clientConn.write(largeMessage)
 
         // Read may return data in chunks, so accumulate
-        var receivedData = Data()
-        while receivedData.count < largeMessage.count {
-            let chunk = try await serverConn.read()
-            receivedData.append(chunk)
+        var receivedData = ByteBuffer()
+        while receivedData.readableBytes < largeMessage.readableBytes {
+            var chunk = try await serverConn.read()
+            receivedData.writeBuffer(&chunk)
         }
         #expect(receivedData == largeMessage)
 
@@ -142,10 +142,10 @@ struct TCPTransportTests {
             serverConns.append(serverConn)
 
             // Verify each connection works
-            let message = Data("conn \(i)".utf8)
+            let message = ByteBuffer(string: "conn \(i)")
             try await clientConn.write(message)
             let received = try await serverConn.read()
-            #expect(String(decoding: received, as: UTF8.self) == "conn \(i)")
+            #expect(String(buffer: received) == "conn \(i)")
         }
 
         // Clean up
@@ -175,14 +175,14 @@ struct TCPTransportTests {
         let server2 = try await accept2
 
         // Verify isolation
-        try await conn1.write(Data("to-1".utf8))
-        try await conn2.write(Data("to-2".utf8))
+        try await conn1.write(ByteBuffer(string: "to-1"))
+        try await conn2.write(ByteBuffer(string: "to-2"))
 
         let received1 = try await server1.read()
         let received2 = try await server2.read()
 
-        #expect(String(decoding: received1, as: UTF8.self) == "to-1")
-        #expect(String(decoding: received2, as: UTF8.self) == "to-2")
+        #expect(String(buffer: received1) == "to-1")
+        #expect(String(buffer: received2) == "to-2")
 
         // Clean up
         try await conn1.close()
@@ -235,7 +235,7 @@ struct TCPTransportTests {
 
         // Write should fail (NIO channel is closed)
         await #expect(throws: Error.self) {
-            try await clientConn.write(Data("should fail".utf8))
+            try await clientConn.write(ByteBuffer(string: "should fail"))
         }
 
         try await listener.close()
@@ -276,7 +276,7 @@ struct TCPTransportTests {
         let serverConn = try await acceptTask
 
         // Client sends data
-        let message = Data("buffered message".utf8)
+        let message = ByteBuffer(string: "buffered message")
         try await clientConn.write(message)
 
         // Small delay to ensure data is buffered on server side
@@ -363,7 +363,7 @@ struct TCPTransportTests {
         let serverConn = try await acceptTask
 
         // Verify communication works
-        let message = Data("IPv6 test".utf8)
+        let message = ByteBuffer(string: "IPv6 test")
         try await clientConn.write(message)
         let received = try await serverConn.read()
         #expect(received == message)
@@ -391,9 +391,9 @@ struct TCPTransportTests {
         let serverConn = try await acceptTask
 
         // Verify it works
-        try await clientConn.write(Data("test".utf8))
+        try await clientConn.write(ByteBuffer(string: "test"))
         let received = try await serverConn.read()
-        #expect(String(decoding: received, as: UTF8.self) == "test")
+        #expect(String(buffer: received) == "test")
 
         // Clean up
         try await clientConn.close()
@@ -499,13 +499,13 @@ struct TCPTransportTests {
         // Rapid alternating read/write
         for i in 0..<20 {
             // Client to server
-            let c2s = Data("c2s-\(i)".utf8)
+            let c2s = ByteBuffer(string: "c2s-\(i)")
             try await clientConn.write(c2s)
             let received1 = try await serverConn.read()
             #expect(received1 == c2s)
 
             // Server to client
-            let s2c = Data("s2c-\(i)".utf8)
+            let s2c = ByteBuffer(string: "s2c-\(i)")
             try await serverConn.write(s2c)
             let received2 = try await clientConn.read()
             #expect(received2 == s2c)
@@ -529,7 +529,7 @@ struct TCPTransportTests {
         let clientConn = try await transport.dial(listenAddr)
 
         // Immediately send data (before accept() returns, triggering race condition)
-        let message = Data("immediate".utf8)
+        let message = ByteBuffer(string: "immediate")
         try await clientConn.write(message)
 
         let serverConn = try await acceptTask
@@ -557,7 +557,7 @@ struct TCPTransportTests {
         try await Task.sleep(for: .milliseconds(100))
 
         // Send data after delay
-        let message = Data("delayed".utf8)
+        let message = ByteBuffer(string: "delayed")
         try await clientConn.write(message)
 
         // This read() should succeed

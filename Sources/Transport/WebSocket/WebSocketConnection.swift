@@ -1,5 +1,4 @@
 /// WebSocketConnection - NIO Channel wrapper for RawConnection over WebSocket
-import Foundation
 import P2PCore
 import P2PTransport
 import NIOCore
@@ -15,9 +14,9 @@ private let wsMaxReadBufferSize = 1024 * 1024
 
 /// Internal state for WebSocketConnection.
 private struct WebSocketConnectionState: Sendable {
-    var readBuffer: [UInt8] = []
+    var readBuffer: ByteBuffer = ByteBuffer()
     /// Queue of waiters for concurrent read support.
-    var readWaiters: [CheckedContinuation<Data, Error>] = []
+    var readWaiters: [CheckedContinuation<ByteBuffer, Error>] = []
     var isClosed = false
 }
 
@@ -41,18 +40,18 @@ public final class WebSocketConnection: RawConnection, Sendable {
         self._remoteAddress = remoteAddress
     }
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         let remoteAddr = self._remoteAddress
         wsConnectionLogger.debug("read(): Starting read on \(remoteAddr)")
         let result = try await withCheckedThrowingContinuation { continuation in
             state.withLock { s in
                 // Check buffer first (avoid data loss on close)
-                if !s.readBuffer.isEmpty {
-                    let data = Data(s.readBuffer)
-                    let count = data.count
-                    s.readBuffer.removeAll()
+                if s.readBuffer.readableBytes > 0 {
+                    var buffer = s.readBuffer
+                    let count = buffer.readableBytes
+                    s.readBuffer = ByteBuffer()
                     wsConnectionLogger.debug("read(): Returning buffered data (\(count) bytes)")
-                    continuation.resume(returning: data)
+                    continuation.resume(returning: buffer)
                     return
                 }
 
@@ -68,11 +67,11 @@ public final class WebSocketConnection: RawConnection, Sendable {
                 s.readWaiters.append(continuation)
             }
         }
-        wsConnectionLogger.debug("read(): Completed with \(result.count) bytes")
+        wsConnectionLogger.debug("read(): Completed with \(result.readableBytes) bytes")
         return result
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         // Early check for closed state
         let closed = state.withLock { $0.isClosed }
         if closed {
@@ -80,9 +79,8 @@ public final class WebSocketConnection: RawConnection, Sendable {
             throw TransportError.connectionClosed
         }
 
-        wsConnectionLogger.debug("write(): Writing \(data.count) bytes to \(self._remoteAddress)")
-        var buffer = channel.allocator.buffer(capacity: data.count)
-        buffer.writeBytes(data)
+        wsConnectionLogger.debug("write(): Writing \(data.readableBytes) bytes to \(self._remoteAddress)")
+        var buffer = data
         let maskKey: WebSocketMaskingKey? = isClient ? .random() : nil
         let frame = WebSocketFrame(fin: true, opcode: .binary, maskKey: maskKey, data: buffer)
         try await channel.writeAndFlush(frame)
@@ -91,7 +89,7 @@ public final class WebSocketConnection: RawConnection, Sendable {
 
     public func close() async throws {
         wsConnectionLogger.debug("close(): Closing connection to \(self._remoteAddress)")
-        let (alreadyClosed, waiters) = state.withLock { state -> (Bool, [CheckedContinuation<Data, Error>]) in
+        let (alreadyClosed, waiters) = state.withLock { state -> (Bool, [CheckedContinuation<ByteBuffer, Error>]) in
             let wasClosed = state.isClosed
             state.isClosed = true
             let w = state.readWaiters
@@ -138,25 +136,26 @@ public final class WebSocketConnection: RawConnection, Sendable {
     }
 
     // Called by WebSocketFrameHandler when data is received
-    fileprivate func dataReceived(_ data: [UInt8]) {
-        wsConnectionLogger.debug("dataReceived(): Received \(data.count) bytes")
-        let (waiter, bufferSize) = state.withLock { s -> (CheckedContinuation<Data, Error>?, Int) in
+    fileprivate func dataReceived(_ data: ByteBuffer) {
+        wsConnectionLogger.debug("dataReceived(): Received \(data.readableBytes) bytes")
+        let (waiter, bufferSize) = state.withLock { s -> (CheckedContinuation<ByteBuffer, Error>?, Int) in
             // FIFO: dequeue the first waiter if any
             if !s.readWaiters.isEmpty {
                 return (s.readWaiters.removeFirst(), 0)
             } else {
                 // Buffer size limit for DoS protection
-                if s.readBuffer.count + data.count > wsMaxReadBufferSize {
+                if s.readBuffer.readableBytes + data.readableBytes > wsMaxReadBufferSize {
                     return (nil, -1)  // -1 indicates buffer full
                 }
-                s.readBuffer.append(contentsOf: data)
-                return (nil, s.readBuffer.count)
+                var incoming = data
+                s.readBuffer.writeBuffer(&incoming)
+                return (nil, s.readBuffer.readableBytes)
             }
         }
         // Log and resume waiter outside of lock to avoid deadlock
         if let waiter = waiter {
             wsConnectionLogger.debug("dataReceived(): Delivering to waiting reader")
-            waiter.resume(returning: Data(data))
+            waiter.resume(returning: data)
         } else if bufferSize == -1 {
             wsConnectionLogger.warning("dataReceived(): Buffer full, dropping data")
         } else {
@@ -167,7 +166,7 @@ public final class WebSocketConnection: RawConnection, Sendable {
     // Called by WebSocketFrameHandler when channel becomes inactive
     fileprivate func channelInactive() {
         wsConnectionLogger.debug("channelInactive(): Channel became inactive")
-        let waiters = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let waiters = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             state.isClosed = true
             let w = state.readWaiters
             state.readWaiters.removeAll()
@@ -196,7 +195,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
 
     private struct HandlerState: Sendable {
         var connection: WebSocketConnection?
-        var bufferedData: [[UInt8]] = []
+        var bufferedData: [ByteBuffer] = []
         var isInactive = false
     }
 
@@ -210,7 +209,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
     /// Flushes any buffered data and propagates inactive state.
     func setConnection(_ connection: WebSocketConnection) {
         wsConnectionLogger.debug("WebSocketFrameHandler.setConnection: Setting connection")
-        let (buffered, inactive) = state.withLock { s -> ([[UInt8]], Bool) in
+        let (buffered, inactive) = state.withLock { s -> ([ByteBuffer], Bool) in
             s.connection = connection
             let b = s.bufferedData
             s.bufferedData.removeAll()
@@ -218,7 +217,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
             return (b, i)
         }
         for data in buffered {
-            wsConnectionLogger.debug("WebSocketFrameHandler: Flushing \(data.count) buffered bytes")
+            wsConnectionLogger.debug("WebSocketFrameHandler: Flushing \(data.readableBytes) buffered bytes")
             connection.dataReceived(data)
         }
         if inactive {
@@ -235,20 +234,20 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
             if let maskKey = frame.maskKey {
                 frame.data.webSocketUnmask(maskKey)
             }
-            if let bytes = frame.data.readBytes(length: frame.data.readableBytes) {
+            if let slice = frame.data.readSlice(length: frame.data.readableBytes) {
                 let conn: WebSocketConnection? = state.withLock { s in
                     if let connection = s.connection {
                         return connection
                     } else {
-                        s.bufferedData.append(bytes)
+                        s.bufferedData.append(slice)
                         return nil
                     }
                 }
                 if let conn {
-                    wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Forwarding \(bytes.count) bytes")
-                    conn.dataReceived(bytes)
+                    wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Forwarding \(slice.readableBytes) bytes")
+                    conn.dataReceived(slice)
                 } else {
-                    wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Buffering \(bytes.count) bytes")
+                    wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Buffering \(slice.readableBytes) bytes")
                 }
             }
 

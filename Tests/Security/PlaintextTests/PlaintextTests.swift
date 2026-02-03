@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PSecurityPlaintext
 @testable import P2PSecurity
 @testable import P2PCore
@@ -216,17 +217,17 @@ struct PlaintextConnectionTests {
 
         // Send data from Alice to Bob
         let testData = Data("Hello, Bob!".utf8)
-        try await alice.write(testData)
+        try await alice.write(ByteBuffer(bytes: testData))
 
         let received = try await bob.read()
-        #expect(received == testData)
+        #expect(Data(buffer: received) == testData)
 
         // Send data from Bob to Alice
         let response = Data("Hello, Alice!".utf8)
-        try await bob.write(response)
+        try await bob.write(ByteBuffer(bytes: response))
 
         let aliceReceived = try await alice.read()
-        #expect(aliceReceived == response)
+        #expect(Data(buffer: aliceReceived) == response)
     }
 }
 
@@ -236,8 +237,8 @@ struct PlaintextConnectionTests {
 final class MockConnectionPair {
     /// Creates a pair of connected mock connections.
     static func create() -> (MockConnection, MockConnection) {
-        let aToB = AsyncStream<Data>.makeStream()
-        let bToA = AsyncStream<Data>.makeStream()
+        let aToB = AsyncStream<ByteBuffer>.makeStream()
+        let bToA = AsyncStream<ByteBuffer>.makeStream()
 
         let a = MockConnection(
             readStream: bToA.stream,
@@ -260,22 +261,22 @@ final class MockConnection: RawConnection, Sendable {
     }
 
     private let state: Mutex<ConnectionState>
-    private let writeContinuation: AsyncStream<Data>.Continuation
-    private let readStream: AsyncStream<Data>
-    private nonisolated(unsafe) var readIterator: AsyncStream<Data>.Iterator?
+    private let writeContinuation: AsyncStream<ByteBuffer>.Continuation
+    private let readStream: AsyncStream<ByteBuffer>
+    private nonisolated(unsafe) var readIterator: AsyncStream<ByteBuffer>.Iterator?
 
     private struct ConnectionState {
         var isClosed: Bool = false
     }
 
-    init(readStream: AsyncStream<Data>, writeContinuation: AsyncStream<Data>.Continuation) {
+    init(readStream: AsyncStream<ByteBuffer>, writeContinuation: AsyncStream<ByteBuffer>.Continuation) {
         self.readStream = readStream
         self.readIterator = readStream.makeAsyncIterator()
         self.state = Mutex(ConnectionState())
         self.writeContinuation = writeContinuation
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
             throw MockConnectionError.connectionClosed
@@ -286,7 +287,7 @@ final class MockConnection: RawConnection, Sendable {
         return data
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
             throw MockConnectionError.connectionClosed

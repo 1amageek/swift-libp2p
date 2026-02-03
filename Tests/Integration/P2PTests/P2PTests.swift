@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import P2P
 @testable import P2PCore
 @testable import P2PSecurity
@@ -215,11 +216,11 @@ private final class MockRawConnection: RawConnection, Sendable {
     var localAddress: Multiaddr? { nil }
     var remoteAddress: Multiaddr { Multiaddr.tcp(host: "127.0.0.1", port: 4001) }
 
-    func read() async throws -> Data {
-        return Data()
+    func read() async throws -> ByteBuffer {
+        return ByteBuffer()
     }
 
-    func write(_ data: Data) async throws {}
+    func write(_ data: ByteBuffer) async throws {}
 
     func close() async throws {}
 }

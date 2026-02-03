@@ -1,12 +1,13 @@
 /// PlaintextConnection - Secured connection wrapper for plaintext
 import Foundation
+import NIOCore
 import P2PCore
 import P2PSecurity
 import Synchronization
 
 /// Internal state for PlaintextConnection.
 private struct PlaintextConnectionState: Sendable {
-    var initialBuffer: Data
+    var initialBuffer: ByteBuffer
 }
 
 /// A secured connection with no encryption.
@@ -33,7 +34,7 @@ public final class PlaintextConnection: SecuredConnection, Sendable {
         underlying: any RawConnection,
         localPeer: PeerID,
         remotePeer: PeerID,
-        initialBuffer: Data = Data()
+        initialBuffer: ByteBuffer = ByteBuffer()
     ) {
         self.underlying = underlying
         self.localPeer = localPeer
@@ -41,12 +42,12 @@ public final class PlaintextConnection: SecuredConnection, Sendable {
         self.state = Mutex(PlaintextConnectionState(initialBuffer: initialBuffer))
     }
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         // Return buffered data first if available
-        let buffered = state.withLock { state -> Data? in
-            if !state.initialBuffer.isEmpty {
+        let buffered = state.withLock { state -> ByteBuffer? in
+            if state.initialBuffer.readableBytes > 0 {
                 let data = state.initialBuffer
-                state.initialBuffer = Data()
+                state.initialBuffer = ByteBuffer()
                 return data
             }
             return nil
@@ -59,7 +60,7 @@ public final class PlaintextConnection: SecuredConnection, Sendable {
         return try await underlying.read()
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         try await underlying.write(data)
     }
 

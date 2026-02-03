@@ -13,6 +13,7 @@
 /// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 /// ```
 import Foundation
+import NIOCore
 
 /// Yamux protocol version.
 let yamuxVersion: UInt8 = 0
@@ -61,11 +62,11 @@ struct YamuxFrame: Sendable {
     let flags: YamuxFlags
     let streamID: UInt32
     let length: UInt32
-    let data: Data?
+    let data: ByteBuffer?
 
     /// Creates a data frame.
-    static func data(streamID: UInt32, flags: YamuxFlags = [], data: Data) -> YamuxFrame {
-        YamuxFrame(type: .data, flags: flags, streamID: streamID, length: UInt32(data.count), data: data)
+    static func data(streamID: UInt32, flags: YamuxFlags = [], data: ByteBuffer) -> YamuxFrame {
+        YamuxFrame(type: .data, flags: flags, streamID: streamID, length: UInt32(data.readableBytes), data: data)
     }
 
     /// Creates a window update frame.
@@ -83,55 +84,51 @@ struct YamuxFrame: Sendable {
         YamuxFrame(type: .goAway, flags: [], streamID: 0, length: reason.rawValue, data: nil)
     }
 
-    /// Encodes the frame to bytes.
-    func encode() -> Data {
-        var result = Data(capacity: yamuxHeaderSize + Int(length))
+    /// Encodes the frame to a ByteBuffer.
+    func encode() -> ByteBuffer {
+        let payloadSize = type == .data ? Int(length) : 0
+        var buf = ByteBuffer()
+        buf.reserveCapacity(yamuxHeaderSize + payloadSize)
 
-        // Build 12-byte header in one batch
-        let header: [UInt8] = [
-            yamuxVersion,
-            type.rawValue,
-            UInt8(flags.rawValue >> 8),
-            UInt8(flags.rawValue & 0xFF),
-            UInt8((streamID >> 24) & 0xFF),
-            UInt8((streamID >> 16) & 0xFF),
-            UInt8((streamID >> 8) & 0xFF),
-            UInt8(streamID & 0xFF),
-            UInt8((length >> 24) & 0xFF),
-            UInt8((length >> 16) & 0xFF),
-            UInt8((length >> 8) & 0xFF),
-            UInt8(length & 0xFF),
-        ]
-        result.append(contentsOf: header)
+        // Write 12-byte header (writeInteger defaults to big-endian)
+        buf.writeInteger(yamuxVersion)
+        buf.writeInteger(type.rawValue)
+        buf.writeInteger(flags.rawValue)
+        buf.writeInteger(streamID)
+        buf.writeInteger(length)
 
-        // Data (if present)
-        if let data = data {
-            result.append(data)
+        // Payload (if present)
+        if var payload = data {
+            buf.writeBuffer(&payload)
         }
 
-        return result
+        return buf
     }
 
-    /// Decodes a frame from bytes.
+    /// Decodes a frame from a ByteBuffer.
     ///
-    /// - Returns: The frame and number of bytes consumed, or nil if more data is needed
+    /// On success, advances the buffer's reader index past the consumed bytes.
+    /// On partial data (returns nil), the reader index is not modified.
+    ///
+    /// - Returns: The decoded frame, or nil if more data is needed
     /// - Throws: `YamuxError` if the frame is malformed
-    static func decode(from data: Data) throws -> (frame: YamuxFrame, bytesRead: Int)? {
-        guard data.count >= yamuxHeaderSize else {
+    static func decode(from buffer: inout ByteBuffer) throws -> YamuxFrame? {
+        guard buffer.readableBytes >= yamuxHeaderSize else {
             return nil
         }
 
-        // Parse header using pointer access to avoid repeated bounds checks
-        let (version, typeRaw, flags, streamID, length): (UInt8, UInt8, YamuxFlags, UInt32, UInt32) =
-            data.withUnsafeBytes { ptr in
-                let b = ptr.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                let v = b[0]
-                let t = b[1]
-                let f = YamuxFlags(rawValue: (UInt16(b[2]) << 8) | UInt16(b[3]))
-                let s = (UInt32(b[4]) << 24) | (UInt32(b[5]) << 16) | (UInt32(b[6]) << 8) | UInt32(b[7])
-                let l = (UInt32(b[8]) << 24) | (UInt32(b[9]) << 16) | (UInt32(b[10]) << 8) | UInt32(b[11])
-                return (v, t, f, s, l)
-            }
+        // Save reader index to restore on partial read
+        let savedReaderIndex = buffer.readerIndex
+
+        // Parse header using readInteger (big-endian)
+        guard let version: UInt8 = buffer.readInteger(),
+              let typeRaw: UInt8 = buffer.readInteger(),
+              let flagsRaw: UInt16 = buffer.readInteger(),
+              let streamID: UInt32 = buffer.readInteger(),
+              let length: UInt32 = buffer.readInteger() else {
+            buffer.moveReaderIndex(to: savedReaderIndex)
+            return nil
+        }
 
         guard version == yamuxVersion else {
             throw YamuxError.invalidVersion(version)
@@ -141,35 +138,37 @@ struct YamuxFrame: Sendable {
             throw YamuxError.invalidFrameType(typeRaw)
         }
 
+        let flags = YamuxFlags(rawValue: flagsRaw)
+
         // Only Data frames have actual payload data.
-        // For WindowUpdate, Ping, and GoAway, the length field stores
-        // a semantic value (delta, opaque value, or error code), not data length.
         let payloadLength = type == .data ? Int(length) : 0
 
         // Validate frame size to prevent memory exhaustion attacks
         if type == .data && length > yamuxMaxFrameSize {
             throw YamuxError.frameTooLarge(size: length, max: yamuxMaxFrameSize)
         }
-        let totalSize = yamuxHeaderSize + payloadLength
-        guard data.count >= totalSize else {
+
+        guard buffer.readableBytes >= payloadLength else {
+            // Not enough data for payload - restore reader index
+            buffer.moveReaderIndex(to: savedReaderIndex)
             return nil
         }
 
-        var frameData: Data?
+        // Read payload as a zero-copy slice (shares underlying storage)
+        let frameData: ByteBuffer?
         if type == .data && length > 0 {
-            let dataStart = data.startIndex + yamuxHeaderSize
-            frameData = Data(data[dataStart..<(dataStart + Int(length))])
+            frameData = buffer.readSlice(length: Int(length))
+        } else {
+            frameData = nil
         }
 
-        let frame = YamuxFrame(
+        return YamuxFrame(
             type: type,
             flags: flags,
             streamID: streamID,
             length: length,
             data: frameData
         )
-
-        return (frame, totalSize)
     }
 }
 

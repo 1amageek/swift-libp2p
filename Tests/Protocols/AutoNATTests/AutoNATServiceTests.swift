@@ -1,6 +1,7 @@
 /// AutoNATServiceTests - Tests for AutoNAT service
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PAutoNAT
 @testable import P2PCore
@@ -680,8 +681,8 @@ final class MockMuxedStream: MuxedStream, Sendable {
 
     private struct StreamState: Sendable {
         var isClosed: Bool = false
-        var readBuffer: [Data] = []
-        var writtenData: [Data] = []
+        var readBuffer: [ByteBuffer] = []
+        var writtenData: [ByteBuffer] = []
     }
 
     init(id: UInt64 = 0, protocolID: String? = nil) {
@@ -694,17 +695,17 @@ final class MockMuxedStream: MuxedStream, Sendable {
         state.withLock { $0.isClosed }
     }
 
-    var readBuffer: [Data] {
+    var readBuffer: [ByteBuffer] {
         get { state.withLock { $0.readBuffer } }
         set { state.withLock { $0.readBuffer = newValue } }
     }
 
-    var writtenData: [Data] {
+    var writtenData: [ByteBuffer] {
         state.withLock { $0.writtenData }
     }
 
-    func read() async throws -> Data {
-        let data: Data? = state.withLock { s in
+    func read() async throws -> ByteBuffer {
+        let data: ByteBuffer? = state.withLock { s in
             if s.readBuffer.isEmpty {
                 return nil
             }
@@ -716,7 +717,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
         return data
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         state.withLock { $0.writtenData.append(data) }
     }
 

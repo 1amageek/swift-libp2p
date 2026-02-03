@@ -8,6 +8,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PCircuitRelay
 @testable import P2PCore
@@ -130,8 +131,8 @@ final class MockE2EStream: MuxedStream, Sendable {
     nonisolated(unsafe) private weak var partner: MockE2EStream?
 
     private struct StreamState {
-        var readBuffer: [Data] = []
-        var readContinuation: CheckedContinuation<Data, any Error>?
+        var readBuffer: [ByteBuffer] = []
+        var readContinuation: CheckedContinuation<ByteBuffer, any Error>?
         var isClosed: Bool = false
         var partnerClosed: Bool = false
     }
@@ -150,13 +151,13 @@ final class MockE2EStream: MuxedStream, Sendable {
         return (local, remote)
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { s in
                 if !s.readBuffer.isEmpty {
                     continuation.resume(returning: s.readBuffer.removeFirst())
                 } else if s.isClosed || s.partnerClosed {
-                    continuation.resume(returning: Data())
+                    continuation.resume(returning: ByteBuffer())
                 } else {
                     s.readContinuation = continuation
                 }
@@ -164,7 +165,7 @@ final class MockE2EStream: MuxedStream, Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         let closed = state.withLock { $0.isClosed }
         if closed {
             throw E2EStreamError.streamClosed
@@ -173,7 +174,7 @@ final class MockE2EStream: MuxedStream, Sendable {
         partner?.receive(data)
     }
 
-    private func receive(_ data: Data) {
+    private func receive(_ data: ByteBuffer) {
         state.withLock { s in
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
@@ -193,7 +194,7 @@ final class MockE2EStream: MuxedStream, Sendable {
             s.isClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -203,7 +204,7 @@ final class MockE2EStream: MuxedStream, Sendable {
             s.isClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
         partner?.notifyPartnerClosed()
@@ -214,7 +215,7 @@ final class MockE2EStream: MuxedStream, Sendable {
             s.partnerClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -445,7 +446,7 @@ struct CircuitRelayE2ETests {
         )
 
         // Send large data in both directions
-        let largeData = Data(repeating: 0x42, count: 10000)
+        let largeData = ByteBuffer(bytes: Data(repeating: 0x42, count: 10000))
 
         // Source → Target
         try await sourceConnection.write(largeData)
@@ -453,13 +454,13 @@ struct CircuitRelayE2ETests {
         #expect(received1 == largeData)
 
         // Target → Source
-        let responseData = Data("Response from target".utf8)
+        let responseData = ByteBuffer(bytes: Data("Response from target".utf8))
         try await targetConnection.write(responseData)
         let received2 = try await sourceConnection.read()
         #expect(received2 == responseData)
 
         // Verify bytes transferred
-        #expect(sourceConnection.bytesTransferred == UInt64(largeData.count + responseData.count))
+        #expect(sourceConnection.bytesTransferred == UInt64(largeData.readableBytes + responseData.readableBytes))
     }
 
     // MARK: - Limit Tests
@@ -480,11 +481,11 @@ struct CircuitRelayE2ETests {
         )
 
         // Write 50 bytes - should succeed
-        try await connection.write(Data(repeating: 0x01, count: 50))
+        try await connection.write(ByteBuffer(bytes: Data(repeating: 0x01, count: 50)))
 
         // Write 60 more bytes - should fail (would exceed 100 byte limit)
         do {
-            try await connection.write(Data(repeating: 0x02, count: 60))
+            try await connection.write(ByteBuffer(bytes: Data(repeating: 0x02, count: 60)))
             Issue.record("Expected limitExceeded error")
         } catch let error as CircuitRelayError {
             switch error {
@@ -571,7 +572,7 @@ struct CircuitRelayE2ETests {
         // Prepare Stop CONNECT message on the "server" side (the one RelayClient reads from)
         let connectMsg = StopMessage.connect(from: sourceKey.peerID, limit: .default)
         let connectData = CircuitRelayProtobuf.encode(connectMsg)
-        try await clientStream.writeLengthPrefixedMessage(connectData)
+        try await clientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: connectData))
 
         // Invoke handler
         if let handler = registry.getHandler(for: CircuitRelayProtocol.stopProtocolID) {

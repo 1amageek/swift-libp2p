@@ -343,14 +343,14 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
             let limitedAddresses = Array(addresses.prefix(configuration.maxAddresses))
             let request = AutoNATMessage.dial(addresses: limitedAddresses)
             let requestData = AutoNATProtobuf.encode(request)
-            try await stream.writeLengthPrefixedMessage(requestData)
+            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
 
             // Read response with timeout
             let responseData = try await withTimeout(configuration.dialTimeout) {
                 try await stream.readLengthPrefixedMessage(maxSize: UInt64(AutoNATProtocol.maxMessageSize))
             }
 
-            let response = try AutoNATProtobuf.decode(responseData)
+            let response = try AutoNATProtobuf.decode(Data(buffer: responseData))
 
             guard response.type == .dialResponse,
                   let dialResponse = response.dialResponse else {
@@ -402,8 +402,8 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
             }
 
             // Read request
-            let requestData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(AutoNATProtocol.maxMessageSize))
-            let request = try AutoNATProtobuf.decode(requestData)
+            let requestBuffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(AutoNATProtocol.maxMessageSize))
+            let request = try AutoNATProtobuf.decode(Data(buffer: requestBuffer))
 
             guard request.type == .dial,
                   let dial = request.dial else {
@@ -483,7 +483,7 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
     private func sendResponse(stream: MuxedStream, response: AutoNATDialResponse) async throws {
         let message = AutoNATMessage.dialResponse(response)
         let data = AutoNATProtobuf.encode(message)
-        try await stream.writeLengthPrefixedMessage(data)
+        try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
         try await stream.close()
     }
 

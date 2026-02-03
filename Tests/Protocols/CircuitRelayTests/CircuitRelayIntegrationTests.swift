@@ -2,6 +2,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PCircuitRelay
 @testable import P2PCore
@@ -40,8 +41,8 @@ final class MockMuxedStream: MuxedStream, Sendable {
     private let partner: Mutex<MockMuxedStream?>
 
     private struct StreamState: Sendable {
-        var readBuffer: [Data] = []
-        var readContinuation: CheckedContinuation<Data, any Error>?
+        var readBuffer: [ByteBuffer] = []
+        var readContinuation: CheckedContinuation<ByteBuffer, any Error>?
         var isClosed: Bool = false
         var isWriteClosed: Bool = false
         var partnerClosed: Bool = false
@@ -63,7 +64,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
         return (client, server)
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // All state checks and continuation installation must happen atomically
         // to avoid race conditions with close() and partner notifications.
         return try await withCheckedThrowingContinuation { continuation in
@@ -72,7 +73,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
                     continuation.resume(returning: s.readBuffer.removeFirst())
                 } else if s.isClosed || s.partnerClosed {
                     // Return empty data to signal EOF
-                    continuation.resume(returning: Data())
+                    continuation.resume(returning: ByteBuffer())
                 } else {
                     // No data available, wait for data or close
                     s.readContinuation = continuation
@@ -81,7 +82,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         let closed = state.withLock { $0.isWriteClosed || $0.isClosed }
         if closed {
             throw MockStreamError.streamClosed
@@ -93,7 +94,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
         }
     }
 
-    private func receive(_ data: Data) {
+    private func receive(_ data: ByteBuffer) {
         state.withLock { s in
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
@@ -113,7 +114,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
             s.isClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -124,7 +125,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
             s.isWriteClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
         // Notify partner that we're closed so they don't block on read()
@@ -140,7 +141,7 @@ final class MockMuxedStream: MuxedStream, Sendable {
             // If we're waiting for a read, return empty data to signal EOF
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -386,14 +387,14 @@ struct CircuitRelayIntegrationTests {
         // Simulate server handling connection (simplified - relay just responds OK)
         let connectServerTask = Task<Void, any Error> {
             // For testing, we simulate the relay behavior
-            let messageData = try await connectServerStream.readLengthPrefixedMessage()
-            let message = try CircuitRelayProtobuf.decodeHop(messageData)
+            let messageBuffer = try await connectServerStream.readLengthPrefixedMessage()
+            let message = try CircuitRelayProtobuf.decodeHop(Data(buffer: messageBuffer))
 
             if message.type == .connect {
                 // Send OK status back
                 let response = HopMessage.statusResponse(.ok, limit: .default)
                 let responseData = CircuitRelayProtobuf.encode(response)
-                try await connectServerStream.writeLengthPrefixedMessage(responseData)
+                try await connectServerStream.writeLengthPrefixedMessage(ByteBuffer(bytes: responseData))
             }
         }
 
@@ -434,13 +435,13 @@ struct CircuitRelayIntegrationTests {
         )
 
         // Test sending data from source to target
-        let testData1 = Data("Hello from source".utf8)
+        let testData1 = ByteBuffer(bytes: Data("Hello from source".utf8))
         try await sourceConnection.write(testData1)
         let received1 = try await targetConnection.read()
         #expect(received1 == testData1)
 
         // Test sending data from target to source
-        let testData2 = Data("Hello from target".utf8)
+        let testData2 = ByteBuffer(bytes: Data("Hello from target".utf8))
         try await targetConnection.write(testData2)
         let received2 = try await sourceConnection.read()
         #expect(received2 == testData2)
@@ -466,7 +467,7 @@ struct CircuitRelayIntegrationTests {
 
         // Target should receive EOF
         let data = try await targetStream.read()
-        #expect(data.isEmpty)
+        #expect(data.readableBytes == 0)
     }
 
     // MARK: - Limit Tests
@@ -703,7 +704,7 @@ struct RelayListenerTests {
                 // Write CONNECT message to the stream (simulating relay's message)
                 let connectMsg = StopMessage.connect(from: sourceKey.peerID, limit: .default)
                 let connectData = CircuitRelayProtobuf.encode(connectMsg)
-                try await stopClientStream.writeLengthPrefixedMessage(connectData)
+                try await stopClientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: connectData))
 
                 await handler(context)
             }

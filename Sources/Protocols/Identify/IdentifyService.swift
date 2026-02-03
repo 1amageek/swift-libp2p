@@ -258,7 +258,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
 
                 // Encode and send
                 let data = try IdentifyProtobuf.encode(info)
-                try await context.stream.write(data)
+                try await context.stream.write(ByteBuffer(bytes: data))
                 try await context.stream.close()
 
                 self.emit(.sent(peer: context.remotePeer))
@@ -408,7 +408,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         )
 
         let data = try IdentifyProtobuf.encode(info)
-        try await stream.write(data)
+        try await stream.write(ByteBuffer(bytes: data))
 
         emit(.sent(peer: peer))
     }
@@ -767,10 +767,10 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
 
         while true {
             let chunk = try await stream.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 break // EOF - normal termination
             }
-            buffer.append(chunk)
+            buffer.append(Data(buffer: chunk))
 
             // Check if buffer exceeds maximum allowed size
             if buffer.count > maxSize {

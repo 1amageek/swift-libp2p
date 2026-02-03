@@ -351,7 +351,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
 
     private func readMessage(from stream: MuxedStream) async throws -> Data {
         // Apply timeout to prevent indefinite blocking on malicious/stalled peers
-        return try await withTimeout(configuration.timeout) {
+        let buffer: ByteBuffer = try await withTimeout(configuration.timeout) {
             do {
                 return try await stream.readLengthPrefixedMessage(maxSize: UInt64(DCUtRProtocol.maxMessageSize))
             } catch let error as StreamMessageError {
@@ -363,6 +363,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
                 }
             }
         }
+        return Data(buffer: buffer)
     }
 
     /// Executes an async operation with a timeout.
@@ -389,7 +390,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
         // Apply timeout to prevent indefinite blocking
         try await withTimeout(configuration.timeout) {
-            try await stream.writeLengthPrefixedMessage(data)
+            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
         }
     }
 

@@ -781,7 +781,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             result = try await MultistreamSelect.negotiate(
                 protocols: [protocolID],
                 read: { try await reader.readMessage() },
-                write: { try await stream.write($0) }
+                write: { try await stream.write(ByteBuffer(bytes: $0)) }
             )
         } catch {
             configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
@@ -1417,7 +1417,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                     let result = try await MultistreamSelect.handle(
                         supported: supportedProtocols,
                         read: { try await reader.readMessage() },
-                        write: { try await stream.write($0) }
+                        write: { try await stream.write(ByteBuffer(bytes: $0)) }
                     )
 
                     // Find and run the handler
@@ -1543,12 +1543,12 @@ final class BufferedStreamReader: Sendable {
 
             // Read more data from the stream
             let chunk = try await stream.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 throw NodeError.streamClosed
             }
 
             state.withLock { buffer in
-                buffer.append(chunk)
+                buffer.append(Data(buffer: chunk))
             }
         }
     }

@@ -48,11 +48,11 @@ internal final class ResourceTrackedStream: MuxedStream, Sendable {
     var id: UInt64 { underlying.id }
     var protocolID: String? { underlying.protocolID }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         try await underlying.read()
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try await underlying.write(data)
     }
 

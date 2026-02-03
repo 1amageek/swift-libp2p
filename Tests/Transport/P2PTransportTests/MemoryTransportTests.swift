@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PCore
 @testable import P2PTransport
 @testable import P2PTransportMemory
@@ -46,15 +47,15 @@ struct MemoryTransportTests {
 
         // Client sends to server
         let clientMessage = Data("hello from client".utf8)
-        try await clientConn.write(clientMessage)
+        try await clientConn.write(ByteBuffer(bytes: clientMessage))
         let receivedAtServer = try await serverConn.read()
-        #expect(receivedAtServer == clientMessage)
+        #expect(Data(buffer: receivedAtServer) == clientMessage)
 
         // Server sends to client
         let serverMessage = Data("hello from server".utf8)
-        try await serverConn.write(serverMessage)
+        try await serverConn.write(ByteBuffer(bytes: serverMessage))
         let receivedAtClient = try await clientConn.read()
-        #expect(receivedAtClient == serverMessage)
+        #expect(Data(buffer: receivedAtClient) == serverMessage)
 
         // Clean up
         try await clientConn.close()
@@ -76,9 +77,9 @@ struct MemoryTransportTests {
         // Send multiple messages
         for i in 1...5 {
             let message = Data("message \(i)".utf8)
-            try await clientConn.write(message)
+            try await clientConn.write(ByteBuffer(bytes: message))
             let received = try await serverConn.read()
-            #expect(String(decoding: received, as: UTF8.self) == "message \(i)")
+            #expect(String(buffer: received) == "message \(i)")
         }
 
         // Clean up
@@ -110,9 +111,9 @@ struct MemoryTransportTests {
 
             // Verify each connection works
             let message = Data("conn \(i)".utf8)
-            try await clientConn.write(message)
+            try await clientConn.write(ByteBuffer(bytes: message))
             let received = try await serverConn.read()
-            #expect(String(decoding: received, as: UTF8.self) == "conn \(i)")
+            #expect(String(buffer: received) == "conn \(i)")
         }
 
         // Clean up
@@ -140,14 +141,14 @@ struct MemoryTransportTests {
         let server2 = try await accept2
 
         // Verify isolation
-        try await conn1.write(Data("to-1".utf8))
-        try await conn2.write(Data("to-2".utf8))
+        try await conn1.write(ByteBuffer(bytes: Data("to-1".utf8)))
+        try await conn2.write(ByteBuffer(bytes: Data("to-2".utf8)))
 
         let received1 = try await server1.read()
         let received2 = try await server2.read()
 
-        #expect(String(decoding: received1, as: UTF8.self) == "to-1")
-        #expect(String(decoding: received2, as: UTF8.self) == "to-2")
+        #expect(String(buffer: received1) == "to-1")
+        #expect(String(buffer: received2) == "to-2")
 
         // Clean up
         try await conn1.close()
@@ -176,7 +177,7 @@ struct MemoryTransportTests {
 
         // Server should receive empty data (EOF)
         let received = try await serverConn.read()
-        #expect(received.isEmpty)
+        #expect(received.readableBytes == 0)
 
         // Clean up
         try await serverConn.close()
@@ -198,7 +199,7 @@ struct MemoryTransportTests {
         try await clientConn.close()
 
         await #expect(throws: MemoryConnection.ConnectionError.self) {
-            try await clientConn.write(Data("should fail".utf8))
+            try await clientConn.write(ByteBuffer(bytes: Data("should fail".utf8)))
         }
 
         try await listener.close()
@@ -356,7 +357,7 @@ struct MemoryTransportTests {
 
         // Client should get an error when trying to write
         await #expect(throws: MemoryConnection.ConnectionError.self) {
-            try await clientConn.write(Data("after close".utf8))
+            try await clientConn.write(ByteBuffer(bytes: Data("after close".utf8)))
         }
     }
 

@@ -1,6 +1,7 @@
 /// TLSUpgrader - SecurityUpgrader implementation using swift-tls TLS 1.3
 import Foundation
 import Crypto
+import NIOCore
 import P2PCore
 import P2PSecurity
 import Synchronization
@@ -150,25 +151,26 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
 
         let initialData = try await tlsConn.startHandshake(isClient: isClient)
         if !initialData.isEmpty {
-            try await connection.write(initialData)
+            try await connection.write(ByteBuffer(bytes: initialData))
         }
 
         var earlyApplicationData = Data()
 
         while !tlsConn.isConnected {
             let received = try await connection.read()
-            guard !received.isEmpty else {
+            guard received.readableBytes > 0 else {
                 throw TLSError.connectionClosed
             }
 
-            let output = try await tlsConn.processReceivedData(received)
+            let receivedData = Data(buffer: received)
+            let output = try await tlsConn.processReceivedData(receivedData)
 
             if output.alert != nil {
                 throw TLSError.handshakeFailed(reason: "TLS alert received")
             }
 
             if !output.dataToSend.isEmpty {
-                try await connection.write(output.dataToSend)
+                try await connection.write(ByteBuffer(bytes: output.dataToSend))
             }
 
             // Capture any application data that arrived alongside handshake messages.

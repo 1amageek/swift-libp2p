@@ -1,5 +1,6 @@
 /// MplexStream - MuxedStream implementation for Mplex
 import Foundation
+import NIOCore
 import P2PCore
 import P2PMux
 import Synchronization
@@ -20,10 +21,10 @@ import Synchronization
 ///     +-----------+               +-----------+
 /// ```
 private struct MplexStreamState: Sendable {
-    var readBuffer: Data = Data()
+    var readBuffer: ByteBuffer = ByteBuffer()
 
     /// Queue of readers waiting for data
-    var readContinuations: [CheckedContinuation<Data, Error>] = []
+    var readContinuations: [CheckedContinuation<ByteBuffer, Error>] = []
 
     // Write direction state
     /// Local has closed write side (sent CLOSE)
@@ -70,7 +71,7 @@ public final class MplexStream: MuxedStream, Sendable {
         self.state = Mutex(MplexStreamState())
     }
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { state in
                 // Reset state - immediate failure
@@ -86,9 +87,9 @@ public final class MplexStream: MuxedStream, Sendable {
                 }
 
                 // Return buffered data if available
-                if !state.readBuffer.isEmpty {
+                if state.readBuffer.readableBytes > 0 {
                     let data = state.readBuffer
-                    state.readBuffer = Data()
+                    state.readBuffer = ByteBuffer()
                     continuation.resume(returning: data)
                 } else if state.remoteWriteClosed {
                     // Remote closed and buffer empty - no more data coming
@@ -101,7 +102,7 @@ public final class MplexStream: MuxedStream, Sendable {
         }
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { state in
             state.localWriteClosed || state.isReset
         }
@@ -110,7 +111,8 @@ public final class MplexStream: MuxedStream, Sendable {
         }
 
         // Mplex has no flow control, send data directly
-        let frame = MplexFrame.message(id: id, isInitiator: isInitiator, data: data)
+        let frameData = Data(buffer: data)
+        let frame = MplexFrame.message(id: id, isInitiator: isInitiator, data: frameData)
         try await connection.sendFrame(frame)
     }
 
@@ -130,10 +132,10 @@ public final class MplexStream: MuxedStream, Sendable {
     public func closeRead() async throws {
         // Mark read side as closed locally
         // Received data after this will be discarded
-        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let readConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             if state.localReadClosed || state.isReset { return [] }
             state.localReadClosed = true
-            state.readBuffer = Data()
+            state.readBuffer = ByteBuffer()
             let r = state.readContinuations
             state.readContinuations = []
             return r
@@ -153,12 +155,12 @@ public final class MplexStream: MuxedStream, Sendable {
     }
 
     public func reset() async throws {
-        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let readConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             state.isReset = true
             state.localWriteClosed = true
             state.localReadClosed = true
             state.remoteWriteClosed = true
-            state.readBuffer = Data()
+            state.readBuffer = ByteBuffer()
             let r = state.readContinuations
             state.readContinuations = []
             return r
@@ -187,17 +189,17 @@ public final class MplexStream: MuxedStream, Sendable {
             // Deliver to waiting reader or buffer
             if !state.readContinuations.isEmpty {
                 let cont = state.readContinuations.removeFirst()
-                cont.resume(returning: data)
+                cont.resume(returning: ByteBuffer(bytes: data))
                 return false
             } else {
                 // Check buffer size limit (DoS protection)
                 // Mplex has no flow control, so reset is the only safe response
-                if state.readBuffer.count + data.count > maxReadBufferSize {
+                if state.readBuffer.readableBytes + data.count > maxReadBufferSize {
                     state.isReset = true
                     state.localWriteClosed = true
                     state.localReadClosed = true
                     state.remoteWriteClosed = true
-                    state.readBuffer = Data()
+                    state.readBuffer = ByteBuffer()
                     let conts = state.readContinuations
                     state.readContinuations = []
                     for cont in conts {
@@ -205,7 +207,7 @@ public final class MplexStream: MuxedStream, Sendable {
                     }
                     return true
                 }
-                state.readBuffer.append(data)
+                state.readBuffer.writeData(data)
                 return false
             }
         }
@@ -225,7 +227,7 @@ public final class MplexStream: MuxedStream, Sendable {
     ///
     /// This is a half-close: remote stopped sending, but we can still write.
     func remoteClose() {
-        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let readConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             state.remoteWriteClosed = true
             let r = state.readContinuations
             state.readContinuations = []
@@ -240,12 +242,12 @@ public final class MplexStream: MuxedStream, Sendable {
 
     /// Called when the stream is reset by remote (received RESET).
     func remoteReset() {
-        let readConts = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let readConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             state.isReset = true
             state.localWriteClosed = true
             state.localReadClosed = true
             state.remoteWriteClosed = true
-            state.readBuffer = Data()
+            state.readBuffer = ByteBuffer()
             let r = state.readContinuations
             state.readContinuations = []
             return r

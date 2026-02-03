@@ -11,3 +11,5 @@
 @_exported import Foundation
 @_exported import Crypto
 @_exported import Logging
+@_exported import NIOCore
+@_exported import NIOFoundationCompat

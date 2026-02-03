@@ -1,9 +1,11 @@
 import Foundation
+import NIOCore
 
 /// A secured connection after security handshake.
 ///
 /// This protocol represents a connection that has been upgraded
-/// with encryption and mutual authentication.
+/// with encryption and mutual authentication. Uses ByteBuffer
+/// for zero-copy data passing through the protocol pipeline.
 public protocol SecuredConnection: Sendable {
     /// The local peer ID.
     var localPeer: PeerID { get }
@@ -18,10 +20,10 @@ public protocol SecuredConnection: Sendable {
     var remoteAddress: Multiaddr { get }
 
     /// Reads decrypted data from the connection.
-    func read() async throws -> Data
+    func read() async throws -> ByteBuffer
 
     /// Writes data to the connection (will be encrypted).
-    func write(_ data: Data) async throws
+    func write(_ data: ByteBuffer) async throws
 
     /// Closes the connection.
     func close() async throws

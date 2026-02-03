@@ -5,6 +5,7 @@
 /// (driven by `TLSUpgrader`), this class handles encrypting outgoing
 /// application data and decrypting incoming TLS records.
 import Foundation
+import NIOCore
 import P2PCore
 import P2PSecurity
 import Synchronization
@@ -61,7 +62,7 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
 
     // MARK: - SecuredConnection
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         // Drain buffered application data first (from handshake overlap)
         let buffered = state.withLock { state -> Data? in
             guard !state.isClosed else { return nil }
@@ -72,7 +73,7 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
         }
 
         if let buffered {
-            return buffered
+            return ByteBuffer(bytes: buffered)
         }
 
         let isClosed = state.withLock { $0.isClosed }
@@ -81,19 +82,20 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
         // Read from network until we get application data
         while true {
             let received = try await underlying.read()
-            guard !received.isEmpty else {
+            guard received.readableBytes > 0 else {
                 throw TLSError.connectionClosed
             }
 
-            let output = try await tlsConnection.processReceivedData(received)
+            let receivedData = Data(buffer: received)
+            let output = try await tlsConnection.processReceivedData(receivedData)
 
             // Send any post-handshake response data (e.g. NewSessionTicket ack)
             if !output.dataToSend.isEmpty {
-                try await underlying.write(output.dataToSend)
+                try await underlying.write(ByteBuffer(bytes: output.dataToSend))
             }
 
             if !output.applicationData.isEmpty {
-                return output.applicationData
+                return ByteBuffer(bytes: output.applicationData)
             }
 
             // No application data in this batch (e.g. post-handshake messages only),
@@ -101,19 +103,20 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
         }
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { $0.isClosed }
         guard !isClosed else { throw TLSError.connectionClosed }
 
-        let encrypted = try tlsConnection.writeApplicationData(data)
-        try await underlying.write(encrypted)
+        let plainData = Data(buffer: data)
+        let encrypted = try tlsConnection.writeApplicationData(plainData)
+        try await underlying.write(ByteBuffer(bytes: encrypted))
     }
 
     public func close() async throws {
         state.withLock { $0.isClosed = true }
         do {
             let closeData = try tlsConnection.close()
-            try await underlying.write(closeData)
+            try await underlying.write(ByteBuffer(bytes: closeData))
         } catch {
             // Best effort to send close_notify
         }

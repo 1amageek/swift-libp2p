@@ -3,6 +3,7 @@
 /// Provides a pair of connected data streams for in-memory transport.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 
@@ -20,9 +21,9 @@ internal final class MemoryChannel: Sendable {
 
     /// The state for one direction of the channel.
     private struct DirectionState: Sendable {
-        var buffer: [Data] = []
+        var buffer: [ByteBuffer] = []
         var isClosed = false
-        var waitingContinuation: CheckedContinuation<Data, any Error>?
+        var waitingContinuation: CheckedContinuation<ByteBuffer, any Error>?
     }
 
     /// State for A to B direction.
@@ -44,7 +45,7 @@ internal final class MemoryChannel: Sendable {
     /// - Parameter data: The data to send
     /// - Returns: `true` if the data was sent, `false` if the channel is closed
     @discardableResult
-    func sendFromA(_ data: Data) -> Bool {
+    func sendFromA(_ data: ByteBuffer) -> Bool {
         aToBState.withLock { state in
             if state.isClosed { return false }
 
@@ -61,7 +62,7 @@ internal final class MemoryChannel: Sendable {
     /// Receives data at A (from B).
     ///
     /// - Throws: `MemoryChannelError.concurrentReadNotSupported` if another read is already waiting
-    func receiveAtA() async throws -> Data {
+    func receiveAtA() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             bToAState.withLock { state in
                 if state.waitingContinuation != nil {
@@ -73,7 +74,7 @@ internal final class MemoryChannel: Sendable {
                     let data = state.buffer.removeFirst()
                     continuation.resume(returning: data)
                 } else if state.isClosed {
-                    continuation.resume(returning: Data())
+                    continuation.resume(returning: ByteBuffer())
                 } else {
                     state.waitingContinuation = continuation
                 }
@@ -88,7 +89,7 @@ internal final class MemoryChannel: Sendable {
     /// - Parameter data: The data to send
     /// - Returns: `true` if the data was sent, `false` if the channel is closed
     @discardableResult
-    func sendFromB(_ data: Data) -> Bool {
+    func sendFromB(_ data: ByteBuffer) -> Bool {
         bToAState.withLock { state in
             if state.isClosed { return false }
 
@@ -105,7 +106,7 @@ internal final class MemoryChannel: Sendable {
     /// Receives data at B (from A).
     ///
     /// - Throws: `MemoryChannelError.concurrentReadNotSupported` if another read is already waiting
-    func receiveAtB() async throws -> Data {
+    func receiveAtB() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             aToBState.withLock { state in
                 if state.waitingContinuation != nil {
@@ -117,7 +118,7 @@ internal final class MemoryChannel: Sendable {
                     let data = state.buffer.removeFirst()
                     continuation.resume(returning: data)
                 } else if state.isClosed {
-                    continuation.resume(returning: Data())
+                    continuation.resume(returning: ByteBuffer())
                 } else {
                     state.waitingContinuation = continuation
                 }
@@ -133,7 +134,7 @@ internal final class MemoryChannel: Sendable {
             state.isClosed = true
             if let continuation = state.waitingContinuation {
                 state.waitingContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -144,7 +145,7 @@ internal final class MemoryChannel: Sendable {
             state.isClosed = true
             if let continuation = state.waitingContinuation {
                 state.waitingContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }

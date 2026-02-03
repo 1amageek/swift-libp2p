@@ -4,6 +4,7 @@
 /// for connecting through Circuit Relay v2 relays.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PTransport
@@ -213,11 +214,11 @@ final class RelayedRawConnection: RawConnection, Sendable {
         self.relayedConnection = relayedConnection
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         try await relayedConnection.read()
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try await relayedConnection.write(data)
     }
 

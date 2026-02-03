@@ -2,6 +2,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PAutoNAT
 @testable import P2PCore
@@ -19,8 +20,8 @@ final class AutoNATMockStream: MuxedStream, Sendable {
     private let partner: Mutex<AutoNATMockStream?>
 
     private struct StreamState: Sendable {
-        var readBuffer: [Data] = []
-        var readContinuation: CheckedContinuation<Data, any Error>?
+        var readBuffer: [ByteBuffer] = []
+        var readContinuation: CheckedContinuation<ByteBuffer, any Error>?
         var isClosed: Bool = false
         var isWriteClosed: Bool = false
         var partnerClosed: Bool = false
@@ -41,7 +42,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
         return (client, server)
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // All state checks and continuation installation must happen atomically
         // to avoid race conditions with close() and partner notifications.
         return try await withCheckedThrowingContinuation { continuation in
@@ -50,7 +51,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
                     continuation.resume(returning: s.readBuffer.removeFirst())
                 } else if s.isClosed || s.partnerClosed {
                     // Return empty data to signal EOF
-                    continuation.resume(returning: Data())
+                    continuation.resume(returning: ByteBuffer())
                 } else {
                     // No data available, wait for data or close
                     s.readContinuation = continuation
@@ -59,7 +60,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         let closed = state.withLock { $0.isWriteClosed || $0.isClosed }
         if closed {
             throw AutoNATTestError.streamClosed
@@ -70,7 +71,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
         }
     }
 
-    private func receive(_ data: Data) {
+    private func receive(_ data: ByteBuffer) {
         state.withLock { s in
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
@@ -90,7 +91,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
             s.isClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -101,7 +102,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
             s.isWriteClosed = true
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
         // Notify partner that we're closed so they don't block on read()
@@ -117,7 +118,7 @@ final class AutoNATMockStream: MuxedStream, Sendable {
             // If we're waiting for a read, return empty data to signal EOF
             if let continuation = s.readContinuation {
                 s.readContinuation = nil
-                continuation.resume(returning: Data())
+                continuation.resume(returning: ByteBuffer())
             }
         }
     }
@@ -395,11 +396,11 @@ struct AutoNATIntegrationTests {
             // Send DIAL request
             let request = AutoNATMessage.dial(addresses: [clientAddress])
             let requestData = AutoNATProtobuf.encode(request)
-            try await clientStream.writeLengthPrefixedMessage(requestData)
+            try await clientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
 
             // Read response
             let responseData = try await clientStream.readLengthPrefixedMessage()
-            let response = try AutoNATProtobuf.decode(responseData)
+            let response = try AutoNATProtobuf.decode(Data(buffer: responseData))
 
             guard let dialResponse = response.dialResponse else {
                 throw AutoNATTestError.dialFailed
@@ -455,10 +456,10 @@ struct AutoNATIntegrationTests {
         let clientTask = Task<AutoNATDialResponse, any Error> {
             let request = AutoNATMessage.dial(addresses: [validAddress, invalidAddress])
             let requestData = AutoNATProtobuf.encode(request)
-            try await clientStream.writeLengthPrefixedMessage(requestData)
+            try await clientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
 
             let responseData = try await clientStream.readLengthPrefixedMessage()
-            let response = try AutoNATProtobuf.decode(responseData)
+            let response = try AutoNATProtobuf.decode(Data(buffer: responseData))
             return response.dialResponse!
         }
 
@@ -511,10 +512,10 @@ struct AutoNATIntegrationTests {
         let clientTask = Task<AutoNATDialResponse, any Error> {
             let request = AutoNATMessage.dial(addresses: [claimedAddress])
             let requestData = AutoNATProtobuf.encode(request)
-            try await clientStream.writeLengthPrefixedMessage(requestData)
+            try await clientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
 
             let responseData = try await clientStream.readLengthPrefixedMessage()
-            let response = try AutoNATProtobuf.decode(responseData)
+            let response = try AutoNATProtobuf.decode(Data(buffer: responseData))
             return response.dialResponse!
         }
 
@@ -752,12 +753,12 @@ struct AutoNATIntegrationTests {
         let serverTask = Task {
             // Read DIAL request directly to capture address count
             let requestData = try await serverStream.readLengthPrefixedMessage()
-            let request = try AutoNATProtobuf.decode(requestData)
+            let request = try AutoNATProtobuf.decode(Data(buffer: requestData))
             await capture.set(request.dial?.peer.addresses.count ?? 0)
 
             // Send OK response
             let response = AutoNATMessage.dialResponse(.ok(address: manyAddresses[0]))
-            try await serverStream.writeLengthPrefixedMessage(AutoNATProtobuf.encode(response))
+            try await serverStream.writeLengthPrefixedMessage(ByteBuffer(bytes: AutoNATProtobuf.encode(response)))
         }
 
         _ = try await client.probe(using: opener, servers: [serverKey.peerID])
@@ -815,11 +816,11 @@ struct AutoNATIntegrationTests {
 
         let serverTask = Task {
             let requestData = try await serverStream.readLengthPrefixedMessage()
-            let request = try AutoNATProtobuf.decode(requestData)
+            let request = try AutoNATProtobuf.decode(Data(buffer: requestData))
             await capture.set(request.dial?.peer.addresses.count ?? 0)
 
             let response = AutoNATMessage.dialResponse(.ok(address: addresses[0]))
-            try await serverStream.writeLengthPrefixedMessage(AutoNATProtobuf.encode(response))
+            try await serverStream.writeLengthPrefixedMessage(ByteBuffer(bytes: AutoNATProtobuf.encode(response)))
         }
 
         _ = try await client.probe(using: opener, servers: [serverKey.peerID])
@@ -875,11 +876,11 @@ struct AutoNATIntegrationTests {
 
         let serverTask = Task {
             let requestData = try await serverStream.readLengthPrefixedMessage()
-            let request = try AutoNATProtobuf.decode(requestData)
+            let request = try AutoNATProtobuf.decode(Data(buffer: requestData))
             await capture.set(request.dial?.peer.addresses.count ?? 0)
 
             let response = AutoNATMessage.dialResponse(.ok(address: addresses[0]))
-            try await serverStream.writeLengthPrefixedMessage(AutoNATProtobuf.encode(response))
+            try await serverStream.writeLengthPrefixedMessage(ByteBuffer(bytes: AutoNATProtobuf.encode(response)))
         }
 
         _ = try await client.probe(using: opener, servers: [serverKey.peerID])

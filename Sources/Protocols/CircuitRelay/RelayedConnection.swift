@@ -1,6 +1,7 @@
 /// A connection relayed through a Circuit Relay.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PMux
@@ -91,13 +92,13 @@ public final class RelayedConnection: Sendable {
     /// - Returns: The data read.
     /// - Throws: `CircuitRelayError.circuitClosed` if closed,
     ///           `CircuitRelayError.limitExceeded` if limits exceeded.
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         try checkLimits()
 
         let data = try await stream.read()
 
         state.withLock { s in
-            s.bytesRead += UInt64(data.count)
+            s.bytesRead += UInt64(data.readableBytes)
         }
 
         return data
@@ -108,13 +109,13 @@ public final class RelayedConnection: Sendable {
     /// - Parameter data: The data to write.
     /// - Throws: `CircuitRelayError.circuitClosed` if closed,
     ///           `CircuitRelayError.limitExceeded` if limits exceeded.
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         try checkLimits()
 
         // Check if write would exceed data limit
         if let dataLimit = limit.data {
             let wouldExceed = state.withLock { s in
-                s.bytesRead + s.bytesWritten + UInt64(data.count) > dataLimit
+                s.bytesRead + s.bytesWritten + UInt64(data.readableBytes) > dataLimit
             }
             if wouldExceed {
                 throw CircuitRelayError.limitExceeded(limit)
@@ -124,7 +125,7 @@ public final class RelayedConnection: Sendable {
         try await stream.write(data)
 
         state.withLock { s in
-            s.bytesWritten += UInt64(data.count)
+            s.bytesWritten += UInt64(data.readableBytes)
         }
     }
 

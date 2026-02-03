@@ -1,6 +1,7 @@
 /// GossipSubRouterTests - Tests for GossipSub router
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PGossipSub
 @testable import P2PCore
 @testable import P2PMux
@@ -736,11 +737,11 @@ final class GossipSubMockStream: MuxedStream, Sendable {
         self.protocolID = protocolID
     }
 
-    func read() async throws -> Data {
-        Data()
+    func read() async throws -> ByteBuffer {
+        ByteBuffer()
     }
 
-    func write(_ data: Data) async throws {}
+    func write(_ data: ByteBuffer) async throws {}
 
     func closeWrite() async throws {}
 

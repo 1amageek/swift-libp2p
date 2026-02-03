@@ -1,5 +1,6 @@
 /// NoiseUpgrader - SecurityUpgrader implementation for Noise protocol
 import Foundation
+import NIOCore
 import P2PCore
 import P2PSecurity
 import Crypto
@@ -66,7 +67,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         // Send Message A: -> e
         let messageA = handshake.writeMessageA()
         let framedA = try encodeNoiseMessage(messageA)
-        try await connection.write(framedA)
+        try await connection.write(ByteBuffer(bytes: framedA))
 
         // Read Message B: <- e, ee, s, es
         let messageB = try await readNoiseFrame(from: connection, buffer: &readBuffer)
@@ -87,7 +88,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         // Send Message C: -> s, se
         let messageC = try handshake.writeMessageC()
         let framedC = try encodeNoiseMessage(messageC)
-        try await connection.write(framedC)
+        try await connection.write(ByteBuffer(bytes: framedC))
 
         return remotePeer
     }
@@ -107,7 +108,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         // Send Message B: <- e, ee, s, es
         let messageB = try handshake.writeMessageB()
         let framedB = try encodeNoiseMessage(messageB)
-        try await connection.write(framedB)
+        try await connection.write(ByteBuffer(bytes: framedB))
 
         // Read Message C: -> s, se
         let messageC = try await readNoiseFrame(from: connection, buffer: &readBuffer)
@@ -144,10 +145,10 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
 
             // Need more data
             let chunk = try await connection.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 throw NoiseError.connectionClosed
             }
-            buffer.append(chunk)
+            buffer.append(Data(buffer: chunk))
         }
     }
 }

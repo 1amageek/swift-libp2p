@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PMuxYamux
 
 @Suite("YamuxFrame Tests")
@@ -71,8 +72,8 @@ struct YamuxFrameTests {
 
     @Test("Encode data frame without payload")
     func encodeDataFrameEmpty() {
-        let frame = YamuxFrame.data(streamID: 1, data: Data())
-        let encoded = frame.encode()
+        let frame = YamuxFrame.data(streamID: 1, data: ByteBuffer())
+        let encoded = Data(buffer: frame.encode())
 
         #expect(encoded.count == 12)
 
@@ -98,8 +99,8 @@ struct YamuxFrameTests {
     @Test("Encode data frame with payload")
     func encodeDataFrameWithPayload() {
         let payload = Data([0x48, 0x65, 0x6C, 0x6C, 0x6F])  // "Hello"
-        let frame = YamuxFrame.data(streamID: 42, data: payload)
-        let encoded = frame.encode()
+        let frame = YamuxFrame.data(streamID: 42, data: ByteBuffer(bytes: payload))
+        let encoded = Data(buffer: frame.encode())
 
         #expect(encoded.count == 12 + 5)
 
@@ -123,8 +124,8 @@ struct YamuxFrameTests {
 
     @Test("Encode data frame with SYN flag")
     func encodeDataFrameWithSYN() {
-        let frame = YamuxFrame.data(streamID: 1, flags: .syn, data: Data())
-        let encoded = frame.encode()
+        let frame = YamuxFrame.data(streamID: 1, flags: .syn, data: ByteBuffer())
+        let encoded = Data(buffer: frame.encode())
 
         // Flags (SYN = 0x0001)
         #expect(encoded[2] == 0x00)
@@ -133,8 +134,8 @@ struct YamuxFrameTests {
 
     @Test("Encode data frame with multiple flags")
     func encodeDataFrameWithMultipleFlags() {
-        let frame = YamuxFrame.data(streamID: 1, flags: [.syn, .fin], data: Data())
-        let encoded = frame.encode()
+        let frame = YamuxFrame.data(streamID: 1, flags: [.syn, .fin], data: ByteBuffer())
+        let encoded = Data(buffer: frame.encode())
 
         // Flags (SYN | FIN = 0x0005)
         #expect(encoded[2] == 0x00)
@@ -144,8 +145,8 @@ struct YamuxFrameTests {
     @Test("Encode data frame with large stream ID")
     func encodeDataFrameLargeStreamID() {
         let streamID: UInt32 = 0xDEADBEEF
-        let frame = YamuxFrame.data(streamID: streamID, data: Data())
-        let encoded = frame.encode()
+        let frame = YamuxFrame.data(streamID: streamID, data: ByteBuffer())
+        let encoded = Data(buffer: frame.encode())
 
         // Stream ID (big-endian)
         #expect(encoded[4] == 0xDE)
@@ -159,7 +160,7 @@ struct YamuxFrameTests {
     @Test("Encode window update frame")
     func encodeWindowUpdateFrame() {
         let frame = YamuxFrame.windowUpdate(streamID: 5, delta: 65536)
-        let encoded = frame.encode()
+        let encoded = Data(buffer: frame.encode())
 
         #expect(encoded.count == 12)
 
@@ -179,7 +180,7 @@ struct YamuxFrameTests {
     @Test("Encode ping request frame")
     func encodePingRequestFrame() {
         let frame = YamuxFrame.ping(opaque: 12345, ack: false)
-        let encoded = frame.encode()
+        let encoded = Data(buffer: frame.encode())
 
         #expect(encoded.count == 12)
 
@@ -203,7 +204,7 @@ struct YamuxFrameTests {
     @Test("Encode ping response frame")
     func encodePingResponseFrame() {
         let frame = YamuxFrame.ping(opaque: 12345, ack: true)
-        let encoded = frame.encode()
+        let encoded = Data(buffer: frame.encode())
 
         // Flags (ACK = 0x0002)
         #expect(encoded[2] == 0x00)
@@ -215,7 +216,7 @@ struct YamuxFrameTests {
     @Test("Encode goaway frame with normal reason")
     func encodeGoAwayNormal() {
         let frame = YamuxFrame.goAway(reason: .normal)
-        let encoded = frame.encode()
+        let encoded = Data(buffer: frame.encode())
 
         #expect(encoded.count == 12)
 
@@ -233,7 +234,7 @@ struct YamuxFrameTests {
     @Test("Encode goaway frame with protocol error")
     func encodeGoAwayProtocolError() {
         let frame = YamuxFrame.goAway(reason: .protocolError)
-        let encoded = frame.encode()
+        let encoded = Data(buffer: frame.encode())
 
         // Length = reason (protocolError = 1)
         #expect(encoded[11] == 1)
@@ -242,7 +243,7 @@ struct YamuxFrameTests {
     @Test("Encode goaway frame with internal error")
     func encodeGoAwayInternalError() {
         let frame = YamuxFrame.goAway(reason: .internalError)
-        let encoded = frame.encode()
+        let encoded = Data(buffer: frame.encode())
 
         // Length = reason (internalError = 2)
         #expect(encoded[11] == 2)
@@ -252,205 +253,194 @@ struct YamuxFrameTests {
 
     @Test("Decode data frame without payload")
     func decodeDataFrameEmpty() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             0,      // type (data)
             0, 0,   // flags
             0, 0, 0, 1,  // stream ID
             0, 0, 0, 0   // length
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
-        #expect(result != nil)
+        let frame = try YamuxFrame.decode(from: &buffer)
+        #expect(frame != nil)
 
-        let (frame, bytesRead) = result!
-        #expect(frame.type == .data)
-        #expect(frame.flags == [])
-        #expect(frame.streamID == 1)
-        #expect(frame.length == 0)
-        #expect(frame.data == nil)
-        #expect(bytesRead == 12)
+        #expect(frame!.type == .data)
+        #expect(frame!.flags == [])
+        #expect(frame!.streamID == 1)
+        #expect(frame!.length == 0)
+        #expect(frame!.data == nil)
+        #expect(buffer.readerIndex == 12)
     }
 
     @Test("Decode data frame with payload")
     func decodeDataFrameWithPayload() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             0,      // type (data)
             0, 0,   // flags
             0, 0, 0, 5,  // stream ID
             0, 0, 0, 5,  // length
             0x48, 0x65, 0x6C, 0x6C, 0x6F  // "Hello"
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
-        #expect(result != nil)
+        let frame = try YamuxFrame.decode(from: &buffer)
+        #expect(frame != nil)
 
-        let (frame, bytesRead) = result!
-        #expect(frame.type == .data)
-        #expect(frame.streamID == 5)
-        #expect(frame.length == 5)
-        #expect(frame.data == Data([0x48, 0x65, 0x6C, 0x6C, 0x6F]))
-        #expect(bytesRead == 17)
+        #expect(frame!.type == .data)
+        #expect(frame!.streamID == 5)
+        #expect(frame!.length == 5)
+        #expect(frame!.data == ByteBuffer(bytes: [0x48, 0x65, 0x6C, 0x6C, 0x6F] as [UInt8]))
+        #expect(buffer.readerIndex == 17)
     }
 
     @Test("Decode data frame with SYN flag")
     func decodeDataFrameWithSYN() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             0,      // type (data)
             0, 1,   // flags (SYN)
             0, 0, 0, 1,  // stream ID
             0, 0, 0, 0   // length
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
-        #expect(result != nil)
-
-        let (frame, _) = result!
-        #expect(frame.flags.contains(.syn))
+        let frame = try YamuxFrame.decode(from: &buffer)
+        #expect(frame != nil)
+        #expect(frame!.flags.contains(.syn))
     }
 
     @Test("Decode window update frame")
     func decodeWindowUpdateFrame() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             1,      // type (windowUpdate)
             0, 0,   // flags
             0, 0, 0, 7,  // stream ID
             0, 1, 0, 0   // delta (65536)
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
-        #expect(result != nil)
+        let frame = try YamuxFrame.decode(from: &buffer)
+        #expect(frame != nil)
 
-        let (frame, _) = result!
-        #expect(frame.type == .windowUpdate)
-        #expect(frame.streamID == 7)
-        #expect(frame.length == 65536)
-        #expect(frame.data == nil)
+        #expect(frame!.type == .windowUpdate)
+        #expect(frame!.streamID == 7)
+        #expect(frame!.length == 65536)
+        #expect(frame!.data == nil)
     }
 
     @Test("Decode ping frame")
     func decodePingFrame() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             2,      // type (ping)
             0, 2,   // flags (ACK)
             0, 0, 0, 0,  // stream ID
             0, 0, 0x30, 0x39  // opaque (12345)
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
-        #expect(result != nil)
+        let frame = try YamuxFrame.decode(from: &buffer)
+        #expect(frame != nil)
 
-        let (frame, _) = result!
-        #expect(frame.type == .ping)
-        #expect(frame.flags.contains(.ack))
-        #expect(frame.streamID == 0)
-        #expect(frame.length == 12345)
+        #expect(frame!.type == .ping)
+        #expect(frame!.flags.contains(.ack))
+        #expect(frame!.streamID == 0)
+        #expect(frame!.length == 12345)
     }
 
     @Test("Decode goaway frame")
     func decodeGoAwayFrame() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             3,      // type (goAway)
             0, 0,   // flags
             0, 0, 0, 0,  // stream ID
             0, 0, 0, 1   // reason (protocolError)
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
-        #expect(result != nil)
+        let frame = try YamuxFrame.decode(from: &buffer)
+        #expect(frame != nil)
 
-        let (frame, _) = result!
-        #expect(frame.type == .goAway)
-        #expect(frame.length == 1)  // protocolError
+        #expect(frame!.type == .goAway)
+        #expect(frame!.length == 1)  // protocolError
     }
 
     // MARK: - Roundtrip Tests
 
     @Test("Roundtrip data frame")
     func roundtripDataFrame() throws {
-        let payload = Data([0xDE, 0xAD, 0xBE, 0xEF])
+        let payload = ByteBuffer(bytes: [0xDE, 0xAD, 0xBE, 0xEF] as [UInt8])
         let original = YamuxFrame.data(streamID: 123, flags: [.syn, .ack], data: payload)
-        let encoded = original.encode()
-        let result = try YamuxFrame.decode(from: encoded)
+        var encoded = original.encode()
+        let decoded = try YamuxFrame.decode(from: &encoded)
 
-        #expect(result != nil)
+        #expect(decoded != nil)
 
-        let (decoded, _) = result!
-        #expect(decoded.type == original.type)
-        #expect(decoded.flags == original.flags)
-        #expect(decoded.streamID == original.streamID)
-        #expect(decoded.length == original.length)
-        #expect(decoded.data == original.data)
+        #expect(decoded!.type == original.type)
+        #expect(decoded!.flags == original.flags)
+        #expect(decoded!.streamID == original.streamID)
+        #expect(decoded!.length == original.length)
+        #expect(decoded!.data == original.data)
     }
 
     @Test("Roundtrip window update frame")
     func roundtripWindowUpdateFrame() throws {
         let original = YamuxFrame.windowUpdate(streamID: 999, delta: 131072)
-        let encoded = original.encode()
-        let result = try YamuxFrame.decode(from: encoded)
+        var encoded = original.encode()
+        let decoded = try YamuxFrame.decode(from: &encoded)
 
-        #expect(result != nil)
+        #expect(decoded != nil)
 
-        let (decoded, _) = result!
-        #expect(decoded.type == .windowUpdate)
-        #expect(decoded.streamID == 999)
-        #expect(decoded.length == 131072)
+        #expect(decoded!.type == .windowUpdate)
+        #expect(decoded!.streamID == 999)
+        #expect(decoded!.length == 131072)
     }
 
     @Test("Roundtrip ping frame")
     func roundtripPingFrame() throws {
         let original = YamuxFrame.ping(opaque: 0xCAFEBABE, ack: true)
-        let encoded = original.encode()
-        let result = try YamuxFrame.decode(from: encoded)
+        var encoded = original.encode()
+        let decoded = try YamuxFrame.decode(from: &encoded)
 
-        #expect(result != nil)
+        #expect(decoded != nil)
 
-        let (decoded, _) = result!
-        #expect(decoded.type == .ping)
-        #expect(decoded.flags.contains(.ack))
-        #expect(decoded.length == 0xCAFEBABE)
+        #expect(decoded!.type == .ping)
+        #expect(decoded!.flags.contains(.ack))
+        #expect(decoded!.length == 0xCAFEBABE)
     }
 
     @Test("Roundtrip goaway frame")
     func roundtripGoAwayFrame() throws {
         let original = YamuxFrame.goAway(reason: .internalError)
-        let encoded = original.encode()
-        let result = try YamuxFrame.decode(from: encoded)
+        var encoded = original.encode()
+        let decoded = try YamuxFrame.decode(from: &encoded)
 
-        #expect(result != nil)
+        #expect(decoded != nil)
 
-        let (decoded, _) = result!
-        #expect(decoded.type == .goAway)
-        #expect(decoded.length == 2)  // internalError
+        #expect(decoded!.type == .goAway)
+        #expect(decoded!.length == 2)  // internalError
     }
 
     // MARK: - Partial Data Handling
 
     @Test("Decode returns nil for incomplete header")
     func decodeIncompleteHeader() throws {
-        let data = Data([0, 0, 0, 0, 0])  // Only 5 bytes
+        var buffer = ByteBuffer(bytes: [0, 0, 0, 0, 0] as [UInt8])  // Only 5 bytes
 
-        let result = try YamuxFrame.decode(from: data)
+        let result = try YamuxFrame.decode(from: &buffer)
         #expect(result == nil)
     }
 
     @Test("Decode returns nil for incomplete payload")
     func decodeIncompletePayload() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             0,      // type (data)
             0, 0,   // flags
             0, 0, 0, 1,  // stream ID
             0, 0, 0, 10, // length = 10
             0x48, 0x65   // only 2 bytes of payload
-        ])
+        ] as [UInt8])
 
-        let result = try YamuxFrame.decode(from: data)
+        let result = try YamuxFrame.decode(from: &buffer)
         #expect(result == nil)
     }
 
@@ -458,59 +448,59 @@ struct YamuxFrameTests {
 
     @Test("Decode throws for invalid version")
     func decodeInvalidVersion() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             1,      // invalid version (should be 0)
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ])
+        ] as [UInt8])
 
         #expect(throws: YamuxError.self) {
-            _ = try YamuxFrame.decode(from: data)
+            _ = try YamuxFrame.decode(from: &buffer)
         }
     }
 
     @Test("Decode throws for invalid frame type")
     func decodeInvalidFrameType() throws {
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             99,     // invalid type
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-        ])
+        ] as [UInt8])
 
         #expect(throws: YamuxError.self) {
-            _ = try YamuxFrame.decode(from: data)
+            _ = try YamuxFrame.decode(from: &buffer)
         }
     }
 
     @Test("Decode throws for frame too large")
     func decodeFrameTooLarge() throws {
         // Frame with length > 16MB (yamuxMaxFrameSize)
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             0,      // type (data)
             0, 0,   // flags
             0, 0, 0, 1,  // stream ID
             0x01, 0x00, 0x00, 0x01  // length = 16777217 (> 16MB)
-        ])
+        ] as [UInt8])
 
         #expect(throws: YamuxError.self) {
-            _ = try YamuxFrame.decode(from: data)
+            _ = try YamuxFrame.decode(from: &buffer)
         }
     }
 
     @Test("Decode accepts frame at max size limit")
     func decodeFrameAtMaxSize() throws {
         // Frame with length = 16MB (exactly at limit)
-        let data = Data([
+        var buffer = ByteBuffer(bytes: [
             0,      // version
             0,      // type (data)
             0, 0,   // flags
             0, 0, 0, 1,  // stream ID
             0x01, 0x00, 0x00, 0x00  // length = 16777216 (exactly 16MB)
-        ])
+        ] as [UInt8])
 
         // Should return nil because we don't have 16MB of payload
         // But it should NOT throw an error for frame size
-        let result = try YamuxFrame.decode(from: data)
+        let result = try YamuxFrame.decode(from: &buffer)
         #expect(result == nil)  // Incomplete payload, not error
     }
 
@@ -519,24 +509,22 @@ struct YamuxFrameTests {
     @Test("Encode/decode max stream ID")
     func maxStreamID() throws {
         let maxID: UInt32 = UInt32.max
-        let original = YamuxFrame.data(streamID: maxID, data: Data())
-        let encoded = original.encode()
-        let result = try YamuxFrame.decode(from: encoded)
+        let original = YamuxFrame.data(streamID: maxID, data: ByteBuffer())
+        var encoded = original.encode()
+        let decoded = try YamuxFrame.decode(from: &encoded)
 
-        #expect(result != nil)
-        let (decoded, _) = result!
-        #expect(decoded.streamID == maxID)
+        #expect(decoded != nil)
+        #expect(decoded!.streamID == maxID)
     }
 
     @Test("Encode/decode max length")
     func maxLength() throws {
         let original = YamuxFrame.windowUpdate(streamID: 1, delta: UInt32.max)
-        let encoded = original.encode()
-        let result = try YamuxFrame.decode(from: encoded)
+        var encoded = original.encode()
+        let decoded = try YamuxFrame.decode(from: &encoded)
 
-        #expect(result != nil)
-        let (decoded, _) = result!
-        #expect(decoded.length == UInt32.max)
+        #expect(decoded != nil)
+        #expect(decoded!.length == UInt32.max)
     }
 
     @Test("Stream ID 0 is valid for ping")
@@ -556,26 +544,24 @@ struct YamuxFrameTests {
     @Test("Decode multiple frames from buffer")
     func decodeMultipleFrames() throws {
         // Create buffer with two frames
-        let frame1 = YamuxFrame.data(streamID: 1, data: Data([0x01]))
-        let frame2 = YamuxFrame.data(streamID: 2, data: Data([0x02]))
+        let frame1 = YamuxFrame.data(streamID: 1, data: ByteBuffer(bytes: [0x01] as [UInt8]))
+        let frame2 = YamuxFrame.data(streamID: 2, data: ByteBuffer(bytes: [0x02] as [UInt8]))
 
         var buffer = frame1.encode()
-        buffer.append(frame2.encode())
+        var buf2 = frame2.encode()
+        buffer.writeBuffer(&buf2)
 
         // Decode first frame
-        let result1 = try YamuxFrame.decode(from: buffer)
-        #expect(result1 != nil)
-        let (decoded1, bytesRead1) = result1!
-        #expect(decoded1.streamID == 1)
-        #expect(decoded1.data == Data([0x01]))
+        let decoded1 = try YamuxFrame.decode(from: &buffer)
+        #expect(decoded1 != nil)
+        #expect(decoded1!.streamID == 1)
+        #expect(decoded1!.data == ByteBuffer(bytes: [0x01] as [UInt8]))
 
-        // Decode second frame from remainder
-        let remainder = Data(buffer.dropFirst(bytesRead1))
-        let result2 = try YamuxFrame.decode(from: remainder)
-        #expect(result2 != nil)
-        let (decoded2, _) = result2!
-        #expect(decoded2.streamID == 2)
-        #expect(decoded2.data == Data([0x02]))
+        // Decode second frame from remainder (buffer reader index already advanced)
+        let decoded2 = try YamuxFrame.decode(from: &buffer)
+        #expect(decoded2 != nil)
+        #expect(decoded2!.streamID == 2)
+        #expect(decoded2!.data == ByteBuffer(bytes: [0x02] as [UInt8]))
     }
 }
 

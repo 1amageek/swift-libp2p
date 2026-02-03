@@ -3,6 +3,7 @@
 /// Wraps a WebRTC data channel as a MuxedStream for libp2p.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PMux
@@ -22,8 +23,8 @@ public final class WebRTCMuxedStream: MuxedStream, Sendable {
     private let streamState: Mutex<StreamState>
 
     private struct StreamState: Sendable {
-        var readBuffer: [Data] = []
-        var readWaiters: [CheckedContinuation<Data, Error>] = []
+        var readBuffer: [ByteBuffer] = []
+        var readWaiters: [CheckedContinuation<ByteBuffer, Error>] = []
         var isReadClosed: Bool = false
         var isWriteClosed: Bool = false
     }
@@ -44,10 +45,10 @@ public final class WebRTCMuxedStream: MuxedStream, Sendable {
     // MARK: - MuxedStream
 
     /// Reads data from the data channel.
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         try await withCheckedThrowingContinuation { continuation in
             enum ReadResult {
-                case data(Data)
+                case data(ByteBuffer)
                 case closed
                 case waiting
             }
@@ -76,12 +77,12 @@ public final class WebRTCMuxedStream: MuxedStream, Sendable {
     }
 
     /// Writes data to the data channel.
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         let isClosed = streamState.withLock { $0.isWriteClosed }
         guard !isClosed else {
             throw WebRTCStreamError.streamClosed
         }
-        try connection.send(data, on: channelID, binary: true)
+        try connection.send(Data(buffer: data), on: channelID, binary: true)
     }
 
     /// Half-close for writing.
@@ -91,7 +92,7 @@ public final class WebRTCMuxedStream: MuxedStream, Sendable {
 
     /// Half-close for reading.
     public func closeRead() async throws {
-        let waiters = streamState.withLock { s -> [CheckedContinuation<Data, Error>] in
+        let waiters = streamState.withLock { s -> [CheckedContinuation<ByteBuffer, Error>] in
             s.isReadClosed = true
             let w = s.readWaiters
             s.readWaiters.removeAll()
@@ -117,14 +118,14 @@ public final class WebRTCMuxedStream: MuxedStream, Sendable {
 
     /// Deliver data received from the WebRTC connection.
     func deliver(_ data: Data) {
-        let waiter = streamState.withLock { s -> CheckedContinuation<Data, Error>? in
+        let waiter = streamState.withLock { s -> CheckedContinuation<ByteBuffer, Error>? in
             if !s.readWaiters.isEmpty {
                 return s.readWaiters.removeFirst()
             }
-            s.readBuffer.append(data)
+            s.readBuffer.append(ByteBuffer(bytes: data))
             return nil
         }
-        waiter?.resume(returning: data)
+        waiter?.resume(returning: ByteBuffer(bytes: data))
     }
 }
 

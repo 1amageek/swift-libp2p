@@ -79,6 +79,17 @@ public struct KademliaConfiguration: Sendable {
         case acceptWithWarning
     }
 
+    // MARK: - S/Kademlia Security
+
+    /// S/Kademlia (Secure Kademlia) configuration.
+    ///
+    /// S/Kademlia extends standard Kademlia with security features to resist
+    /// Sybil and Eclipse attacks. When enabled, the DHT uses:
+    /// - Cryptographic node ID validation
+    /// - Sibling broadcast for redundancy
+    /// - Disjoint paths for query robustness
+    public var skademlia: SKademliaConfig
+
     /// Creates a new configuration.
     public init(
         kValue: Int = KademliaProtocol.kValue,
@@ -95,7 +106,8 @@ public struct KademliaConfiguration: Sendable {
         cleanupInterval: Duration? = .seconds(300),
         mode: KademliaMode = .automatic,
         recordValidator: (any RecordValidator)? = DefaultRecordValidator(),
-        onValidationFailure: ValidationFailureAction = .reject
+        onValidationFailure: ValidationFailureAction = .reject,
+        skademlia: SKademliaConfig = .disabled
     ) {
         self.kValue = kValue
         self.alphaValue = alphaValue
@@ -112,10 +124,14 @@ public struct KademliaConfiguration: Sendable {
         self.mode = mode
         self.recordValidator = recordValidator
         self.onValidationFailure = onValidationFailure
+        self.skademlia = skademlia
     }
 
     /// Default configuration.
     public static let `default` = KademliaConfiguration()
+
+    /// S/Kademlia configuration with all security features enabled.
+    public static let secure = KademliaConfiguration(skademlia: .standard)
 }
 
 /// Kademlia DHT service.
@@ -467,18 +483,18 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
                 try await stream.readLengthPrefixedMessage(maxSize: UInt64(maxMessageSize))
             }
 
-            guard data.count <= maxMessageSize else {
+            guard data.readableBytes <= maxMessageSize else {
                 try? await stream.close()
                 return
             }
 
-            let message = try KademliaProtobuf.decode(data)
+            let message = try KademliaProtobuf.decode(Data(buffer: data))
             let response = try await handleMessage(message, from: context.remotePeer)
 
             // Write response with per-peer timeout
             let responseData = KademliaProtobuf.encode(response)
             try await withPeerTimeout {
-                try await stream.writeLengthPrefixedMessage(responseData)
+                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: responseData))
             }
 
         } catch {
@@ -1006,10 +1022,10 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             // Send/receive with timeout (phase 2)
             let response = try await withPeerTimeout { [configuration] in
                 let data = KademliaProtobuf.encode(message)
-                try await stream.writeLengthPrefixedMessage(data)
+                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
 
                 let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
-                return try KademliaProtobuf.decode(responseData)
+                return try KademliaProtobuf.decode(Data(buffer: responseData))
             }
             try? await stream.close()
             return response

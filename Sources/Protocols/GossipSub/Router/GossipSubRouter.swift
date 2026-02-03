@@ -352,15 +352,20 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             forwardMessages.append(contentsOf: forwards)
         }
 
-        // Handle control messages
+        // Handle control messages (FloodSub peers do not use control messages)
         if let control = rpc.control {
-            let (controlResponse, iwantMessages) = await handleControl(control, from: peerID)
-            if !controlResponse.isEmpty {
-                response.control = controlResponse
-            }
-            // Include IWANT response messages in the response
-            if !iwantMessages.isEmpty {
-                response.messages.append(contentsOf: iwantMessages)
+            // FloodSub backward compatibility: ignore control messages from FloodSub peers
+            // FloodSub does not support mesh management (GRAFT/PRUNE/IHAVE/IWANT)
+            let peerVersion = peerState.getPeer(peerID)?.version
+            if peerVersion != .floodsub {
+                let (controlResponse, iwantMessages) = await handleControl(control, from: peerID)
+                if !controlResponse.isEmpty {
+                    response.control = controlResponse
+                }
+                // Include IWANT response messages in the response
+                if !iwantMessages.isEmpty {
+                    response.messages.append(contentsOf: iwantMessages)
+                }
             }
         }
 
@@ -541,7 +546,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         return forwards
     }
 
-    /// Forwards a message to mesh peers and direct peers.
+    /// Forwards a message to mesh peers, direct peers, and FloodSub peers.
     ///
     /// - Returns: List of (peer, RPC) tuples for forwarding
     private func forwardMessage(
@@ -552,6 +557,15 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         var targetPeers = meshState.meshPeers(for: topic)
         // Always include direct peers (v1.1)
         targetPeers.formUnion(directPeers(for: topic))
+
+        // FloodSub backward compatibility: include all FloodSub peers subscribed to this topic
+        // FloodSub peers do not participate in mesh management and receive all messages for subscribed topics
+        let subscribedPeers = peerState.peersSubscribedTo(topic)
+        for peer in subscribedPeers {
+            if let state = peerState.getPeer(peer), state.version == .floodsub {
+                targetPeers.insert(peer)
+            }
+        }
 
         var forwards: [(peer: PeerID, rpc: GossipSubRPC)] = []
         let rpc = GossipSubRPC(messages: [message])

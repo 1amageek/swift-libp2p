@@ -31,22 +31,22 @@ public struct UpgradeResult: Sendable {
 /// that data is not lost.
 private final class BufferedRawConnection: RawConnection, Sendable {
     private let underlying: any RawConnection
-    private let buffer: Mutex<Data>
+    private let buffer: Mutex<ByteBuffer>
 
     var localAddress: Multiaddr? { underlying.localAddress }
     var remoteAddress: Multiaddr { underlying.remoteAddress }
 
     init(underlying: any RawConnection, initialBuffer: Data = Data()) {
         self.underlying = underlying
-        self.buffer = Mutex(initialBuffer)
+        self.buffer = Mutex(ByteBuffer(bytes: initialBuffer))
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // Return buffered data first if available
-        let buffered = buffer.withLock { buf -> Data? in
-            if !buf.isEmpty {
+        let buffered = buffer.withLock { buf -> ByteBuffer? in
+            if buf.readableBytes > 0 {
                 let data = buf
-                buf = Data()
+                buf = ByteBuffer()
                 return data
             }
             return nil
@@ -59,7 +59,7 @@ private final class BufferedRawConnection: RawConnection, Sendable {
         return try await underlying.read()
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try await underlying.write(data)
     }
 
@@ -71,7 +71,7 @@ private final class BufferedRawConnection: RawConnection, Sendable {
 /// A secured connection wrapper that preserves leftover data from multistream-select negotiation.
 private final class BufferedSecuredConnection: SecuredConnection, Sendable {
     private let underlying: any SecuredConnection
-    private let buffer: Mutex<Data>
+    private let buffer: Mutex<ByteBuffer>
 
     var localPeer: PeerID { underlying.localPeer }
     var remotePeer: PeerID { underlying.remotePeer }
@@ -80,15 +80,15 @@ private final class BufferedSecuredConnection: SecuredConnection, Sendable {
 
     init(underlying: any SecuredConnection, initialBuffer: Data = Data()) {
         self.underlying = underlying
-        self.buffer = Mutex(initialBuffer)
+        self.buffer = Mutex(ByteBuffer(bytes: initialBuffer))
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // Return buffered data first if available
-        let buffered = buffer.withLock { buf -> Data? in
-            if !buf.isEmpty {
+        let buffered = buffer.withLock { buf -> ByteBuffer? in
+            if buf.readableBytes > 0 {
                 let data = buf
-                buf = Data()
+                buf = ByteBuffer()
                 return data
             }
             return nil
@@ -101,7 +101,7 @@ private final class BufferedSecuredConnection: SecuredConnection, Sendable {
         return try await underlying.read()
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try await underlying.write(data)
     }
 
@@ -204,14 +204,14 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
             let result = try await MultistreamSelect.negotiateLazy(
                 protocols: protocolIDs,
                 read: { try await self.readBuffered(from: raw, buffer: &buffer) },
-                write: { try await raw.write($0) }
+                write: { try await raw.write(ByteBuffer(bytes: $0)) }
             )
             negotiatedProtocol = result.protocolID
         } else {
             let result = try await MultistreamSelect.handle(
                 supported: protocolIDs,
                 read: { try await self.readBuffered(from: raw, buffer: &buffer) },
-                write: { try await raw.write($0) }
+                write: { try await raw.write(ByteBuffer(bytes: $0)) }
             )
             negotiatedProtocol = result.protocolID
         }
@@ -270,14 +270,14 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
             let result = try await MultistreamSelect.negotiateLazy(
                 protocols: protocolIDs,
                 read: { try await self.readBufferedSecured(from: secured, buffer: &buffer) },
-                write: { try await secured.write($0) }
+                write: { try await secured.write(ByteBuffer(bytes: $0)) }
             )
             negotiatedProtocol = result.protocolID
         } else {
             let result = try await MultistreamSelect.handle(
                 supported: protocolIDs,
                 read: { try await self.readBufferedSecured(from: secured, buffer: &buffer) },
-                write: { try await secured.write($0) }
+                write: { try await secured.write(ByteBuffer(bytes: $0)) }
             )
             negotiatedProtocol = result.protocolID
         }
@@ -318,10 +318,10 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
             }
 
             let chunk = try await raw.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 throw UpgradeError.connectionClosed
             }
-            buffer.append(chunk)
+            buffer.append(Data(buffer: chunk))
         }
     }
 
@@ -340,10 +340,10 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
             }
 
             let chunk = try await secured.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 throw UpgradeError.connectionClosed
             }
-            buffer.append(chunk)
+            buffer.append(Data(buffer: chunk))
         }
     }
 

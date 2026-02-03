@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2P
 @testable import P2PCore
@@ -689,13 +690,13 @@ struct ResourceManagerTests {
 
         #expect(tracked.id == mockStream.id)
 
-        let data = Data([1, 2, 3])
+        let data = ByteBuffer(bytes: [1, 2, 3])
         try await tracked.write(data)
         #expect(mockStream.writtenData == [data])
 
-        mockStream.setReadBuffer([Data([4, 5, 6])])
+        mockStream.setReadBuffer([ByteBuffer(bytes: [4, 5, 6])])
         let result = try await tracked.read()
-        #expect(result == Data([4, 5, 6]))
+        #expect(result == ByteBuffer(bytes: [4, 5, 6]))
     }
 
     @Test("ResourceTrackedStream delegates closeWrite and closeRead")
@@ -1035,8 +1036,8 @@ private final class MockMuxedStream: MuxedStream, Sendable {
     let protocolID: String? = nil
 
     private struct State: Sendable {
-        var readBuffer: [Data] = []
-        var writtenData: [Data] = []
+        var readBuffer: [ByteBuffer] = []
+        var writtenData: [ByteBuffer] = []
         var closeCalled = false
         var resetCalled = false
         var closeWriteCalled = false
@@ -1049,18 +1050,18 @@ private final class MockMuxedStream: MuxedStream, Sendable {
         self._state = Mutex(State())
     }
 
-    var writtenData: [Data] { _state.withLock { $0.writtenData } }
+    var writtenData: [ByteBuffer] { _state.withLock { $0.writtenData } }
     var closeCalled: Bool { _state.withLock { $0.closeCalled } }
     var resetCalled: Bool { _state.withLock { $0.resetCalled } }
     var closeWriteCalled: Bool { _state.withLock { $0.closeWriteCalled } }
     var closeReadCalled: Bool { _state.withLock { $0.closeReadCalled } }
 
-    func setReadBuffer(_ data: [Data]) {
+    func setReadBuffer(_ data: [ByteBuffer]) {
         _state.withLock { $0.readBuffer = data }
     }
 
-    func read() async throws -> Data {
-        let data = _state.withLock { s -> Data? in
+    func read() async throws -> ByteBuffer {
+        let data = _state.withLock { s -> ByteBuffer? in
             guard !s.readBuffer.isEmpty else { return nil }
             return s.readBuffer.removeFirst()
         }
@@ -1070,7 +1071,7 @@ private final class MockMuxedStream: MuxedStream, Sendable {
         return data
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         _state.withLock { $0.writtenData.append(data) }
     }
 

@@ -6,6 +6,7 @@
 /// - Muxer protocol abstractions
 
 import P2PCore
+import NIOCore
 
 /// A multiplexed stream within a connection.
 ///
@@ -26,10 +27,10 @@ public protocol MuxedStream: Sendable {
     var protocolID: String? { get }
 
     /// Reads data from the stream.
-    func read() async throws -> Data
+    func read() async throws -> ByteBuffer
 
     /// Writes data to the stream.
-    func write(_ data: Data) async throws
+    func write(_ data: ByteBuffer) async throws
 
     /// Closes the stream for writing (half-close).
     ///
@@ -119,8 +120,8 @@ extension MuxedStream {
     /// - Note: If the underlying stream delivers more bytes than needed for one message,
     ///   the excess bytes are discarded. Use `readLengthPrefixedMessage(buffer:maxSize:)`
     ///   to preserve excess bytes across sequential reads.
-    public func readLengthPrefixedMessage(maxSize: UInt64 = 64 * 1024) async throws -> Data {
-        var buf = Data()
+    public func readLengthPrefixedMessage(maxSize: UInt64 = 64 * 1024) async throws -> ByteBuffer {
+        var buf = ByteBuffer()
         return try await readLengthPrefixedMessage(buffer: &buf, maxSize: maxSize)
     }
 
@@ -135,65 +136,78 @@ extension MuxedStream {
     ///   - maxSize: Maximum allowed message size.
     /// - Returns: The message data.
     /// - Throws: `StreamMessageError` on failure.
-    public func readLengthPrefixedMessage(buffer: inout Data, maxSize: UInt64 = 64 * 1024) async throws -> Data {
+    public func readLengthPrefixedMessage(buffer: inout ByteBuffer, maxSize: UInt64 = 64 * 1024) async throws -> ByteBuffer {
         // Read until we have a complete varint (max 10 bytes)
         while true {
             // Check if we already have a complete varint in the buffer
             var foundEnd = false
-            for i in 0..<min(buffer.count, 10) {
-                if buffer[i] & 0x80 == 0 {
-                    foundEnd = true
-                    break
+            let readableBytes = buffer.readableBytes
+            let checkCount = min(readableBytes, 10)
+            if checkCount > 0 {
+                buffer.withUnsafeReadableBytes { ptr in
+                    for i in 0..<checkCount {
+                        if ptr[i] & 0x80 == 0 {
+                            foundEnd = true
+                            break
+                        }
+                    }
                 }
             }
-            if foundEnd || buffer.count >= 10 {
+            if foundEnd || readableBytes >= 10 {
                 break
             }
 
-            let chunk = try await read()
-            if chunk.isEmpty {
+            var chunk = try await read()
+            if chunk.readableBytes == 0 {
                 throw StreamMessageError.streamClosed
             }
-            buffer.append(chunk)
+            buffer.writeBuffer(&chunk)
         }
 
-        guard !buffer.isEmpty else {
+        guard buffer.readableBytes > 0 else {
             throw StreamMessageError.emptyMessage
         }
 
-        let (length, varintBytes) = try Varint.decode(buffer)
+        // Decode varint from buffer
+        let (length, varintBytes) = try buffer.withUnsafeReadableBytes { ptr in
+            try Varint.decode(from: UnsafeRawBufferPointer(ptr), at: 0)
+        }
         guard length <= maxSize else {
             throw StreamMessageError.messageTooLarge(length)
         }
-        // Ensure length fits in Int for memory operations
         guard length <= UInt64(Int.max) else {
             throw StreamMessageError.messageTooLarge(length)
         }
 
-        // Use remaining bytes from buffer
-        buffer.removeFirst(varintBytes)
+        // Skip varint bytes
+        buffer.moveReaderIndex(forwardBy: varintBytes)
 
         // Read more if needed
-        while buffer.count < Int(length) {
-            let chunk = try await read()
-            if chunk.isEmpty {
+        let messageLength = Int(length)
+        while buffer.readableBytes < messageLength {
+            var chunk = try await read()
+            if chunk.readableBytes == 0 {
                 throw StreamMessageError.streamClosed
             }
-            buffer.append(chunk)
+            buffer.writeBuffer(&chunk)
         }
 
-        // Extract exactly length bytes, keep excess in buffer
-        let result = Data(buffer.prefix(Int(length)))
-        buffer.removeFirst(Int(length))
+        // Extract exactly length bytes (readSlice shares underlying storage = zero-copy)
+        guard let result = buffer.readSlice(length: messageLength) else {
+            throw StreamMessageError.streamClosed
+        }
         return result
     }
 
     /// Writes a length-prefixed message to the stream.
     ///
     /// - Parameter data: The message data to write.
-    public func writeLengthPrefixedMessage(_ data: Data) async throws {
-        var message = Data(Varint.encode(UInt64(data.count)))
-        message.append(data)
+    public func writeLengthPrefixedMessage(_ data: ByteBuffer) async throws {
+        let varintData = Varint.encode(UInt64(data.readableBytes))
+        var message = ByteBuffer()
+        message.reserveCapacity(varintData.count + data.readableBytes)
+        message.writeBytes(varintData)
+        message.writeImmutableBuffer(data)
         try await write(message)
     }
 }

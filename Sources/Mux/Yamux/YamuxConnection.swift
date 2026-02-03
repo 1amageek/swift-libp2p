@@ -1,5 +1,6 @@
 /// YamuxConnection - MuxedConnection implementation for Yamux
 import Foundation
+import NIOCore
 import P2PCore
 import P2PMux
 import Synchronization
@@ -18,7 +19,7 @@ private actor FrameWriter {
         self.connection = connection
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         try await connection.write(data)
     }
 }
@@ -32,9 +33,7 @@ private struct YamuxConnectionState: Sendable {
     var isStarted = false
     /// GoAway received - reject new streams but allow existing to continue
     var isGoAwayReceived = false
-    var readBuffer = Data()
-    /// Offset into readBuffer for the next unprocessed byte (avoids O(n) copy on each frame)
-    var readBufferOffset = 0
+    var readBuffer = ByteBuffer()
     var inboundContinuation: AsyncStream<MuxedStream>.Continuation?
     /// Pending keep-alive pings awaiting pong response. Maps ping ID to send time.
     var pendingPings: [UInt32: ContinuousClock.Instant] = [:]
@@ -46,18 +45,10 @@ private struct YamuxConnectionState: Sendable {
         self.nextStreamID = isInitiator ? 1 : 2
     }
 
-    /// Returns a slice of the unprocessed portion of the read buffer
-    var unprocessedBuffer: Data {
-        readBuffer[readBufferOffset...]
-    }
-
-    /// Advances the read offset and compacts the buffer if needed
-    mutating func advanceReadBuffer(by bytesRead: Int) {
-        readBufferOffset += bytesRead
-        // Compact when consumed portion exceeds threshold
-        if readBufferOffset > readBufferCompactThreshold {
-            readBuffer = Data(readBuffer[readBufferOffset...])
-            readBufferOffset = 0
+    /// Compacts the read buffer if consumed portion exceeds threshold.
+    mutating func compactReadBufferIfNeeded() {
+        if readBuffer.readerIndex > readBufferCompactThreshold {
+            readBuffer.discardReadBytes()
         }
     }
 }
@@ -266,32 +257,33 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     private func readLoop() async {
         do {
             while !Task.isCancelled {
-                let data = try await underlying.read()
+                var data = try await underlying.read()
 
                 // Empty read indicates connection closed/EOF
-                if data.isEmpty {
+                if data.readableBytes == 0 {
                     throw YamuxError.connectionClosed
                 }
 
                 // Append data and check buffer size limit (DoS protection)
                 let bufferOverflow = state.withLock { state -> Bool in
-                    state.readBuffer.append(data)
-                    return state.readBuffer.count > yamuxMaxReadBufferSize
+                    state.readBuffer.writeBuffer(&data)
+                    return state.readBuffer.readableBytes > yamuxMaxReadBufferSize
                 }
 
                 if bufferOverflow {
                     throw YamuxError.readBufferOverflow
                 }
 
-                // Process all complete frames
+                // Process all complete frames (decode directly from ByteBuffer - zero-copy)
                 while true {
-                    let frameResult: (frame: YamuxFrame, bytesRead: Int)? = try state.withLock { state in
-                        try YamuxFrame.decode(from: state.unprocessedBuffer)
+                    let frame: YamuxFrame? = try state.withLock { state in
+                        let frame = try YamuxFrame.decode(from: &state.readBuffer)
+                        if frame != nil {
+                            state.compactReadBufferIfNeeded()
+                        }
+                        return frame
                     }
-                    guard let (frame, bytesRead) = frameResult else { break }
-                    state.withLock { state in
-                        state.advanceReadBuffer(by: bytesRead)
-                    }
+                    guard let frame else { break }
                     try await handleFrame(frame)
                 }
             }
@@ -311,7 +303,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         case .ping:
             try await handlePing(frame)
         case .goAway:
-            handleGoAway(frame)
+            try handleGoAway(frame)
         }
     }
 
@@ -509,7 +501,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         }
 
         // Handle data
-        if let data = frame.data, !data.isEmpty {
+        if let data = frame.data, data.readableBytes > 0 {
             let stream = state.withLock { state in state.streams[streamID] }
             if let stream = stream {
                 let accepted = stream.dataReceived(data)
@@ -589,34 +581,12 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         try await sendFrame(pong)
     }
 
-    private func handleGoAway(_ frame: YamuxFrame) {
-        // Per Yamux spec: GoAway signals graceful shutdown intent
-        // - Reject new streams (both inbound SYN and outbound newStream)
-        // - Allow existing streams to complete naturally
-        // - Do NOT reset existing streams
-
-        // Step 1: Set flag to reject new streams
-        state.withLock { state in
-            state.isGoAwayReceived = true
-        }
-
-        // Step 2: Resume pending accepts with error (no new streams coming)
-        let pendingAccepts = state.withLock { state -> [CheckedContinuation<MuxedStream, Error>] in
-            let pending = state.pendingAccepts
-            state.pendingAccepts.removeAll()
-            return pending
-        }
-        for cont in pendingAccepts {
-            cont.resume(throwing: YamuxError.connectionClosed)
-        }
-
-        // Step 3: Finish inbound stream (no more new streams)
-        state.withLock { state in
-            state.inboundContinuation?.finish()
-            state.inboundContinuation = nil
-        }
-
-        // Step 4: Existing streams continue operating - do NOT reset them
+    private func handleGoAway(_ frame: YamuxFrame) throws {
+        // GoAway signals session termination.
+        // Reset all existing streams and reject new ones.
+        abruptShutdown(error: .connectionClosed)
+        // Throw to exit the readLoop (prevents blocking on underlying.read())
+        throw YamuxError.connectionClosed
     }
 
     // MARK: - Shutdown Infrastructure

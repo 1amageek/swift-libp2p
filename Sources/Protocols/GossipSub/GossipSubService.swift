@@ -1,5 +1,6 @@
 /// GossipSubService - Main service implementation for GossipSub protocol
 import Foundation
+import NIOCore
 import P2PCore
 import P2PMux
 import P2PProtocols
@@ -438,10 +439,10 @@ public final class GossipSubService: ProtocolService, Sendable {
         do {
             readLoop: while true {
                 let chunk = try await stream.read()
-                if chunk.isEmpty {
+                if chunk.readableBytes == 0 {
                     break // EOF - normal close
                 }
-                buffer.append(chunk)
+                buffer.append(Data(buffer: chunk))
 
                 // Check buffer size limit to prevent DoS
                 if buffer.count > Self.maxBufferSize {
@@ -464,10 +465,8 @@ public final class GossipSubService: ProtocolService, Sendable {
                             await sendRPC(response, to: peerID)
                         }
 
-                        // Forward messages to mesh peers
-                        for (peer, forwardRPC) in result.forwardMessages {
-                            await sendRPC(forwardRPC, to: peer)
-                        }
+                        // Forward messages to mesh peers (encode once, send to many)
+                        await forwardRPCs(result.forwardMessages)
                     } catch {
                         // Parsing error - malformed data from peer
                         break readLoop
@@ -526,23 +525,64 @@ public final class GossipSubService: ProtocolService, Sendable {
         return (rpc, totalLength)
     }
 
+    /// Encodes an RPC with length prefix.
+    private func encodeRPC(_ rpc: GossipSubRPC) -> ByteBuffer {
+        let encoded = GossipSubProtobuf.encode(rpc)
+        var data = Data()
+        data.append(contentsOf: Varint.encode(UInt64(encoded.count)))
+        data.append(encoded)
+        return ByteBuffer(bytes: data)
+    }
+
     /// Sends an RPC to a peer.
     private func sendRPC(_ rpc: GossipSubRPC, to peerID: PeerID) async {
+        await sendEncodedRPC(encodeRPC(rpc), to: peerID)
+    }
+
+    /// Sends pre-encoded RPC data to a peer.
+    private func sendEncodedRPC(_ data: ByteBuffer, to peerID: PeerID) async {
         guard let stream = serviceState.withLock({ $0.peerStreams[peerID] }) else {
             return
         }
 
         do {
-            // Encode with length prefix
-            let encoded = GossipSubProtobuf.encode(rpc)
-            var data = Data()
-            data.append(contentsOf: Varint.encode(UInt64(encoded.count)))
-            data.append(encoded)
-
             try await stream.write(data)
         } catch {
             logger.warning("GossipSub sendRPC failed to \(peerID): \(error)")
             try? await stream.close()
+        }
+    }
+
+    /// Forwards RPCs to multiple peers, encoding identical RPCs only once.
+    ///
+    /// The router typically creates the same RPC for all mesh peers in a topic.
+    /// This method encodes each unique RPC once and reuses the encoded bytes
+    /// for all target peers.
+    private func forwardRPCs(_ forwards: [(peer: PeerID, rpc: GossipSubRPC)]) async {
+        guard !forwards.isEmpty else { return }
+
+        // Encode the first RPC and track it for deduplication
+        var lastEncodedData = encodeRPC(forwards[0].rpc)
+        var lastRPCMessages = forwards[0].rpc.messages
+
+        await sendEncodedRPC(lastEncodedData, to: forwards[0].peer)
+
+        for i in 1..<forwards.count {
+            let (peer, rpc) = forwards[i]
+            // Check if this RPC has the same messages as the last one
+            // (forwardMessage produces identical RPCs for all peers in a topic)
+            if rpc.messages.count == lastRPCMessages.count,
+               rpc.messages.count == 1,
+               lastRPCMessages.count == 1,
+               rpc.messages[0].id == lastRPCMessages[0].id {
+                // Same RPC content - reuse encoded data (ByteBuffer is CoW)
+                await sendEncodedRPC(lastEncodedData, to: peer)
+            } else {
+                // Different RPC - encode fresh
+                lastEncodedData = encodeRPC(rpc)
+                lastRPCMessages = rpc.messages
+                await sendEncodedRPC(lastEncodedData, to: peer)
+            }
         }
     }
 

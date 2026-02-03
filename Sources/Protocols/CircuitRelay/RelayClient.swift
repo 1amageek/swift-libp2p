@@ -3,6 +3,7 @@
 /// Allows making reservations on relays and connecting to peers through relays.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PMux
@@ -538,7 +539,8 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
 
     private func readMessage(from stream: MuxedStream) async throws -> Data {
         do {
-            return try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
+            let buffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
+            return Data(buffer: buffer)
         } catch let error as StreamMessageError {
             switch error {
             case .streamClosed, .emptyMessage:
@@ -550,7 +552,7 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     }
 
     private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
-        try await stream.writeLengthPrefixedMessage(data)
+        try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
     }
 
     // MARK: - Event Emission

@@ -9,6 +9,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PIdentify
 @testable import P2PTransportQUIC
 @testable import P2PTransport
@@ -70,14 +71,14 @@ struct GoInteropTests {
         let stream = try await connection.newStream()
 
         // Send identify request (empty data triggers server response)
-        try await stream.write(Data())
+        try await stream.write(ByteBuffer())
         try await stream.closeWrite()
 
         // Read identify response
         let data = try await stream.read()
 
         // Decode the response
-        let info = try IdentifyProtobuf.decode(data)
+        let info = try IdentifyProtobuf.decode(Data(buffer: data))
 
         // Verify go-libp2p response
         #expect(info.agentVersion?.contains("go-libp2p") == true || info.agentVersion != nil)
@@ -106,11 +107,11 @@ struct GoInteropTests {
 
         // Request identify
         let stream = try await connection.newStream()
-        try await stream.write(Data())
+        try await stream.write(ByteBuffer())
         try await stream.closeWrite()
 
         let data = try await stream.read()
-        let info = try IdentifyProtobuf.decode(data)
+        let info = try IdentifyProtobuf.decode(Data(buffer: data))
 
         // Verify PeerID derives from public key
         if let publicKey = info.publicKey {
@@ -150,7 +151,7 @@ struct GoInteropTests {
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         let startTime = ContinuousClock.now
 
-        try await stream.write(payload)
+        try await stream.write(ByteBuffer(bytes: payload))
         try await stream.closeWrite()
 
         // Read echo response
@@ -159,7 +160,7 @@ struct GoInteropTests {
         let rtt = ContinuousClock.now - startTime
 
         // Verify response matches payload
-        #expect(response == payload, "Ping response should match sent payload")
+        #expect(Data(buffer: response) == payload, "Ping response should match sent payload")
         #expect(rtt < .seconds(5), "RTT should be reasonable")
 
         try await stream.close()
@@ -188,13 +189,13 @@ struct GoInteropTests {
             let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
             let startTime = ContinuousClock.now
 
-            try await stream.write(payload)
+            try await stream.write(ByteBuffer(bytes: payload))
             try await stream.closeWrite()
 
             let response = try await stream.read()
             let rtt = ContinuousClock.now - startTime
 
-            #expect(response == payload, "Ping \(i) response should match")
+            #expect(Data(buffer: response) == payload, "Ping \(i) response should match")
             rtts.append(rtt)
 
             try await stream.close()
@@ -232,7 +233,7 @@ struct GoInteropTests {
 
         // Send data
         let testData = Data("Hello from Swift!".utf8)
-        try await stream.write(testData)
+        try await stream.write(ByteBuffer(bytes: testData))
         try await stream.closeWrite()
 
         // Read response (may be empty if no echo handler)
@@ -240,7 +241,7 @@ struct GoInteropTests {
 
         // We don't necessarily expect a response if there's no echo handler,
         // but the stream operations should complete without error
-        #expect(response.count >= 0)
+        #expect(response.readableBytes >= 0)
 
         try await stream.close()
         try await connection.close()

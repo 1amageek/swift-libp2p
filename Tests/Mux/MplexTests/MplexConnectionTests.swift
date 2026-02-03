@@ -1,5 +1,6 @@
 /// MplexConnectionTests - Tests for MplexConnection
 import Foundation
+import NIOCore
 import Testing
 @testable import P2PCore
 @testable import P2PMux
@@ -154,7 +155,7 @@ struct MplexConnectionTests {
         let stream = try await connection.newStream()
 
         // Write should work
-        try await stream.write(Data("hello".utf8))
+        try await stream.write(ByteBuffer(bytes: Data("hello".utf8)))
 
         try await Task.sleep(for: .milliseconds(50))
 
@@ -394,7 +395,7 @@ struct MplexConnectionTests {
 
         // Read from stream
         let data = try await stream.read()
-        #expect(String(data: data, encoding: .utf8) == "hello")
+        #expect(String(buffer: data) == "hello")
 
         try await connection.close()
     }
@@ -483,7 +484,7 @@ struct MplexConnectionTests {
         let stream = try await connection.newStream()
         mock.clearOutbound()
 
-        try await stream.write(Data("test".utf8))
+        try await stream.write(ByteBuffer(bytes: Data("test".utf8)))
 
         try await Task.sleep(for: .milliseconds(50))
 

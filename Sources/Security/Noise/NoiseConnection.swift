@@ -1,5 +1,6 @@
 /// NoiseConnection - SecuredConnection implementation for Noise protocol
 import Foundation
+import NIOCore
 import P2PCore
 import Synchronization
 
@@ -89,7 +90,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
         underlying.remoteAddress
     }
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         // Try to read a complete frame
         while true {
             // 1. Check closed + buffer atomically (receive lock)
@@ -118,7 +119,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
             switch frameResult {
             case .success(let data):
                 if let data = data {
-                    return data
+                    return ByteBuffer(bytes: data)
                 }
             case .failure(let error):
                 throw error
@@ -126,30 +127,33 @@ public final class NoiseConnection: SecuredConnection, Sendable {
 
             // 2. Read from network (no lock held)
             let chunk = try await underlying.read()
-            if chunk.isEmpty {
+            if chunk.readableBytes == 0 {
                 throw NoiseError.connectionClosed
             }
 
             // 3. Append to buffer (receive lock only)
+            let chunkData = Data(buffer: chunk)
             recvState.withLock { state in
-                state.buffer.append(chunk)
+                state.buffer.append(chunkData)
             }
         }
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
+        let inputData = Data(buffer: data)
+
         // Handle empty data: still send a frame (carries authentication)
-        if data.isEmpty {
+        if inputData.isEmpty {
             let encrypted = try sendState.withLock { state -> Data in
                 guard !state.isClosed else { throw NoiseError.connectionClosed }
                 let ciphertext = try state.cipher.encryptWithAD(Data(), plaintext: Data())
                 return try encodeNoiseMessage(ciphertext)
             }
-            try await underlying.write(encrypted)
+            try await underlying.write(ByteBuffer(bytes: encrypted))
             return
         }
 
-        var remaining = data[data.startIndex...]
+        var remaining = inputData[inputData.startIndex...]
 
         while !remaining.isEmpty {
             let chunkSize = min(remaining.count, noiseMaxPlaintextSize)
@@ -164,7 +168,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
             }
 
             // Write to network (no lock held)
-            try await underlying.write(encrypted)
+            try await underlying.write(ByteBuffer(bytes: encrypted))
         }
     }
 

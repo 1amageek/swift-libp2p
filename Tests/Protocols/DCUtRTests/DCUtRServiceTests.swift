@@ -1,6 +1,7 @@
 /// DCUtRServiceTests - Tests for DCUtR (Direct Connection Upgrade through Relay) service
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PDCUtR
 @testable import P2PCore
@@ -448,7 +449,7 @@ final class DCUtRMockMuxedStream: MuxedStream, Sendable {
         var isClosed: Bool = false
         var connectResponseAddresses: [Multiaddr]
         var readIndex: Int = 0
-        var writtenData: [Data] = []
+        var writtenData: [ByteBuffer] = []
     }
 
     init(id: UInt64 = 0, protocolID: String? = nil, connectResponseAddresses: [Multiaddr] = []) {
@@ -461,11 +462,11 @@ final class DCUtRMockMuxedStream: MuxedStream, Sendable {
         state.withLock { $0.isClosed }
     }
 
-    var writtenData: [Data] {
+    var writtenData: [ByteBuffer] {
         state.withLock { $0.writtenData }
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // Atomically check and increment readIndex
         let (shouldRespond, addresses) = state.withLock { s -> (Bool, [Multiaddr]) in
             if s.readIndex == 0 {
@@ -483,12 +484,12 @@ final class DCUtRMockMuxedStream: MuxedStream, Sendable {
             var data = Data()
             data.append(contentsOf: Varint.encode(UInt64(encoded.count)))
             data.append(encoded)
-            return data
+            return ByteBuffer(bytes: data)
         }
         throw DCUtRMockError.noData
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         state.withLock { $0.writtenData.append(data) }
     }
 

@@ -1,6 +1,7 @@
 /// NoiseIntegrationTests - Integration tests for NoiseUpgrader and NoiseConnection
 import Testing
 import Foundation
+import NIOCore
 import Crypto
 import Synchronization
 @testable import P2PSecurityNoise
@@ -63,10 +64,10 @@ struct NoiseIntegrationTests {
 
         let testData = Data("Hello, Noise Connection!".utf8)
 
-        try await initiator.write(testData)
+        try await initiator.write(ByteBuffer(bytes: testData))
         let received = try await responder.read()
 
-        #expect(received == testData)
+        #expect(Data(buffer: received) == testData)
 
         try await initiator.close()
         try await responder.close()
@@ -83,12 +84,12 @@ struct NoiseIntegrationTests {
         ]
 
         for msg in messages {
-            try await initiator.write(msg)
+            try await initiator.write(ByteBuffer(bytes: msg))
         }
 
         for expected in messages {
             let received = try await responder.read()
-            #expect(received == expected)
+            #expect(Data(buffer: received) == expected)
         }
 
         try await initiator.close()
@@ -101,21 +102,21 @@ struct NoiseIntegrationTests {
 
         // Initiator sends
         let msg1 = Data("From initiator".utf8)
-        try await initiator.write(msg1)
+        try await initiator.write(ByteBuffer(bytes: msg1))
         let recv1 = try await responder.read()
-        #expect(recv1 == msg1)
+        #expect(Data(buffer: recv1) == msg1)
 
         // Responder sends
         let msg2 = Data("From responder".utf8)
-        try await responder.write(msg2)
+        try await responder.write(ByteBuffer(bytes: msg2))
         let recv2 = try await initiator.read()
-        #expect(recv2 == msg2)
+        #expect(Data(buffer: recv2) == msg2)
 
         // Alternate
         let msg3 = Data("Another from initiator".utf8)
-        try await initiator.write(msg3)
+        try await initiator.write(ByteBuffer(bytes: msg3))
         let recv3 = try await responder.read()
-        #expect(recv3 == msg3)
+        #expect(Data(buffer: recv3) == msg3)
 
         try await initiator.close()
         try await responder.close()
@@ -128,13 +129,13 @@ struct NoiseIntegrationTests {
         // Create data larger than max frame size
         let largeData = Data((0..<100000).map { UInt8($0 % 256) })
 
-        try await initiator.write(largeData)
+        try await initiator.write(ByteBuffer(bytes: largeData))
 
         // Read may return data in chunks, so we need to accumulate
         var received = Data()
         while received.count < largeData.count {
             let chunk = try await responder.read()
-            received.append(chunk)
+            received.append(Data(buffer: chunk))
         }
 
         #expect(received == largeData)
@@ -148,9 +149,9 @@ struct NoiseIntegrationTests {
         let (initiator, responder) = try await createSecuredPair()
 
         // Writing empty data should work
-        try await initiator.write(Data())
+        try await initiator.write(ByteBuffer())
         let received = try await responder.read()
-        #expect(received.isEmpty)
+        #expect(received.readableBytes == 0)
 
         try await initiator.close()
         try await responder.close()
@@ -275,9 +276,9 @@ final class MockRawConnection: RawConnection, Sendable {
     private let peerRef: Mutex<MockRawConnection?>
 
     private struct ConnectionState: Sendable {
-        var buffer: [Data] = []
+        var buffer: [ByteBuffer] = []
         var isClosed = false
-        var waitingContinuation: CheckedContinuation<Data, any Error>?
+        var waitingContinuation: CheckedContinuation<ByteBuffer, any Error>?
     }
 
     init(remoteAddress: Multiaddr) {
@@ -292,7 +293,7 @@ final class MockRawConnection: RawConnection, Sendable {
     }
 
     /// Receives data from the peer connection.
-    func receive(_ data: Data) {
+    func receive(_ data: ByteBuffer) {
         state.withLock { state in
             if let continuation = state.waitingContinuation {
                 state.waitingContinuation = nil
@@ -303,9 +304,9 @@ final class MockRawConnection: RawConnection, Sendable {
         }
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         // Check buffer first
-        let buffered: Data? = state.withLock { state in
+        let buffered: ByteBuffer? = state.withLock { state in
             if !state.buffer.isEmpty {
                 return state.buffer.removeFirst()
             }
@@ -336,7 +337,7 @@ final class MockRawConnection: RawConnection, Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { $0.isClosed }
         guard !isClosed else {
             throw MockConnectionError.connectionClosed

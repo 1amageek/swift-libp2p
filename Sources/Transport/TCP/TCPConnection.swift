@@ -14,9 +14,9 @@ private let tcpMaxReadBufferSize = 1024 * 1024
 
 /// Internal state for TCPConnection.
 private struct TCPConnectionState: Sendable {
-    var readBuffer: [UInt8] = []
+    var readBuffer: ByteBuffer = ByteBuffer()
     /// Queue of waiters for concurrent read support.
-    var readWaiters: [CheckedContinuation<Data, Error>] = []
+    var readWaiters: [CheckedContinuation<ByteBuffer, Error>] = []
     var isClosed = false
 }
 
@@ -64,16 +64,16 @@ public final class TCPConnection: RawConnection, Sendable {
         return connection
     }
 
-    public func read() async throws -> Data {
+    public func read() async throws -> ByteBuffer {
         let remoteAddr = self._remoteAddress
         tcpLogger.debug("read(): Starting read on \(remoteAddr)")
-        let result = try await withCheckedThrowingContinuation { continuation in
+        let result: ByteBuffer = try await withCheckedThrowingContinuation { continuation in
             state.withLock { s in
                 // Check buffer first (avoid data loss on close)
-                if !s.readBuffer.isEmpty {
-                    let data = Data(s.readBuffer)
-                    let count = data.count
-                    s.readBuffer.removeAll()
+                if s.readBuffer.readableBytes > 0 {
+                    let data = s.readBuffer
+                    let count = data.readableBytes
+                    s.readBuffer = ByteBuffer()
                     tcpLogger.debug("read(): Returning buffered data (\(count) bytes)")
                     continuation.resume(returning: data)
                     return
@@ -91,11 +91,11 @@ public final class TCPConnection: RawConnection, Sendable {
                 s.readWaiters.append(continuation)
             }
         }
-        tcpLogger.debug("read(): Completed with \(result.count) bytes")
+        tcpLogger.debug("read(): Completed with \(result.readableBytes) bytes")
         return result
     }
 
-    public func write(_ data: Data) async throws {
+    public func write(_ data: ByteBuffer) async throws {
         // Early check for closed state - provides clearer error than NIO's failure
         let closed = state.withLock { $0.isClosed }
         if closed {
@@ -103,16 +103,14 @@ public final class TCPConnection: RawConnection, Sendable {
             throw TransportError.connectionClosed
         }
 
-        tcpLogger.debug("write(): Writing \(data.count) bytes to \(self._remoteAddress)")
-        var buffer = channel.allocator.buffer(capacity: data.count)
-        buffer.writeBytes(data)
-        try await channel.writeAndFlush(buffer)
+        tcpLogger.debug("write(): Writing \(data.readableBytes) bytes to \(self._remoteAddress)")
+        try await channel.writeAndFlush(data)
         tcpLogger.debug("write(): Write completed")
     }
 
     public func close() async throws {
         tcpLogger.debug("close(): Closing connection to \(self._remoteAddress)")
-        let (alreadyClosed, waiters) = state.withLock { state -> (Bool, [CheckedContinuation<Data, Error>]) in
+        let (alreadyClosed, waiters) = state.withLock { state -> (Bool, [CheckedContinuation<ByteBuffer, Error>]) in
             let wasClosed = state.isClosed
             state.isClosed = true
             let w = state.readWaiters
@@ -151,26 +149,27 @@ public final class TCPConnection: RawConnection, Sendable {
     }
 
     // Called by TCPReadHandler when data is received
-    fileprivate func dataReceived(_ data: [UInt8]) {
-        tcpLogger.debug("dataReceived(): Received \(data.count) bytes")
-        let (waiter, bufferSize) = state.withLock { s -> (CheckedContinuation<Data, Error>?, Int) in
+    fileprivate func dataReceived(_ data: ByteBuffer) {
+        tcpLogger.debug("dataReceived(): Received \(data.readableBytes) bytes")
+        let (waiter, bufferSize) = state.withLock { s -> (CheckedContinuation<ByteBuffer, Error>?, Int) in
             // FIFO: dequeue the first waiter if any
             if !s.readWaiters.isEmpty {
                 return (s.readWaiters.removeFirst(), 0)
             } else {
                 // Buffer size limit for DoS protection
-                if s.readBuffer.count + data.count > tcpMaxReadBufferSize {
+                if s.readBuffer.readableBytes + data.readableBytes > tcpMaxReadBufferSize {
                     // Drop data if buffer is full (backpressure)
                     return (nil, -1)  // -1 indicates buffer full
                 }
-                s.readBuffer.append(contentsOf: data)
-                return (nil, s.readBuffer.count)
+                var mutableData = data
+                s.readBuffer.writeBuffer(&mutableData)
+                return (nil, s.readBuffer.readableBytes)
             }
         }
         // Log and resume waiter outside of lock to avoid deadlock
         if let waiter = waiter {
             tcpLogger.debug("dataReceived(): Delivering to waiting reader")
-            waiter.resume(returning: Data(data))
+            waiter.resume(returning: data)
         } else if bufferSize == -1 {
             tcpLogger.warning("dataReceived(): Buffer full, dropping data")
         } else {
@@ -181,7 +180,7 @@ public final class TCPConnection: RawConnection, Sendable {
     // Called by TCPReadHandler when channel becomes inactive
     fileprivate func channelInactive() {
         tcpLogger.debug("channelInactive(): Channel became inactive")
-        let waiters = state.withLock { state -> [CheckedContinuation<Data, Error>] in
+        let waiters = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
             state.isClosed = true
             let w = state.readWaiters
             state.readWaiters.removeAll()
@@ -220,7 +219,7 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
 
     private struct HandlerState: Sendable {
         var connection: TCPConnection?
-        var bufferedData: [[UInt8]] = []
+        var bufferedData: [ByteBuffer] = []
         var isInactive = false
         /// Callback for accept side: set via setListener(), may be set after channelActive
         var onAccepted: (@Sendable (TCPConnection) -> Void)?
@@ -279,8 +278,8 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
             )
 
             enum ActiveAction {
-                case deliver(@Sendable (TCPConnection) -> Void, [[UInt8]])
-                case queue([[UInt8]])
+                case deliver(@Sendable (TCPConnection) -> Void, [ByteBuffer])
+                case queue([ByteBuffer])
                 case skip
             }
 
@@ -302,14 +301,14 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
             switch action {
             case .deliver(let callback, let buffered):
                 for data in buffered {
-                    tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
+                    tcpLogger.debug("TCPReadHandler: Flushing \(data.readableBytes) buffered bytes")
                     newConnection.dataReceived(data)
                 }
                 tcpLogger.debug("TCPReadHandler.channelActive: Delivering connection immediately")
                 callback(newConnection)
             case .queue(let buffered):
                 for data in buffered {
-                    tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
+                    tcpLogger.debug("TCPReadHandler: Flushing \(data.readableBytes) buffered bytes")
                     newConnection.dataReceived(data)
                 }
                 tcpLogger.debug("TCPReadHandler.channelActive: Queuing connection (listener not ready)")
@@ -323,7 +322,7 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
     /// Dial side: manually set connection after handler is added to pipeline.
     func setConnection(_ connection: TCPConnection) {
         tcpLogger.debug("TCPReadHandler.setConnection: Setting connection")
-        let (buffered, inactive) = state.withLock { s -> ([[UInt8]], Bool) in
+        let (buffered, inactive) = state.withLock { s -> ([ByteBuffer], Bool) in
             s.connection = connection
             let b = s.bufferedData
             s.bufferedData.removeAll()
@@ -331,7 +330,7 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
             return (b, i)
         }
         for data in buffered {
-            tcpLogger.debug("TCPReadHandler: Flushing \(data.count) buffered bytes")
+            tcpLogger.debug("TCPReadHandler: Flushing \(data.readableBytes) buffered bytes")
             connection.dataReceived(data)
         }
         if inactive {
@@ -341,21 +340,21 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var buffer = unwrapInboundIn(data)
-        if let bytes = buffer.readBytes(length: buffer.readableBytes) {
-            let conn: TCPConnection? = state.withLock { s in
-                if let connection = s.connection {
-                    return connection
-                } else {
-                    s.bufferedData.append(bytes)
-                    return nil
-                }
-            }
-            if let conn {
-                tcpLogger.debug("TCPReadHandler.channelRead: Forwarding \(bytes.count) bytes")
-                conn.dataReceived(bytes)
+        let readable = buffer.readableBytes
+        guard readable > 0, let slice = buffer.readSlice(length: readable) else { return }
+        let conn: TCPConnection? = state.withLock { s in
+            if let connection = s.connection {
+                return connection
             } else {
-                tcpLogger.debug("TCPReadHandler.channelRead: Buffering \(bytes.count) bytes")
+                s.bufferedData.append(slice)
+                return nil
             }
+        }
+        if let conn {
+            tcpLogger.debug("TCPReadHandler.channelRead: Forwarding \(readable) bytes")
+            conn.dataReceived(slice)
+        } else {
+            tcpLogger.debug("TCPReadHandler.channelRead: Buffering \(readable) bytes")
         }
     }
 

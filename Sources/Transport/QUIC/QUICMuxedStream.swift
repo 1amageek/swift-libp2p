@@ -1,6 +1,7 @@
 /// QUIC Stream wrapper implementing MuxedStream protocol.
 
 import Foundation
+import NIOCore
 import Synchronization
 import P2PCore
 import P2PMux
@@ -58,18 +59,19 @@ public final class QUICMuxedStream: MuxedStream, Sendable {
 
     /// Reads data from the stream.
     ///
-    /// - Returns: The data read, or empty Data if the stream is finished.
+    /// - Returns: The data read, or empty ByteBuffer if the stream is finished.
     /// - Throws: Error if read fails or stream is closed for reading.
-    public func read() async throws -> Data {
-        try await stream.read()
+    public func read() async throws -> ByteBuffer {
+        let data = try await stream.read()
+        return ByteBuffer(bytes: data)
     }
 
     /// Writes data to the stream.
     ///
     /// - Parameter data: The data to write.
     /// - Throws: Error if write fails or stream is closed for writing.
-    public func write(_ data: Data) async throws {
-        try await stream.write(data)
+    public func write(_ data: ByteBuffer) async throws {
+        try await stream.write(Data(buffer: data))
     }
 
     /// Closes the write side of the stream (sends FIN).

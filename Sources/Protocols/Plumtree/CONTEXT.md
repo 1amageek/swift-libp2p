@@ -24,7 +24,16 @@ complementary strategies:
 | PlumtreeService | final class + Mutex | Public API, ProtocolService conformance, stream I/O |
 
 All components follow the **class + Mutex** pattern (high-frequency message routing).
-Events use **EventBroadcaster** (multi-consumer, same as Discovery layer).
+
+### イベントパターン
+
+PlumtreeServiceは **EventBroadcaster（多消費者）** を使用。
+
+- **理由**: Pub/Sub型プロトコル。複数の消費者が異なるトピックを同時に購読する（`subscribe(to: Topic)`）
+- **実装**: 2つのbroadcaster
+  - `eventBroadcaster`: プロトコルイベント（pruneSent, graftSent等）
+  - `messageBroadcaster`: メッセージ配信（トピックごとのフィルタリング）
+- **ライフサイクル**: `stop()` で両方のbroadcasterを `shutdown()`
 
 ## Algorithm
 

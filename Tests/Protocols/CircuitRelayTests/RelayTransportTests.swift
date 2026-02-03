@@ -2,6 +2,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PCore
 @testable import P2PTransport
@@ -411,7 +412,7 @@ struct RelayedRawConnectionTests {
         let rawConnection = RelayedRawConnection(relayedConnection: relayedConnection)
 
         // Write from server side
-        let testData = Data("Hello from relay".utf8)
+        let testData = ByteBuffer(bytes: Data("Hello from relay".utf8))
         try await serverStream.write(testData)
 
         // Read from raw connection
@@ -436,7 +437,7 @@ struct RelayedRawConnectionTests {
         let rawConnection = RelayedRawConnection(relayedConnection: relayedConnection)
 
         // Write from raw connection
-        let testData = Data("Hello to relay".utf8)
+        let testData = ByteBuffer(bytes: Data("Hello to relay".utf8))
         try await rawConnection.write(testData)
 
         // Read from server side

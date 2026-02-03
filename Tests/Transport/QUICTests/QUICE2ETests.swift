@@ -5,6 +5,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
@@ -143,7 +144,9 @@ struct QUICE2ETests {
                 let received = try await stream.read()
 
                 // Echo back with modification
-                try await stream.write(received + Data(" - echoed".utf8))
+                var echoBuffer = received
+                echoBuffer.writeBytes(Data(" - echoed".utf8))
+                try await stream.write(echoBuffer)
 
                 // Close write side
                 try await stream.closeWrite()
@@ -163,13 +166,13 @@ struct QUICE2ETests {
         let clientStream = try await clientConnection.newStream()
 
         // Send data
-        let testData = Data("Hello QUIC".utf8)
+        let testData = ByteBuffer(bytes: Data("Hello QUIC".utf8))
         try await clientStream.write(testData)
         try await clientStream.closeWrite()
 
         // Read response
         let response = try await clientStream.read()
-        #expect(response == Data("Hello QUIC - echoed".utf8))
+        #expect(Data(buffer: response) == Data("Hello QUIC - echoed".utf8))
 
         // Cleanup
         let serverConnection = try? await serverTask.value
@@ -215,7 +218,7 @@ struct QUICE2ETests {
         // Open 3 streams
         for i in 0..<3 {
             let stream = try await clientConnection.newStream()
-            let testData = Data("Stream \(i)".utf8)
+            let testData = ByteBuffer(bytes: Data("Stream \(i)".utf8))
             try await stream.write(testData)
             try await stream.closeWrite()
 
@@ -302,7 +305,7 @@ struct QUICE2ETests {
                 // Open 3 streams to client
                 for i in 0..<3 {
                     let stream = try await serverConnection.newStream()
-                    try await stream.write(Data("Server stream \(i)".utf8))
+                    try await stream.write(ByteBuffer(bytes: Data("Server stream \(i)".utf8)))
                     try await stream.closeWrite()
                 }
                 return serverConnection
@@ -317,8 +320,8 @@ struct QUICE2ETests {
         )
 
         // Collect messages from server-initiated streams
-        let collectTask = Task { () -> [Data] in
-            var messages: [Data] = []
+        let collectTask = Task { () -> [ByteBuffer] in
+            var messages: [ByteBuffer] = []
             var count = 0
             for await stream in clientConnection.inboundStreams {
                 let data = try await stream.read()

@@ -71,7 +71,7 @@ struct MultiaddrConversionTests {
 
     @Test("Convert IPv4 SocketAddress to QUIC multiaddr")
     func convertIPv4SocketToMultiaddr() throws {
-        let socketAddr = SocketAddress(ipAddress: "10.0.0.1", port: 9000)
+        let socketAddr = QUIC.SocketAddress(ipAddress: "10.0.0.1", port: 9000)
         let multiaddr = socketAddr.toQUICMultiaddr()
 
         #expect(multiaddr.hasQUICProtocol)
@@ -87,7 +87,7 @@ struct MultiaddrConversionTests {
 
     @Test("Convert IPv6 SocketAddress to QUIC multiaddr")
     func convertIPv6SocketToMultiaddr() throws {
-        let socketAddr = SocketAddress(ipAddress: "fe80::1", port: 8080)
+        let socketAddr = QUIC.SocketAddress(ipAddress: "fe80::1", port: 8080)
         let multiaddr = socketAddr.toQUICMultiaddr()
 
         #expect(multiaddr.hasQUICProtocol)

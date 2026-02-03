@@ -5,6 +5,7 @@
 
 import Testing
 import Foundation
+import NIOCore
 import Synchronization
 @testable import P2PTransportWebRTC
 @testable import P2PCore
@@ -49,7 +50,7 @@ struct WebRTCMuxedStreamTests {
         stream.deliver(Data("hello".utf8))
 
         let data = try await stream.read()
-        #expect(String(data: data, encoding: .utf8) == "hello")
+        #expect(String(buffer: data) == "hello")
     }
 
     @Test("read waits for deliver", .timeLimit(.minutes(1)))
@@ -67,7 +68,7 @@ struct WebRTCMuxedStreamTests {
         stream.deliver(Data("delayed".utf8))
 
         let data = try await readTask.value
-        #expect(String(data: data, encoding: .utf8) == "delayed")
+        #expect(String(buffer: data) == "delayed")
     }
 
     @Test("read throws when read-closed", .timeLimit(.minutes(1)))
@@ -112,9 +113,9 @@ struct WebRTCMuxedStreamTests {
         let d2 = try await stream.read()
         let d3 = try await stream.read()
 
-        #expect(d1 == Data([0x01]))
-        #expect(d2 == Data([0x02]))
-        #expect(d3 == Data([0x03]))
+        #expect(Data(buffer: d1) == Data([0x01]))
+        #expect(Data(buffer: d2) == Data([0x02]))
+        #expect(Data(buffer: d3) == Data([0x03]))
     }
 
     @Test("write throws when write-closed", .timeLimit(.minutes(1)))
@@ -124,7 +125,7 @@ struct WebRTCMuxedStreamTests {
         try await stream.closeWrite()
 
         await #expect(throws: WebRTCStreamError.self) {
-            try await stream.write(Data("test".utf8))
+            try await stream.write(ByteBuffer(bytes: Data("test".utf8)))
         }
     }
 }

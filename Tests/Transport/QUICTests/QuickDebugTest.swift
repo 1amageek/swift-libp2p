@@ -1,6 +1,7 @@
 /// Quick debug test for isolating server->client data flow
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
@@ -28,7 +29,7 @@ struct QuickDebugTest {
                     print("[S] Got connection")
                     let stream = try await connection.acceptStream()
                     print("[S] Got stream, writing...")
-                    try await stream.write(Data("FROM_SERVER".utf8))
+                    try await stream.write(ByteBuffer(bytes: Data("FROM_SERVER".utf8)))
                     print("[S] Wrote data, closing write...")
                     try await stream.closeWrite()
                     print("[S] Done")
@@ -53,14 +54,14 @@ struct QuickDebugTest {
         print("[C] Stream opened, writing trigger...")
 
         // Write to trigger server to see the stream
-        try await clientStream.write(Data("trigger".utf8))
+        try await clientStream.write(ByteBuffer(bytes: Data("trigger".utf8)))
         print("[C] Trigger sent, reading response...")
 
         // Read server's response
         let response = try await clientStream.read()
-        print("[C] Got response: \(String(data: response, encoding: .utf8) ?? "?")")
+        print("[C] Got response: \(String(buffer: response))")
 
-        #expect(response == Data("FROM_SERVER".utf8))
+        #expect(Data(buffer: response) == Data("FROM_SERVER".utf8))
 
         _ = await serverTask.value
         try await listener.close()

@@ -313,7 +313,7 @@ public final class PlumtreeService: ProtocolService, Sendable {
                 let data = try await stream.readLengthPrefixedMessage(
                     maxSize: UInt64(configuration.maxMessageSize) + 4096
                 )
-                let rpc = try PlumtreeProtobuf.decode(data)
+                let rpc = try PlumtreeProtobuf.decode(Data(buffer: data))
                 await processRPC(rpc, from: peerID)
             }
         } catch {
@@ -474,7 +474,7 @@ public final class PlumtreeService: ProtocolService, Sendable {
 
         do {
             let encoded = PlumtreeProtobuf.encode(rpc)
-            try await stream.writeLengthPrefixedMessage(encoded)
+            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: encoded))
         } catch {
             logger.debug("Plumtree sendRPC failed to \(peerID): \(error)")
         }
