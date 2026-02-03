@@ -95,6 +95,7 @@ public actor MDNSDiscovery: DiscoveryService {
         await advertiser.stop()
         isStarted = false
         knownServices.removeAll()
+        sequenceNumber = 0
         broadcaster.shutdown()
     }
 

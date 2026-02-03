@@ -292,16 +292,16 @@ Discovery層のすべてのサービスは **EventBroadcaster（多消費者）*
 
 **理由**: 内部で非同期リソース（`await transport.stop()`, `await browser.stop()`）を停止する必要がある。
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18, Updated 2026-02-03)
 
 ### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Advertised address unroutable | `SWIM/SWIMMembership.swift:90-118` | Uses `0.0.0.0` address which is not routable; other nodes cannot dial back |
-| AsyncStream permanently closed | `MDNSDiscovery.swift:93-104`, `CompositeDiscovery.swift:88-98` | Once `stop()` called, AsyncStream closed forever; restart not possible |
-| knownServices not cleared on stop | `MDNSDiscovery.swift:95-103` | State persists after stop(); may cause stale data on restart |
-| Division by zero possible | `P2PDiscovery/AddressBook.swift:247-289` | `totalWeight` could be zero if all weights are zero |
-| Multiaddr type mismatch | `MDNS/PeerIDServiceCodec.swift:78-97` | Builds both UDP and TCP multiaddrs regardless of actual service type |
+| Issue | Location | Status | Resolution |
+|-------|----------|--------|------------|
+| ~~Advertised address unroutable~~ | ~~SWIM/SWIMMembership.swift:90-118~~ | ✅ FALSE POSITIVE | Already validated by `resolveAdvertisedHost()`; 0.0.0.0 used for binding only |
+| AsyncStream permanently closed | MDNSDiscovery/CompositeDiscovery | ✅ BY DESIGN | Services are single-use; documented in lifecycle section |
+| ~~knownServices not cleared on stop~~ | ~~MDNSDiscovery.swift:95-103~~ | ✅ FIXED | `knownServices.removeAll()` already present; `sequenceNumber` reset added to all Discovery services |
+| ~~Division by zero possible~~ | ~~AddressBook.swift:247-289~~ | ✅ FALSE POSITIVE | All divisions properly guarded; uses weighted sum not division |
+| Multiaddr type mismatch | PeerIDServiceCodec.swift:78-97 | ℹ️ ACCEPTABLE | mDNS advertises all possible connection methods per libp2p spec |
 
 ### Info
 | Issue | Location | Description |

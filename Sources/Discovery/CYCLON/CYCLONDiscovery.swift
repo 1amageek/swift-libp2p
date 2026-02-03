@@ -73,6 +73,7 @@ public actor CYCLONDiscovery: DiscoveryService {
         shuffleTask = nil
         streamOpener = nil
         isStarted = false
+        sequenceNumber = 0
         broadcaster.shutdown()
         logger.info("CYCLON stopped")
     }

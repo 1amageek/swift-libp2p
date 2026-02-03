@@ -232,6 +232,7 @@ public actor SWIMMembership: DiscoveryService {
         swim = nil
         transport = nil
         isStarted = false
+        sequenceNumber = 0
         broadcaster.shutdown()
     }
 

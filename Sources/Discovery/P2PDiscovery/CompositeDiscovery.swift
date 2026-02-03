@@ -120,6 +120,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
             let t = state.forwardingTasks
             state.forwardingTasks.removeAll()
             state.isRunning = false
+            state.sequenceNumber = 0
             return (t, services)
         }
 
