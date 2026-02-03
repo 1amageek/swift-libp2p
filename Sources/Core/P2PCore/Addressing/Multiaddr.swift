@@ -155,6 +155,11 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         protocols.filter { $0.code == code }
     }
 
+    /// Whether this multiaddr contains a p2p (PeerID) component.
+    public var hasPeerID: Bool {
+        peerID != nil
+    }
+
     /// The PeerID component, if present.
     public var peerID: PeerID? {
         for proto in protocols {

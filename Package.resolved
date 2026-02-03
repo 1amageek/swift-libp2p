@@ -1,5 +1,5 @@
 {
-  "originHash" : "c0a6a56dd912f2e87f8bea177254aa4171b3f7e0cad0f12480aaf4c5b2fdada3",
+  "originHash" : "557b62c0cb67e2b3927dc240112be2c4e64c82984ec9ad3e85bd2d97b1e60584",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-mDNS.git",
       "state" : {
-        "revision" : "f430de1f6dd5f185526abddf97b404f26c3a55ee",
-        "version" : "1.0.0"
+        "revision" : "74b2f477ecc60fb89a4f323a9489c675cd2cb82c",
+        "version" : "1.1.0"
       }
     },
     {

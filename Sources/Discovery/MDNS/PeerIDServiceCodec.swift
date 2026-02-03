@@ -45,7 +45,21 @@ public enum PeerIDServiceCodec {
         // Agent version
         txtRecord[PeerTXTKey.agentVersion] = configuration.agentVersion
 
-        // Extract protocol information from addresses
+        // Encode multiaddresses as dnsaddr TXT attributes (libp2p mDNS spec)
+        for var addr in addresses {
+            do {
+                // Ensure p2p component is present
+                if !addr.hasPeerID {
+                    addr = try addr.appending(.p2p(peerID))
+                }
+                txtRecord.appendValue(addr.description, forKey: "dnsaddr")
+            } catch {
+                // Skip invalid multiaddr
+                continue
+            }
+        }
+
+        // Extract protocol information from addresses (backward compatibility)
         let protocols = extractProtocols(from: addresses)
         if !protocols.isEmpty {
             txtRecord[PeerTXTKey.protocols] = protocols.joined(separator: ",")
@@ -80,18 +94,47 @@ public enum PeerIDServiceCodec {
             throw MDNSDiscoveryError.invalidPeerID(service.name)
         }
 
-        // Build addresses from resolved service info
         var addresses: [Multiaddr] = []
 
-        if let port = service.port {
+        // Priority 1: Read dnsaddr TXT attributes (libp2p mDNS spec)
+        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
+        for addrString in dnsaddrValues {
+            do {
+                var addr = try Multiaddr(addrString)
+
+                // Validate peer ID component
+                if let addrPeerID = addr.peerID {
+                    guard addrPeerID == peerID else {
+                        // Peer ID mismatch - skip this address
+                        continue
+                    }
+                } else {
+                    // Add p2p component if missing
+                    addr = try addr.appending(.p2p(peerID))
+                }
+
+                addresses.append(addr)
+            } catch {
+                // Invalid multiaddr - skip and continue
+                continue
+            }
+        }
+
+        // Fallback: Build addresses from A/AAAA records + port
+        // (backward compatibility and for peers not using dnsaddr)
+        if addresses.isEmpty, let port = service.port {
             // Add IPv4 addresses (TCP — mDNS-SD advertises TCP service ports)
             for ipv4 in service.ipv4Addresses {
-                addresses.append(try Multiaddr("/ip4/\(ipv4)/tcp/\(port)"))
+                var addr = try Multiaddr("/ip4/\(ipv4)/tcp/\(port)")
+                addr = try addr.appending(.p2p(peerID))
+                addresses.append(addr)
             }
 
             // Add IPv6 addresses
             for ipv6 in service.ipv6Addresses {
-                addresses.append(try Multiaddr("/ip6/\(ipv6)/tcp/\(port)"))
+                var addr = try Multiaddr("/ip6/\(ipv6)/tcp/\(port)")
+                addr = try addr.appending(.p2p(peerID))
+                addresses.append(addr)
             }
         }
 
@@ -127,14 +170,42 @@ public enum PeerIDServiceCodec {
             throw MDNSDiscoveryError.invalidPeerID(service.name)
         }
 
-        // Build address hints (TCP — consistent with decode())
         var hints: [Multiaddr] = []
-        if let port = service.port {
+
+        // Priority 1: Read dnsaddr TXT attributes (consistent with decode())
+        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
+        for addrString in dnsaddrValues {
+            do {
+                var addr = try Multiaddr(addrString)
+
+                // Validate peer ID component
+                if let addrPeerID = addr.peerID {
+                    guard addrPeerID == peerID else {
+                        continue
+                    }
+                } else {
+                    // Add p2p component if missing
+                    addr = try addr.appending(.p2p(peerID))
+                }
+
+                hints.append(addr)
+            } catch {
+                // Invalid multiaddr - skip and continue
+                continue
+            }
+        }
+
+        // Fallback: Build address hints from A/AAAA records + port
+        if hints.isEmpty, let port = service.port {
             for ipv4 in service.ipv4Addresses {
-                hints.append(try Multiaddr("/ip4/\(ipv4)/tcp/\(port)"))
+                var addr = try Multiaddr("/ip4/\(ipv4)/tcp/\(port)")
+                addr = try addr.appending(.p2p(peerID))
+                hints.append(addr)
             }
             for ipv6 in service.ipv6Addresses {
-                hints.append(try Multiaddr("/ip6/\(ipv6)/tcp/\(port)"))
+                var addr = try Multiaddr("/ip6/\(ipv6)/tcp/\(port)")
+                addr = try addr.appending(.p2p(peerID))
+                hints.append(addr)
             }
         }
 

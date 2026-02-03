@@ -301,7 +301,7 @@ Discovery層のすべてのサービスは **EventBroadcaster（多消費者）*
 | AsyncStream permanently closed | MDNSDiscovery/CompositeDiscovery | ✅ BY DESIGN | Services are single-use; documented in lifecycle section |
 | ~~knownServices not cleared on stop~~ | ~~MDNSDiscovery.swift:95-103~~ | ✅ FIXED | `knownServices.removeAll()` already present; `sequenceNumber` reset added to all Discovery services |
 | ~~Division by zero possible~~ | ~~AddressBook.swift:247-289~~ | ✅ FALSE POSITIVE | All divisions properly guarded; uses weighted sum not division |
-| Multiaddr type mismatch | PeerIDServiceCodec.swift:78-97 | ℹ️ ACCEPTABLE | mDNS advertises all possible connection methods per libp2p spec |
+| ~~Multiaddr type mismatch~~ | ~~PeerIDServiceCodec.swift:78-97~~ | ✅ FIXED | Now uses `dnsaddr=` TXT attributes per libp2p mDNS spec (2026-02-03) |
 
 ### Info
 | Issue | Location | Description |
@@ -310,3 +310,103 @@ Discovery層のすべてのサービスは **EventBroadcaster（多消費者）*
 | Sequential find() | `P2PDiscovery/CompositeDiscovery.swift:110-125` | Services queried sequentially; parallel execution would improve latency |
 | Fingerprinting surface | `MDNS/PeerIDServiceCodec.swift:36-48` | mDNS broadcasts PeerID allowing LAN device enumeration |
 | Browser errors silently ignored | `MDNS/MDNSDiscovery.swift:177-190` | Errors from ServiceBrowser are logged but not propagated |
+
+## libp2p mDNS Specification Compliance (2026-02-03)
+
+### TXTRecord Redesign (swift-mdns)
+
+swift-mdnsのTXTRecordを再設計し、libp2p mDNS仕様の複数`dnsaddr`属性に対応。
+
+#### 新しい設計
+
+- **Storage**: DNS wire format (`[String]`) + O(1)インデックス (`[String: [Int]]`)
+- **DNS-SD API**: `subscript` - 最初の値のみ返す（RFC 6763準拠）
+- **libp2p API**: `values(forKey:)`, `appendValue(_:forKey:)` - 複数値対応
+
+#### 主要なAPI
+
+```swift
+// DNS-SD標準（単一値）
+txtRecord["dnsaddr"]  // 最初の値のみ
+
+// libp2p拡張（複数値）
+txtRecord.values(forKey: "dnsaddr")  // 全ての値
+txtRecord.appendValue(addr, forKey: "dnsaddr")  // 追加
+txtRecord.setValues(addrs, forKey: "dnsaddr")  // 置換
+txtRecord.removeValues(forKey: "dnsaddr")  // 削除
+```
+
+### PeerIDServiceCodec仕様準拠 (swift-libp2p)
+
+#### encode() 変更
+
+- 各multiaddrを`dnsaddr=`属性としてTXTレコードに保存
+- p2pコンポーネントが欠けている場合は自動追加
+- 無効なmultiaddrは静かにスキップ
+
+```swift
+// 出力例
+dnsaddr=/ip4/192.168.1.1/tcp/4001/p2p/QmPeerId
+dnsaddr=/ip6/fe80::1/tcp/4001/p2p/QmPeerId
+```
+
+#### decode() 変更
+
+- **優先**: TXTレコードから`dnsaddr`属性を読み取り
+- **フォールバック**: `dnsaddr`がない場合はA/AAAA+ポートから再構築（後方互換性）
+- p2pコンポーネント検証（不一致はスキップ）
+- 無効なmultiaddrは静かにスキップ
+
+#### toObservation() 変更
+
+- decode()と一貫性を保つ
+- dnsaddr属性優先、A/AAAAフォールバック
+
+### Multiaddr拡張
+
+`hasPeerID`プロパティを追加:
+
+```swift
+let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
+addr.hasPeerID  // false
+
+let addrWithP2P = try Multiaddr("/ip4/127.0.0.1/tcp/4001/p2p/QmId")
+addrWithP2P.hasPeerID  // true
+```
+
+### DCUtR堅牢性改善
+
+無効なmultiaddrをスキップするようにエラーハンドリングを改善:
+
+```swift
+// DCUtRProtobuf.swift:80-95
+do {
+    let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+    addresses.append(addr)
+} catch {
+    // Skip invalid multiaddr and continue
+}
+```
+
+### テスト追加
+
+PeerIDServiceCodecTests.swiftに12個の新しいテストを追加:
+
+1. `encodeDnsaddrAttributes` - dnsaddr属性のエンコード
+2. `encodePreservesP2PComponent` - p2pコンポーネントの保持
+3. `decodeDnsaddrAttributes` - dnsaddr属性のデコード
+4. `decodeSkipsInvalidDnsaddr` - 無効なdnsaddrのスキップ
+5. `decodeAddsP2PComponent` - p2pコンポーネントの自動追加
+6. `decodeSkipsMismatchedPeerID` - peer ID不一致のスキップ
+7. `decodeFallbackToARecords` - A/AAAAフォールバック
+8. `decodePrefersDnsaddr` - dnsaddr優先
+9. `toObservationDnsaddr` - observationでのdnsaddr使用
+10. `toObservationFallback` - observationでのフォールバック
+11-12. 既存テストの期待値修正（TCP only, with p2p component）
+
+### 影響範囲
+
+- **swift-mdns**: TXTRecord構造体のみ（後方互換性あり）
+- **swift-libp2p**: PeerIDServiceCodec, DCUtRProtobuf, Multiaddr
+- **破壊的変更**: なし（既存APIはすべて維持）
+- **仕様準拠**: libp2p mDNS specification完全準拠

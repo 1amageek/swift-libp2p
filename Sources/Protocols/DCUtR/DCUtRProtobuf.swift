@@ -84,8 +84,15 @@ enum DCUtRProtobuf {
                 guard fieldEnd <= data.endIndex else {
                     throw DCUtRError.encodingError("Address field truncated")
                 }
-                let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
-                addresses.append(addr)
+
+                // Skip invalid multiaddr instead of throwing
+                do {
+                    let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                    addresses.append(addr)
+                } catch {
+                    // Invalid multiaddr - skip and continue
+                }
+
                 offset = fieldEnd
 
             default:
