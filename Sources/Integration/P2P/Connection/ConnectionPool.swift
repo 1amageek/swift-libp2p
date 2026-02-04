@@ -514,35 +514,33 @@ internal final class ConnectionPool: Sendable {
             let graceCutoff = now - limits.gracePeriod
 
             // Get trimmable connections sorted by priority (lowest first)
-            let candidates = state.connections.values
-                .filter { managed in
-                    // Not protected
-                    guard !managed.isProtected else { return false }
-                    // Not within grace period
-                    guard let connectedAt = managed.connectedAt,
-                          connectedAt < graceCutoff else { return false }
-                    // Must be connected
-                    guard managed.state.isConnected else { return false }
-                    return true
-                }
-                .sorted { a, b in
-                    // Fewer tags = trim first
-                    if a.tags.count != b.tags.count {
-                        return a.tags.count < b.tags.count
-                    }
-                    // Older activity = trim first
-                    if a.lastActivity != b.lastActivity {
-                        return a.lastActivity < b.lastActivity
-                    }
-                    // Inbound before outbound
-                    if a.direction != b.direction {
-                        return a.direction == .inbound
-                    }
-                    return false
-                }
+            // Use partial sort for efficiency when target << total connections
+            let candidates = state.connections.values.filter { managed in
+                // Not protected
+                guard !managed.isProtected else { return false }
+                // Not within grace period
+                guard let connectedAt = managed.connectedAt,
+                      connectedAt < graceCutoff else { return false }
+                // Must be connected
+                guard managed.state.isConnected else { return false }
+                return true
+            }
 
-            // Take the first `target` connections
-            let toTrim = Array(candidates.prefix(target))
+            let toTrim = Array(candidates).smallest(target, by: { a, b in
+                // Fewer tags = trim first
+                if a.tags.count != b.tags.count {
+                    return a.tags.count < b.tags.count
+                }
+                // Older activity = trim first
+                if a.lastActivity != b.lastActivity {
+                    return a.lastActivity < b.lastActivity
+                }
+                // Inbound before outbound
+                if a.direction != b.direction {
+                    return a.direction == .inbound
+                }
+                return false
+            })
 
             // Remove them from state
             for managed in toTrim {

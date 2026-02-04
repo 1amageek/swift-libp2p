@@ -154,13 +154,10 @@ public final class RoutingTable: Sendable {
                 // with sparse bucket occupation, this is much faster.
             }
 
-            // Sort only the collected candidates (typically much fewer than
-            // the theoretical maximum of 256 * K)
-            candidates.sort { e1, e2 in
+            // Use partial sort for efficiency when count << candidates.count
+            return candidates.smallest(count, by: { e1, e2 in
                 e1.key.isCloser(to: target, than: e2.key)
-            }
-
-            return Array(candidates.prefix(count))
+            })
         }
     }
 

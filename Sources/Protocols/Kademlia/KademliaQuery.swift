@@ -340,21 +340,16 @@ public struct KademliaQuery: Sendable {
         from peers: [PeerID: QueryPeer],
         count: Int
     ) -> [QueryPeer] {
-        peers.values
-            .filter { $0.state == .notContacted }
-            .sorted { $0.distance < $1.distance }
-            .prefix(count)
-            .map { $0 }
+        Array(peers.values.filter { $0.state == .notContacted })
+            .smallest(count, by: { $0.distance < $1.distance })
     }
 
     private func getClosestSucceeded(
         from peers: [PeerID: QueryPeer],
         count: Int
     ) -> [KademliaPeer] {
-        peers.values
-            .filter { $0.state == .succeeded }
-            .sorted { $0.distance < $1.distance }
-            .prefix(count)
+        Array(peers.values.filter { $0.state == .succeeded })
+            .smallest(count, by: { $0.distance < $1.distance })
             .map { $0.peer }
     }
 
