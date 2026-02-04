@@ -26,10 +26,7 @@ import (
 	"syscall"
 
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
-	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	"github.com/libp2p/go-libp2p/p2p/transport/quic"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -40,32 +37,32 @@ func main() {
 	}
 
 	// Create a new libp2p host with QUIC transport
+	// QUIC is enabled by default in go-libp2p v0.36+
 	listenAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/udp/%s/quic-v1", port))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create listen address: %v\n", err)
 		os.Exit(1)
 	}
 
-	host, err := libp2p.New(
+	h, err := libp2p.New(
 		libp2p.ListenAddrs(listenAddr),
-		libp2p.Transport(quic.NewTransport),
-		libp2p.Security(noise.ID, noise.New),
+		// QUIC and Noise are enabled by default
 		libp2p.Ping(true),
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create host: %v\n", err)
 		os.Exit(1)
 	}
-	defer host.Close()
+	defer h.Close()
 
 	// Create ping service
-	pingService := ping.NewPingService(host)
+	pingService := ping.NewPingService(h)
 	_ = pingService
 
 	// Print node info
-	fmt.Printf("PeerID: %s\n", host.ID())
-	for _, addr := range host.Addrs() {
-		fmt.Printf("Listen: %s/p2p/%s\n", addr, host.ID())
+	fmt.Printf("PeerID: %s\n", h.ID())
+	for _, addr := range h.Addrs() {
+		fmt.Printf("Listen: %s/p2p/%s\n", addr, h.ID())
 	}
 	fmt.Println("Ready to accept connections")
 
