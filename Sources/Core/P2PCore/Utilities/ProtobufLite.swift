@@ -16,13 +16,32 @@ public enum ProtobufLiteError: Error, Sendable, Equatable {
 }
 
 /// A decoded protobuf field (wire type 2 only).
+///
+/// Stores a reference to the source data and offset/length to avoid copying.
+/// The `data` property returns a slice that shares storage with the source.
 public struct ProtobufField: Sendable {
     public let fieldNumber: UInt64
-    public let data: Data
 
-    public init(fieldNumber: UInt64, data: Data) {
+    /// Source data containing the field.
+    private let sourceData: Data
+
+    /// Offset from sourceData.startIndex to the field data.
+    private let dataOffset: Int
+
+    /// Length of the field data.
+    private let dataLength: Int
+
+    /// The field data as a slice of the source (zero-copy).
+    public var data: Data {
+        let start = sourceData.startIndex + dataOffset
+        return sourceData[start ..< start + dataLength]
+    }
+
+    internal init(fieldNumber: UInt64, sourceData: Data, offset: Int, length: Int) {
         self.fieldNumber = fieldNumber
-        self.data = data
+        self.sourceData = sourceData
+        self.dataOffset = offset
+        self.dataLength = length
     }
 }
 
@@ -81,16 +100,19 @@ public func decodeProtobufFields(
         }
 
         let length = Int(fieldLength)
-        let startIndex = data.startIndex + offset
 
         guard offset + length <= data.count else {
             throw ProtobufLiteError.truncatedField
         }
 
-        let fieldData = Data(data[startIndex ..< startIndex + length])
+        // Zero-copy: store reference to source data with offset/length
+        fields.append(ProtobufField(
+            fieldNumber: fieldNumber,
+            sourceData: data,
+            offset: offset,
+            length: length
+        ))
         offset += length
-
-        fields.append(ProtobufField(fieldNumber: fieldNumber, data: fieldData))
     }
 
     return fields
