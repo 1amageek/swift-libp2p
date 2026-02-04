@@ -2,6 +2,7 @@
 /// https://github.com/multiformats/unsigned-varint
 
 import Foundation
+import NIOCore
 
 public enum Varint {
 
@@ -40,6 +41,46 @@ public enum Varint {
         }
         buffer[i] = UInt8(n)
         return i + 1
+    }
+
+    /// Encodes a UInt64 value into a ByteBuffer (zero-copy, NIO-optimized).
+    ///
+    /// This is the most efficient encoding method when working with SwiftNIO,
+    /// as it avoids any Data allocation and directly writes to the ByteBuffer.
+    ///
+    /// - Parameters:
+    ///   - value: The value to encode
+    ///   - buffer: The ByteBuffer to write into (will be mutated)
+    /// - Returns: Number of bytes written
+    @inlinable
+    public static func encode(_ value: UInt64, into buffer: inout ByteBuffer) -> Int {
+        // Reserve space for maximum varint size (10 bytes)
+        buffer.reserveCapacity(buffer.writerIndex + 10)
+
+        // Use the unsafe buffer pointer API for direct writing
+        let bytesWritten = buffer.writeWithUnsafeMutableBytes(minimumWritableBytes: 10) { ptr in
+            encode(value, into: ptr)
+        }
+
+        return bytesWritten
+    }
+
+    /// Decodes a varint from a ByteBuffer (zero-copy, NIO-optimized).
+    ///
+    /// - Parameter buffer: The ByteBuffer to read from (will be mutated to advance reader index)
+    /// - Returns: The decoded value
+    /// - Throws: `VarintError` if the varint is malformed
+    @inlinable
+    public static func decode(from buffer: inout ByteBuffer) throws -> UInt64 {
+        // Use withUnsafeReadableBytes to get the raw pointer
+        let result = try buffer.withUnsafeReadableBytes { ptr -> (UInt64, Int) in
+            try decode(from: ptr, at: 0)
+        }
+
+        // Advance the reader index by the number of bytes consumed
+        buffer.moveReaderIndex(forwardBy: result.1)
+
+        return result.0
     }
 
     /// Decodes an unsigned varint from the given data.

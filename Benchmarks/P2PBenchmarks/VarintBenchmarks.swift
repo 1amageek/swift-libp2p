@@ -2,6 +2,7 @@
 import Testing
 import Foundation
 import P2PCore
+import NIOCore
 
 @Suite("Varint Benchmarks")
 struct VarintBenchmarks {
@@ -79,6 +80,46 @@ struct VarintBenchmarks {
             }
             result.append(UInt8(n))
             blackHole(Data(result))
+        }
+    }
+
+    // MARK: - ByteBuffer Optimizations (NIO zero-copy)
+
+    @Test("ByteBuffer encode - zero allocation")
+    func byteBufferEncode() {
+        let allocator = ByteBufferAllocator()
+        benchmark("Varint.encode(into: ByteBuffer)", iterations: 10_000_000) {
+            var buffer = allocator.buffer(capacity: 10)
+            _ = Varint.encode(300, into: &buffer)
+            blackHole(buffer)
+        }
+    }
+
+    @Test("ByteBuffer decode - zero copy")
+    func byteBufferDecode() throws {
+        let allocator = ByteBufferAllocator()
+        var encoded = allocator.buffer(capacity: 10)
+        _ = Varint.encode(300, into: &encoded)
+
+        try benchmark("Varint.decode(from: ByteBuffer)", iterations: 10_000_000) {
+            var buffer = encoded
+            let value = try Varint.decode(from: &buffer)
+            blackHole(value)
+        }
+    }
+
+    @Test("ByteBuffer round-trip - NIO native")
+    func byteBufferRoundTrip() throws {
+        let allocator = ByteBufferAllocator()
+        let values: [UInt64] = [0, 1, 127, 128, 255, 300, 16384, 1_000_000, UInt64(Int32.max), UInt64.max]
+
+        try benchmark("Varint ByteBuffer round-trip x10", iterations: 1_000_000) {
+            for v in values {
+                var buffer = allocator.buffer(capacity: 10)
+                _ = Varint.encode(v, into: &buffer)
+                let decoded = try Varint.decode(from: &buffer)
+                blackHole(decoded)
+            }
         }
     }
 }

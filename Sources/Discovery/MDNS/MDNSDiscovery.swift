@@ -15,8 +15,8 @@ public actor MDNSDiscovery: DiscoveryService {
 
     private let localPeerID: PeerID
     private let configuration: MDNSConfiguration
-    private let browser: ServiceBrowser
-    private let advertiser: ServiceAdvertiser
+    private var browser: ServiceBrowser?
+    private var advertiser: ServiceAdvertiser?
 
     private var knownServices: [String: Service] = [:]
     private var sequenceNumber: UInt64 = 0
@@ -38,25 +38,6 @@ public actor MDNSDiscovery: DiscoveryService {
     ) {
         self.localPeerID = localPeerID
         self.configuration = configuration
-
-        // Create browser configuration
-        var browserConfig = ServiceBrowser.Configuration()
-        browserConfig.queryInterval = configuration.queryInterval
-        browserConfig.autoResolve = true
-        browserConfig.useIPv4 = configuration.useIPv4
-        browserConfig.useIPv6 = configuration.useIPv6
-        browserConfig.networkInterface = configuration.networkInterface
-
-        self.browser = ServiceBrowser(configuration: browserConfig)
-
-        // Create advertiser configuration
-        var advertiserConfig = ServiceAdvertiser.Configuration()
-        advertiserConfig.ttl = configuration.ttl
-        advertiserConfig.useIPv4 = configuration.useIPv4
-        advertiserConfig.useIPv6 = configuration.useIPv6
-        advertiserConfig.networkInterface = configuration.networkInterface
-
-        self.advertiser = ServiceAdvertiser(configuration: advertiserConfig)
     }
 
     deinit {
@@ -70,6 +51,27 @@ public actor MDNSDiscovery: DiscoveryService {
         guard !isStarted else {
             throw MDNSDiscoveryError.alreadyStarted
         }
+
+        // Create browser configuration
+        var browserConfig = ServiceBrowser.Configuration()
+        browserConfig.queryInterval = configuration.queryInterval
+        browserConfig.autoResolve = true
+        browserConfig.useIPv4 = configuration.useIPv4
+        browserConfig.useIPv6 = configuration.useIPv6
+        browserConfig.networkInterface = configuration.networkInterface
+
+        let browser = ServiceBrowser(configuration: browserConfig)
+        self.browser = browser
+
+        // Create advertiser configuration
+        var advertiserConfig = ServiceAdvertiser.Configuration()
+        advertiserConfig.ttl = configuration.ttl
+        advertiserConfig.useIPv4 = configuration.useIPv4
+        advertiserConfig.useIPv6 = configuration.useIPv6
+        advertiserConfig.networkInterface = configuration.networkInterface
+
+        let advertiser = ServiceAdvertiser(configuration: advertiserConfig)
+        self.advertiser = advertiser
 
         try await browser.start()
         try await advertiser.start()
@@ -91,19 +93,24 @@ public actor MDNSDiscovery: DiscoveryService {
         forwardTask?.cancel()
         forwardTask = nil
 
-        await browser.stop()
-        await advertiser.stop()
+        await browser?.stop()
+        await advertiser?.stop()
+
+        // Clear references to allow new instances on next start()
+        browser = nil
+        advertiser = nil
+
         isStarted = false
         knownServices.removeAll()
         sequenceNumber = 0
-        broadcaster.shutdown()
+        // Note: Don't shutdown broadcaster here - it can be reused
     }
 
     // MARK: - DiscoveryService Protocol
 
     /// Announces our presence with the given addresses.
     public func announce(addresses: [Multiaddr]) async throws {
-        guard isStarted else {
+        guard isStarted, let advertiser = advertiser else {
             throw MDNSDiscoveryError.notStarted
         }
 
@@ -175,6 +182,8 @@ public actor MDNSDiscovery: DiscoveryService {
     // MARK: - Private Methods
 
     private func forwardBrowserEvents() async {
+        guard let browser = browser else { return }
+
         for await event in await browser.events {
             switch event {
             case .found(let service):
