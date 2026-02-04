@@ -62,10 +62,10 @@ enum DCUtRProtobuf {
         var type: DCUtRMessageType = .connect
         var addresses: [Multiaddr] = []
 
-        var offset = data.startIndex
+        var offset = 0
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+        while offset < data.count {
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -73,21 +73,22 @@ enum DCUtRProtobuf {
 
             switch (fieldNumber, wireType) {
             case (1, wireTypeVarint): // type
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
+                let (value, valueBytes) = try Varint.decode(from: data, at: offset)
                 offset += valueBytes
                 type = DCUtRMessageType(rawValue: value) ?? .connect
 
             case (2, wireTypeLengthDelimited): // ObsAddrs
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw DCUtRError.encodingError("Address field truncated")
                 }
 
                 // Skip invalid multiaddr instead of throwing
                 do {
-                    let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                    let addrData = data[data.startIndex + offset ..< data.startIndex + fieldEnd]
+                    let addr = try Multiaddr(bytes: Data(addrData))
                     addresses.append(addr)
                 } catch {
                     // Invalid multiaddr - skip and continue
@@ -111,12 +112,12 @@ enum DCUtRProtobuf {
 
         switch wireType {
         case 0: // Varint
-            let (_, varBytes) = try Varint.decode(Data(data[newOffset...]))
+            let (_, varBytes) = try Varint.decode(from: data, at: newOffset)
             newOffset += varBytes
         case 1: // 64-bit
             newOffset += 8
         case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
+            let (length, lengthBytes) = try Varint.decode(from: data, at: newOffset)
             newOffset += lengthBytes + Int(length)
         case 5: // 32-bit
             newOffset += 4
@@ -124,7 +125,7 @@ enum DCUtRProtobuf {
             throw DCUtRError.encodingError("Unknown wire type \(wireType)")
         }
 
-        guard newOffset <= data.endIndex else {
+        guard newOffset <= data.count else {
             throw DCUtRError.encodingError("Field extends beyond data")
         }
 

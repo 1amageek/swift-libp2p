@@ -6,19 +6,23 @@ import Foundation
 /// Topics are used to organize messages into logical channels.
 /// Subscribers receive messages published to topics they're subscribed to.
 ///
-/// Hash value is pre-computed at initialization for O(1) Dictionary/Set operations.
+/// Hash value and UTF-8 bytes are pre-computed at initialization for O(1) operations.
 public struct Topic: Sendable, Hashable, CustomStringConvertible {
     /// The topic string.
     public let value: String
 
-    /// Pre-computed hash value.
+    /// Pre-computed hash value for O(1) Dictionary/Set operations.
     private let _hashValue: Int
+
+    /// Pre-computed UTF-8 bytes for O(1) wire encoding.
+    public let utf8Bytes: Data
 
     /// Creates a topic from a string.
     ///
     /// - Parameter value: The topic identifier string
     public init(_ value: String) {
         self.value = value
+        self.utf8Bytes = Data(value.utf8)
         var hasher = Hasher()
         hasher.combine(value)
         self._hashValue = hasher.finalize()

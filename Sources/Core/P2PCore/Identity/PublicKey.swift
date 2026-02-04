@@ -13,6 +13,9 @@ public struct PublicKey: Sendable, Hashable {
     /// The raw public key bytes.
     public let rawBytes: Data
 
+    /// Pre-computed protobuf-encoded representation.
+    private let _protobufEncoded: Data
+
     // MARK: - Raw Bytes Initialization
 
     /// Creates a public key from raw bytes.
@@ -46,6 +49,15 @@ public struct PublicKey: Sendable, Hashable {
                 throw PublicKeyError.invalidKeySize(expected: 1, actual: 0)
             }
         }
+
+        // Pre-compute protobuf encoding
+        var encoded = Data()
+        encoded.append(0x08) // Field 1: KeyType (field number 1, wire type 0)
+        encoded.append(contentsOf: Varint.encode(keyType.rawValue))
+        encoded.append(0x12) // Field 2: Data (field number 2, wire type 2)
+        encoded.append(contentsOf: Varint.encode(UInt64(rawBytes.count)))
+        encoded.append(rawBytes)
+        self._protobufEncoded = encoded
     }
 
     // MARK: - Ed25519
@@ -56,6 +68,15 @@ public struct PublicKey: Sendable, Hashable {
     public init(ed25519 key: Curve25519.Signing.PublicKey) {
         self.keyType = .ed25519
         self.rawBytes = Data(key.rawRepresentation)
+
+        // Pre-compute protobuf encoding
+        var encoded = Data()
+        encoded.append(0x08)
+        encoded.append(contentsOf: Varint.encode(KeyType.ed25519.rawValue))
+        encoded.append(0x12)
+        encoded.append(contentsOf: Varint.encode(UInt64(self.rawBytes.count)))
+        encoded.append(self.rawBytes)
+        self._protobufEncoded = encoded
     }
 
     /// Returns this key as a Curve25519 signing public key, if applicable.
@@ -77,6 +98,15 @@ public struct PublicKey: Sendable, Hashable {
         self.keyType = .ecdsa
         // Use uncompressed representation (65 bytes) for compatibility
         self.rawBytes = Data(key.x963Representation)
+
+        // Pre-compute protobuf encoding
+        var encoded = Data()
+        encoded.append(0x08)
+        encoded.append(contentsOf: Varint.encode(KeyType.ecdsa.rawValue))
+        encoded.append(0x12)
+        encoded.append(contentsOf: Varint.encode(UInt64(self.rawBytes.count)))
+        encoded.append(self.rawBytes)
+        self._protobufEncoded = encoded
     }
 
     /// Returns this key as a P256 signing public key, if applicable.
@@ -125,25 +155,11 @@ public struct PublicKey: Sendable, Hashable {
         PeerID(publicKey: self)
     }
 
-    /// The protobuf-encoded representation of this public key.
+    /// The protobuf-encoded representation of this public key (pre-computed).
     ///
     /// Format: KeyType (varint) + key data
     public var protobufEncoded: Data {
-        // Simple protobuf encoding:
-        // Field 1 (KeyType): varint
-        // Field 2 (Data): length-delimited bytes
-        var result = Data()
-
-        // Field 1: KeyType (field number 1, wire type 0 = varint)
-        result.append(0x08) // (1 << 3) | 0
-        result.append(contentsOf: Varint.encode(keyType.rawValue))
-
-        // Field 2: Data (field number 2, wire type 2 = length-delimited)
-        result.append(0x12) // (2 << 3) | 2
-        result.append(contentsOf: Varint.encode(UInt64(rawBytes.count)))
-        result.append(rawBytes)
-
-        return result
+        _protobufEncoded
     }
 
     /// Decodes a public key from its protobuf representation.

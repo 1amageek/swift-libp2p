@@ -102,7 +102,7 @@ public enum GossipSubProtobuf {
         result.append(sub.subscribe ? 1 : 0)
 
         // Field 2: topicid (string)
-        let topicBytes = Data(sub.topic.value.utf8)
+        let topicBytes = sub.topic.utf8Bytes
         result.append(tagSubOptsTopic)
         result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
         result.append(topicBytes)
@@ -136,7 +136,7 @@ public enum GossipSubProtobuf {
         }
 
         // Field 4: topic (string) - required
-        let topicBytes = Data(message.topic.value.utf8)
+        let topicBytes = message.topic.utf8Bytes
         result.append(tagMessageTopic)
         result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
         result.append(topicBytes)
