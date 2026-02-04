@@ -21,11 +21,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	ma "github.com/multiformats/go-multiaddr"
 )
@@ -58,6 +61,29 @@ func main() {
 	// Create ping service
 	pingService := ping.NewPingService(h)
 	_ = pingService
+
+	// Set up network notifications for debugging
+	h.Network().Notify(&network.NotifyBundle{
+		ConnectedF: func(n network.Network, c network.Conn) {
+			log.Printf("Connected: peer=%s", c.RemotePeer())
+		},
+		DisconnectedF: func(n network.Network, c network.Conn) {
+			log.Printf("Disconnected: peer=%s", c.RemotePeer())
+		},
+	})
+
+	// Set stream handler for catch-all debugging
+	h.SetStreamHandler("/debug", func(s network.Stream) {
+		log.Printf("Received /debug stream from %s", s.Conn().RemotePeer())
+		io.Copy(io.Discard, s)
+		s.Close()
+	})
+
+	// Log all supported protocols
+	log.Println("Supported protocols:")
+	for _, proto := range h.Mux().Protocols() {
+		log.Printf("  %s", proto)
+	}
 
 	// Print node info
 	fmt.Printf("PeerID: %s\n", h.ID())

@@ -15,16 +15,58 @@ import NIOCore
 @testable import P2PTransport
 @testable import P2PCore
 @testable import P2PMux
+@testable import P2PNegotiation
+@testable import P2PProtocols
 import QUIC
 
 /// Interoperability tests with go-libp2p
 ///
-/// These tests require Docker to be running and are disabled by default.
+/// These tests require Docker to be running.
 /// Run with: swift test --filter GoInteropTests
-@Suite("Go-libp2p Interop Tests", .disabled("Requires Docker - run explicitly with --filter GoInteropTests"))
+@Suite("Go-libp2p Interop Tests")
 struct GoInteropTests {
 
     // MARK: - Connection Tests
+
+    @Test("Send raw data to go-libp2p (no protocol negotiation)", .timeLimit(.minutes(2)))
+    func sendRawData() async throws {
+        // Start go-libp2p node
+        let harness = try await GoLibp2pHarness.start()
+        defer { Task { try? await harness.stop() } }
+
+        let nodeInfo = harness.nodeInfo
+
+        // Create Swift client
+        let keyPair = KeyPair.generateEd25519()
+        let transport = QUICTransport()
+
+        // Connect to go-libp2p node
+        let connection = try await transport.dialSecured(
+            Multiaddr(nodeInfo.address),
+            localKeyPair: keyPair
+        )
+
+        // Open stream
+        let stream = try await connection.newStream()
+
+        print("Stream opened: ID=\(stream.id)")
+
+        // Send simple data
+        let testData = Data("Hello".utf8)
+        try await stream.write(ByteBuffer(bytes: testData))
+        print("Data written to stream")
+
+        // Close write to send FIN
+        try await stream.closeWrite()
+        print("Write side closed (FIN sent)")
+
+        // Wait very long to ensure all packets are sent
+        try await Task.sleep(for: .seconds(10))
+
+        // Close stream
+        try await stream.close()
+        try await connection.close()
+    }
 
     @Test("Connect to go-libp2p node over QUIC", .timeLimit(.minutes(2)))
     func connectToGo() async throws {
@@ -67,14 +109,27 @@ struct GoInteropTests {
             localKeyPair: keyPair
         )
 
-        // Open stream and request identify
+        // Open stream and negotiate identify protocol
         let stream = try await connection.newStream()
 
-        // Send identify request (empty data triggers server response)
-        try await stream.write(ByteBuffer())
-        try await stream.closeWrite()
+        // Negotiate identify protocol using multistream-select
+        let negotiationResult = try await MultistreamSelect.negotiate(
+            protocols: [LibP2PProtocol.identify],
+            read: {
+                // Add small delay to ensure write is flushed
+                try await Task.sleep(for: .milliseconds(100))
+                return Data(buffer: try await stream.read())
+            },
+            write: { data in
+                try await stream.write(ByteBuffer(bytes: data))
+                // Force flush by waiting a bit
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        )
 
-        // Read identify response
+        #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
+
+        // Read identify response (server sends immediately after accepting protocol)
         let data = try await stream.read()
 
         // Decode the response
@@ -105,10 +160,16 @@ struct GoInteropTests {
             localKeyPair: keyPair
         )
 
-        // Request identify
+        // Request identify with protocol negotiation
         let stream = try await connection.newStream()
-        try await stream.write(ByteBuffer())
-        try await stream.closeWrite()
+
+        let negotiationResult = try await MultistreamSelect.negotiate(
+            protocols: [LibP2PProtocol.identify],
+            read: { Data(buffer: try await stream.read()) },
+            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+        )
+
+        #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
 
         let data = try await stream.read()
         let info = try IdentifyProtobuf.decode(Data(buffer: data))
@@ -144,15 +205,23 @@ struct GoInteropTests {
             localKeyPair: keyPair
         )
 
-        // Open stream and send ping
+        // Open stream and negotiate ping protocol
         let stream = try await connection.newStream()
+
+        // Negotiate ping protocol using multistream-select
+        let negotiationResult = try await MultistreamSelect.negotiate(
+            protocols: [LibP2PProtocol.ping],
+            read: { Data(buffer: try await stream.read()) },
+            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+        )
+
+        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
 
         // Generate 32-byte random payload (libp2p ping spec)
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         let startTime = ContinuousClock.now
 
         try await stream.write(ByteBuffer(bytes: payload))
-        try await stream.closeWrite()
 
         // Read echo response
         let response = try await stream.read()
@@ -186,11 +255,19 @@ struct GoInteropTests {
         for i in 0..<5 {
             let stream = try await connection.newStream()
 
+            // Negotiate ping protocol
+            let negotiationResult = try await MultistreamSelect.negotiate(
+                protocols: [LibP2PProtocol.ping],
+                read: { Data(buffer: try await stream.read()) },
+                write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+            )
+
+            #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+
             let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
             let startTime = ContinuousClock.now
 
             try await stream.write(ByteBuffer(bytes: payload))
-            try await stream.closeWrite()
 
             let response = try await stream.read()
             let rtt = ContinuousClock.now - startTime
@@ -231,17 +308,24 @@ struct GoInteropTests {
 
         let stream = try await connection.newStream()
 
-        // Send data
-        let testData = Data("Hello from Swift!".utf8)
-        try await stream.write(ByteBuffer(bytes: testData))
-        try await stream.closeWrite()
+        // Negotiate ping protocol for bidirectional test
+        let negotiationResult = try await MultistreamSelect.negotiate(
+            protocols: [LibP2PProtocol.ping],
+            read: { Data(buffer: try await stream.read()) },
+            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+        )
 
-        // Read response (may be empty if no echo handler)
+        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+
+        // Send 32-byte payload as per ping protocol
+        let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        try await stream.write(ByteBuffer(bytes: payload))
+
+        // Read response - ping protocol echoes the payload
         let response = try await stream.read()
 
-        // We don't necessarily expect a response if there's no echo handler,
-        // but the stream operations should complete without error
-        #expect(response.readableBytes >= 0)
+        // Verify echo
+        #expect(Data(buffer: response) == payload, "Bidirectional stream should echo payload")
 
         try await stream.close()
         try await connection.close()
