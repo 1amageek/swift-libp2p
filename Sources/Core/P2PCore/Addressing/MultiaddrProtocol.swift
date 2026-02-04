@@ -217,17 +217,21 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     /// - Rejects invalid addresses (multiple `::`, malformed groups)
     ///
     /// - Parameter address: The IPv6 address string to normalize
-    /// - Returns: The normalized IPv6 address, or nil if invalid or too long (>64 chars with zone)
+    /// - Returns: The normalized IPv6 address in expanded form, or nil if invalid or too long (>64 chars with zone)
     static func normalizeIPv6(_ address: String) -> String? {
         // Max IPv6 address length with zone ID is ~64 chars
         guard address.count <= 64 else { return nil }
         guard let bytes = encodeIPv6(address) else { return nil }
-        var parts: [String] = []
+
+        // Parse into 16-bit groups
+        var groups: [UInt16] = []
         for i in 0..<8 {
             let value = UInt16(bytes[i * 2]) << 8 | UInt16(bytes[i * 2 + 1])
-            parts.append(String(value, radix: 16))
+            groups.append(value)
         }
-        return parts.joined(separator: ":")
+
+        // Build expanded string (always 8 groups separated by colons)
+        return groups.map { String($0, radix: 16) }.joined(separator: ":")
     }
 
     private static func encodePort(_ port: UInt16) -> Data {
