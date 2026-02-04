@@ -120,14 +120,14 @@ final class MessageCache: Sendable {
             }
 
             var ids: [MessageID] = []
+            ids.reserveCapacity(min(topicIDs.count, 100))
 
-            // Collect IDs from gossip windows that belong to this topic
+            // Optimized: use Set intersection instead of nested contains()
+            // This leverages Set's internal hash-based lookup for better performance
             for i in 0..<gossipWindowCount where i < state.windows.count {
-                for id in state.windows[i] {
-                    if topicIDs.contains(id) {
-                        ids.append(id)
-                    }
-                }
+                let windowSet = Set(state.windows[i])
+                let intersection = windowSet.intersection(topicIDs)
+                ids.append(contentsOf: intersection)
             }
 
             return ids
