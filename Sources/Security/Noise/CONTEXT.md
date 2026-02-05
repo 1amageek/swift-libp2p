@@ -80,7 +80,14 @@ Initiator                       Responder
 
 1. Generate ephemeral key pair (e)
 2. MixHash(e.public)
-3. Send: e.public (32 bytes, unencrypted)
+3. **EncryptAndHash(empty)** ← 重要: Noise 仕様では空ペイロードでも必須
+4. Send: e.public (32 bytes, unencrypted)
+
+> **注意**: Noise Protocol 仕様では、`WriteMessage` は常にペイロードに対して
+> `EncryptAndHash` を呼び出す必要がある。libp2p-noise は Message A でペイロードを
+> 送信しないが、空のペイロードに対する `encryptAndHash(Data())` 呼び出しは必須。
+> この呼び出しにより `mixHash(empty)` が実行され、handshakeHash が変化する:
+> `SHA256(h || empty) ≠ h`
 
 ```
 Wire format:
@@ -217,12 +224,12 @@ struct NoiseHandshake: Sendable {
     private var symmetricState: NoiseSymmetricState
 
     // Initiator methods
-    mutating func writeMessageA() -> Data
+    mutating func writeMessageA() -> Data           // mixHash(e) + encryptAndHash(empty)
     mutating func readMessageB(_ data: Data) throws -> NoisePayload
     mutating func writeMessageC() throws -> Data
 
     // Responder methods
-    mutating func readMessageA(_ data: Data) throws
+    mutating func readMessageA(_ data: Data) throws // mixHash(re) + decryptAndHash(empty)
     mutating func writeMessageB() throws -> Data
     mutating func readMessageC(_ data: Data) throws -> NoisePayload
 
@@ -388,6 +395,7 @@ expectedPeerが指定された場合:
 3. **署名**: libp2p Ed25519鍵でNoise静的公開鍵に署名してIDを証明
 4. **Nonce Reuse**: 絶対にnonceを再利用しない（カウンタで管理）
 5. **Split順序**: Initiatorのsend = Responderのrecv（方向に注意）
+6. **空ペイロード処理**: Message A でも `encryptAndHash(empty)` / `decryptAndHash(empty)` を呼び出す必要がある（Noise 仕様要件、go-libp2p/rust-libp2p との相互運用に必須）
 
 ---
 

@@ -67,11 +67,19 @@ struct NoiseHandshake: Sendable {
     ///
     /// Pattern: `-> e`
     /// - Sends ephemeral public key
+    /// - Per Noise spec, calls encryptAndHash on empty payload
     mutating func writeMessageA() -> Data {
         let ephemeralPub = Data(localEphemeralKey.publicKey.rawRepresentation)
 
         // Mix ephemeral into hash
         symmetricState.mixHash(ephemeralPub)
+
+        // Per Noise spec, WriteMessage always calls EncryptAndHash on the payload.
+        // For message A, there's no payload (empty), but we still need to call
+        // encryptAndHash(empty) which does mixHash(empty ciphertext).
+        // Since no key is set yet, encryptAndHash returns empty but still does mixHash(empty).
+        // This is required for compatibility with go-libp2p/flynn-noise.
+        _ = try? symmetricState.encryptAndHash(Data())
 
         return ephemeralPub
     }
@@ -176,6 +184,7 @@ struct NoiseHandshake: Sendable {
     ///
     /// Pattern: `-> e`
     /// - Receives initiator's ephemeral public key
+    /// - Per Noise spec, calls decryptAndHash on remaining bytes (empty payload)
     mutating func readMessageA(_ message: Data) throws {
         guard message.count >= noisePublicKeySize else {
             throw NoiseError.handshakeFailed("Message A too short")
@@ -193,6 +202,14 @@ struct NoiseHandshake: Sendable {
 
         // Mix remote ephemeral into hash
         symmetricState.mixHash(remoteEphemeralData)
+
+        // Per Noise spec, ReadMessage always calls DecryptAndHash on remaining bytes.
+        // For message A, the remaining bytes are empty (no payload), but we still need
+        // to call decryptAndHash(empty) which does mixHash(empty ciphertext).
+        // Since no key is set yet, decryptAndHash returns empty but still does mixHash(empty).
+        // This is required for compatibility with go-libp2p/flynn-noise.
+        let remainingBytes = Data(message.dropFirst(noisePublicKeySize))
+        _ = try symmetricState.decryptAndHash(remainingBytes)
     }
 
     /// Writes Message B (responder's response).

@@ -15,16 +15,50 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
 
     public init() {}
 
+    /// Upgrades a raw connection to a secured connection using Noise protocol.
+    ///
+    /// This is the protocol-conforming method that starts with an empty buffer.
+    /// If you have remainder data from multistream-select, use the overload with `initialBuffer`.
+    ///
+    /// - Parameters:
+    ///   - connection: The raw connection to upgrade
+    ///   - localKeyPair: The local key pair for authentication
+    ///   - role: Whether we initiated or are responding
+    ///   - expectedPeer: The expected remote peer ID (optional)
+    /// - Returns: A secured connection
     public func secure(
         _ connection: any RawConnection,
         localKeyPair: KeyPair,
         as role: SecurityRole,
         expectedPeer: PeerID?
     ) async throws -> any SecuredConnection {
+        try await secure(connection, localKeyPair: localKeyPair, as: role, expectedPeer: expectedPeer, initialBuffer: Data())
+    }
+
+    /// Upgrades a raw connection to a secured connection using Noise protocol with initial buffer.
+    ///
+    /// Use this method when you have remainder data from multistream-select negotiation.
+    /// This prevents data loss when go-libp2p sends protocol confirmation and Noise message
+    /// in the same packet.
+    ///
+    /// - Parameters:
+    ///   - connection: The raw connection to upgrade
+    ///   - localKeyPair: The local key pair for authentication
+    ///   - role: Whether we initiated or are responding
+    ///   - expectedPeer: The expected remote peer ID (optional)
+    ///   - initialBuffer: Initial data buffer (e.g., remainder from multistream-select negotiation)
+    /// - Returns: A secured connection
+    public func secure(
+        _ connection: any RawConnection,
+        localKeyPair: KeyPair,
+        as role: SecurityRole,
+        expectedPeer: PeerID?,
+        initialBuffer: Data
+    ) async throws -> any SecuredConnection {
         let isInitiator = role == .initiator
         var handshake = NoiseHandshake(localKeyPair: localKeyPair, isInitiator: isInitiator)
 
-        var readBuffer = Data()
+        var readBuffer = initialBuffer
         let remotePeer: PeerID
 
         if isInitiator {
