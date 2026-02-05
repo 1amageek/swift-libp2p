@@ -1,173 +1,160 @@
-/// GoLibp2pHarness - Manages a go-libp2p test node via Docker
+/// GoLibp2pHarness
 ///
-/// This harness starts a go-libp2p node in a Docker container and exposes
-/// its QUIC endpoint for Swift interoperability testing.
-///
-/// Prerequisites:
-/// - Docker must be installed and running
-/// - The go-libp2p-test image must be available (see Tests/Interop/Dockerfile)
+/// Manages a go-libp2p Docker container for interoperability testing
 
 import Foundation
 
-/// Manages a go-libp2p test node via Docker
 public final class GoLibp2pHarness: Sendable {
-
-    // MARK: - Types
-
-    /// Information about the running go-libp2p node
     public struct NodeInfo: Sendable {
-        /// The multiaddr to connect to (e.g., /ip4/127.0.0.1/udp/4001/quic-v1)
         public let address: String
-
-        /// The PeerID of the node (e.g., 12D3KooW...)
         public let peerID: String
     }
 
-    /// Errors from the harness
-    public enum HarnessError: Error, Sendable {
-        case dockerNotAvailable
-        case containerStartFailed(String)
-        case parseError(String)
-    }
-
-    // MARK: - Properties
-
-    /// The Docker container ID
-    private let containerId: String
-
-    /// Node information
+    private let containerName: String
+    private let port: UInt16
     public let nodeInfo: NodeInfo
 
-    // MARK: - Initialization
-
-    private init(containerId: String, nodeInfo: NodeInfo) {
-        self.containerId = containerId
+    private init(containerName: String, port: UInt16, nodeInfo: NodeInfo) {
+        self.containerName = containerName
+        self.port = port
         self.nodeInfo = nodeInfo
     }
 
-    // MARK: - Lifecycle
-
-    /// Starts a go-libp2p test node and returns the harness
-    /// - Parameter port: The UDP port to listen on (0 for random)
-    /// - Returns: A harness managing the running node
+    /// Starts a go-libp2p test node in Docker
+    /// - Parameter port: Port to expose (0 for random)
+    /// - Returns: A harness managing the container
     public static func start(port: UInt16 = 0) async throws -> GoLibp2pHarness {
-        // Check Docker availability
-        guard await isDockerAvailable() else {
-            throw HarnessError.dockerNotAvailable
-        }
+        let actualPort = port == 0 ? UInt16.random(in: 10000..<60000) : port
+        let containerName = "go-libp2p-test-\(actualPort)"
 
-        // Build the test image if needed
-        try await buildImageIfNeeded()
-
-        // Start the container
-        let hostPort = port == 0 ? UInt16.random(in: 10000...60000) : port
-
-        let startResult = try await runCommand(
-            "docker", "run", "-d",
-            "-p", "\(hostPort):4001/udp",
-            "-e", "LISTEN_PORT=4001",
-            "go-libp2p-test:latest"
-        )
-
-        let containerId = startResult.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !containerId.isEmpty else {
-            throw HarnessError.containerStartFailed("Empty container ID")
-        }
-
-        // Wait for the node to be ready and get its info
-        let nodeInfo = try await waitForNodeReady(containerId: containerId, hostPort: hostPort)
-
-        return GoLibp2pHarness(containerId: containerId, nodeInfo: nodeInfo)
-    }
-
-    /// Stops and removes the container
-    public func stop() async throws {
-        _ = try? await Self.runCommand("docker", "stop", containerId)
-        _ = try? await Self.runCommand("docker", "rm", "-f", containerId)
-    }
-
-    // MARK: - Private Helpers
-
-    /// Checks if Docker is available
-    private static func isDockerAvailable() async -> Bool {
-        do {
-            _ = try await runCommand("docker", "info")
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Builds the go-libp2p test image if not present
-    private static func buildImageIfNeeded() async throws {
-        // Check if image exists
-        let checkResult = try? await runCommand("docker", "images", "-q", "go-libp2p-test:latest")
-        if let result = checkResult, !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return // Image exists
-        }
-
-        // Build the image
-        let dockerfilePath = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("Dockerfile")
-            .path
-
-        _ = try await runCommand(
+        // Build Docker image
+        let buildProcess = Process()
+        buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        buildProcess.arguments = [
             "docker", "build",
-            "-t", "go-libp2p-test:latest",
-            "-f", dockerfilePath,
-            URL(fileURLWithPath: dockerfilePath).deletingLastPathComponent().path
-        )
-    }
+            "-t", "go-libp2p-test",
+            "-f", "Dockerfile.go",
+            "."
+        ]
+        buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
 
-    /// Waits for the node to be ready and returns its info
-    private static func waitForNodeReady(containerId: String, hostPort: UInt16) async throws -> NodeInfo {
-        // Wait a bit for the node to start
-        try await Task.sleep(for: .seconds(2))
+        try buildProcess.run()
+        buildProcess.waitUntilExit()
 
-        // Get the logs to find the peer ID and listen address
-        let logs = try await runCommand("docker", "logs", containerId)
-
-        // Parse PeerID from logs (format: "PeerID: 12D3KooW...")
-        guard let peerIdMatch = logs.range(of: "PeerID: ([a-zA-Z0-9]+)", options: .regularExpression) else {
-            throw HarnessError.parseError("Could not find PeerID in logs: \(logs)")
+        guard buildProcess.terminationStatus == 0 else {
+            throw TestHarnessError.dockerBuildFailed
         }
 
-        let peerIdLine = String(logs[peerIdMatch])
-        let peerID = String(peerIdLine.dropFirst("PeerID: ".count))
+        // Remove existing container if any
+        let rmProcess = Process()
+        rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        rmProcess.arguments = ["docker", "rm", "-f", containerName]
+        try? rmProcess.run()
+        rmProcess.waitUntilExit()
 
-        let address = "/ip4/127.0.0.1/udp/\(hostPort)/quic-v1"
+        // Start container
+        let runProcess = Process()
+        runProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        runProcess.arguments = [
+            "docker", "run",
+            "--rm",
+            "-d",
+            "--name", containerName,
+            "-p", "\(actualPort):4001/udp",
+            "-e", "LISTEN_PORT=4001",
+            "go-libp2p-test"
+        ]
 
-        return NodeInfo(address: address, peerID: peerID)
-    }
+        try runProcess.run()
+        runProcess.waitUntilExit()
 
-    /// Runs a command and returns its output
-    @discardableResult
-    private static func runCommand(_ args: String...) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = args
+        guard runProcess.terminationStatus == 0 else {
+            throw TestHarnessError.dockerRunFailed
+        }
+
+        // Wait for node to be ready and get peer ID
+        var attempts = 0
+        var nodeInfo: NodeInfo?
+
+        while attempts < 30 {
+            try await Task.sleep(for: .milliseconds(500))
+
+            let logsProcess = Process()
+            logsProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            logsProcess.arguments = ["docker", "logs", containerName]
 
             let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
+            logsProcess.standardOutput = pipe
 
-            do {
-                try process.run()
-                process.waitUntilExit()
+            try logsProcess.run()
+            logsProcess.waitUntilExit()
 
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
 
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    continuation.resume(throwing: HarnessError.containerStartFailed(output))
+            // Look for "Listen: " line
+            if let listenLine = output.components(separatedBy: "\n")
+                .first(where: { $0.contains("Listen: ") }) {
+
+                // Extract multiaddr
+                let parts = listenLine.components(separatedBy: "Listen: ")
+                if parts.count >= 2 {
+                    let multiaddr = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    // Extract peer ID from multiaddr
+                    if let peerIDComponent = multiaddr.components(separatedBy: "/p2p/").last {
+                        let peerID = peerIDComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                        // Build address with actual exposed port
+                        let address = "/ip4/127.0.0.1/udp/\(actualPort)/quic-v1/p2p/\(peerID)"
+
+                        nodeInfo = NodeInfo(address: address, peerID: peerID)
+                        print("go-libp2p node ready: \(address)")
+                        break
+                    }
                 }
-            } catch {
-                continuation.resume(throwing: error)
             }
+
+            attempts += 1
         }
+
+        guard let info = nodeInfo else {
+            // Cleanup on failure
+            let stopProcess = Process()
+            stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            stopProcess.arguments = ["docker", "stop", containerName]
+            try? stopProcess.run()
+            stopProcess.waitUntilExit()
+
+            throw TestHarnessError.nodeNotReady
+        }
+
+        return GoLibp2pHarness(containerName: containerName, port: actualPort, nodeInfo: info)
     }
+
+    /// Stops the container
+    public func stop() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["docker", "stop", containerName]
+
+        try process.run()
+        process.waitUntilExit()
+    }
+
+    deinit {
+        // Best effort cleanup
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["docker", "stop", containerName]
+        try? process.run()
+        process.waitUntilExit()
+    }
+}
+
+public enum TestHarnessError: Error {
+    case dockerBuildFailed
+    case dockerRunFailed
+    case nodeNotReady
 }

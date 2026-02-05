@@ -148,11 +148,21 @@ enum IdentifyProtobuf {
 
             switch fieldNumber {
             case 1: // publicKey
-                publicKey = try PublicKey(protobufEncoded: fieldData)
+                do {
+                    publicKey = try PublicKey(protobufEncoded: fieldData)
+                } catch {
+                    print("[IdentifyProtobuf] Failed to decode publicKey: \(error)")
+                    throw IdentifyError.invalidProtobuf("publicKey decode failed: \(error)")
+                }
 
             case 2: // listenAddrs
-                let addr = try Multiaddr(bytes: fieldData)
-                listenAddresses.append(addr)
+                do {
+                    let addr = try Multiaddr(bytes: fieldData)
+                    listenAddresses.append(addr)
+                } catch {
+                    // listenAddrs is repeated/optional, skip invalid entries
+                    print("[IdentifyProtobuf] WARNING: Failed to decode listenAddr: \(error), skipping")
+                }
 
             case 3: // protocols
                 if let proto = String(data: fieldData, encoding: .utf8) {
@@ -160,7 +170,13 @@ enum IdentifyProtobuf {
                 }
 
             case 4: // observedAddr
-                observedAddress = try Multiaddr(bytes: fieldData)
+                do {
+                    observedAddress = try Multiaddr(bytes: fieldData)
+                } catch {
+                    // observedAddr is optional, skip if decode fails
+                    print("[IdentifyProtobuf] WARNING: Failed to decode observedAddr: \(error), skipping")
+                    observedAddress = nil
+                }
 
             case 5: // protocolVersion
                 protocolVersion = String(data: fieldData, encoding: .utf8)
@@ -169,7 +185,13 @@ enum IdentifyProtobuf {
                 agentVersion = String(data: fieldData, encoding: .utf8)
 
             case 8: // signedPeerRecord
-                signedPeerRecord = try Envelope.unmarshal(fieldData)
+                do {
+                    signedPeerRecord = try Envelope.unmarshal(fieldData)
+                } catch {
+                    // signedPeerRecord is optional, log and skip if decode fails
+                    print("[IdentifyProtobuf] WARNING: Failed to decode signedPeerRecord: \(error), continuing without it")
+                    signedPeerRecord = nil
+                }
 
             default:
                 // Skip unknown fields

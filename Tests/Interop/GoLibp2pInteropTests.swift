@@ -1,6 +1,6 @@
-/// RustInteropTests - Interoperability tests with rust-libp2p
+/// GoLibp2pInteropTests - Interoperability tests with go-libp2p
 ///
-/// Tests that swift-libp2p can communicate with rust-libp2p nodes
+/// Tests that swift-libp2p can communicate with go-libp2p nodes
 /// over QUIC transport with Noise security.
 ///
 /// Prerequisites:
@@ -19,63 +19,19 @@ import NIOCore
 @testable import P2PProtocols
 import QUIC
 
-/// Interoperability tests with rust-libp2p
+/// Interoperability tests with go-libp2p
 ///
 /// These tests require Docker to be running.
-/// Run with: swift test --filter RustInteropTests
-@Suite("Rust-libp2p Interop Tests")
-struct RustInteropTests {
+/// Run with: swift test --filter GoLibp2pInteropTests
+@Suite("go-libp2p Interop Tests")
+struct GoLibp2pInteropTests {
 
     // MARK: - Connection Tests
 
-    @Test("Send raw data to rust-libp2p (no protocol negotiation)", .timeLimit(.minutes(2)))
-    func sendRawData() async throws {
-        // Start rust-libp2p node
-        let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
-
-        let nodeInfo = harness.nodeInfo
-
-        // Create Swift client
-        let keyPair = KeyPair.generateEd25519()
-        let transport = QUICTransport()
-
-        // Connect to rust-libp2p node
-        let connection = try await transport.dialSecured(
-            Multiaddr(nodeInfo.address),
-            localKeyPair: keyPair
-        )
-
-        // Open stream
-        let stream = try await connection.newStream()
-
-        print("Stream opened: ID=\(stream.id)")
-
-        // Send simple data
-        let testData = Data("Hello".utf8)
-        try await stream.write(ByteBuffer(bytes: testData))
-        print("Data written to stream")
-
-        // Give time for frame generation and sending
-        try await Task.sleep(for: .milliseconds(500))
-        print("Waited 500ms for frame generation")
-
-        // Close write to send FIN
-        try await stream.closeWrite()
-        print("Write side closed (FIN sent)")
-
-        // Wait for packets to be sent and processed
-        try await Task.sleep(for: .seconds(2))
-
-        // Close stream
-        try await stream.close()
-        try await connection.close()
-    }
-
-    @Test("Connect to rust-libp2p node over QUIC", .timeLimit(.minutes(2)))
+    @Test("Connect to go-libp2p node over QUIC", .timeLimit(.minutes(2)))
     func connectToGo() async throws {
-        // Start rust-libp2p node
-        let harness = try await RustLibp2pHarness.start()
+        // Start go-libp2p node
+        let harness = try await GoLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
@@ -84,7 +40,7 @@ struct RustInteropTests {
         let keyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        // Connect to rust-libp2p node
+        // Connect to go-libp2p node
         let connection = try await transport.dialSecured(
             Multiaddr(nodeInfo.address),
             localKeyPair: keyPair
@@ -99,9 +55,9 @@ struct RustInteropTests {
 
     // MARK: - Identify Tests
 
-    @Test("Identify rust-libp2p node", .timeLimit(.minutes(2)))
+    @Test("Identify go-libp2p node", .timeLimit(.minutes(2)))
     func identifyGo() async throws {
-        let harness = try await RustLibp2pHarness.start()
+        let harness = try await GoLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
@@ -140,8 +96,8 @@ struct RustInteropTests {
         let protobufData = bytes.dropFirst(prefixBytes)
         let info = try IdentifyProtobuf.decode(Data(protobufData))
 
-        // Verify rust-libp2p response
-        #expect(info.agentVersion?.contains("rust-libp2p") == true || info.agentVersion != nil)
+        // Verify go-libp2p response
+        #expect(info.agentVersion?.contains("go-libp2p") == true || info.agentVersion != nil)
         #expect(info.protocolVersion != nil)
         #expect(info.protocols.contains("/ipfs/ping/1.0.0") || info.protocols.count > 0)
         #expect(info.publicKey != nil)
@@ -151,9 +107,9 @@ struct RustInteropTests {
         try await connection.close()
     }
 
-    @Test("Verify rust-libp2p PeerID matches public key", .timeLimit(.minutes(2)))
+    @Test("Verify go-libp2p PeerID matches public key", .timeLimit(.minutes(2)))
     func verifyGoPeerID() async throws {
-        let harness = try await RustLibp2pHarness.start()
+        let harness = try await GoLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
@@ -194,7 +150,7 @@ struct RustInteropTests {
             let derivedPeerID = PeerID(publicKey: publicKey)
 
             // The derived PeerID should match the one we connected to
-            // (at least the prefix, since rust-libp2p may use different encoding)
+            // (at least the prefix, since go-libp2p may use different encoding)
             #expect(derivedPeerID.description.hasPrefix("12D3KooW") || derivedPeerID.description.hasPrefix("Qm"))
         } else {
             Issue.record("No public key in identify response")
@@ -206,9 +162,9 @@ struct RustInteropTests {
 
     // MARK: - Ping Tests
 
-    @Test("Ping rust-libp2p node", .timeLimit(.minutes(2)))
+    @Test("Ping go-libp2p node", .timeLimit(.minutes(2)))
     func pingGo() async throws {
-        let harness = try await RustLibp2pHarness.start()
+        let harness = try await GoLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
@@ -251,9 +207,9 @@ struct RustInteropTests {
         try await connection.close()
     }
 
-    @Test("Multiple pings to rust-libp2p node", .timeLimit(.minutes(2)))
+    @Test("Multiple pings to go-libp2p node", .timeLimit(.minutes(2)))
     func multiplePingsToGo() async throws {
-        let harness = try await RustLibp2pHarness.start()
+        let harness = try await GoLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
@@ -307,9 +263,9 @@ struct RustInteropTests {
 
     // MARK: - Bidirectional Tests
 
-    @Test("Bidirectional stream with rust-libp2p", .timeLimit(.minutes(2)))
+    @Test("Bidirectional stream with go-libp2p", .timeLimit(.minutes(2)))
     func bidirectionalStream() async throws {
-        let harness = try await RustLibp2pHarness.start()
+        let harness = try await GoLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
@@ -345,6 +301,50 @@ struct RustInteropTests {
         try await stream.close()
         try await connection.close()
     }
+
+    @Test("Send raw data to go-libp2p (no protocol negotiation)", .timeLimit(.minutes(2)))
+    func sendRawData() async throws {
+        // Start go-libp2p node
+        let harness = try await GoLibp2pHarness.start()
+        defer { Task { try? await harness.stop() } }
+
+        let nodeInfo = harness.nodeInfo
+
+        // Create Swift client
+        let keyPair = KeyPair.generateEd25519()
+        let transport = QUICTransport()
+
+        // Connect to go-libp2p node
+        let connection = try await transport.dialSecured(
+            Multiaddr(nodeInfo.address),
+            localKeyPair: keyPair
+        )
+
+        // Open stream
+        let stream = try await connection.newStream()
+
+        print("Stream opened: ID=\(stream.id)")
+
+        // Send simple data
+        let testData = Data("Hello from swift-libp2p".utf8)
+        try await stream.write(ByteBuffer(bytes: testData))
+        print("Data written to stream")
+
+        // Give time for frame generation and sending
+        try await Task.sleep(for: .milliseconds(500))
+        print("Waited 500ms for frame generation")
+
+        // Close write to send FIN
+        try await stream.closeWrite()
+        print("Write side closed (FIN sent)")
+
+        // Wait for packets to be sent and processed
+        try await Task.sleep(for: .seconds(2))
+
+        // Close stream
+        try await stream.close()
+        try await connection.close()
+    }
 }
 
 // MARK: - Manual Test Entry Point
@@ -354,12 +354,12 @@ struct RustInteropTests {
 /// ```bash
 /// # Build the test image first
 /// cd Tests/Interop
-/// docker build -t rust-libp2p-test .
+/// docker build -t go-libp2p-test -f Dockerfile.go .
 ///
 /// # Run interop tests
-/// swift test --filter RustInteropTests
+/// swift test --filter GoLibp2pInteropTests
 /// ```
-extension RustInteropTests {
+extension GoLibp2pInteropTests {
 
     @Test("Manual: Check Docker availability", .disabled("Manual test"))
     func checkDocker() async throws {

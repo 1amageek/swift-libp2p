@@ -1,5 +1,5 @@
 {
-  "originHash" : "557b62c0cb67e2b3927dc240112be2c4e64c82984ec9ad3e85bd2d97b1e60584",
+  "originHash" : "5f152016f69c4ce2350b8ab0d840266e5fdc33b4da3ef0d97af75529f73a21ff",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -56,15 +56,6 @@
       }
     },
     {
-      "identity" : "swift-mdns",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/1amageek/swift-mDNS.git",
-      "state" : {
-        "revision" : "74b2f477ecc60fb89a4f323a9489c675cd2cb82c",
-        "version" : "1.1.0"
-      }
-    },
-    {
       "identity" : "swift-nio",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
@@ -78,17 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-nio-udp.git",
       "state" : {
-        "revision" : "b5465af42e292c75157f9a610337143b78882108",
-        "version" : "1.0.0"
-      }
-    },
-    {
-      "identity" : "swift-quic",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/1amageek/swift-quic.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "2f99e1a198d153a276983ee7430dd9973674fcfb"
+        "revision" : "81bc221147d585a4edc24b15b3ef7c0d7278c365",
+        "version" : "1.0.1"
       }
     },
     {

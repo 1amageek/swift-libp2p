@@ -1,121 +1,147 @@
-# Dockerfile for go-libp2p test node
+# Dockerfile for rust-libp2p test node
 #
-# This creates a simple go-libp2p node that listens on QUIC
+# This creates a simple rust-libp2p node that listens on QUIC
 # and supports Identify and Ping protocols.
 
-FROM golang:1.22-alpine AS builder
+FROM rust:1.83-alpine AS builder
 
 WORKDIR /app
 
-# Create go.mod
-RUN echo 'module go-libp2p-test' > go.mod && \
-    echo '' >> go.mod && \
-    echo 'go 1.22' >> go.mod && \
-    echo '' >> go.mod && \
-    echo 'require github.com/libp2p/go-libp2p v0.36.0' >> go.mod
+# Install build dependencies
+RUN apk add --no-cache musl-dev
+
+# Install nightly Rust for edition2024 support
+RUN rustup toolchain install nightly && rustup default nightly
+
+# Create a new Rust project
+RUN cargo init --name rust-libp2p-test
+
+# Add dependencies to Cargo.toml
+RUN cat > Cargo.toml << 'EOF'
+[package]
+name = "rust-libp2p-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p = { version = "0.56", features = ["quic", "tcp", "noise", "yamux", "ping", "identify", "macros", "tokio"] }
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+EOF
 
 # Create the test server
-RUN cat > main.go << 'EOF'
-package main
+RUN cat > src/main.rs << 'EOF'
+use futures::StreamExt;
+use libp2p::{
+    identify, ping,
+    swarm::{NetworkBehaviour, SwarmEvent},
+    Multiaddr, SwarmBuilder,
+};
+use std::error::Error;
+use std::time::Duration;
+use tracing::{info, warn};
 
-import (
-	"context"
-	"fmt"
-	"io"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
+#[derive(NetworkBehaviour)]
+struct Behaviour {
+    ping: ping::Behaviour,
+    identify: identify::Behaviour,
+}
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
-	ma "github.com/multiformats/go-multiaddr"
-)
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    // Setup logging with detailed QUIC/TLS traces
+    tracing_subscriber::fmt()
+        .with_env_filter("info,rust_libp2p_test=trace,libp2p=trace,libp2p_quic=trace,quinn=trace")
+        .init();
 
-func main() {
-	port := os.Getenv("LISTEN_PORT")
-	if port == "" {
-		port = "4001"
-	}
+    // Get port from environment
+    let port: u16 = std::env::var("LISTEN_PORT")
+        .unwrap_or_else(|_| "4001".to_string())
+        .parse()
+        .expect("Invalid port");
 
-	// Create a new libp2p host with QUIC transport
-	// QUIC is enabled by default in go-libp2p v0.36+
-	listenAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/udp/%s/quic-v1", port))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create listen address: %v\n", err)
-		os.Exit(1)
-	}
+    // Create swarm using SwarmBuilder
+    let mut swarm = SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_quic()
+        .with_behaviour(|keypair| {
+            let peer_id = keypair.public().to_peer_id();
+            info!("Local peer id: {peer_id}");
 
-	h, err := libp2p.New(
-		libp2p.ListenAddrs(listenAddr),
-		// QUIC and Noise are enabled by default
-		libp2p.Ping(true),
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create host: %v\n", err)
-		os.Exit(1)
-	}
-	defer h.Close()
+            Behaviour {
+                ping: ping::Behaviour::new(ping::Config::new()),
+                identify: identify::Behaviour::new(identify::Config::new(
+                    "/ipfs/0.1.0".to_string(),
+                    keypair.public(),
+                )),
+            }
+        })
+        .expect("Failed to create behaviour")
+        .with_swarm_config(|cfg| {
+            cfg.with_idle_connection_timeout(Duration::from_secs(60))
+        })
+        .build();
 
-	// Create ping service
-	pingService := ping.NewPingService(h)
-	_ = pingService
+    // Listen on QUIC
+    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1")
+        .parse()
+        .expect("Invalid multiaddr");
 
-	// Set up network notifications for debugging
-	h.Network().Notify(&network.NotifyBundle{
-		ConnectedF: func(n network.Network, c network.Conn) {
-			log.Printf("Connected: peer=%s", c.RemotePeer())
-		},
-		DisconnectedF: func(n network.Network, c network.Conn) {
-			log.Printf("Disconnected: peer=%s", c.RemotePeer())
-		},
-	})
+    swarm.listen_on(listen_addr.clone())?;
+    info!("Listening on {listen_addr}");
 
-	// Set stream handler for catch-all debugging
-	h.SetStreamHandler("/debug", func(s network.Stream) {
-		log.Printf("Received /debug stream from %s", s.Conn().RemotePeer())
-		io.Copy(io.Discard, s)
-		s.Close()
-	})
-
-	// Log all supported protocols
-	log.Println("Supported protocols:")
-	for _, proto := range h.Mux().Protocols() {
-		log.Printf("  %s", proto)
-	}
-
-	// Print node info
-	fmt.Printf("PeerID: %s\n", h.ID())
-	for _, addr := range h.Addrs() {
-		fmt.Printf("Listen: %s/p2p/%s\n", addr, h.ID())
-	}
-	fmt.Println("Ready to accept connections")
-
-	// Wait for shutdown signal
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-sigChan:
-		fmt.Println("Shutting down...")
-	case <-ctx.Done():
-	}
+    loop {
+        match swarm.next().await {
+            Some(SwarmEvent::NewListenAddr { address, .. }) => {
+                let peer_id = swarm.local_peer_id();
+                println!("Listen: {}/p2p/{}", address, peer_id);
+                println!("Ready to accept connections");
+            }
+            Some(SwarmEvent::IncomingConnection { local_addr, send_back_addr, .. }) => {
+                info!("Incoming connection from {send_back_addr} to {local_addr}");
+            }
+            Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) => {
+                info!("Connected: peer={peer_id} endpoint={endpoint:?}");
+            }
+            Some(SwarmEvent::ConnectionClosed { peer_id, cause, .. }) => {
+                info!("Disconnected: peer={peer_id} cause={cause:?}");
+            }
+            Some(SwarmEvent::IncomingConnectionError { local_addr, send_back_addr, error, .. }) => {
+                warn!("Incoming connection error from {send_back_addr} to {local_addr}: {error}");
+            }
+            Some(SwarmEvent::Behaviour(BehaviourEvent::Ping(event))) => {
+                match event.result {
+                    Ok(rtt) => info!("Ping: peer={:?} rtt={rtt:?}", event.peer),
+                    Err(err) => warn!("Ping failed: peer={:?} error={err}", event.peer),
+                }
+            }
+            Some(SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. }))) => {
+                info!("Identify received: peer={peer_id} agent={} protocols={:?}",
+                    info.agent_version, info.protocols);
+            }
+            Some(SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent { peer_id, .. }))) => {
+                info!("Identify sent to: peer={peer_id}");
+            }
+            Some(event) => {
+                info!("Other event: {event:?}");
+            }
+            None => break,
+        }
+    }
+    Ok(())
 }
 EOF
 
-# Download dependencies and build
-RUN go mod tidy && \
-    CGO_ENABLED=0 go build -o /go-libp2p-test .
+# Build the application
+RUN cargo build --release
 
 # Final image
 FROM alpine:3.19
 
-COPY --from=builder /go-libp2p-test /usr/local/bin/go-libp2p-test
+COPY --from=builder /app/target/release/rust-libp2p-test /usr/local/bin/rust-libp2p-test
 
 EXPOSE 4001/udp
 
-ENTRYPOINT ["/usr/local/bin/go-libp2p-test"]
+ENTRYPOINT ["/usr/local/bin/rust-libp2p-test"]
