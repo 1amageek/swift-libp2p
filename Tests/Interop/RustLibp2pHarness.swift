@@ -51,123 +51,115 @@ public final class RustLibp2pHarness: Sendable {
     /// - Parameter port: The UDP port to listen on (0 for random)
     /// - Returns: A harness managing the running node
     public static func start(port: UInt16 = 0) async throws -> RustLibp2pHarness {
-        // Check Docker availability
-        guard await isDockerAvailable() else {
-            throw HarnessError.dockerNotAvailable
+        let hostPort = port == 0 ? UInt16.random(in: 10000...60000) : port
+        let containerName = "rust-libp2p-test-\(hostPort)"
+
+        // Build Docker image if needed
+        let buildProcess = Process()
+        buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        buildProcess.arguments = [
+            "docker", "build",
+            "-t", "rust-libp2p-test",
+            "-f", "Dockerfile",
+            "."
+        ]
+        buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+
+        try buildProcess.run()
+        buildProcess.waitUntilExit()
+
+        guard buildProcess.terminationStatus == 0 else {
+            throw HarnessError.containerStartFailed("Docker build failed")
         }
 
-        // Build the test image if needed
-        try await buildImageIfNeeded()
+        // Remove existing container if any
+        let rmProcess = Process()
+        rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        rmProcess.arguments = ["docker", "rm", "-f", containerName]
+        try? rmProcess.run()
+        rmProcess.waitUntilExit()
 
-        // Start the container
-        let hostPort = port == 0 ? UInt16.random(in: 10000...60000) : port
-
-        let startResult = try await runCommand(
-            "docker", "run", "-d",
+        // Start container
+        let runProcess = Process()
+        runProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        runProcess.arguments = [
+            "docker", "run",
+            "--rm",
+            "-d",
+            "--name", containerName,
             "-p", "\(hostPort):4001/udp",
             "-e", "LISTEN_PORT=4001",
-            "rust-libp2p-test:latest"
-        )
+            "rust-libp2p-test"
+        ]
 
-        let containerId = startResult.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !containerId.isEmpty else {
-            throw HarnessError.containerStartFailed("Empty container ID")
+        try runProcess.run()
+        runProcess.waitUntilExit()
+
+        guard runProcess.terminationStatus == 0 else {
+            throw HarnessError.containerStartFailed("Docker run failed")
         }
 
-        // Wait for the node to be ready and get its info
-        let nodeInfo = try await waitForNodeReady(containerId: containerId, hostPort: hostPort)
+        // Wait for node to be ready and get peer ID
+        var attempts = 0
+        var nodeInfo: NodeInfo?
 
-        return RustLibp2pHarness(containerId: containerId, nodeInfo: nodeInfo)
+        while attempts < 30 {
+            try await Task.sleep(for: .milliseconds(500))
+
+            let logsProcess = Process()
+            logsProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            logsProcess.arguments = ["docker", "logs", containerName]
+
+            let pipe = Pipe()
+            logsProcess.standardOutput = pipe
+            logsProcess.standardError = pipe
+
+            try logsProcess.run()
+            logsProcess.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+
+            // Look for "Listen: " line
+            if let listenLine = output.components(separatedBy: "\n")
+                .first(where: { $0.contains("Listen: ") }) {
+
+                // Extract peer ID from the line using regex
+                if let peerIdMatch = listenLine.range(of: "12D3KooW[a-zA-Z0-9]+", options: .regularExpression) {
+                    let peerID = String(listenLine[peerIdMatch])
+
+                    // Build address with actual exposed port
+                    let address = "/ip4/127.0.0.1/udp/\(hostPort)/quic-v1/p2p/\(peerID)"
+
+                    nodeInfo = NodeInfo(address: address, peerID: peerID)
+                    print("rust-libp2p node ready: \(address)")
+                    break
+                }
+            }
+
+            attempts += 1
+        }
+
+        guard let info = nodeInfo else {
+            throw HarnessError.parseError("Could not start rust-libp2p node after 30 attempts")
+        }
+
+        return RustLibp2pHarness(containerId: containerName, nodeInfo: info)
     }
 
     /// Stops and removes the container
     public func stop() async throws {
-        _ = try? await Self.runCommand("docker", "stop", containerId)
-        _ = try? await Self.runCommand("docker", "rm", "-f", containerId)
-    }
+        let stopProcess = Process()
+        stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        stopProcess.arguments = ["docker", "stop", containerId]
+        try? stopProcess.run()
+        stopProcess.waitUntilExit()
 
-    // MARK: - Private Helpers
-
-    /// Checks if Docker is available
-    private static func isDockerAvailable() async -> Bool {
-        do {
-            _ = try await runCommand("docker", "info")
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Builds the rust-libp2p test image if not present
-    private static func buildImageIfNeeded() async throws {
-        // Check if image exists
-        let checkResult = try? await runCommand("docker", "images", "-q", "rust-libp2p-test:latest")
-        if let result = checkResult, !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return // Image exists
-        }
-
-        // Build the image
-        let dockerfilePath = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("Dockerfile")
-            .path
-
-        _ = try await runCommand(
-            "docker", "build",
-            "-t", "rust-libp2p-test:latest",
-            "-f", dockerfilePath,
-            URL(fileURLWithPath: dockerfilePath).deletingLastPathComponent().path
-        )
-    }
-
-    /// Waits for the node to be ready and returns its info
-    private static func waitForNodeReady(containerId: String, hostPort: UInt16) async throws -> NodeInfo {
-        // Wait a bit for the node to start
-        try await Task.sleep(for: .seconds(3))
-
-        // Get the logs to find the peer ID and listen address
-        let logs = try await runCommand("docker", "logs", containerId)
-
-        // Parse PeerID from logs (format: "Local peer id: 12D3KooW..." for rust-libp2p)
-        guard let peerIdMatch = logs.range(of: "Local peer id: ([a-zA-Z0-9]+)", options: .regularExpression) else {
-            throw HarnessError.parseError("Could not find PeerID in logs: \(logs)")
-        }
-
-        let peerIdLine = String(logs[peerIdMatch])
-        let peerID = String(peerIdLine.dropFirst("Local peer id: ".count))
-
-        let address = "/ip4/127.0.0.1/udp/\(hostPort)/quic-v1"
-
-        return NodeInfo(address: address, peerID: peerID)
-    }
-
-    /// Runs a command and returns its output
-    @discardableResult
-    private static func runCommand(_ args: String...) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = args
-
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    continuation.resume(throwing: HarnessError.containerStartFailed(output))
-                }
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
+        let rmProcess = Process()
+        rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        rmProcess.arguments = ["docker", "rm", "-f", containerId]
+        try? rmProcess.run()
+        rmProcess.waitUntilExit()
     }
 }
