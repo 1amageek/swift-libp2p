@@ -81,6 +81,20 @@ public struct KademliaConfiguration: Sendable {
 
     // MARK: - S/Kademlia Security
 
+    // MARK: - Dynamic Alpha
+
+    /// Whether to dynamically adjust alpha based on network conditions.
+    ///
+    /// When enabled, the alpha (parallelism) value is adjusted based on
+    /// peer latency and success rate from the PeerLatencyTracker.
+    public var enableDynamicAlpha: Bool
+
+    /// Minimum alpha value when dynamic alpha is enabled.
+    public var minAlpha: Int
+
+    /// Maximum alpha value when dynamic alpha is enabled.
+    public var maxAlpha: Int
+
     /// S/Kademlia (Secure Kademlia) configuration.
     ///
     /// S/Kademlia extends standard Kademlia with security features to resist
@@ -107,6 +121,9 @@ public struct KademliaConfiguration: Sendable {
         mode: KademliaMode = .automatic,
         recordValidator: (any RecordValidator)? = DefaultRecordValidator(),
         onValidationFailure: ValidationFailureAction = .reject,
+        enableDynamicAlpha: Bool = false,
+        minAlpha: Int = 1,
+        maxAlpha: Int = 10,
         skademlia: SKademliaConfig = .disabled
     ) {
         self.kValue = kValue
@@ -124,6 +141,9 @@ public struct KademliaConfiguration: Sendable {
         self.mode = mode
         self.recordValidator = recordValidator
         self.onValidationFailure = onValidationFailure
+        self.enableDynamicAlpha = enableDynamicAlpha
+        self.minAlpha = minAlpha
+        self.maxAlpha = maxAlpha
         self.skademlia = skademlia
     }
 
@@ -198,11 +218,17 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         var opener: (any StreamOpener)?
     }
 
+    /// Peer latency tracker.
+    public let peerLatencyTracker = PeerLatencyTracker()
+
     /// Background cleanup task.
     private let cleanupTask: Mutex<Task<Void, Never>?>
 
     /// Background refresh task.
     private let refreshTask: Mutex<Task<Void, Never>?>
+
+    /// Background republish task.
+    private let republishTask: Mutex<Task<Void, Never>?>
 
     // MARK: - Initialization
 
@@ -224,6 +250,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         self.serviceState = Mutex(ServiceState(mode: configuration.mode))
         self.cleanupTask = Mutex(nil)
         self.refreshTask = Mutex(nil)
+        self.republishTask = Mutex(nil)
     }
 
     // MARK: - Events
@@ -254,6 +281,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
     public func shutdown() {
         stopMaintenance()
         stopRefresh()
+        stopRepublish()
         eventState.withLock { state in
             state.continuation?.yield(.stopped)
             state.continuation?.finish()
@@ -340,6 +368,98 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         }
     }
 
+    // MARK: - Record Republish
+
+    /// Starts the background republish loop.
+    ///
+    /// Periodically republishes locally stored records and provider announcements
+    /// to the closest peers, ensuring data persistence across the DHT.
+    ///
+    /// - Parameter opener: Stream opener for sending requests.
+    public func startRepublish(using opener: any StreamOpener) {
+        republishTask.withLock { task in
+            task?.cancel()
+            task = Task { [weak self] in
+                guard let self else { return }
+                await self.runRepublishLoop(opener: opener)
+            }
+        }
+    }
+
+    /// Stops the background republish loop.
+    public func stopRepublish() {
+        republishTask.withLock { task in
+            task?.cancel()
+            task = nil
+        }
+    }
+
+    /// Runs the republish loop.
+    private func runRepublishLoop(opener: any StreamOpener) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: configuration.recordRepublishInterval)
+            } catch {
+                break
+            }
+
+            // Republish stale records
+            let staleRecords = recordStore.recordsNeedingRepublish(
+                threshold: configuration.recordRepublishInterval
+            )
+            for record in staleRecords {
+                guard !Task.isCancelled else { break }
+                let key = KademliaKey(hashing: record.key)
+                let closestPeers = routingTable.closestPeers(to: key)
+                    .map { KademliaPeer(id: $0.peerID, addresses: $0.addresses) }
+                var stored = 0
+                for peer in closestPeers {
+                    do {
+                        try await sendPutValue(to: peer.id, record: record, opener: opener)
+                        stored += 1
+                    } catch {
+                        logger.debug("Republish to \(peer.id) failed: \(error)")
+                    }
+                }
+                if stored > 0 {
+                    // Re-put locally to refresh the timestamp
+                    recordStore.put(record)
+                    emit(.recordRepublished(key: record.key, toPeers: stored))
+                }
+            }
+
+            // Republish stale provider announcements
+            let staleProviderKeys = providerStore.keysNeedingRepublish(
+                localPeerID: localPeerID,
+                threshold: configuration.providerRepublishInterval
+            )
+            for key in staleProviderKeys {
+                guard !Task.isCancelled else { break }
+                let kadKey = KademliaKey(hashing: key)
+                let closestPeers = routingTable.closestPeers(to: kadKey)
+                    .map { KademliaPeer(id: $0.peerID, addresses: $0.addresses) }
+                let localAddresses = providerStore.getProviders(for: key)
+                    .first(where: { $0.peerID == localPeerID })?.addresses ?? []
+                let localProvider = KademliaPeer(id: localPeerID, addresses: localAddresses)
+                var announced = 0
+                for peer in closestPeers {
+                    do {
+                        try await sendAddProvider(to: peer.id, key: key, provider: localProvider, opener: opener)
+                        announced += 1
+                    } catch {
+                        logger.debug("Provider republish to \(peer.id) failed: \(error)")
+                    }
+                }
+                if announced > 0 {
+                    emit(.providerAnnounced(key: key, toPeers: announced))
+                }
+            }
+
+            // Periodic latency tracker cleanup
+            peerLatencyTracker.cleanup(olderThan: Duration.seconds(3600))
+        }
+    }
+
     /// Runs the refresh loop.
     private func runRefreshLoop(interval: Duration) async {
         while !Task.isCancelled {
@@ -383,6 +503,36 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         }
 
         emit(.refreshCompleted(bucketsRefreshed: bucketsRefreshed))
+    }
+
+    // MARK: - Dynamic Alpha
+
+    /// Calculates the current alpha value based on network conditions.
+    ///
+    /// When dynamic alpha is disabled, returns the configured static alpha.
+    /// When enabled, adjusts alpha based on peer success rate:
+    /// - High success rate (>80%) → increase alpha for faster queries
+    /// - Low success rate (<50%) → decrease alpha to reduce wasted requests
+    private func currentAlpha() -> Int {
+        guard configuration.enableDynamicAlpha else {
+            return configuration.alphaValue
+        }
+        guard let successRate = peerLatencyTracker.overallSuccessRate() else {
+            return configuration.alphaValue
+        }
+
+        let alpha: Int
+        if successRate > 0.8 {
+            // Good network: increase parallelism
+            alpha = configuration.alphaValue + Int((successRate - 0.8) * 10.0)
+        } else if successRate < 0.5 {
+            // Poor network: reduce parallelism
+            alpha = max(configuration.minAlpha, configuration.alphaValue - Int((0.5 - successRate) * 10.0))
+        } else {
+            alpha = configuration.alphaValue
+        }
+
+        return min(max(alpha, configuration.minAlpha), configuration.maxAlpha)
     }
 
     // MARK: - Mode
@@ -688,7 +838,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         let query = KademliaQuery(
             type: .findNode(targetKey),
             config: KademliaQueryConfig(
-                alpha: configuration.alphaValue,
+                alpha: currentAlpha(),
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
             ),
@@ -759,7 +909,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         let query = KademliaQuery(
             type: .getValue(key),
             config: KademliaQueryConfig(
-                alpha: configuration.alphaValue,
+                alpha: currentAlpha(),
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
             ),
@@ -866,7 +1016,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         let query = KademliaQuery(
             type: .getProviders(key),
             config: KademliaQueryConfig(
-                alpha: configuration.alphaValue,
+                alpha: currentAlpha(),
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
             ),
@@ -880,6 +1030,15 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
 
             switch result {
             case .providers(var providers, let closerPeers):
+                // Cache network-discovered providers locally
+                for provider in providers {
+                    providerStore.addProvider(
+                        for: key,
+                        peerID: provider.id,
+                        addresses: provider.addresses,
+                        ttl: configuration.providerTTL
+                    )
+                }
                 // Merge with local providers
                 for local in localProviders {
                     if !providers.contains(where: { $0.id == local.id }) {
@@ -1125,5 +1284,13 @@ private final class QueryDelegateImpl: KademliaQueryDelegate, Sendable {
 
     func sendGetProviders(to peer: PeerID, key: Data) async throws -> (providers: [KademliaPeer], closerPeers: [KademliaPeer]) {
         try await service.sendGetProviders(to: peer, key: key, opener: opener)
+    }
+
+    func recordLatency(peer: PeerID, latency: Duration, success: Bool) {
+        if success {
+            service.peerLatencyTracker.recordSuccess(peer: peer, latency: latency)
+        } else {
+            service.peerLatencyTracker.recordFailure(peer: peer)
+        }
     }
 }

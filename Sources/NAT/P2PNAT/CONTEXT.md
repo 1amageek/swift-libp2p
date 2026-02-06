@@ -76,6 +76,22 @@ let addr = try mapping.multiaddr()
 4. **単一責任**: 各ファイルが1つの責務を持つ
 5. **重複排除**: `UDPSocket` と `extractXMLTagValue()` で共通コードを統合
 
+## テスト
+
+```
+Tests/NAT/P2PNATTests/
+└── NATPortMapperTests.swift  # 41テスト
+    ├── NATPortMapper Tests (config, PortMapping, GatewayType, lifecycle, errors)
+    ├── PortMapping Tests (init, equatable, multiaddr)
+    ├── NATPortMapperConfiguration Tests (defaults, custom, all fields)
+    ├── NATPortMapperEvent Tests (全eventケースの構築・パターンマッチ)
+    ├── NATPortMapperError Tests (全errorケースの構築)
+    ├── NATTransportProtocol Tests (rawValue)
+    └── NetworkUtils Tests (XML tag extraction, service block extraction, UDP socket)
+```
+
+**合計: 41テスト** (2026-02-06時点。ネットワークI/O不要のユニットテストに限定)
+
 ## Known Issues
 
 - `shutdown()` はゲートウェイ上のマッピングを解放しない（リース期限で自然消滅）

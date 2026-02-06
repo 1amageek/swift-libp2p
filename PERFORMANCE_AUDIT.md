@@ -9,7 +9,7 @@
 | 重大度 | 総数 | ✅ 修正済み | ⬜ 未修正 |
 |--------|------|-----------|----------|
 | HIGH | 8件 | 8件 | 0件 |
-| MEDIUM | 14件 | 13件 | 1件 (2.1 MessageCache) |
+| MEDIUM | 14件 | 14件 | 0件 |
 | LOW | 10件 | 0件 | 10件 (将来対応) |
 
 ---
@@ -104,15 +104,12 @@ PRK抽出を `ikm.withUnsafeBytes` で直接実行し、ループ内も `block.w
 
 ## 2. 重大度MEDIUM: 改善推奨
 
-### 2.1 GossipSub MessageCache.getGossipIDs の二重イテレーション
+### 2.1 ✅ GossipSub MessageCache.getGossipIDs の二重イテレーション — 修正済み
 
 | 項目 | 値 |
 |------|-----|
 | ファイル | `Sources/Protocols/GossipSub/Router/MessageCache.swift:108-124` |
-| 影響 | 毎秒のハートビートで呼ばれる |
-| 計算量 | O(windows × IDs_per_window) + dictionary lookups |
-
-ウィンドウの全メッセージIDに対してディクショナリ検索を行い、トピックでフィルタリングしている。トピック別のインデックスを追加することで O(1) でアクセス可能になる。
+| ステータス | ✅ 修正済み — `topicIndex: [Topic: Set<MessageID>]` でトピック別O(1)アクセス |
 
 ---
 
@@ -369,14 +366,13 @@ PRK抽出を `ikm.withUnsafeBytes` で直接実行し、ループ内も `block.w
 | 重大度 | 総数 | ✅ 修正済み | ⬜ 未修正 |
 |--------|------|-----------|----------|
 | HIGH | 8件 | 8件 | 0件 |
-| MEDIUM | 14件 | 13件 | 1件 |
+| MEDIUM | 14件 | 14件 | 0件 |
 | LOW | 10件 | 0件 | 10件 |
 
 ### 未修正項目一覧
 
-**MEDIUM (1件)**:
-1. **2.1 MessageCache.getGossipIDs** — トピック別インデックス欠如
+**MEDIUM**: なし（全件修正済み）
 
 ### 推奨対応順序
 
-1. **MessageCache** — トピック別インデックス追加
+LOW の10件は将来的な改善候補として残置。

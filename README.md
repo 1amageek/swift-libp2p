@@ -12,7 +12,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 - **Addressing**: Full Multiaddr support
 - **Discovery**: SWIM membership, mDNS local discovery, CYCLON random peer sampling
 - **NAT Traversal**: Circuit Relay v2, AutoNAT, DCUtR hole punching
-- **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT, Plumtree
+- **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT (S/Kademlia, latency tracking), Plumtree
 
 ## Implementation Status
 
@@ -89,10 +89,14 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | GossipSub v1.1 | ✅ Implemented | Peer scoring, signature verification |
 | GossipSub IDONTWANT (v1.2 wire format) | ✅ Implemented | Full encode/decode + send/receive |
 | GossipSub per-topic scoring | ✅ Implemented | TopicScoreParams (P1-P4), PeerScorer integration |
-| Kademlia DHT | ✅ Implemented | 131 tests, record validation, S/Kademlia |
+| Kademlia DHT | ✅ Implemented | 153 tests, record validation, S/Kademlia, latency tracking |
 | Kademlia client/server mode restriction | ✅ Implemented | Inbound query rejection in client mode (Go-compatible) |
 | Kademlia RecordValidator.Select | ✅ Implemented | Best record selection via `select(key:records:)` |
 | Kademlia persistent storage | ✅ Implemented | FileRecordStorage + FileProviderStorage |
+| Kademlia peer latency tracking | ✅ Implemented | PeerLatencyTracker, dynamic timeout, success rate |
+| Kademlia record republish | ✅ Implemented | Background republish for records and providers |
+| Kademlia provider caching | ✅ Implemented | Local cache for network-fetched providers |
+| Kademlia dynamic alpha | ✅ Implemented | Network-adaptive query parallelism |
 | Plumtree (Epidemic Broadcast Trees) | ✅ Implemented | 50 tests |
 
 ### NAT Traversal

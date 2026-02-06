@@ -108,9 +108,13 @@ public struct BackoffStrategy: Sendable {
 
         switch kind {
         case .exponential(let base, let multiplier, let max):
+            let maxFactor = max.asSeconds / Swift.max(base.asSeconds, 1e-18)
             let factor = pow(multiplier, Double(attempt))
-            let calculated = base.scaled(by: factor)
-            baseDelay = Swift.min(calculated, max)
+            if factor >= maxFactor {
+                baseDelay = max
+            } else {
+                baseDelay = Swift.min(base.scaled(by: factor), max)
+            }
 
         case .constant(let duration):
             baseDelay = duration

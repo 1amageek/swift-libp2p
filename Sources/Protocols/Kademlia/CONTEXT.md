@@ -43,6 +43,7 @@ Based on the original Kademlia paper with influences from S/Kademlia, Coral, and
 | `Storage/InMemoryProviderStorage.swift` | In-memory provider storage (default) |
 | `Storage/FileRecordStorage.swift` | File-based persistent record storage |
 | `Storage/FileProviderStorage.swift` | File-based persistent provider storage |
+| `PeerLatencyTracker.swift` | Per-peer latency tracking and dynamic timeout |
 
 ## Key Concepts
 
@@ -288,7 +289,7 @@ public enum KademliaEvent {
 
 ### クエリ
 - ~~クエリタイムアウトは全ピアで均一~~ → `peerTimeout` (10秒) で個別タイムアウト実装済み
-- ピアごとのレイテンシ追跡なし（動的タイムアウト調整なし）
+- ~~ピアごとのレイテンシ追跡なし~~ → `PeerLatencyTracker` で実装済み（動的タイムアウト計算可能）
 
 ## 内部実装詳細
 
@@ -380,8 +381,8 @@ let kad = KademliaService(
 - [x] **Client モードのインバウンドクエリ拒否** - Go/Rust 互換の動作制限 ✅ 2026-01-28 (GAP-6)
 - [x] **永続化ストレージオプション** - `FileRecordStorage`/`FileProviderStorage` で実装 ✅ 2026-01-30
 - [x] **ピアごとのタイムアウト** - `peerTimeout` 設定で実装 ✅ 2026-01-23
-- [ ] **ピアレイテンシ追跡** - 過去のレスポンス時間に基づく動的タイムアウト調整
-- [ ] **クエリ並列度の動的調整** - ネットワーク状態に応じたALPHA調整
+- [x] **ピアレイテンシ追跡** - `PeerLatencyTracker` で実装、クエリRTT計測・平均レイテンシ・成功率・動的タイムアウト計算 ✅ 2026-02-06
+- [x] **クエリ並列度の動的調整** - `enableDynamicAlpha` 設定、`currentAlpha()` でネットワーク状態に応じたALPHA調整 ✅ 2026-02-06
 - [ ] **Envelope 統合バリデータ** - P2PCore の Envelope/SignedRecord と統合した署名検証
 
 ### 低優先度
@@ -391,8 +392,8 @@ let kad = KademliaService(
   - 11個のテストすべてパス
 - [x] **S/Kademlia Sibling Broadcast実装** - クエリロジックへの統合 ✅ 2026-02-06
 - [x] **S/Kademlia Disjoint Paths実装** - 複数経路クエリ ✅ 2026-02-06
-- [ ] **レコードリパブリッシュ** - 定期的なレコード再配布
-- [ ] **プロバイダキャッシング** - 頻繁に要求されるCIDのキャッシュ
+- [x] **レコードリパブリッシュ** - `startRepublish()` でバックグラウンドタスク実行、レコード＆プロバイダの定期的な再配布 ✅ 2026-02-06
+- [x] **プロバイダキャッシング** - `getProviders` 結果をローカル `providerStore` にキャッシュ、ネットワーク検索前にキャッシュ確認 ✅ 2026-02-06
 
 ## Fixes Applied
 
@@ -439,8 +440,11 @@ let kad = KademliaService(
 | `RecordValidatorTests` | 11 | バリデータ検証 |
 | `SKademliaSiblingBroadcastTests` | 8 | Sibling Broadcast選択 |
 | `SKademliaDisjointPathsTests` | 15 | Disjoint Paths分割・マージ |
+| `PeerLatencyTrackerTests` | 22 | レイテンシ追跡、成功率、タイムアウト計算 |
+| `RandomWalkRefreshTests` | 5 | ランダムウォーク、バケットリフレッシュ |
+| `ClientModeTests` | 4 | クライアントモード設定 |
 
-**合計: 131テスト** (2026-02-06時点)
+**合計: 153テスト** (2026-02-06時点)
 
 ## Codex Review (2026-01-18)
 

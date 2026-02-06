@@ -35,6 +35,8 @@ Sources/Integration/P2P/
 │   ├── ConnectionLimits.swift    # 接続制限設定
 │   ├── ConnectionGater.swift     # 接続フィルタリング
 │   ├── HealthMonitor.swift       # ヘルスモニタリング
+│   ├── BackoffStrategy.swift    # リトライ遅延計算 (exponential/constant/linear)
+│   ├── ReconnectionPolicy.swift # 再接続ポリシー
 │   └── ...
 └── Resource/                 # リソース管理 (GAP-9)
     ├── ResourceManager.swift             # ResourceManager プロトコル
@@ -340,13 +342,14 @@ discoveryタスクは継続的なポーリングループを維持（5秒間隔�
 
 ```
 Tests/Integration/P2PTests/
-└── P2PTests.swift  # 13テスト
-    ├── NodeConfiguration tests
-    ├── Node initialization tests
-    ├── ConnectionUpgrader tests
-    ├── NodeEvent tests
-    └── Multiaddr extension tests
+├── P2PTests.swift              # 13テスト (Node, Config, Upgrader, Events)
+├── BackoffStrategyTests.swift  # 12テスト (exponential, constant, linear, jitter, presets)
+├── ReconnectionPolicyTests.swift # 13テスト (config presets, shouldReconnect, delay)
+├── HealthMonitorTests.swift    # 11テスト (monitoring lifecycle, health check, config)
+└── ConnectionPoolTests.swift   # 17テスト (add/remove, query, limits, tags, protection)
 ```
+
+**合計: 136テスト** (2026-02-06時点。E2Eテスト含む)
 
 ## 未実装機能
 
@@ -361,7 +364,7 @@ Tests/Integration/P2PTests/
 ### 高優先度
 - [x] **Early Muxer Negotiation** - TLS ALPN でmuxerヒントを渡し、muxerネゴシエーションを省略
 - [ ] **UpgradeError/NodeErrorの包括的テスト** - エラーパステスト追加
-- [ ] **再接続ロジックのユニットテスト** - ポリシーとバックオフのテスト
+- [x] **再接続ロジックのユニットテスト** - ReconnectionPolicyTests + BackoffStrategyTests ✅ 2026-02-06
 
 ### 中優先度
 - [x] **Resource Manager** - マルチスコープのリソース制限 ✅ 2026-01-30 (GAP-9)

@@ -105,6 +105,14 @@ public protocol KademliaQueryDelegate: Sendable {
 
     /// Sends a GET_PROVIDERS request to a peer.
     func sendGetProviders(to peer: PeerID, key: Data) async throws -> (providers: [KademliaPeer], closerPeers: [KademliaPeer])
+
+    /// Records latency for a peer (optional).
+    func recordLatency(peer: PeerID, latency: Duration, success: Bool)
+}
+
+extension KademliaQueryDelegate {
+    /// Default no-op implementation for backward compatibility.
+    public func recordLatency(peer: PeerID, latency: Duration, success: Bool) {}
 }
 
 /// Executes iterative Kademlia queries.
@@ -588,18 +596,29 @@ public struct KademliaQuery: Sendable {
         _ peerID: PeerID,
         delegate: any KademliaQueryDelegate
     ) async throws -> QueryResponse {
-        switch queryType {
-        case .findNode(let key):
-            let peers = try await delegate.sendFindNode(to: peerID, key: key)
-            return .findNode(peers)
+        let start = ContinuousClock.now
+        do {
+            let response: QueryResponse
+            switch queryType {
+            case .findNode(let key):
+                let peers = try await delegate.sendFindNode(to: peerID, key: key)
+                response = .findNode(peers)
 
-        case .getValue(let key):
-            let (record, closerPeers) = try await delegate.sendGetValue(to: peerID, key: key)
-            return .getValue(record, closerPeers)
+            case .getValue(let key):
+                let (record, closerPeers) = try await delegate.sendGetValue(to: peerID, key: key)
+                response = .getValue(record, closerPeers)
 
-        case .getProviders(let key):
-            let (providers, closerPeers) = try await delegate.sendGetProviders(to: peerID, key: key)
-            return .getProviders(providers, closerPeers)
+            case .getProviders(let key):
+                let (providers, closerPeers) = try await delegate.sendGetProviders(to: peerID, key: key)
+                response = .getProviders(providers, closerPeers)
+            }
+            let elapsed = ContinuousClock.now - start
+            delegate.recordLatency(peer: peerID, latency: elapsed, success: true)
+            return response
+        } catch {
+            let elapsed = ContinuousClock.now - start
+            delegate.recordLatency(peer: peerID, latency: elapsed, success: false)
+            throw error
         }
     }
 }

@@ -45,7 +45,13 @@ enum KademliaProtobuf {
 
     /// Encodes a KademliaMessage to protobuf wire format.
     static func encode(_ message: KademliaMessage) -> Data {
-        var result = Data()
+        // Estimate: type(2) + key(10+key.count) + record(~100) + peers(~100 each)
+        let estimatedSize = 12
+            + (message.key.map { 10 + $0.count } ?? 0)
+            + (message.record.map { 10 + $0.key.count + $0.value.count + 20 } ?? 0)
+            + message.closerPeers.count * 100
+            + message.providerPeers.count * 100
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: type (varint)
         result.append(MessageTag.type)
@@ -202,7 +208,10 @@ enum KademliaProtobuf {
     // MARK: - Peer Encoding
 
     private static func encodePeer(_ peer: KademliaPeer) -> Data {
-        var result = Data()
+        let estimatedSize = 10 + peer.id.bytes.count
+            + peer.addresses.reduce(0) { $0 + 10 + $1.bytes.count }
+            + 5
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: id (bytes)
         let idBytes = peer.id.bytes
@@ -281,7 +290,8 @@ enum KademliaProtobuf {
     // MARK: - Record Encoding
 
     private static func encodeRecord(_ record: KademliaRecord) -> Data {
-        var result = Data()
+        let estimatedSize = 10 + record.key.count + 10 + record.value.count + 20
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: key (bytes)
         result.append(RecordTag.key)
