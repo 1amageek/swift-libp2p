@@ -16,6 +16,7 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 | QUIC Transport | - | ✅ | ✅ |
 | TLS 1.3 Security | - | ✅ | ✅ |
 | TCP Transport | - | ✅ | ✅ |
+| WebSocket Transport | - | ✅ | - |
 | Noise Security | `/noise` | ✅ | ✅ |
 | Yamux Mux | `/yamux/1.0.0` | ✅ | - |
 | multistream-select | `/multistream/1.0.0` | ✅ | ✅ |
@@ -39,6 +40,9 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 ```bash
 # TCP Transport
 swift test --filter TCPInteropTests
+
+# WebSocket Transport
+swift test --filter WebSocketInteropTests
 
 # Noise Security
 swift test --filter NoiseInteropTests
@@ -92,6 +96,7 @@ Tests/Interop/
 │   ├── Dockerfile.go           # go-libp2p QUIC
 │   ├── Dockerfile.rust         # rust-libp2p QUIC
 │   ├── Dockerfile.tcp.go       # go-libp2p TCP+Noise
+│   ├── Dockerfile.ws.go        # go-libp2p WebSocket+Noise
 │   ├── Dockerfile.noise.go     # go-libp2p Noise専用
 │   ├── Dockerfile.yamux.go     # go-libp2p Yamux
 │   ├── Dockerfile.gossipsub.go # go-libp2p GossipSub
@@ -103,10 +108,12 @@ Tests/Interop/
 │   ├── GoLibp2pHarness.swift        # go-libp2p QUIC
 │   ├── RustLibp2pHarness.swift      # rust-libp2p QUIC
 │   ├── GoTCPHarness.swift           # go-libp2p TCP
+│   ├── GoWebSocketHarness.swift     # go-libp2p WebSocket
 │   └── GoProtocolHarness.swift      # go-libp2p Protocol tests
 │
 ├── Transport/                   # Transport Layer Tests
-│   └── TCPInteropTests.swift
+│   ├── TCPInteropTests.swift
+│   └── WebSocketInteropTests.swift
 │
 ├── Security/                    # Security Layer Tests
 │   └── NoiseInteropTests.swift
@@ -136,6 +143,7 @@ Tests/Interop/
 | go-libp2p-test | QUIC | TLS 1.3 | QUIC native |
 | rust-libp2p-test | QUIC | TLS 1.3 | QUIC native |
 | go-libp2p-tcp-test | TCP | Noise | Yamux |
+| go-libp2p-ws-test | WebSocket | Noise | Yamux |
 | go-libp2p-noise-test | TCP | Noise | Yamux |
 | go-libp2p-yamux-test | TCP | Noise | Yamux |
 

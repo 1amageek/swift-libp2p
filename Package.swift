@@ -66,14 +66,15 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.91.0"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.29.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.1.0"),
-        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.0.0"),
-        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.0.0"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.0.2"),
-        .package(url: "https://github.com/1amageek/swift-tls.git", branch: "main"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.0.0"),
+        .package(path: "../swift-mDNS"),
+        .package(path: "../swift-SWIM"),
+        .package(path: "../swift-nio-udp"),
+        .package(path: "../swift-quic"),
+        .package(path: "../swift-tls"),
+        .package(path: "../swift-webrtc"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -146,6 +147,7 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOWebSocket", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ],
             path: "Sources/Transport/WebSocket",
             exclude: ["CONTEXT.md"]
@@ -528,9 +530,22 @@ let package = Package(
                 "P2PProtocols",
                 "P2PTransportQUIC",
                 "P2PTransport",
+                "P2PTransportTCP",
+                "P2PTransportWebSocket",
+                "P2PSecurityNoise",
+                "P2PMuxYamux",
+                "P2PGossipSub",
+                "P2PKademlia",
+                "P2PCircuitRelay",
                 .product(name: "QUIC", package: "swift-quic"),
             ],
-            path: "Tests/Interop"
+            path: "Tests/Interop",
+            exclude: [
+                "Dockerfiles",
+                "README.md",
+                "KNOWN_ISSUES.md",
+                "docker-compose.interop.yml",
+            ]
         ),
 
         // MARK: - Benchmarks

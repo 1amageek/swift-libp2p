@@ -101,26 +101,74 @@ struct RustInteropTests {
 
     @Test("Identify rust-libp2p node", .timeLimit(.minutes(2)))
     func identifyGo() async throws {
+        print("[TEST] Starting rust-libp2p identify test")
         let harness = try await RustLibp2pHarness.start()
         defer { Task { try? await harness.stop() } }
 
         let nodeInfo = harness.nodeInfo
+        print("[TEST] Harness started: \(nodeInfo.address)")
+
         let keyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
+        print("[TEST] Dialing rust-libp2p node...")
         let connection = try await transport.dialSecured(
             Multiaddr(nodeInfo.address),
             localKeyPair: keyPair
         )
+        print("[TEST] Connection established")
+
+        // rust-libp2p identify behaviour automatically opens a stream to send identify info
+        // We need to accept this incoming stream first
+        async let incomingTask = Task {
+            do {
+                print("[TEST] Waiting for incoming identify push...")
+                let pushStream = try await connection.acceptStream()
+                print("[TEST] Received identify push stream ID: \(pushStream.id)")
+
+                // Handle multistream-select for the push
+                let pushNegotiationResult = try await MultistreamSelect.handle(
+                    supported: [LibP2PProtocol.identifyPush, LibP2PProtocol.identify],
+                    read: { Data(buffer: try await pushStream.read()) },
+                    write: { data in try await pushStream.write(ByteBuffer(bytes: data)) }
+                )
+                print("[TEST] Identify push protocol: \(pushNegotiationResult.protocolID)")
+
+                // Read the identify message
+                let pushData = try await pushStream.read()
+                let pushBytes = Data(buffer: pushData)
+                let (_, pushPrefixBytes) = try Varint.decode(pushBytes)
+                let pushProtobufData = pushBytes.dropFirst(pushPrefixBytes)
+                let pushInfo = try IdentifyProtobuf.decode(Data(pushProtobufData))
+                print("[TEST] Received identify from rust-libp2p: agent=\(pushInfo.agentVersion ?? "unknown")")
+
+                try await pushStream.close()
+            } catch {
+                print("[TEST] Error handling identify push: \(error)")
+            }
+        }
+
+        // Give rust-libp2p time to initiate the identify push
+        try await Task.sleep(for: .milliseconds(100))
 
         // Open stream and negotiate identify protocol
+        print("[TEST] Opening new stream...")
         let stream = try await connection.newStream()
+        print("[TEST] Stream opened: \(stream.id)")
 
         // Negotiate identify protocol using multistream-select
         let negotiationResult = try await MultistreamSelect.negotiate(
             protocols: [LibP2PProtocol.identify],
-            read: { Data(buffer: try await stream.read()) },
-            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+            read: {
+                let buffer = try await stream.read()
+                let data = Data(buffer: buffer)
+                print("[RUST] Read \(data.count) bytes: \(data.prefix(100).map { String(format: "%02X", $0) }.joined(separator: " "))")
+                return data
+            },
+            write: { data in
+                print("[RUST] Write \(data.count) bytes: \(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+                try await stream.write(ByteBuffer(bytes: data))
+            }
         )
 
         #expect(negotiationResult.protocolID == LibP2PProtocol.identify)

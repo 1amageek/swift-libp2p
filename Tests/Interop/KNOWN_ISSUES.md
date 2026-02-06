@@ -184,3 +184,271 @@ mutating func readMessageA(_ message: Data) throws {
 | rust-libp2p | Connect via TCP | ✅ |
 
 **TCP: 全テスト成功** (Issue #2 解決済み)
+
+### WebSocket Transport (Noise)
+
+| 実装 | テスト | 結果 |
+|------|--------|------|
+| go-libp2p | Connect via WebSocket | ✅ |
+| go-libp2p | WebSocket + Yamux | ✅ |
+| go-libp2p | Identify via WebSocket | ✅ |
+| go-libp2p | Ping via WebSocket | ✅ |
+
+**WebSocket: 全4テスト成功** (Issue #3 解決済み)
+
+---
+
+## Issue #3: WebSocket アップグレード失敗
+
+### ステータス
+**解決済み** - 2026-02-05
+
+### 影響を受けたテスト
+- `WebSocketInteropTests/connectToGoViaWS`
+- `WebSocketInteropTests/wsWithYamuxMuxing`
+- `WebSocketInteropTests/identifyGoViaWS`
+- `WebSocketInteropTests/pingGoViaWS`
+
+### 症状
+WebSocket 接続で `upgradeFailed` エラーが発生。go-libp2p ノードは正常に起動しているが、HTTP → WebSocket アップグレードが完了しない。
+
+```
+[WS] Node info: ...
+upgradeFailed  ← HTTP アップグレード失敗
+```
+
+### 根本原因
+**HTTP/1.1 の Host ヘッダー欠落**
+
+Swift NIO の WebSocket クライアント実装で、HTTP リクエストに `Host` ヘッダーが含まれていなかった。HTTP/1.1 では `Host` ヘッダーは必須であり、go-libp2p の WebSocket サーバー（gorilla/websocket ベース）はこれを要求する。
+
+### 解決策
+
+`WebSocketTransport.swift` の `dial()` メソッドで、HTTP リクエストに `Host` ヘッダーを追加:
+
+**修正前:**
+```swift
+var headers = HTTPHeaders()
+headers.add(name: "Content-Length", value: "0")
+
+let requestHead = HTTPRequestHead(
+    version: .http1_1,
+    method: .GET,
+    uri: "/",
+    headers: headers
+)
+```
+
+**修正後:**
+```swift
+var headers = HTTPHeaders()
+headers.add(name: "Host", value: "\(host):\(port)")
+headers.add(name: "Content-Length", value: "0")
+
+let requestHead = HTTPRequestHead(
+    version: .http1_1,
+    method: .GET,
+    uri: "/",
+    headers: headers
+)
+```
+
+### 修正されたファイル
+- `Sources/Transport/WebSocket/WebSocketTransport.swift` - Host ヘッダーを追加
+
+### 検証結果
+- go-libp2p WebSocket + Noise + Yamux: ✅ 全4テストパス
+- Swift WebSocket 単体テスト: ✅ 全15テストパス（既存テストに影響なし）
+
+### 学んだ教訓
+1. HTTP/1.1 では `Host` ヘッダーは必須（RFC 7230）
+2. 外部実装との相互運用テストで暗黙の仮定が明らかになる
+
+---
+
+## 機能追加: WSS (Secure WebSocket) サポート
+
+### ステータス
+**実装完了** - 2026-02-05
+
+### 概要
+`WebSocketTransport` に WSS（TLS + WebSocket）サポートを追加。swift-nio-ssl を使用した標準的な WSS 実装。
+
+### サポートする Multiaddr フォーマット
+- `/ip4/<host>/tcp/<port>/ws` - 非セキュア WebSocket
+- `/ip4/<host>/tcp/<port>/wss` - セキュア WebSocket (TLS)
+- `/ip4/<host>/tcp/<port>/tls/ws` - TLS + WebSocket（代替フォーマット）
+
+### 実装詳細
+
+#### アーキテクチャ
+標準 WSS スタック: `TCP → TLS → HTTP → WebSocket`
+
+NIO パイプライン:
+```
+[NIOSSLClientHandler] → [HTTP Client Upgrade] → [WebSocket Frame Handler]
+```
+
+#### 主な変更点
+
+**Package.swift:**
+```swift
+.target(
+    name: "P2PTransportWebSocket",
+    dependencies: [
+        // ... existing dependencies ...
+        .product(name: "NIOSSL", package: "swift-nio-ssl"),  // 追加
+    ],
+)
+```
+
+**WebSocketTransport.swift:**
+```swift
+public var protocols: [[String]] {
+    [
+        ["ip4", "tcp", "ws"],
+        ["ip6", "tcp", "ws"],
+        ["ip4", "tcp", "wss"],       // 追加
+        ["ip6", "tcp", "wss"],       // 追加
+        ["ip4", "tcp", "tls", "ws"], // 追加
+        ["ip6", "tcp", "tls", "ws"], // 追加
+    ]
+}
+
+private func dialSecure(host: String, port: UInt16, address: Multiaddr) async throws -> any RawConnection {
+    // TLS 設定
+    var tlsConfig = TLSConfiguration.makeClientConfiguration()
+    tlsConfig.certificateVerification = .none  // Interop テスト用
+    let sslContext = try NIOSSLContext(configuration: tlsConfig)
+
+    // TLS ハンドラを先に追加、その後 WebSocket アップグレード
+    let sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+    try channel.pipeline.syncOperations.addHandler(sslHandler)
+    // ... WebSocket upgrade ...
+}
+```
+
+### 検証結果
+- Swift WebSocket 単体テスト: ✅ 全15テストパス
+- go-libp2p WebSocket Interop: ✅ 全4テストパス
+
+### 制限事項
+- WSS Listener は未実装（サーバー証明書設定が必要）
+- 証明書検証は無効化（Interop テスト用）
+
+### 関連ファイル
+- `Sources/Transport/WebSocket/WebSocketTransport.swift` - WSS dial 実装
+- `Package.swift` - NIOSSL 依存追加
+
+---
+
+## Issue #4: WSS SNI エラー（IP アドレス接続時）
+
+### ステータス
+**解決済み** - 2026-02-06
+
+### 症状
+WSS 接続時に以下のエラーが発生:
+```
+NIOSSLExtraError.cannotUseIPAddressInSNI: IP addresses cannot validly be used for Server Name Indication, got 127.0.0.1
+```
+
+### 根本原因
+TLS の SNI（Server Name Indication）拡張は IP アドレスをサポートしていない（RFC 6066）。`NIOSSLClientHandler` に IP アドレスを `serverHostname` として渡すとエラーになる。
+
+### 解決策
+接続先が IP アドレスかどうかを判定し、IP アドレスの場合は `serverHostname: nil` を設定:
+
+```swift
+// Check if host is an IP address (SNI doesn't work with IP addresses)
+let isIPAddress = host.contains(":") || host.split(separator: ".").allSatisfy { Int($0) != nil }
+
+if isIPAddress {
+    sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: nil)
+} else {
+    sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+}
+```
+
+### 修正されたファイル
+- `Sources/Transport/WebSocket/WebSocketTransport.swift` - IP アドレス検出と SNI 無効化
+
+---
+
+## Issue #5: `/tls/ws` Multiaddr 非対応
+
+### ステータス
+**設計上の制約** - 2026-02-06
+
+### 概要
+`/tls/ws` 形式の Multiaddr は swift-libp2p ではサポートされない。
+
+### 根本原因
+Multiaddr ライブラリに `tls` プロトコルが定義されていないため、`/ip4/127.0.0.1/tcp/443/tls/ws` を解析しようとすると `unknownProtocolName("tls")` エラーが発生する。
+
+### 影響
+- go-libp2p は WSS アドレスを `/tls/ws` 形式で出力する
+- swift-libp2p は `/wss` 形式のみをサポート
+- `GoWSSHarness` は go-libp2p の `/tls/ws` 出力を検出し、Swift 用に `/wss` 形式に変換する
+
+### 解決策
+`WebSocketTransport` から到達不能なコード（`/tls/ws` 関連）を削除:
+
+**削除前:**
+```swift
+public var protocols: [[String]] {
+    [
+        ["ip4", "tcp", "ws"],
+        ["ip4", "tcp", "wss"],
+        ["ip4", "tcp", "tls", "ws"],  // ← 到達不能
+    ]
+}
+```
+
+**削除後:**
+```swift
+public var protocols: [[String]] {
+    [
+        ["ip4", "tcp", "ws"],
+        ["ip4", "tcp", "wss"],
+    ]
+}
+```
+
+### 将来の対応
+Multiaddr ライブラリに `tls` プロトコルが追加された場合、`/tls/ws` サポートを再検討する。
+
+---
+
+## テスト結果サマリー (2026-02-06 更新)
+
+### WebSocket Transport (Noise)
+
+| 実装 | テスト | 結果 |
+|------|--------|------|
+| go-libp2p | Connect via WebSocket | ✅ |
+| go-libp2p | WebSocket + Yamux | ✅ |
+| go-libp2p | Identify via WebSocket | ✅ |
+| go-libp2p | Ping via WebSocket | ✅ |
+
+**WebSocket: 全4テスト成功**
+
+### WSS Transport (TLS + WebSocket + Noise)
+
+| 実装 | テスト | 結果 |
+|------|--------|------|
+| go-libp2p | Connect via WSS | ✅ |
+| go-libp2p | WSS + Yamux | ✅ |
+| go-libp2p | Identify via WSS | ✅ |
+| go-libp2p | Ping via WSS | ✅ |
+
+**WSS: 全4テスト成功** (Issue #4 解決済み)
+
+### WebSocket 単体テスト
+
+| カテゴリ | テスト数 | 結果 |
+|---------|---------|------|
+| WS 基本機能 | 15 | ✅ |
+| WSS 機能 | 5 | ✅ |
+
+**単体テスト: 全20テスト成功**

@@ -364,4 +364,66 @@ struct WebSocketTransportTests {
         let hasWS6 = addr6.protocols.contains(where: { if case .ws = $0 { return true } else { return false } })
         #expect(hasWS6)
     }
+
+    // MARK: - WSS (Secure WebSocket) Tests
+
+    @Test("protocols property includes WSS protocols")
+    func testProtocolsIncludesWSS() {
+        let transport = WebSocketTransport()
+        let protocols = transport.protocols
+
+        #expect(protocols.contains(["ip4", "tcp", "wss"]))
+        #expect(protocols.contains(["ip6", "tcp", "wss"]))
+        // Note: /tls/ws format is NOT supported because `tls` is not a valid
+        // Multiaddr protocol. Use /wss format instead.
+    }
+
+    @Test("canDial returns true for WSS addresses")
+    func testCanDialWSS() {
+        let transport = WebSocketTransport()
+
+        // /wss format
+        let wssAddr = Multiaddr.wss(host: "127.0.0.1", port: 443)
+        #expect(transport.canDial(wssAddr))
+
+        // IPv6 WSS
+        let wss6Addr = Multiaddr.wss(host: "::1", port: 443)
+        #expect(transport.canDial(wss6Addr))
+    }
+
+    @Test("canListen returns true for WSS addresses")
+    func testCanListenWSS() {
+        let transport = WebSocketTransport()
+
+        #expect(transport.canListen(Multiaddr.wss(host: "0.0.0.0", port: 443)))
+        #expect(transport.canListen(Multiaddr.wss(host: "127.0.0.1", port: 0)))
+    }
+
+    @Test("WSS Multiaddr factory")
+    func testWSSMultiaddrFactory() {
+        let addr = Multiaddr.wss(host: "127.0.0.1", port: 443)
+
+        #expect(addr.ipAddress == "127.0.0.1")
+        #expect(addr.tcpPort == 443)
+        #expect(addr.description == "/ip4/127.0.0.1/tcp/443/wss")
+
+        let hasWSS = addr.protocols.contains(where: { if case .wss = $0 { return true } else { return false } })
+        #expect(hasWSS)
+
+        // IPv6 variant
+        let addr6 = Multiaddr.wss(host: "::1", port: 443)
+        #expect(addr6.tcpPort == 443)
+        let hasWSS6 = addr6.protocols.contains(where: { if case .wss = $0 { return true } else { return false } })
+        #expect(hasWSS6)
+    }
+
+    @Test("Dial WSS to non-existent server throws connection error", .timeLimit(.minutes(1)))
+    func testDialWSSConnectionRefused() async throws {
+        let transport = WebSocketTransport()
+        let addr = Multiaddr.wss(host: "127.0.0.1", port: 59999)
+
+        await #expect(throws: Error.self) {
+            _ = try await transport.dial(addr)
+        }
+    }
 }

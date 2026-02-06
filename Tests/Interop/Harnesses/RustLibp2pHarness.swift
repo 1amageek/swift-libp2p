@@ -54,23 +54,41 @@ public final class RustLibp2pHarness: Sendable {
         let hostPort = port == 0 ? UInt16.random(in: 10000...60000) : port
         let containerName = "rust-libp2p-test-\(hostPort)"
 
-        // Build Docker image if needed
-        let buildProcess = Process()
-        buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        buildProcess.arguments = [
-            "docker", "build",
-            "-t", "rust-libp2p-test",
-            "-f", "Dockerfile",
-            "."
-        ]
-        buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
+        // Check if Docker image exists
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        checkProcess.arguments = ["docker", "images", "-q", "rust-libp2p-test"]
 
-        try buildProcess.run()
-        buildProcess.waitUntilExit()
+        let checkPipe = Pipe()
+        checkProcess.standardOutput = checkPipe
+        checkProcess.standardError = Pipe()
 
-        guard buildProcess.terminationStatus == 0 else {
-            throw HarnessError.containerStartFailed("Docker build failed")
+        try checkProcess.run()
+        checkProcess.waitUntilExit()
+
+        let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
+
+        // Build Docker image only if it doesn't exist
+        if !imageExists {
+            let buildProcess = Process()
+            buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            buildProcess.arguments = [
+                "docker", "build",
+                "-t", "rust-libp2p-test",
+                "-f", "Dockerfiles/Dockerfile.rust",
+                "."
+            ]
+            // Go up from Harnesses/ to Interop/
+            buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()  // Harnesses/
+                .deletingLastPathComponent()  // Interop/
+
+            try buildProcess.run()
+            buildProcess.waitUntilExit()
+
+            guard buildProcess.terminationStatus == 0 else {
+                throw HarnessError.containerStartFailed("Docker build failed")
+            }
         }
 
         // Remove existing container if any

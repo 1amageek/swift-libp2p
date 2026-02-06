@@ -27,23 +27,41 @@ public final class GoLibp2pHarness: Sendable {
         let actualPort = port == 0 ? UInt16.random(in: 10000..<60000) : port
         let containerName = "go-libp2p-test-\(actualPort)"
 
-        // Build Docker image
-        let buildProcess = Process()
-        buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        buildProcess.arguments = [
-            "docker", "build",
-            "-t", "go-libp2p-test",
-            "-f", "Dockerfile.go",
-            "."
-        ]
-        buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
+        // Check if Docker image exists
+        let checkProcess = Process()
+        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        checkProcess.arguments = ["docker", "images", "-q", "go-libp2p-test"]
 
-        try buildProcess.run()
-        buildProcess.waitUntilExit()
+        let checkPipe = Pipe()
+        checkProcess.standardOutput = checkPipe
+        checkProcess.standardError = Pipe()
 
-        guard buildProcess.terminationStatus == 0 else {
-            throw TestHarnessError.dockerBuildFailed
+        try checkProcess.run()
+        checkProcess.waitUntilExit()
+
+        let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
+
+        // Build Docker image only if it doesn't exist
+        if !imageExists {
+            let buildProcess = Process()
+            buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            buildProcess.arguments = [
+                "docker", "build",
+                "-t", "go-libp2p-test",
+                "-f", "Dockerfiles/Dockerfile.go",
+                "."
+            ]
+            // Go up from Harnesses/ to Interop/
+            buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()  // Harnesses/
+                .deletingLastPathComponent()  // Interop/
+
+            try buildProcess.run()
+            buildProcess.waitUntilExit()
+
+            guard buildProcess.terminationStatus == 0 else {
+                throw TestHarnessError.dockerBuildFailed
+            }
         }
 
         // Remove existing container if any

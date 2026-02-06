@@ -1,0 +1,121 @@
+# docker-compose for multi-node interoperability testing
+#
+# Usage:
+#   docker-compose -f docker-compose.interop.yml up -d
+#   swift test --filter TopologyInteropTests
+#   docker-compose -f docker-compose.interop.yml down
+
+version: '3.8'
+
+services:
+  # Go node 1 - QUIC transport
+  go-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.go
+    container_name: go-libp2p-node-1
+    ports:
+      - "4001:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+    networks:
+      - libp2p-test
+
+  # Go node 2 - QUIC transport
+  go-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.go
+    container_name: go-libp2p-node-2
+    ports:
+      - "4002:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+    networks:
+      - libp2p-test
+
+  # Go relay node - Circuit Relay server
+  go-relay:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.relay.go
+    container_name: go-libp2p-relay
+    ports:
+      - "4003:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+      - RELAY_MODE=server
+    networks:
+      - libp2p-test
+
+  # Go GossipSub node
+  go-gossipsub:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.gossipsub.go
+    container_name: go-libp2p-gossipsub
+    ports:
+      - "4004:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+      - DEFAULT_TOPIC=test-topic
+    networks:
+      - libp2p-test
+
+  # Go Kademlia node 1
+  go-kad-1:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.kad.go
+    container_name: go-libp2p-kad-1
+    ports:
+      - "4005:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+      - DHT_MODE=server
+    networks:
+      - libp2p-test
+
+  # Go Kademlia node 2
+  go-kad-2:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.kad.go
+    container_name: go-libp2p-kad-2
+    ports:
+      - "4006:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+      - DHT_MODE=server
+    networks:
+      - libp2p-test
+
+  # Rust node - QUIC transport
+  rust-node:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.rust
+    container_name: rust-libp2p-node
+    ports:
+      - "4007:4001/udp"
+    environment:
+      - LISTEN_PORT=4001
+    networks:
+      - libp2p-test
+
+  # Go TCP node
+  go-tcp:
+    build:
+      context: .
+      dockerfile: Dockerfiles/Dockerfile.tcp.go
+    container_name: go-libp2p-tcp
+    ports:
+      - "4008:4001/tcp"
+    environment:
+      - LISTEN_PORT=4001
+    networks:
+      - libp2p-test
+
+networks:
+  libp2p-test:
+    driver: bridge

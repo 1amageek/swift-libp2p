@@ -75,21 +75,34 @@ struct GoLibp2pInteropTests {
         // Negotiate identify protocol using multistream-select
         let negotiationResult = try await MultistreamSelect.negotiate(
             protocols: [LibP2PProtocol.identify],
-            read: { Data(buffer: try await stream.read()) },
-            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+            read: {
+                let buffer = try await stream.read()
+                let data = Data(buffer: buffer)
+                print("[GO] Read \(data.count) bytes: \(data.prefix(100).map { String(format: "%02X", $0) }.joined(separator: " "))")
+                return data
+            },
+            write: { data in
+                print("[GO] Write \(data.count) bytes: \(data.map { String(format: "%02X", $0) }.joined(separator: " "))")
+                try await stream.write(ByteBuffer(bytes: data))
+            }
         )
 
         #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
 
-        // Wait for identify response
-        try await Task.sleep(for: .seconds(1))
-
-        // Read identify response (server sends immediately after accepting protocol)
-        let data = try await stream.read()
+        // Use remainder from negotiation if available (go-libp2p sends protocol confirmation
+        // and identify response in the same packet), otherwise read from stream
+        let bytes: Data
+        if !negotiationResult.remainder.isEmpty {
+            bytes = negotiationResult.remainder
+        } else {
+            // Wait for identify response
+            try await Task.sleep(for: .seconds(1))
+            let data = try await stream.read()
+            bytes = Data(buffer: data)
+        }
 
         // libp2p identify uses length-prefixed protobuf messages
         // Wire format: [varint: message length] [protobuf message]
-        let bytes = Data(buffer: data)
 
         // Decode length prefix and extract protobuf message
         let (_, prefixBytes) = try Varint.decode(bytes)
@@ -132,12 +145,16 @@ struct GoLibp2pInteropTests {
 
         #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
 
-        // Wait a bit to ensure packets are sent
-        try await Task.sleep(for: .seconds(1))
-
-        // Read identify response with length-prefix handling
-        let data = try await stream.read()
-        let bytes = Data(buffer: data)
+        // Use remainder from negotiation if available (go-libp2p sends protocol confirmation
+        // and identify response in the same packet), otherwise read from stream
+        let bytes: Data
+        if !negotiationResult.remainder.isEmpty {
+            bytes = negotiationResult.remainder
+        } else {
+            try await Task.sleep(for: .seconds(1))
+            let data = try await stream.read()
+            bytes = Data(buffer: data)
+        }
 
         // libp2p identify uses length-prefixed protobuf messages
         // Wire format: [varint: message length] [protobuf message]

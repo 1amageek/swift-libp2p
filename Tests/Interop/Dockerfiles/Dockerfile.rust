@@ -1,0 +1,234 @@
+# Dockerfile for rust-libp2p test node
+#
+# This creates a simple rust-libp2p node that listens on QUIC
+# and handles Identify and Ping protocols manually (without auto-push).
+
+FROM rust:1.83-alpine AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache musl-dev
+
+# Install nightly Rust for edition2024 support
+RUN rustup toolchain install nightly && rustup default nightly
+
+# Create a new Rust project
+RUN cargo init --name rust-libp2p-test
+
+# Add dependencies to Cargo.toml
+RUN cat > Cargo.toml << 'EOF'
+[package]
+name = "rust-libp2p-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p = { version = "0.56", features = ["quic", "noise", "macros", "tokio"] }
+libp2p-stream = "0.4.0-alpha"
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+prost = "0.13"
+unsigned-varint = { version = "0.8", features = ["futures"] }
+EOF
+
+# Create the test server with manual protocol handlers (no auto-push)
+RUN cat > src/main.rs << 'EOF'
+use futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
+use libp2p::{
+    swarm::{NetworkBehaviour, SwarmEvent},
+    Multiaddr, StreamProtocol, SwarmBuilder,
+};
+use libp2p_stream as stream;
+use std::error::Error;
+use std::time::Duration;
+use tracing::{info, warn};
+
+// Protocol IDs
+const MULTISTREAM_PROTOCOL: &str = "/multistream/1.0.0";
+const IDENTIFY_PROTOCOL: &str = "/ipfs/id/1.0.0";
+const PING_PROTOCOL: &str = "/ipfs/ping/1.0.0";
+
+#[derive(NetworkBehaviour)]
+struct Behaviour {
+    stream: stream::Behaviour,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("info,rust_libp2p_test=debug")
+        .init();
+
+    let port: u16 = std::env::var("LISTEN_PORT")
+        .unwrap_or_else(|_| "4001".to_string())
+        .parse()
+        .expect("Invalid port");
+
+    let local_keypair = libp2p::identity::Keypair::generate_ed25519();
+    let local_public_key = local_keypair.public();
+
+    let mut swarm = SwarmBuilder::with_existing_identity(local_keypair)
+        .with_tokio()
+        .with_quic()
+        .with_behaviour(|_| Behaviour {
+            stream: stream::Behaviour::new(),
+        })
+        .expect("Failed to create behaviour")
+        .with_swarm_config(|cfg| {
+            cfg.with_idle_connection_timeout(Duration::from_secs(60))
+        })
+        .build();
+
+    let local_peer_id = *swarm.local_peer_id();
+    info!("Local peer id: {local_peer_id}");
+
+    // Register protocol handlers
+    let mut incoming_streams = swarm
+        .behaviour()
+        .stream
+        .new_control()
+        .accept(StreamProtocol::new(IDENTIFY_PROTOCOL))
+        .unwrap();
+
+    let mut ping_streams = swarm
+        .behaviour()
+        .stream
+        .new_control()
+        .accept(StreamProtocol::new(PING_PROTOCOL))
+        .unwrap();
+
+    let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{port}/quic-v1")
+        .parse()
+        .expect("Invalid multiaddr");
+
+    swarm.listen_on(listen_addr.clone())?;
+    info!("Listening on {listen_addr}");
+
+    // Spawn identify handler
+    let pk = local_public_key;
+    let pid = local_peer_id;
+    tokio::spawn(async move {
+        while let Some((peer, mut stream)) = incoming_streams.next().await {
+            info!("Identify request from: {peer}");
+
+            // Build identify response (simplified protobuf)
+            let agent = b"rust-libp2p/0.56.0";
+            let proto_version = b"/ipfs/0.1.0";
+            let protocols = vec![IDENTIFY_PROTOCOL.as_bytes(), PING_PROTOCOL.as_bytes()];
+            let public_key = pk.encode_protobuf();
+
+            // Manually build protobuf Identify message
+            // Field numbers per libp2p spec:
+            // 1: publicKey, 2: listenAddrs, 3: protocols, 4: observedAddr,
+            // 5: protocolVersion, 6: agentVersion, 8: signedPeerRecord
+            let mut msg = Vec::new();
+
+            // Field 1: publicKey (bytes) - tag = 1 << 3 | 2 = 0x0a
+            msg.push(0x0a);
+            let pk_len = public_key.len();
+            if pk_len < 128 {
+                msg.push(pk_len as u8);
+            } else {
+                msg.push((pk_len & 0x7f | 0x80) as u8);
+                msg.push((pk_len >> 7) as u8);
+            }
+            msg.extend_from_slice(&public_key);
+
+            // Field 3: protocols (repeated string) - tag = 3 << 3 | 2 = 0x1a
+            for proto in &protocols {
+                msg.push(0x1a);
+                msg.push(proto.len() as u8);
+                msg.extend_from_slice(proto);
+            }
+
+            // Field 5: protocolVersion (string) - tag = 5 << 3 | 2 = 0x2a
+            msg.push(0x2a);
+            msg.push(proto_version.len() as u8);
+            msg.extend_from_slice(proto_version);
+
+            // Field 6: agentVersion (string) - tag = 6 << 3 | 2 = 0x32
+            msg.push(0x32);
+            msg.push(agent.len() as u8);
+            msg.extend_from_slice(agent);
+
+            // Length-prefix the message
+            let mut response = Vec::new();
+            let msg_len = msg.len();
+            if msg_len < 128 {
+                response.push(msg_len as u8);
+            } else {
+                response.push((msg_len & 0x7f | 0x80) as u8);
+                response.push((msg_len >> 7) as u8);
+            }
+            response.extend_from_slice(&msg);
+
+            if let Err(e) = stream.write_all(&response).await {
+                warn!("Failed to send identify response: {e}");
+            }
+            let _ = stream.close().await;
+            info!("Identify response sent to: {peer}");
+        }
+    });
+
+    // Spawn ping handler
+    tokio::spawn(async move {
+        while let Some((peer, mut stream)) = ping_streams.next().await {
+            info!("Ping request from: {peer}");
+            let mut buf = [0u8; 32];
+            loop {
+                match stream.read_exact(&mut buf).await {
+                    Ok(_) => {
+                        if let Err(e) = stream.write_all(&buf).await {
+                            warn!("Failed to send ping response: {e}");
+                            break;
+                        }
+                        info!("Ping echoed 32 bytes to: {peer}");
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    });
+
+    loop {
+        match swarm.next().await {
+            Some(SwarmEvent::NewListenAddr { address, .. }) => {
+                println!("Listen: {}/p2p/{}", address, local_peer_id);
+                println!("Ready to accept connections");
+            }
+            Some(SwarmEvent::IncomingConnection { local_addr, send_back_addr, .. }) => {
+                info!("Incoming connection from {send_back_addr} to {local_addr}");
+            }
+            Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) => {
+                info!("Connected: peer={peer_id} endpoint={endpoint:?}");
+            }
+            Some(SwarmEvent::ConnectionClosed { peer_id, cause, .. }) => {
+                info!("Disconnected: peer={peer_id} cause={cause:?}");
+            }
+            Some(SwarmEvent::IncomingConnectionError { local_addr, send_back_addr, error, .. }) => {
+                warn!("Incoming connection error from {send_back_addr} to {local_addr}: {error}");
+            }
+            Some(event) => {
+                info!("Event: {event:?}");
+            }
+            None => break,
+        }
+    }
+    Ok(())
+}
+EOF
+
+# Build the application
+RUN cargo build --release
+
+# Final image
+FROM alpine:3.19
+
+COPY --from=builder /app/target/release/rust-libp2p-test /usr/local/bin/rust-libp2p-test
+
+EXPOSE 4001/udp
+
+ENTRYPOINT ["/usr/local/bin/rust-libp2p-test"]

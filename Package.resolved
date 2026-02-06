@@ -1,5 +1,5 @@
 {
-  "originHash" : "5f152016f69c4ce2350b8ab0d840266e5fdc33b4da3ef0d97af75529f73a21ff",
+  "originHash" : "996d343f4faada7cb32f28a2188ccc0095c966a79668133861f28743574bd916",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -65,21 +65,12 @@
       }
     },
     {
-      "identity" : "swift-nio-udp",
+      "identity" : "swift-nio-ssl",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/1amageek/swift-nio-udp.git",
+      "location" : "https://github.com/apple/swift-nio-ssl.git",
       "state" : {
-        "revision" : "81bc221147d585a4edc24b15b3ef7c0d7278c365",
-        "version" : "1.0.1"
-      }
-    },
-    {
-      "identity" : "swift-swim",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/1amageek/swift-SWIM.git",
-      "state" : {
-        "revision" : "56055d73dd847c42c810f745dae0120e4301b5f8",
-        "version" : "1.0.0"
+        "revision" : "173cc69a058623525a58ae6710e2f5727c663793",
+        "version" : "2.36.0"
       }
     },
     {
@@ -89,15 +80,6 @@
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
-      }
-    },
-    {
-      "identity" : "swift-tls",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/1amageek/swift-tls.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "4730feda741ac16b42d2e047d4026c494578750f"
       }
     }
   ],

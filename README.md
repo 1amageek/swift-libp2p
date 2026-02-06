@@ -515,15 +515,36 @@ Relayed addresses use the `p2p-circuit` protocol:
 swift test
 ```
 
-### Integration Tests with Other Implementations
+### Interoperability Tests
+
+Interoperability tests verify compatibility with go-libp2p and rust-libp2p using Docker containers.
+
+**Prerequisites**: Docker (OrbStack recommended)
 
 ```bash
-# Start a rust-libp2p node
-cargo run --example ping -- --listen /ip4/127.0.0.1/tcp/4001
+# Run go-libp2p interop tests
+swift test --filter "GoLibp2pInteropTests"
 
-# Connect from swift-libp2p
-swift run swift-libp2p-example dial /ip4/127.0.0.1/tcp/4001/p2p/<peer-id>
+# Run rust-libp2p interop tests
+swift test --filter "RustInteropTests"
+
+# Run all interop tests
+swift test --filter "Interop"
 ```
+
+**Test Coverage**:
+
+| Test | go-libp2p | rust-libp2p |
+|------|-----------|-------------|
+| QUIC Connection | ✅ | ✅ |
+| Identify Protocol | ✅ | ✅ |
+| PeerID Verification | ✅ | ✅ |
+| Ping Protocol | ✅ | ✅ |
+| Multiple Pings | ✅ | ✅ |
+| Bidirectional Stream | ✅ | ✅ |
+| Raw Data Transfer | ✅ | ✅ |
+
+See [Tests/Interop/README.md](Tests/Interop/README.md) for details.
 
 ## Dependencies
 
