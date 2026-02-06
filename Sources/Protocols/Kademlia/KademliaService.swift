@@ -672,19 +672,33 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             throw KademliaError.noPeersAvailable
         }
 
+        let queryPeers: [KademliaPeer]
+        if configuration.skademlia.enabled && configuration.skademlia.useDisjointPaths {
+            let peerCount = max(
+                configuration.skademlia.disjointPathCount * configuration.alphaValue,
+                configuration.kValue
+            )
+            let expanded = routingTable.closestPeers(to: targetKey, count: peerCount)
+                .map { KademliaPeer(id: $0.peerID, addresses: $0.addresses) }
+            queryPeers = expanded.isEmpty ? initialPeers : expanded
+        } else {
+            queryPeers = initialPeers
+        }
+
         let query = KademliaQuery(
             type: .findNode(targetKey),
             config: KademliaQueryConfig(
                 alpha: configuration.alphaValue,
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
-            )
+            ),
+            skademliaConfig: configuration.skademlia
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)
 
         do {
-            let result = try await query.execute(initialPeers: initialPeers, delegate: delegate)
+            let result = try await query.execute(initialPeers: queryPeers, delegate: delegate)
 
             switch result {
             case .nodes(let peers):
@@ -729,6 +743,19 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             throw KademliaError.noPeersAvailable
         }
 
+        let queryPeers: [KademliaPeer]
+        if configuration.skademlia.enabled && configuration.skademlia.useDisjointPaths {
+            let peerCount = max(
+                configuration.skademlia.disjointPathCount * configuration.alphaValue,
+                configuration.kValue
+            )
+            let expanded = routingTable.closestPeers(to: targetKey, count: peerCount)
+                .map { KademliaPeer(id: $0.peerID, addresses: $0.addresses) }
+            queryPeers = expanded.isEmpty ? initialPeers : expanded
+        } else {
+            queryPeers = initialPeers
+        }
+
         let query = KademliaQuery(
             type: .getValue(key),
             config: KademliaQueryConfig(
@@ -736,13 +763,14 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
             ),
-            validator: configuration.recordValidator
+            validator: configuration.recordValidator,
+            skademliaConfig: configuration.skademlia
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)
 
         do {
-            let result = try await query.execute(initialPeers: initialPeers, delegate: delegate)
+            let result = try await query.execute(initialPeers: queryPeers, delegate: delegate)
 
             switch result {
             case .value(let record, let from):
@@ -822,19 +850,33 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             throw KademliaError.noPeersAvailable
         }
 
+        let queryPeers: [KademliaPeer]
+        if configuration.skademlia.enabled && configuration.skademlia.useDisjointPaths {
+            let peerCount = max(
+                configuration.skademlia.disjointPathCount * configuration.alphaValue,
+                configuration.kValue
+            )
+            let expanded = routingTable.closestPeers(to: targetKey, count: peerCount)
+                .map { KademliaPeer(id: $0.peerID, addresses: $0.addresses) }
+            queryPeers = expanded.isEmpty ? initialPeers : expanded
+        } else {
+            queryPeers = initialPeers
+        }
+
         let query = KademliaQuery(
             type: .getProviders(key),
             config: KademliaQueryConfig(
                 alpha: configuration.alphaValue,
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
-            )
+            ),
+            skademliaConfig: configuration.skademlia
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)
 
         do {
-            let result = try await query.execute(initialPeers: initialPeers, delegate: delegate)
+            let result = try await query.execute(initialPeers: queryPeers, delegate: delegate)
 
             switch result {
             case .providers(var providers, let closerPeers):

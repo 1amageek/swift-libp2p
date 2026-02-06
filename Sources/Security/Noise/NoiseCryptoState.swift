@@ -244,12 +244,20 @@ struct NoiseSymmetricState: Sendable {
         outputLength: Int
     ) -> Data {
         let saltKey = SymmetricKey(data: salt)
-        let prk = HMAC<SHA256>.authenticationCode(
-            for: ikm.withUnsafeBytes { Data($0) },
-            using: saltKey
-        )
 
-        let prkKey = SymmetricKey(data: Data(prk))
+        // Extract: PRK = HMAC-Hash(salt, IKM)
+        // Use withUnsafeBytes to avoid intermediate Data allocation for IKM
+        let prk: HashedAuthenticationCode<SHA256> = ikm.withUnsafeBytes { ikmBuffer in
+            HMAC<SHA256>.authenticationCode(
+                for: ikmBuffer,
+                using: saltKey
+            )
+        }
+
+        // Create PRK key once, reuse for all expand iterations
+        let prkKey: SymmetricKey = prk.withUnsafeBytes { prkBuffer in
+            SymmetricKey(data: prkBuffer)
+        }
 
         var output = Data(capacity: outputLength)
         var t = Data()
@@ -265,8 +273,10 @@ struct NoiseSymmetricState: Sendable {
                 for: input,
                 using: prkKey
             )
-            t = Data(block)
-            output.append(t)
+            block.withUnsafeBytes { blockBuffer in
+                t = Data(blockBuffer)
+                output.append(contentsOf: blockBuffer)
+            }
             counter += 1
         }
 

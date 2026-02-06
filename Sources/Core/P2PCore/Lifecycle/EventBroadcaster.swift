@@ -35,8 +35,13 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
 
     private let state: Mutex<BroadcastState>
 
+    private struct Entry: Sendable {
+        let id: UInt64
+        let continuation: AsyncStream<T>.Continuation
+    }
+
     private struct BroadcastState: Sendable {
-        var continuations: [UInt64: AsyncStream<T>.Continuation] = [:]
+        var entries: [Entry] = []
         var nextID: UInt64 = 0
     }
 
@@ -45,12 +50,12 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
     }
 
     deinit {
-        let conts = state.withLock { s in
-            let c = Array(s.continuations.values)
-            s.continuations.removeAll()
-            return c
+        let entries = state.withLock { s in
+            let e = s.entries
+            s.entries.removeAll()
+            return e
         }
-        for cont in conts { cont.finish() }
+        for entry in entries { entry.continuation.finish() }
     }
 
     /// Creates a new independent stream for this subscriber.
@@ -63,11 +68,13 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
         let id = state.withLock { s -> UInt64 in
             let id = s.nextID
             s.nextID += 1
-            s.continuations[id] = continuation
+            s.entries.append(Entry(id: id, continuation: continuation))
             return id
         }
         continuation.onTermination = { [weak self] _ in
-            _ = self?.state.withLock { $0.continuations.removeValue(forKey: id) }
+            self?.state.withLock { s in
+                s.entries.removeAll(where: { $0.id == id })
+            }
         }
         return stream
     }
@@ -77,9 +84,9 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
     /// Events are delivered to each subscriber's stream independently.
     /// If no subscribers are registered, the event is silently dropped.
     public func emit(_ event: T) {
-        let conts = state.withLock { Array($0.continuations.values) }
-        for cont in conts {
-            cont.yield(event)
+        let entries = state.withLock { $0.entries }
+        for entry in entries {
+            entry.continuation.yield(event)
         }
     }
 
@@ -89,13 +96,13 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
     /// New subscribers can still call `subscribe()` after shutdown.
     /// This method is idempotent.
     public func shutdown() {
-        let conts = state.withLock { s -> [AsyncStream<T>.Continuation] in
-            let c = Array(s.continuations.values)
-            s.continuations.removeAll()
-            return c
+        let entries = state.withLock { s -> [Entry] in
+            let e = s.entries
+            s.entries.removeAll()
+            return e
         }
-        for cont in conts {
-            cont.finish()
+        for entry in entries {
+            entry.continuation.finish()
         }
     }
 }

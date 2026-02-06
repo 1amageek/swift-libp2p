@@ -121,20 +121,26 @@ public struct KademliaQuery: Sendable {
     /// Record validator for selecting the best record from multiple responses.
     public let validator: (any RecordValidator)?
 
+    /// S/Kademlia configuration for sibling broadcast and disjoint paths.
+    public let skademliaConfig: SKademliaConfig
+
     /// Creates a query.
     ///
     /// - Parameters:
     ///   - type: The query type.
     ///   - config: Query configuration.
     ///   - validator: Record validator for GET_VALUE selection (optional).
+    ///   - skademliaConfig: S/Kademlia configuration (default: disabled).
     public init(
         type: KademliaQueryType,
         config: KademliaQueryConfig = .default,
-        validator: (any RecordValidator)? = nil
+        validator: (any RecordValidator)? = nil,
+        skademliaConfig: SKademliaConfig = .disabled
     ) {
         self.queryType = type
         self.config = config
         self.validator = validator
+        self.skademliaConfig = skademliaConfig
 
         switch type {
         case .findNode(let key):
@@ -161,7 +167,16 @@ public struct KademliaQuery: Sendable {
             throw KademliaError.noPeersAvailable
         }
 
-        // Execute with timeout
+        // Use disjoint paths if enabled
+        if skademliaConfig.enabled && skademliaConfig.useDisjointPaths {
+            return try await executeDisjointPaths(
+                initialPeers: initialPeers,
+                pathCount: skademliaConfig.disjointPathCount,
+                delegate: delegate
+            )
+        }
+
+        // Execute with timeout (single-path)
         return try await withThrowingTaskGroup(of: KademliaQueryResult?.self) { group in
             // Add the main query task
             group.addTask {
@@ -186,6 +201,154 @@ public struct KademliaQuery: Sendable {
             }
 
             throw KademliaError.timeout
+        }
+    }
+
+    // MARK: - Disjoint Paths
+
+    /// Partitions peers into `pathCount` groups using round-robin on distance-sorted order.
+    /// Ensures each path gets a mix of close and far peers.
+    private func partitionPeers(
+        _ peers: [KademliaPeer],
+        pathCount: Int
+    ) -> [[KademliaPeer]] {
+        let sorted = peers.sorted { lhs, rhs in
+            KademliaKey(from: lhs.id).distance(to: targetKey)
+                < KademliaKey(from: rhs.id).distance(to: targetKey)
+        }
+
+        var partitions = Array(repeating: [KademliaPeer](), count: pathCount)
+        for (index, peer) in sorted.enumerated() {
+            partitions[index % pathCount].append(peer)
+        }
+        return partitions
+    }
+
+    /// Executes disjoint path queries in parallel, then merges results.
+    private func executeDisjointPaths(
+        initialPeers: [KademliaPeer],
+        pathCount: Int,
+        delegate: any KademliaQueryDelegate
+    ) async throws -> KademliaQueryResult {
+        let partitions = partitionPeers(initialPeers, pathCount: pathCount)
+            .filter { !$0.isEmpty }
+
+        guard !partitions.isEmpty else {
+            throw KademliaError.noPeersAvailable
+        }
+
+        // Execute all paths in parallel with overall timeout
+        return try await withThrowingTaskGroup(of: KademliaQueryResult?.self) { group in
+            // Timeout task
+            group.addTask {
+                try await Task.sleep(for: self.config.timeout)
+                return nil
+            }
+
+            // Main execution task
+            group.addTask {
+                let pathResults = await withTaskGroup(of: KademliaQueryResult?.self) { pathGroup in
+                    for partition in partitions {
+                        pathGroup.addTask {
+                            do {
+                                return try await self.executeInternal(
+                                    initialPeers: partition,
+                                    delegate: delegate
+                                )
+                            } catch {
+                                return nil
+                            }
+                        }
+                    }
+                    var results: [KademliaQueryResult] = []
+                    for await result in pathGroup {
+                        if let r = result {
+                            results.append(r)
+                        }
+                    }
+                    return results
+                }
+
+                guard !pathResults.isEmpty else {
+                    throw KademliaError.queryFailed("All disjoint paths failed")
+                }
+
+                return self.mergeResults(pathResults)
+            }
+
+            // Wait for first completion (query or timeout)
+            for try await result in group {
+                group.cancelAll()
+                if let queryResult = result {
+                    return queryResult
+                } else {
+                    throw KademliaError.timeout
+                }
+            }
+
+            throw KademliaError.timeout
+        }
+    }
+
+    /// Merges results from multiple disjoint path queries.
+    private func mergeResults(_ results: [KademliaQueryResult]) -> KademliaQueryResult {
+        switch queryType {
+        case .findNode:
+            // Deduplicate by PeerID, sort by distance, take top k
+            var seen = Set<PeerID>()
+            var allPeers: [KademliaPeer] = []
+            for result in results {
+                if case .nodes(let peers) = result {
+                    for peer in peers where seen.insert(peer.id).inserted {
+                        allPeers.append(peer)
+                    }
+                }
+            }
+            let sorted = allPeers.sorted { lhs, rhs in
+                KademliaKey(from: lhs.id).distance(to: targetKey)
+                    < KademliaKey(from: rhs.id).distance(to: targetKey)
+            }
+            return .nodes(Array(sorted.prefix(config.k)))
+
+        case .getValue:
+            // Collect all found records, pick best (first found if no validator)
+            var allRecords: [(KademliaRecord, PeerID)] = []
+            var allClosestPeers: [KademliaPeer] = []
+            var seenPeerIDs = Set<PeerID>()
+            for result in results {
+                switch result {
+                case .value(let record, let from):
+                    allRecords.append((record, from))
+                case .noValue(let peers):
+                    for peer in peers where seenPeerIDs.insert(peer.id).inserted {
+                        allClosestPeers.append(peer)
+                    }
+                default:
+                    break
+                }
+            }
+            if let first = allRecords.first {
+                return .value(first.0, from: first.1)
+            }
+            return .noValue(Array(allClosestPeers.prefix(config.k)))
+
+        case .getProviders:
+            // Deduplicate providers
+            var seenProviders = Set<PeerID>()
+            var allProviders: [KademliaPeer] = []
+            var seenCloser = Set<PeerID>()
+            var allCloser: [KademliaPeer] = []
+            for result in results {
+                if case .providers(let providers, let closerPeers) = result {
+                    for p in providers where seenProviders.insert(p.id).inserted {
+                        allProviders.append(p)
+                    }
+                    for p in closerPeers where seenCloser.insert(p.id).inserted {
+                        allCloser.append(p)
+                    }
+                }
+            }
+            return .providers(allProviders, closerPeers: Array(allCloser.prefix(config.k)))
         }
     }
 
@@ -340,8 +503,48 @@ public struct KademliaQuery: Sendable {
         from peers: [PeerID: QueryPeer],
         count: Int
     ) -> [QueryPeer] {
-        Array(peers.values.filter { $0.state == .notContacted })
-            .smallest(count, by: { $0.distance < $1.distance })
+        let notContacted = Array(peers.values.filter { $0.state == .notContacted })
+
+        guard skademliaConfig.enabled && skademliaConfig.useSiblingBroadcast else {
+            return notContacted.smallest(count, by: { $0.distance < $1.distance })
+        }
+
+        // Sibling Broadcast: select alpha closest peers + additional peers from diverse distance bands
+        let baseCandidates = notContacted.smallest(count, by: { $0.distance < $1.distance })
+        let basePeerIDs = Set(baseCandidates.map { $0.peer.id })
+
+        // Group remaining not-contacted peers by distance band (bucket index)
+        let remaining = notContacted.filter { !basePeerIDs.contains($0.peer.id) }
+        var bucketGroups: [Int: [QueryPeer]] = [:]
+        for peer in remaining {
+            if let bucketIdx = peer.distance.bucketIndex {
+                bucketGroups[bucketIdx, default: []].append(peer)
+            }
+        }
+
+        // Round-robin select from different distance bands for diversity
+        let siblingCount = skademliaConfig.siblingCount
+        var siblings: [QueryPeer] = []
+        let sortedBuckets = bucketGroups.keys.sorted()
+        var bucketOffsets = [Int: Int]()
+
+        var added = 0
+        var pass = 0
+        while added < siblingCount && pass < remaining.count {
+            for bucket in sortedBuckets {
+                guard added < siblingCount else { break }
+                let group = bucketGroups[bucket]!
+                let offset = bucketOffsets[bucket, default: 0]
+                if offset < group.count {
+                    siblings.append(group[offset])
+                    bucketOffsets[bucket] = offset + 1
+                    added += 1
+                }
+            }
+            pass += 1
+        }
+
+        return baseCandidates + siblings
     }
 
     private func getClosestSucceeded(

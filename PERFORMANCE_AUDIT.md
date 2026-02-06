@@ -8,8 +8,8 @@
 
 | 重大度 | 総数 | ✅ 修正済み | ⬜ 未修正 |
 |--------|------|-----------|----------|
-| HIGH | 8件 | 6件 | 2件 (1.7 Noise HKDF, 1.8 HealthMonitor) |
-| MEDIUM | 14件 | 10件 | 4件 (2.6 GossipSub protobuf, 2.8 AddressBook, 2.13 EventBroadcaster, 2.1 MessageCache) |
+| HIGH | 8件 | 8件 | 0件 |
+| MEDIUM | 14件 | 13件 | 1件 (2.1 MessageCache) |
 | LOW | 10件 | 0件 | 10件 (将来対応) |
 
 ---
@@ -82,41 +82,23 @@
 
 ---
 
-### 1.7 Noise HKDF鍵導出の不要なData変換
+### 1.7 ✅ Noise HKDF鍵導出の不要なData変換 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Security/Noise/NoiseCryptoState.swift:228-258` |
-| 影響 | ハンドシェイク中に2回呼ばれる鍵分割処理 |
-| 原因 | `SymmetricKey` ↔ `Data` の繰り返し変換 |
+| ファイル | `Sources/Security/Noise/NoiseCryptoState.swift:239-274` |
+| ステータス | ✅ 修正済み — `withUnsafeBytes` で中間Data変換を排除 |
 
-```swift
-// 現状: 各反復で不要なData変換
-let prk = HMAC<SHA256>.authenticationCode(
-    for: ikm.withUnsafeBytes { Data($0) },  // 変換1
-    using: SymmetricKey(data: salt)
-)
-// ループ内:
-let block = HMAC<SHA256>.authenticationCode(
-    for: input,
-    using: SymmetricKey(data: Data(prk))  // 毎回変換
-)
-t = Data(block)  // 毎回変換
-```
-
-`withUnsafeBytes` を使い中間Data生成を排除すべき。
+PRK抽出を `ikm.withUnsafeBytes` で直接実行し、ループ内も `block.withUnsafeBytes` で `Data(blockBuffer)` を使用。不要な `SymmetricKey` ↔ `Data` 変換を排除。
 
 ---
 
-### 1.8 HealthMonitor のピア毎Task生成
+### 1.8 ✅ HealthMonitor のピア毎Task生成 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Integration/P2P/Connection/HealthMonitor.swift:133-136,168-205` |
-| 影響 | 1000ピアで1000個のTask生成 |
-| 原因 | `monitoringTasks: [PeerID: Task<Void, Never>]` |
-
-ピア毎に個別のTaskを作成するため、大量のピアでスケールしない。バッチ処理に変更すべき。
+| ファイル | `Sources/Integration/P2P/Connection/HealthMonitor.swift` |
+| ステータス | ✅ 修正済み — 単一モニタリングループ + `withTaskGroup` でバッチ化済み |
 
 ---
 
@@ -170,14 +152,12 @@ t = Data(block)  // 毎回変換
 
 ---
 
-### 2.6 GossipSub Protobuf エンコードの複数Data生成
+### 2.6 ✅ GossipSub Protobuf エンコードの複数Data生成 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Protocols/GossipSub/Wire/GossipSubProtobuf.swift:65-93` |
-| 影響 | 全メッセージ送信時 |
-
-各フィールドのエンコードで新規Dataオブジェクトを生成し、appendを繰り返している。事前容量確保またはバッファプールを使うべき。
+| ファイル | `Sources/Protocols/GossipSub/Wire/GossipSubProtobuf.swift` |
+| ステータス | ✅ 修正済み — `Data(capacity:)` プレアロケーションを6つの内部エンコードメソッドに追加 |
 
 ---
 
@@ -190,21 +170,12 @@ t = Data(block)  // 毎回変換
 
 ---
 
-### 2.8 AddressBook スコアリングの非同期ループ
+### 2.8 ✅ AddressBook スコアリングの非同期ループ — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Discovery/P2PDiscovery/AddressBook.swift:191-205` |
-| 影響 | アドレス毎に個別のMutexロック取得 |
-
-```swift
-for address in addresses {
-    let addressScore = await score(address: address, for: peer)  // 毎回ロック
-    scoredAddresses.append((address, addressScore))
-}
-```
-
-バッチ取得に変更し、ロック回数を1回にすべき。
+| ファイル | `Sources/Discovery/P2PDiscovery/AddressBook.swift` |
+| ステータス | ✅ 修正済み — `addressRecords` バッチ取得で一回のlock内で全アドレス情報を取得済み |
 
 ---
 
@@ -244,18 +215,12 @@ for address in addresses {
 
 ---
 
-### 2.13 EventBroadcaster.emit の配列コピー
+### 2.13 ✅ EventBroadcaster.emit の配列コピー — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Core/P2PCore/Lifecycle/EventBroadcaster.swift:79-84` |
-| 影響 | 全イベント発行時にcontinuation配列をコピー |
-
-```swift
-let conts = state.withLock { Array($0.continuations.values) }
-```
-
-事前確保配列の再利用、またはRWLockの検討。
+| ファイル | `Sources/Core/P2PCore/Lifecycle/EventBroadcaster.swift` |
+| ステータス | ✅ 修正済み — Dictionary `[UInt64: Continuation]` から `[Entry]` 配列に変更。`values` コピーを回避 |
 
 ---
 
@@ -403,27 +368,15 @@ let conts = state.withLock { Array($0.continuations.values) }
 
 | 重大度 | 総数 | ✅ 修正済み | ⬜ 未修正 |
 |--------|------|-----------|----------|
-| HIGH | 8件 | 6件 | 2件 |
-| MEDIUM | 14件 | 10件 | 4件 |
+| HIGH | 8件 | 8件 | 0件 |
+| MEDIUM | 14件 | 13件 | 1件 |
 | LOW | 10件 | 0件 | 10件 |
 
 ### 未修正項目一覧
 
-**HIGH (2件)**:
-1. **1.7 Noise HKDF** — `SymmetricKey` ↔ `Data` の不要な中間変換
-2. **1.8 HealthMonitor** — ピアごとの個別Task生成（バッチ化が必要）
-
-**MEDIUM (4件)**:
+**MEDIUM (1件)**:
 1. **2.1 MessageCache.getGossipIDs** — トピック別インデックス欠如
-2. **2.6 GossipSub Protobuf** — 内部エンコーダの capacity ヒントなし
-3. **2.8 AddressBook** — アドレスごとの個別ロック取得
-4. **2.13 EventBroadcaster.emit** — continuation配列の毎回コピー
 
 ### 推奨対応順序
 
-1. **HealthMonitor** — バッチ監視に変更（スケーラビリティ影響大）
-2. **Noise HKDF** — 中間Data変換の排除
-3. **EventBroadcaster.emit** — 配列コピー回避
-4. **AddressBook** — バッチスコアリング
-5. **GossipSub Protobuf** — capacity ヒント追加
-6. **MessageCache** — トピック別インデックス追加
+1. **MessageCache** — トピック別インデックス追加

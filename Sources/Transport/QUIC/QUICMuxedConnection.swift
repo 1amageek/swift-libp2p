@@ -122,7 +122,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     private let _localPeer: PeerID
     private let _remotePeer: PeerID
     private let _localAddress: Multiaddr?
-    private let _remoteAddress: Multiaddr
+    private let _initialRemoteAddress: Multiaddr
 
     private let state: Mutex<ConnectionState>
     private let streamChannel: StreamChannel
@@ -164,8 +164,10 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     /// The local address (if known).
     public var localAddress: Multiaddr? { _localAddress }
 
-    /// The remote address.
-    public var remoteAddress: Multiaddr { _remoteAddress }
+    /// The remote address (dynamically reflects connection migration).
+    public var remoteAddress: Multiaddr {
+        quicConnection.currentRemoteAddress.toQUICMultiaddr()
+    }
 
     /// Creates a new QUICMuxedConnection.
     ///
@@ -186,7 +188,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         self._localPeer = localPeer
         self._remotePeer = remotePeer
         self._localAddress = localAddress
-        self._remoteAddress = remoteAddress
+        self._initialRemoteAddress = remoteAddress
         self.streamChannel = StreamChannel()
         self.state = Mutex(ConnectionState())
     }

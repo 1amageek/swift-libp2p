@@ -347,21 +347,22 @@ let kad = KademliaService(
 )
 ```
 
-### 計画中の機能
+#### Sibling Broadcast（兄弟ブロードキャスト）✅
 
-#### Sibling Broadcast（兄弟ブロードキャスト）⏳
+異なる距離帯（bucket index）から追加ピアを選択し、クエリの多様性を確保します。Eclipse攻撃耐性を向上させます。
 
-同じk-bucket内の複数のピア（兄弟ノード）に同時にクエリを送信します。冗長性を提供し、悪意のあるノードに対する耐性を向上させます。
+- 実装状況: ✅ 完了 (2026-02-06)
+- `KademliaQuery.selectCandidates` でalphaの最近接ピアに加え、残りのピアをbucketIndexでグループ化しラウンドロビンで`siblingCount`個を追加選択
+- `SKademliaConfig.useSiblingBroadcast` で有効化
 
-- 実装状況: 設定のみ実装、クエリロジック未実装
-- 優先度: 中
+#### Disjoint Paths（独立経路）✅
 
-#### Disjoint Paths（独立経路）⏳
+複数の独立した初期ピアセットで並列ルックアップを実行し、結果をマージします。単一の悪意あるノードがクエリパス全体を制御することを防止します。
 
-複数の独立した経路でクエリを実行します。Eclipse攻撃（攻撃者がクエリ経路を制御）への耐性を向上させます。
-
-- 実装状況: 設定のみ実装、クエリロジック未実装
-- 優先度: 中
+- 実装状況: ✅ 完了 (2026-02-06)
+- `KademliaQuery.executeDisjointPaths` で初期ピアを距離順ラウンドロビンでd個のグループに分割し、`withThrowingTaskGroup`で並列実行
+- 結果は`mergeResults`でクエリタイプ別にマージ（findNode: 重複排除+距離順、getValue: 最良レコード選択、getProviders: 重複排除）
+- `SKademliaConfig.useDisjointPaths` で有効化
 
 ## 品質向上TODO
 
@@ -388,8 +389,8 @@ let kad = KademliaService(
   - `SKademliaConfig` - 設定オプション
   - `SKademliaValidator` - ノードID検証ユーティリティ
   - 11個のテストすべてパス
-- [ ] **S/Kademlia Sibling Broadcast実装** - クエリロジックへの統合
-- [ ] **S/Kademlia Disjoint Paths実装** - 複数経路クエリ
+- [x] **S/Kademlia Sibling Broadcast実装** - クエリロジックへの統合 ✅ 2026-02-06
+- [x] **S/Kademlia Disjoint Paths実装** - 複数経路クエリ ✅ 2026-02-06
 - [ ] **レコードリパブリッシュ** - 定期的なレコード再配布
 - [ ] **プロバイダキャッシング** - 頻繁に要求されるCIDのキャッシュ
 
@@ -436,8 +437,10 @@ let kad = KademliaService(
 | `KademliaServiceTests` | 6 | サービス初期化、モード |
 | `ProtocolInputValidationTests` | 10 | 入力検証 |
 | `RecordValidatorTests` | 11 | バリデータ検証 |
+| `SKademliaSiblingBroadcastTests` | 8 | Sibling Broadcast選択 |
+| `SKademliaDisjointPathsTests` | 15 | Disjoint Paths分割・マージ |
 
-**合計: 108テスト** (2026-01-31時点)
+**合計: 131テスト** (2026-02-06時点)
 
 ## Codex Review (2026-01-18)
 

@@ -208,10 +208,11 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeIHave(_ ihave: ControlMessage.IHave) -> Data {
-        var result = Data()
+        let topicBytes = Data(ihave.topic.value.utf8)
+        // Estimate: tag+varint+topic + per-messageID (tag+varint+~32 bytes)
+        var result = Data(capacity: 4 + topicBytes.count + ihave.messageIDs.count * 36)
 
         // Field 1: topicID (string)
-        let topicBytes = Data(ihave.topic.value.utf8)
         result.append(tagIHaveTopic)
         result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
         result.append(topicBytes)
@@ -227,7 +228,8 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeIWant(_ iwant: ControlMessage.IWant) -> Data {
-        var result = Data()
+        // Estimate: per-messageID (tag+varint+~32 bytes)
+        var result = Data(capacity: iwant.messageIDs.count * 36)
 
         // Field 1: messageIDs (repeated bytes)
         for msgID in iwant.messageIDs {
@@ -240,10 +242,10 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeGraft(_ graft: ControlMessage.Graft) -> Data {
-        var result = Data()
+        let topicBytes = Data(graft.topic.value.utf8)
+        var result = Data(capacity: 4 + topicBytes.count)
 
         // Field 1: topicID (string)
-        let topicBytes = Data(graft.topic.value.utf8)
         result.append(tagGraftTopic)
         result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
         result.append(topicBytes)
@@ -252,10 +254,11 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodePrune(_ prune: ControlMessage.Prune) -> Data {
-        var result = Data()
+        let topicBytes = Data(prune.topic.value.utf8)
+        // Estimate: topic + peers + backoff
+        var result = Data(capacity: 4 + topicBytes.count + prune.peers.count * 48 + 12)
 
         // Field 1: topicID (string)
-        let topicBytes = Data(prune.topic.value.utf8)
         result.append(tagPruneTopic)
         result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
         result.append(topicBytes)
@@ -278,7 +281,7 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodePeerInfo(_ info: ControlMessage.Prune.PeerInfo) -> Data {
-        var result = Data()
+        var result = Data(capacity: 4 + info.peerID.bytes.count + (info.signedPeerRecord?.count ?? 0) + 4)
 
         // Field 1: peerID (bytes)
         result.append(tagPeerInfoPeerID)
@@ -296,7 +299,8 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeIDontWant(_ idontwant: ControlMessage.IDontWant) -> Data {
-        var result = Data()
+        // Estimate: per-messageID (tag+varint+~32 bytes)
+        var result = Data(capacity: idontwant.messageIDs.count * 36)
 
         // Field 1: messageIDs (repeated bytes)
         for msgID in idontwant.messageIDs {

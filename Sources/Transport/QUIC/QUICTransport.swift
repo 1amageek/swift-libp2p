@@ -40,6 +40,11 @@ public final class QUICTransport: SecuredTransport, Sendable {
     /// QUIC configuration
     private let configuration: QUICConfiguration
 
+    /// Session cache for 0-RTT resumption.
+    /// Stores TLS session tickets from previous connections to enable
+    /// zero round-trip reconnection.
+    private let sessionCache = ClientSessionCache()
+
     /// Supported protocol chains.
     ///
     /// QUIC uses UDP as the underlying transport:
@@ -144,8 +149,27 @@ public final class QUICTransport: SecuredTransport, Sendable {
         // Create client endpoint with libp2p TLS
         let endpoint = QUICEndpoint(configuration: config)
 
-        // Dial server and wait for handshake completion
-        let quicConnection = try await endpoint.dial(address: socketAddress)
+        // Try 0-RTT first if we have a cached session
+        let quicConnection: any QUICConnectionProtocol
+        let earlyDataAccepted: Bool
+
+        let serverIdentity = "\(socketAddress.ipAddress):\(socketAddress.port)"
+        let cachedSession = sessionCache.retrieveForEarlyData(for: serverIdentity)
+
+        if cachedSession != nil {
+            let result = try await endpoint.connectWith0RTT(
+                to: socketAddress,
+                sessionCache: sessionCache
+            )
+            quicConnection = result.connection
+            earlyDataAccepted = result.earlyDataAccepted
+            _ = earlyDataAccepted  // Will be useful for future metrics
+        } else {
+            quicConnection = try await endpoint.dial(address: socketAddress)
+        }
+
+        // Collect session tickets for future 0-RTT connections
+        startSessionTicketCollection(for: quicConnection, serverIdentity: serverIdentity)
 
         // Extract PeerID from TLS certificate
         let remotePeer = try extractPeerIDFromQUIC(quicConnection)
@@ -170,6 +194,27 @@ public final class QUICTransport: SecuredTransport, Sendable {
         connection.startForwarding()
 
         return connection
+    }
+
+    /// Collects session tickets from a QUIC connection for future 0-RTT resumption.
+    private func startSessionTicketCollection(
+        for connection: any QUICConnectionProtocol,
+        serverIdentity: String
+    ) {
+        guard let managedConn = connection as? ManagedConnection else { return }
+        let cache = self.sessionCache
+
+        Task {
+            for await ticketInfo in managedConn.sessionTickets {
+                cache.storeTicket(
+                    ticketInfo.ticket,
+                    resumptionMasterSecret: ticketInfo.resumptionMasterSecret,
+                    cipherSuite: ticketInfo.cipherSuite,
+                    alpn: ticketInfo.alpn,
+                    serverIdentity: serverIdentity
+                )
+            }
+        }
     }
 
     /// Listens and returns a QUIC-specific listener.

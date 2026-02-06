@@ -32,7 +32,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | Component | Status | Notes |
 |-----------|--------|-------|
 | TCP (SwiftNIO) | ✅ Implemented | |
-| QUIC (swift-quic) | ✅ Implemented | 0-RTT, connection migration pending |
+| QUIC (swift-quic) | ✅ Implemented | 0-RTT resumption, connection migration |
 | Memory (testing) | ✅ Implemented | |
 | Circuit Relay v2 Transport | ✅ Implemented | |
 | WebRTC Direct (swift-webrtc) | ✅ Implemented | DTLS 1.2 + SCTP, 25 tests |
@@ -89,7 +89,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | GossipSub v1.1 | ✅ Implemented | Peer scoring, signature verification |
 | GossipSub IDONTWANT (v1.2 wire format) | ✅ Implemented | Full encode/decode + send/receive |
 | GossipSub per-topic scoring | ✅ Implemented | TopicScoreParams (P1-P4), PeerScorer integration |
-| Kademlia DHT | ✅ Implemented | 108 tests, record validation, S/Kademlia |
+| Kademlia DHT | ✅ Implemented | 131 tests, record validation, S/Kademlia |
 | Kademlia client/server mode restriction | ✅ Implemented | Inbound query rejection in client mode (Go-compatible) |
 | Kademlia RecordValidator.Select | ✅ Implemented | Best record selection via `select(key:records:)` |
 | Kademlia persistent storage | ✅ Implemented | FileRecordStorage + FileProviderStorage |

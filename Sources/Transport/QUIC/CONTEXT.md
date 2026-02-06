@@ -153,6 +153,7 @@ swift-quic provides `QUICConnectionProtocol` with:
 public protocol QUICConnectionProtocol: Sendable {
     var localAddress: SocketAddress? { get }
     var remoteAddress: SocketAddress { get }
+    var currentRemoteAddress: SocketAddress { get }  // connection migration対応
     var isEstablished: Bool { get }
 
     func openStream() async throws -> any QUICStreamProtocol
@@ -192,12 +193,17 @@ streams initiated by the remote peer.
 | | PeerID verification | ✅ |
 | | Ed25519/ECDSA support | ✅ |
 
+### Recently Completed
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| 0-RTT connection establishment | ✅ | `ClientSessionCache`でセッションチケットをキャッシュ、`dialSecured`で自動的に0-RTTを試行 |
+| Connection migration | ✅ | `QUICEndpoint.processIncomingPacket`でアドレス変更検出、`QUICMuxedConnection.remoteAddress`を動的プロパティ化 |
+
 ### Pending Features
 
 | Feature | Status |
 |---------|--------|
-| 0-RTT connection establishment | ⏳ |
-| Connection migration | ⏳ |
 | rust-libp2p interop testing | ⏳ |
 | go-libp2p interop testing | ⏳ |
 
