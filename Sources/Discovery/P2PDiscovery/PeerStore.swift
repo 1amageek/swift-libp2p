@@ -54,6 +54,9 @@ public protocol PeerStore: Sendable {
     /// Returns detailed record for an address.
     func addressRecord(_ address: Multiaddr, for peer: PeerID) async -> AddressRecord?
 
+    /// Returns all address records for a peer in a single lock acquisition.
+    func addressRecords(for peer: PeerID) async -> [Multiaddr: AddressRecord]
+
     /// Records a successful connection to an address.
     func recordSuccess(address: Multiaddr, for peer: PeerID) async
 
@@ -383,6 +386,10 @@ public final class MemoryPeerStore: PeerStore, Sendable {
 
     public func addressRecord(_ address: Multiaddr, for peer: PeerID) async -> AddressRecord? {
         state.withLock { $0.peers[peer]?.addresses[address] }
+    }
+
+    public func addressRecords(for peer: PeerID) async -> [Multiaddr: AddressRecord] {
+        state.withLock { $0.peers[peer]?.addresses ?? [:] }
     }
 
     public func recordSuccess(address: Multiaddr, for peer: PeerID) async {

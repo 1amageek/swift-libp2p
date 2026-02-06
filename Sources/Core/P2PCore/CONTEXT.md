@@ -22,7 +22,7 @@ libp2pスタック全体で使用される最小限の共通抽象を提供す�
 | `PublicKey` | Identity/PublicKey.swift | 公開鍵の表現 |
 | `PrivateKey` | Identity/PrivateKey.swift | 秘密鍵の表現 |
 | `KeyPair` | Identity/KeyPair.swift | 鍵ペア |
-| `KeyType` | Identity/KeyType.swift | 鍵種別（Ed25519, Secp256k1等） |
+| `KeyType` | Identity/KeyType.swift | 鍵種別（Ed25519, ECDSA P-256） |
 | `Multiaddr` | Addressing/Multiaddr.swift | 自己記述型ネットワークアドレス |
 | `Protocol` | Addressing/Protocol.swift | アドレスプロトコルコンポーネント |
 | `RawConnection` | Connection/RawConnection.swift | 生のネットワーク接続 (protocol) |
@@ -66,13 +66,25 @@ let addr = try Multiaddr(socketAddress: "192.168.1.1:4001", transport: .tcp)
 | BLAKE2b-256 | 0xb220 | ❌ 未実装 | コード定義のみ |
 | BLAKE2s-256 | 0xb260 | ❌ 未実装 | コード定義のみ |
 
+## 設計判断: モダン暗号のみサポート
+
+本プロジェクトは **Ed25519** と **ECDSA P-256** のみをサポートし、RSA と Secp256k1 は意図的に除外する。
+
+| 鍵タイプ | ステータス | 理由 |
+|---------|-----------|------|
+| Ed25519 | ✅ サポート | 高速・安全・鍵サイズ小。libp2pの推奨アルゴリズム |
+| ECDSA P-256 | ✅ サポート | TLS 1.3 証明書との互換性に必要 |
+| RSA | ❌ 非サポート | 鍵サイズが大きく低速。レガシー互換のためだけに存在し、新規実装では不要 |
+| Secp256k1 | ❌ 非サポート | Bitcoin/Ethereum用途。libp2pネットワーキングでの実用的需要なし |
+
+コード上は `KeyType` enumに全種別を定義しているが（Protobufワイヤフォーマット互換のため）、RSA/Secp256k1 で鍵生成・署名検証を試みると `unsupportedKeyType` エラーを返す。
+
 ## 既知の制限事項
 
-1. **暗号化サポート**: Ed25519のみ実装。Secp256k1/ECDSA/RSAは未実装
-2. **アドレス検証**: IPv4/IPv6の形式検証は行わない（文字列操作のみ）
-3. **ハッシュ関数**: SHA-256とidentityのみ。SHA-512/SHA3/BLAKE2は未実装
-4. **PeerID公開鍵抽出**: identity hashでエンコードされたPeerIDのみ公開鍵を復元可能。SHA-256でハッシュされたPeerIDからは復元不可（libp2p仕様に準拠）
-5. **IPv6表記**: デコード時に展開形式（`0:0:0:0:0:0:0:1`）を使用。圧縮形式（`::1`）は生成されない
+1. **アドレス検証**: IPv4/IPv6の形式検証は行わない（文字列操作のみ）
+2. **ハッシュ関数**: SHA-256とidentityのみ。SHA-512/SHA3/BLAKE2は未実装
+3. **PeerID公開鍵抽出**: identity hashでエンコードされたPeerIDのみ公開鍵を復元可能。SHA-256でハッシュされたPeerIDからは復元不可（libp2p仕様に準拠）
+4. **IPv6表記**: デコード時に展開形式（`0:0:0:0:0:0:0:1`）を使用。圧縮形式（`::1`）は生成されない
 
 ## セキュリティに関する注意事項
 
@@ -149,11 +161,6 @@ Envelopeの署名検証時、ドメイン文字列は検証データに含まれ
 - 状態管理（ConnectionPool等）は含まない
 
 ## 品質向上TODO
-
-### 高優先度
-- [ ] **Secp256k1署名検証の実装** - 現在Ed25519のみサポート
-- [ ] **ECDSA署名検証の実装** - 現在未実装
-- [ ] **RSA署名検証の実装** - 現在未実装
 
 ### 中優先度
 - [ ] **SHA-512/SHA3/BLAKE2ハッシュファクトリの追加** - Multihashで宣言されているが実装なし

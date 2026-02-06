@@ -191,10 +191,20 @@ public final class DefaultAddressBook: AddressBook, Sendable {
     public func sortedAddresses(for peer: PeerID) async -> [Multiaddr] {
         let addresses = await peerStore.addresses(for: peer)
 
-        // Calculate scores and sort
+        // Batch fetch all address records in a single lock acquisition
+        let records = await peerStore.addressRecords(for: peer)
+
+        // Calculate scores using pre-fetched records
         var scoredAddresses: [(address: Multiaddr, score: Double)] = []
+        scoredAddresses.reserveCapacity(addresses.count)
         for address in addresses {
-            let addressScore = await score(address: address, for: peer)
+            let record = records[address]
+            let transportScore = calculateTransportScore(for: address)
+            let successScore = calculateSuccessScore(record: record)
+            let recencyScore = calculateRecencyScore(record: record)
+            let addressScore = transportScore * configuration.transportWeight
+                + successScore * configuration.successWeight
+                + recencyScore * configuration.recencyWeight
             scoredAddresses.append((address, addressScore))
         }
 

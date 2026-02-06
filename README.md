@@ -4,10 +4,10 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 
 ## Features
 
-- **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), WebRTC Direct (DTLS 1.2 + SCTP), Memory for testing
+- **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), WebRTC Direct (DTLS 1.2 + SCTP), WebSocket, Memory for testing
 - **Security Layer**: TLS 1.3 (libp2p spec, via swift-tls), Noise Protocol (XX pattern), QUIC TLS 1.3, DTLS 1.2 (WebRTC), Plaintext for testing
 - **Multiplexing**: Yamux stream multiplexer, Mplex, QUIC native multiplexing, SCTP data channels (WebRTC)
-- **Protocol Negotiation**: multistream-select 1.0
+- **Protocol Negotiation**: multistream-select 1.0, V1 Lazy (0-RTT)
 - **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
 - **Discovery**: SWIM membership, mDNS local discovery, CYCLON random peer sampling
@@ -36,7 +36,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | Memory (testing) | ✅ Implemented | |
 | Circuit Relay v2 Transport | ✅ Implemented | |
 | WebRTC Direct (swift-webrtc) | ✅ Implemented | DTLS 1.2 + SCTP, 25 tests |
-| WebSocket | ❌ Not implemented | Browser interop |
+| WebSocket (NIOWebSocket) | ✅ Implemented | HTTP/1.1 upgrade, TLS support, 15 tests |
 
 ### Security
 
@@ -61,7 +61,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | Component | Status | Notes |
 |-----------|--------|-------|
 | multistream-select v1 | ✅ Implemented | 20 tests |
-| multistream-select v1 Lazy (0-RTT) | ❌ Not implemented | |
+| multistream-select v1 Lazy (0-RTT) | ✅ Implemented | ConnectionUpgrader initiator side |
 
 ### Discovery
 
@@ -88,11 +88,11 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | AutoNAT v1 | ✅ Implemented | Rate limiting, 74 tests |
 | GossipSub v1.1 | ✅ Implemented | Peer scoring, signature verification |
 | GossipSub IDONTWANT (v1.2 wire format) | ✅ Implemented | Full encode/decode + send/receive |
-| GossipSub per-topic scoring | ❌ Not implemented | Global scoring only |
-| Kademlia DHT | ✅ Implemented | 65 tests, record validation |
-| Kademlia client/server mode restriction | ⚠️ Partial | Config exists but doesn't restrict behavior |
-| Kademlia RecordValidator.Select | ❌ Not implemented | Best record selection missing |
-| Kademlia persistent storage | ❌ Not implemented | In-memory only |
+| GossipSub per-topic scoring | ✅ Implemented | TopicScoreParams (P1-P4), PeerScorer integration |
+| Kademlia DHT | ✅ Implemented | 108 tests, record validation, S/Kademlia |
+| Kademlia client/server mode restriction | ✅ Implemented | Inbound query rejection in client mode (Go-compatible) |
+| Kademlia RecordValidator.Select | ✅ Implemented | Best record selection via `select(key:records:)` |
+| Kademlia persistent storage | ✅ Implemented | FileRecordStorage + FileProviderStorage |
 | Plumtree (Epidemic Broadcast Trees) | ✅ Implemented | 50 tests |
 
 ### NAT Traversal

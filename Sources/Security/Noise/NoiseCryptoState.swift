@@ -249,7 +249,6 @@ struct NoiseSymmetricState: Sendable {
             using: saltKey
         )
 
-        // Pre-convert PRK to SymmetricKey once, reuse across iterations
         let prkKey = SymmetricKey(data: Data(prk))
 
         var output = Data(capacity: outputLength)

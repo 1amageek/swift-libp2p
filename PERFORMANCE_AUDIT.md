@@ -4,6 +4,16 @@
 
 ---
 
+## 修正状況サマリ (2026-02-06 更新)
+
+| 重大度 | 総数 | ✅ 修正済み | ⬜ 未修正 |
+|--------|------|-----------|----------|
+| HIGH | 8件 | 6件 | 2件 (1.7 Noise HKDF, 1.8 HealthMonitor) |
+| MEDIUM | 14件 | 10件 | 4件 (2.6 GossipSub protobuf, 2.8 AddressBook, 2.13 EventBroadcaster, 2.1 MessageCache) |
+| LOW | 10件 | 0件 | 10件 (将来対応) |
+
+---
+
 ## 目次
 
 1. [重大度HIGH: 即時対応推奨](#1-重大度high-即時対応推奨)
@@ -16,150 +26,59 @@
 
 ## 1. 重大度HIGH: 即時対応推奨
 
-### 1.1 TCP_NODELAY 未設定
+### 1.1 ✅ TCP_NODELAY 未設定 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Transport/TCP/TCPTransport.swift:51` |
-| 影響 | 全TCP通信に40ms以上の遅延 (Nagle's Algorithm) |
-| 修正コスト | 1行追加 |
+| ファイル | `Sources/Transport/TCP/TCPTransport.swift:52` |
+| ステータス | ✅ 修正済み |
 
-Nagle's Algorithmが有効のため、小さなパケットがバッファリングされ遅延する。p2pプロトコルは小さなメッセージを頻繁に送るため影響が大きい。
-
-```swift
-// 現状: SO_REUSEADDR のみ
-.channelOption(.socketOption(.so_reuseaddr), value: 1)
-
-// 追加すべき設定
-.channelOption(.socketOption(.tcp_nodelay), value: 1)
-.channelOption(.socketOption(.so_keepalive), value: 1)
-```
-
-`TCPListener.swift:54,61` にも同様の設定追加が必要。
+`TCPTransport.swift:52-53` と `TCPListener.swift:62-63` に `tcp_nodelay` + `so_keepalive` 設定済み。
 
 ---
 
-### 1.2 Base58デコードの O(n²) 計算量
+### 1.2 ✅ Base58デコードの O(n²) 計算量 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Core/P2PCore/Utilities/Base58.swift:85-104` |
-| 影響 | PeerIDの生成・パース時に毎回発生 |
-| 原因 | `insert(at: 0)` による配列先頭挿入 |
-
-```swift
-// 現状: O(n²) — 先頭挿入のたびに全要素シフト
-for byte in bytes.reversed() {
-    let product = UInt(byte) * base + carry
-    newBytes.insert(UInt8(product & 0xFF), at: 0)  // O(n)
-    carry = product >> 8
-}
-
-// 改善案: append + reverse で O(n)
-for byte in bytes.reversed() {
-    let product = UInt(byte) * base + carry
-    newBytes.append(UInt8(product & 0xFF))  // O(1)
-    carry = product >> 8
-}
-newBytes.reverse()
-```
+| ファイル | `Sources/Core/P2PCore/Utilities/Base58.swift` |
+| ステータス | ✅ 修正済み — `append` + `reverse` パターンに変更済み |
 
 ---
 
-### 1.3 Multiaddr.bytes の O(n²) Data結合
+### 1.3 ✅ Multiaddr.bytes の O(n²) Data結合 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Core/P2PCore/Addressing/Multiaddr.swift:128` |
-| 影響 | Multiaddrのシリアライズ時に毎回発生 |
-| 原因 | `reduce` + `+` 演算子が中間Dataオブジェクトを生成 |
-
-```swift
-// 現状: 中間Dataが N-1 個生成される
-public var bytes: Data {
-    protocols.reduce(Data()) { $0 + $1.bytes }
-}
-
-// 改善案: 事前容量確保 + append
-public var bytes: Data {
-    var result = Data()
-    result.reserveCapacity(protocols.reduce(0) { $0 + $1.bytes.count })
-    for proto in protocols {
-        result.append(contentsOf: proto.bytes)
-    }
-    return result
-}
-```
+| ファイル | `Sources/Core/P2PCore/Addressing/Multiaddr.swift:127-133` |
+| ステータス | ✅ 修正済み — `for` + `append` パターンに変更済み（O(n)） |
 
 ---
 
-### 1.4 RoutingTable.closestPeers の全エントリソート
+### 1.4 ✅ RoutingTable.closestPeers の全エントリソート — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Protocols/Kademlia/RoutingTable.swift:120-142` |
-| 影響 | Kademliaクエリの度に呼ばれるホットパス |
-| 現在の計算量 | O(n log n) (全エントリ収集 + ソート) |
-| 改善後の計算量 | O(n log k) (部分ソート / k-way merge) |
-
-```swift
-// 現状: 全バケットの全エントリを収集→ソート
-var allEntries: [KBucketEntry] = []
-for bucket in buckets {
-    allEntries.append(contentsOf: bucket.allEntries)  // 最大5120エントリ
-}
-let sorted = filtered.sorted { ... }  // O(n log n)
-return Array(sorted.prefix(count))
-```
-
-K=20個だけ必要なのに全エントリをソートしている。バケット構造を活用し、ターゲットに最も近いバケットから順に取得するk-way mergeに変更すべき。
+| ファイル | `Sources/Protocols/Kademlia/RoutingTable.swift` |
+| ステータス | ✅ 修正済み — `smallest()` 部分ソート + bucket-proximity expansion 使用 |
 
 ---
 
-### 1.5 PeerStore LRU 管理の O(n) touchPeer
+### 1.5 ✅ PeerStore LRU 管理の O(n) touchPeer — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Discovery/P2PDiscovery/PeerStore.swift:491-494` |
-| 影響 | ピアへの全アクセスで発生 (`addresses(for:)`, `addAddresses`, `recordSuccess`) |
-| 原因 | `Array.firstIndex(of:)` が O(n) |
-
-```swift
-// 現状: O(n) 線形探索
-private func touchPeer(_ peer: PeerID, state s: inout State) {
-    if let index = s.accessOrder.firstIndex(of: peer) {
-        s.accessOrder.remove(at: index)  // O(n)
-        s.accessOrder.append(peer)
-    }
-}
-```
-
-1000ピアで毎回O(1000)。`OrderedSet` または二重連結リストで O(1) にできる。
+| ファイル | `Sources/Discovery/P2PDiscovery/PeerStore.swift` |
+| ステータス | ✅ 修正済み — `LRUOrder<PeerID>` 二重連結リストで O(1) 操作 |
 
 ---
 
-### 1.6 CompositeDiscovery の逐次サービス問い合わせ
+### 1.6 ✅ CompositeDiscovery の逐次サービス問い合わせ — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Discovery/P2PDiscovery/CompositeDiscovery.swift:125-149` |
-| 影響 | ピア探索レイテンシが全サービスの合計になる |
-| 原因 | `for (service, weight) in services` が逐次実行 |
-
-```swift
-// 現状: T1 + T2 + T3 (逐次)
-for (service, weight) in services {
-    let candidates = try await service.find(peer: peer)
-    // ...
-}
-
-// 改善案: max(T1, T2, T3) (並列)
-try await withThrowingTaskGroup(of: ...) { group in
-    for (service, weight) in services {
-        group.addTask { try await service.find(peer: peer) }
-    }
-}
-```
+| ファイル | `Sources/Discovery/P2PDiscovery/CompositeDiscovery.swift:166` |
+| ステータス | ✅ 修正済み — `withTaskGroup` による並列クエリに変更済み |
 
 ---
 
@@ -215,53 +134,39 @@ t = Data(block)  // 毎回変換
 
 ---
 
-### 2.2 MeshState.allMeshPeers のキャッシュなし再計算
+### 2.2 ✅ MeshState.allMeshPeers のキャッシュなし再計算 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Protocols/GossipSub/Router/MeshState.swift:170-178` |
-| 影響 | 呼び出し毎に全トピックのSet unionを再計算 |
-
-結果をキャッシュし、メッシュ変更時のみ無効化すべき。
+| ファイル | `Sources/Protocols/GossipSub/Router/MeshState.swift:39` |
+| ステータス | ✅ 修正済み — `allMeshPeersCache` でキャッシュ、メッシュ変更時にinvalidate |
 
 ---
 
-### 2.3 Yamux/Mplex バッファスライス生成
+### 2.3 ✅ Yamux/Mplex バッファスライス生成 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Mux/Yamux/YamuxConnection.swift:50-51,289` |
-| 同様 | `Sources/Mux/Mplex/MplexConnection.swift:261` |
-| 影響 | フレーム処理ループの毎反復でDataスライスを生成 |
-
-`unprocessedBuffer` プロパティアクセスの度に `readBuffer[readBufferOffset...]` でDataスライスを生成している。デコード関数にオフセットを直接渡す設計に変更すべき。
+| ファイル | `Sources/Mux/Yamux/YamuxConnection.swift`, `Sources/Mux/Mplex/MplexConnection.swift` |
+| ステータス | ✅ 修正済み — NIO `ByteBuffer` の reader/writer index 使用 |
 
 ---
 
-### 2.4 TCP/WebSocket 読み取りパスの不要なデータコピー
+### 2.4 ✅ TCP/WebSocket 読み取りパスの不要なデータコピー — 改善済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Transport/TCP/TCPConnection.swift:73-78,342-360` |
-| 同様 | `Sources/Transport/WebSocket/WebSocketConnection.swift:50-56` |
-| 影響 | 受信パケット毎に ByteBuffer → [UInt8] → Data の変換チェーン |
-
-NIOの `ByteBuffer` をできるだけ長く保持し、`Data` への変換を遅延させるべき。
+| ファイル | `Sources/Transport/TCP/TCPConnection.swift`, `Sources/Transport/WebSocket/WebSocketConnection.swift` |
+| ステータス | ✅ 改善済み — NIO ByteBuffer lifecycle を延長、最小限のコピーに削減 |
 
 ---
 
-### 2.5 Noise NoiseConnection 読み取りバッファの dropFirst コピー
+### 2.5 ✅ Noise NoiseConnection 読み取りバッファの dropFirst コピー — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Security/Noise/NoiseConnection.swift:84` |
-| 影響 | フレーム読み取り毎にバッファ全体をコピー |
-
-```swift
-state.buffer = Data(state.buffer.dropFirst(consumed))  // バッファ全体のコピー
-```
-
-Yamuxのようにオフセットトラッキングに変更すべき。
+| ファイル | `Sources/Security/Noise/NoiseConnection.swift:22-36` |
+| ステータス | ✅ 修正済み — `bufferOffset` トラッキング + 閾値圧縮パターン |
 
 ---
 
@@ -276,18 +181,12 @@ Yamuxのようにオフセットトラッキングに変更すべき。
 
 ---
 
-### 2.7 PeerID.description の繰り返しBase58エンコード
+### 2.7 ✅ PeerID.description の繰り返しBase58エンコード — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Core/P2PCore/Identity/PeerID.swift:98-108` |
-| 影響 | ログ出力・シリアライズの度に発生 |
-
-```swift
-public var description: String { bytes.base58EncodedString }  // 毎回計算
-```
-
-Lazy cached propertyで初回のみ計算にすべき。
+| ファイル | `Sources/Core/P2PCore/Identity/PeerID.swift:20,106` |
+| ステータス | ✅ 修正済み — `_description` プロパティでinit時にキャッシュ |
 
 ---
 
@@ -309,65 +208,39 @@ for address in addresses {
 
 ---
 
-### 2.9 CYCLON evictIfNeeded の O(n²) 削除
+### 2.9 ✅ CYCLON evictIfNeeded の O(n²) 削除 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Discovery/CYCLON/CYCLONPartialView.swift:140-147` |
-| 影響 | 大量マージ時のみ |
-| 計算量 | O(n²) (whileループ × max(by:)) |
-
-```swift
-while s.entries.count > cacheSize {
-    if let oldest = s.entries.values.max(by: { $0.age < $1.age }) {  // O(n)
-        s.entries.removeValue(forKey: oldest.peerID)
-    }
-}
-```
-
-ヒープ構造またはage順インデックスに変更すべき。
+| ファイル | `Sources/Discovery/CYCLON/CYCLONPartialView.swift` |
+| ステータス | ✅ 修正済み — 単一ソートベースの削除に変更 |
 
 ---
 
-### 2.10 ProtoBook プロトコル検索の逆引きインデックス欠落
+### 2.10 ✅ ProtoBook プロトコル検索の逆引きインデックス欠落 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Discovery/P2PDiscovery/MemoryProtoBook.swift:70-73` |
-| 影響 | プロトコル探索時に全ピアを走査 |
-
-```swift
-func peers(supporting protocolID: String) async -> [PeerID] {
-    state.withLock { s in
-        s.protocols.compactMap { $0.value.contains(protocolID) ? $0.key : nil }  // O(n)
-    }
-}
-```
-
-`[String: Set<PeerID>]` の逆引きインデックスで O(1) にできる。
+| ファイル | `Sources/Discovery/P2PDiscovery/MemoryProtoBook.swift:21` |
+| ステータス | ✅ 修正済み — `protocolPeers: [String: Set<PeerID>]` 逆引きインデックス追加 |
 
 ---
 
-### 2.11 ConnectionPool.connectedPeers のネスト走査
+### 2.11 ✅ ConnectionPool.connectedPeers のネスト走査 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Integration/P2P/Connection/ConnectionPool.swift:356-363` |
-| 影響 | 統計取得時 |
-| 計算量 | O(P × C) (ピア数 × ピア毎コネクション数) |
-
-接続中ピアのキャッシュSetを持ち、接続/切断時に更新する方式に変更すべき。
+| ファイル | `Sources/Integration/P2P/Connection/ConnectionPool.swift:112` |
+| ステータス | ✅ 修正済み — `connectedPeerCache: Set<PeerID>` で接続/切断時に更新 |
 
 ---
 
-### 2.12 SeenCache の重複データ構造
+### 2.12 ✅ SeenCache の重複データ構造 — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Protocols/GossipSub/Router/MessageCache.swift:186-189` |
-| 影響 | メッセージ重複排除でメモリ2倍使用 |
-
-DictionaryとArrayの両方でMessageIDを保持している。`OrderedDictionary` または `LinkedHashMap` 相当に統合すべき。
+| ファイル | `Sources/Protocols/GossipSub/Router/MessageCache.swift` |
+| ステータス | ✅ 修正済み — `LRUOrder<MessageID>` で統合 |
 
 ---
 
@@ -386,14 +259,12 @@ let conts = state.withLock { Array($0.continuations.values) }
 
 ---
 
-### 2.14 HexEncoding の文字列コピー
+### 2.14 ✅ HexEncoding の文字列コピー — 修正済み
 
 | 項目 | 値 |
 |------|-----|
-| ファイル | `Sources/Core/P2PCore/Utilities/HexEncoding.swift:11,16` |
-| 影響 | Hexデコード毎にString lowercased() のコピー |
-
-UTF-8バイト配列で直接処理し、Stringオブジェクトの生成を避けるべき。
+| ファイル | `Sources/Core/P2PCore/Utilities/HexEncoding.swift` |
+| ステータス | ✅ 修正済み — UTF-8 バイトレベル処理に変更 |
 
 ---
 
@@ -528,34 +399,31 @@ UTF-8バイト配列で直接処理し、Stringオブジェクトの生成を避
 
 ## 5. 全体サマリ
 
-### 重大度別集計
+### 重大度別集計 (2026-02-06 更新)
 
-| 重大度 | 件数 | 対象 |
-|--------|------|------|
-| HIGH | 8件 | TCP_NODELAY, Base58 O(n²), Multiaddr O(n²), RoutingTable sort, PeerStore LRU, CompositeDiscovery sequential, Noise HKDF, HealthMonitor per-peer task |
-| MEDIUM | 14件 | MessageCache, MeshState, Mux buffer slicing, TCP data copy, Noise buffer, GossipSub protobuf, PeerID caching, AddressBook scoring, CYCLON eviction, ProtoBook index, ConnectionPool, SeenCache, EventBroadcaster, HexEncoding |
-| LOW | 10件 | Socket buffers, hardcoded limits, WebRTC backpressure, Yamux frame header, Yamux window wait, LazyPushBuffer, Envelope marshal, Negotiation string, Mplex decode, Multiaddr IP |
+| 重大度 | 総数 | ✅ 修正済み | ⬜ 未修正 |
+|--------|------|-----------|----------|
+| HIGH | 8件 | 6件 | 2件 |
+| MEDIUM | 14件 | 10件 | 4件 |
+| LOW | 10件 | 0件 | 10件 |
 
-### モジュール別集計
+### 未修正項目一覧
 
-| モジュール | HIGH | MEDIUM | LOW |
-|-----------|------|--------|-----|
-| Transport (TCP/WS/WebRTC) | 1 | 2 | 3 |
-| Core (PeerID/Multiaddr/Utilities) | 2 | 3 | 2 |
-| Protocols (Kademlia/GossipSub/Plumtree) | 1 | 3 | 1 |
-| Discovery (PeerStore/CYCLON/Composite) | 2 | 3 | 0 |
-| Security (Noise/TLS) | 1 | 1 | 0 |
-| Mux (Yamux/Mplex) | 0 | 1 | 3 |
-| Integration (ConnectionPool/Health) | 1 | 1 | 0 |
-| Negotiation | 0 | 0 | 1 |
+**HIGH (2件)**:
+1. **1.7 Noise HKDF** — `SymmetricKey` ↔ `Data` の不要な中間変換
+2. **1.8 HealthMonitor** — ピアごとの個別Task生成（バッチ化が必要）
+
+**MEDIUM (4件)**:
+1. **2.1 MessageCache.getGossipIDs** — トピック別インデックス欠如
+2. **2.6 GossipSub Protobuf** — 内部エンコーダの capacity ヒントなし
+3. **2.8 AddressBook** — アドレスごとの個別ロック取得
+4. **2.13 EventBroadcaster.emit** — continuation配列の毎回コピー
 
 ### 推奨対応順序
 
-1. **TCP_NODELAY追加** — 1行の変更で全TCP通信のレイテンシ改善
-2. **Base58デコード O(n²) → O(n)** — append+reverseパターンに変更
-3. **Multiaddr.bytes O(n²) → O(n)** — reserveCapacity+appendに変更
-4. **RoutingTable.closestPeers** — k-way mergeまたは部分ソートに変更
-5. **PeerStore LRU** — OrderedSetまたは連結リストに変更
-6. **CompositeDiscovery** — TaskGroupによる並列化
-7. **Noise HKDF** — 中間Data変換の排除
-8. **HealthMonitor** — バッチ監視に変更
+1. **HealthMonitor** — バッチ監視に変更（スケーラビリティ影響大）
+2. **Noise HKDF** — 中間Data変換の排除
+3. **EventBroadcaster.emit** — 配列コピー回避
+4. **AddressBook** — バッチスコアリング
+5. **GossipSub Protobuf** — capacity ヒント追加
+6. **MessageCache** — トピック別インデックス追加

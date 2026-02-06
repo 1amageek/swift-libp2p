@@ -129,8 +129,13 @@ public struct PeerState: Sendable {
         return ContinuousClock.now < expiration
     }
 
+    /// Maximum number of IDONTWANT entries per peer to prevent memory exhaustion.
+    public static let maxDontWantEntries = 10_000
+
     /// Adds a message to the don't-want list.
     public mutating func addDontWant(_ messageID: MessageID, ttl: Duration) {
+        // Prevent unbounded growth from malicious peers
+        guard dontWantMessages.count < Self.maxDontWantEntries else { return }
         dontWantMessages[messageID] = .now + ttl
     }
 

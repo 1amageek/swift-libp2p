@@ -95,7 +95,7 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeSubOpts(_ sub: GossipSubRPC.SubscriptionOpt) -> Data {
-        var result = Data()
+        var result = Data(capacity: 4 + sub.topic.value.utf8.count)
 
         // Field 1: subscribe (bool as varint)
         result.append(tagSubOptsSubscribe)
@@ -159,7 +159,10 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeControl(_ control: ControlMessageBatch) -> Data {
-        var result = Data()
+        let estimatedSize = control.ihaves.count * 64 + control.iwants.count * 64
+            + control.grafts.count * 32 + control.prunes.count * 48
+            + control.idontwants.count * 64
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: ihave (repeated)
         for ihave in control.ihaves {

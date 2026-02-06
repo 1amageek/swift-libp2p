@@ -129,11 +129,17 @@ public actor HealthMonitor {
     /// Ping provider for health checks.
     private let pingProvider: any PingProvider
 
-    /// Active monitoring tasks by peer.
-    private var monitoringTasks: [PeerID: Task<Void, Never>] = [:]
+    /// Set of peers being monitored.
+    private var monitoredPeerSet: Set<PeerID> = []
+
+    /// Next check time for each peer.
+    private var nextCheckTimes: [PeerID: ContinuousClock.Instant] = [:]
 
     /// Consecutive failure counts by peer.
     private var failureCounts: [PeerID: Int] = [:]
+
+    /// The single monitoring loop task.
+    private var monitorLoopTask: Task<Void, Never>?
 
     /// Callback when health check fails (threshold exceeded).
     private var onHealthCheckFailed: (@Sendable (PeerID) async -> Void)?
@@ -166,59 +172,39 @@ public actor HealthMonitor {
     ///
     /// - Parameter peer: The peer to monitor
     public func startMonitoring(peer: PeerID) {
-        guard monitoringTasks[peer] == nil else { return }
+        guard !monitoredPeerSet.contains(peer) else { return }
 
-        let task = Task { [weak self, configuration, pingProvider] in
-            guard let self = self else { return }
+        monitoredPeerSet.insert(peer)
 
-            // Immediate check if configured
-            var isFirstCheck = configuration.checkImmediately
-
-            while !Task.isCancelled {
-                do {
-                    // Wait for interval (skip on first check if immediate)
-                    if !isFirstCheck {
-                        try await Task.sleep(for: configuration.interval)
-                    }
-                    isFirstCheck = false
-
-                    // Ping with timeout
-                    _ = try await self.pingWithTimeout(
-                        peer: peer,
-                        pingProvider: pingProvider,
-                        timeout: configuration.timeout
-                    )
-
-                    // Success - reset failure count
-                    await self.resetFailureCount(for: peer)
-
-                } catch is CancellationError {
-                    break
-                } catch {
-                    // Ping failed - record failure
-                    await self.recordFailure(for: peer)
-                }
-            }
+        if configuration.checkImmediately {
+            nextCheckTimes[peer] = .now
+        } else {
+            nextCheckTimes[peer] = .now + configuration.interval
         }
 
-        monitoringTasks[peer] = task
+        ensureMonitorLoopRunning()
     }
 
     /// Stops monitoring a peer.
     ///
     /// - Parameter peer: The peer to stop monitoring
     public func stopMonitoring(peer: PeerID) {
-        monitoringTasks[peer]?.cancel()
-        monitoringTasks.removeValue(forKey: peer)
+        monitoredPeerSet.remove(peer)
+        nextCheckTimes.removeValue(forKey: peer)
         failureCounts.removeValue(forKey: peer)
+
+        if monitoredPeerSet.isEmpty {
+            monitorLoopTask?.cancel()
+            monitorLoopTask = nil
+        }
     }
 
     /// Stops monitoring all peers.
     public func stopAll() {
-        for task in monitoringTasks.values {
-            task.cancel()
-        }
-        monitoringTasks.removeAll()
+        monitorLoopTask?.cancel()
+        monitorLoopTask = nil
+        monitoredPeerSet.removeAll()
+        nextCheckTimes.removeAll()
         failureCounts.removeAll()
     }
 
@@ -227,12 +213,73 @@ public actor HealthMonitor {
     /// - Parameter peer: The peer to check
     /// - Returns: true if monitoring is active
     public func isMonitoring(peer: PeerID) -> Bool {
-        monitoringTasks[peer] != nil
+        monitoredPeerSet.contains(peer)
     }
 
     /// Returns all peers being monitored.
     public var monitoredPeers: [PeerID] {
-        Array(monitoringTasks.keys)
+        Array(monitoredPeerSet)
+    }
+
+    /// Starts the single monitoring loop if not already running.
+    private func ensureMonitorLoopRunning() {
+        guard monitorLoopTask == nil else { return }
+
+        monitorLoopTask = Task { [weak self] in
+            guard let self = self else { return }
+            // Tick at a fraction of the check interval for responsiveness
+            let tickInterval = Duration.seconds(1)
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: tickInterval)
+                } catch {
+                    break
+                }
+
+                let now = ContinuousClock.now
+                let peersToCheck = await self.peersReadyForCheck(at: now)
+
+                // Check peers concurrently in a batch
+                await withTaskGroup(of: Void.self) { group in
+                    for peer in peersToCheck {
+                        group.addTask {
+                            await self.performCheck(peer: peer)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns peers whose next check time has arrived.
+    private func peersReadyForCheck(at now: ContinuousClock.Instant) -> [PeerID] {
+        var ready: [PeerID] = []
+        for (peer, nextTime) in nextCheckTimes {
+            if now >= nextTime && monitoredPeerSet.contains(peer) {
+                ready.append(peer)
+            }
+        }
+        return ready
+    }
+
+    /// Performs a single health check for a peer.
+    private func performCheck(peer: PeerID) async {
+        guard monitoredPeerSet.contains(peer) else { return }
+
+        do {
+            _ = try await pingWithTimeout(
+                peer: peer,
+                pingProvider: pingProvider,
+                timeout: configuration.timeout
+            )
+            resetFailureCount(for: peer)
+        } catch {
+            await recordFailure(for: peer)
+        }
+
+        // Schedule next check
+        nextCheckTimes[peer] = .now + configuration.interval
     }
 
     // MARK: - Manual Check
