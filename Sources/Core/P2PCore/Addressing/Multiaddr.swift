@@ -125,7 +125,8 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
     /// The binary representation of this address.
     public var bytes: Data {
-        var result = Data()
+        // Pre-allocate capacity: each protocol typically uses 3-20 bytes
+        var result = Data(capacity: protocols.count * 12)
         for proto in protocols {
             result.append(contentsOf: proto.bytes)
         }

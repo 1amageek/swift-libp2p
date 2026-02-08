@@ -21,7 +21,10 @@ public struct NATPortMapperConfiguration: Sendable {
     /// Whether to try NAT-PMP.
     public var tryNATPMP: Bool
 
-    /// NAT-PMP port (default: 5351).
+    /// Whether to try PCP (Port Control Protocol).
+    public var tryPCP: Bool
+
+    /// NAT-PMP / PCP port (default: 5351).
     public var natpmpPort: UInt16
 
     /// Label for port mappings registered on the gateway.
@@ -34,6 +37,7 @@ public struct NATPortMapperConfiguration: Sendable {
         autoRenew: Bool = true,
         tryUPnP: Bool = true,
         tryNATPMP: Bool = true,
+        tryPCP: Bool = true,
         natpmpPort: UInt16 = 5351,
         mappingDescription: String = "libp2p"
     ) {
@@ -43,6 +47,7 @@ public struct NATPortMapperConfiguration: Sendable {
         self.autoRenew = autoRenew
         self.tryUPnP = tryUPnP
         self.tryNATPMP = tryNATPMP
+        self.tryPCP = tryPCP
         self.natpmpPort = natpmpPort
         self.mappingDescription = mappingDescription
     }

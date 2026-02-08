@@ -7,4 +7,6 @@ public enum NATGatewayType: Sendable, Equatable {
     case upnp(controlURL: URL, serviceType: String)
     /// NAT-PMP gateway
     case natpmp(gatewayIP: String)
+    /// PCP (Port Control Protocol) gateway
+    case pcp(gatewayIP: String)
 }

@@ -79,30 +79,28 @@ public enum Base58 {
             }
         }
 
-        // Convert from base58
+        // Convert from base58 — O(n*m) where n=string length, m=byte length
+        // Uses in-place mutation to avoid O(n²) from repeated array copies
         var bytes: [UInt8] = []
+        bytes.reserveCapacity(string.utf8.count)
 
         for char in string.dropFirst(leadingOnes) {
             guard let value = decodeTable[char] else {
                 throw Base58Error.invalidCharacter(char)
             }
 
+            // Multiply existing bytes by 58 and add new value (big-endian)
             var carry = UInt(value)
-            var newBytes: [UInt8] = []
-
-            for byte in bytes.reversed() {
-                let product = UInt(byte) * base + carry
-                newBytes.append(UInt8(product & 0xFF))
+            for i in stride(from: bytes.count - 1, through: 0, by: -1) {
+                let product = UInt(bytes[i]) * base + carry
+                bytes[i] = UInt8(product & 0xFF)
                 carry = product >> 8
             }
 
             while carry > 0 {
-                newBytes.append(UInt8(carry & 0xFF))
+                bytes.insert(UInt8(carry & 0xFF), at: 0)
                 carry >>= 8
             }
-
-            newBytes.reverse()
-            bytes = newBytes
         }
 
         // Add leading zeros

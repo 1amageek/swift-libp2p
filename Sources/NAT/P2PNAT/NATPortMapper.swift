@@ -1,6 +1,6 @@
 /// NATPortMapper - Unified NAT port mapping service
 ///
-/// Facade that delegates to protocol-specific handlers (UPnP, NAT-PMP).
+/// Facade that delegates to protocol-specific handlers (UPnP, NAT-PMP, PCP).
 /// Manages lifecycle, caching, renewal, and event emission.
 import Foundation
 import P2PCore
@@ -42,6 +42,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
         var handlers: [any NATProtocolHandler] = []
         if configuration.tryUPnP { handlers.append(UPnPHandler()) }
         if configuration.tryNATPMP { handlers.append(NATPMPHandler()) }
+        if configuration.tryPCP { handlers.append(PCPHandler()) }
         self.handlers = handlers
     }
 
@@ -218,6 +219,11 @@ public final class NATPortMapper: EventEmitting, Sendable {
             return handler
         case .natpmp:
             guard let handler = handlers.first(where: { $0 is NATPMPHandler }) else {
+                throw NATPortMapperError.noGatewayFound
+            }
+            return handler
+        case .pcp:
+            guard let handler = handlers.first(where: { $0 is PCPHandler }) else {
                 throw NATPortMapperError.noGatewayFound
             }
             return handler

@@ -251,7 +251,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
                 throw DCUtRError.protocolViolation("Expected CONNECT response")
             }
 
-            let theirAddresses = response.observedAddresses
+            let theirAddresses = filterDialableAddresses(response.observedAddresses)
             emit(.addressExchangeCompleted(peer: peer, theirAddresses: theirAddresses))
 
             if theirAddresses.isEmpty {
@@ -304,7 +304,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
                 throw DCUtRError.protocolViolation("Expected CONNECT")
             }
 
-            let theirAddresses = connect.observedAddresses
+            let theirAddresses = filterDialableAddresses(connect.observedAddresses)
 
             // Get our local addresses
             let ourAddresses = configuration.getLocalAddresses()
@@ -440,6 +440,58 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
             }
             return nil
         }
+    }
+
+    // MARK: - Address Filtering
+
+    /// Filters addresses to only include publicly routable addresses.
+    /// Private/loopback/link-local addresses cannot be dialed across NAT.
+    private func filterDialableAddresses(_ addresses: [Multiaddr]) -> [Multiaddr] {
+        addresses.filter { addr in
+            guard let ip = addr.ipAddress else {
+                // Non-IP addresses (like /memory) are not dialable
+                return false
+            }
+            return !isPrivateAddress(ip)
+        }
+    }
+
+    /// Checks if an IP address is private/unroutable.
+    private func isPrivateAddress(_ ip: String) -> Bool {
+        // IPv4
+        if ip.contains(".") {
+            let octets = ip.split(separator: ".").compactMap { UInt8($0) }
+            guard octets.count == 4 else { return true }
+
+            // Loopback: 127.0.0.0/8
+            if octets[0] == 127 { return true }
+            // Unspecified: 0.0.0.0
+            if octets.allSatisfy({ $0 == 0 }) { return true }
+            // Private: 10.0.0.0/8
+            if octets[0] == 10 { return true }
+            // Private: 172.16.0.0/12
+            if octets[0] == 172 && (octets[1] >= 16 && octets[1] <= 31) { return true }
+            // Private: 192.168.0.0/16
+            if octets[0] == 192 && octets[1] == 168 { return true }
+            // Link-local: 169.254.0.0/16
+            if octets[0] == 169 && octets[1] == 254 { return true }
+
+            return false
+        }
+
+        // IPv6
+        let normalized = ip.lowercased()
+        // Loopback: ::1
+        if normalized == "::1" || normalized == "0:0:0:0:0:0:0:1" { return true }
+        // Unspecified: ::
+        if normalized == "::" || normalized == "0:0:0:0:0:0:0:0" { return true }
+        // Link-local: fe80::/10
+        if normalized.hasPrefix("fe8") || normalized.hasPrefix("fe9") ||
+           normalized.hasPrefix("fea") || normalized.hasPrefix("feb") { return true }
+        // Unique local: fc00::/7
+        if normalized.hasPrefix("fc") || normalized.hasPrefix("fd") { return true }
+
+        return false
     }
 
     // MARK: - Shutdown
