@@ -42,6 +42,7 @@ and return `MuxedConnection` directly.
 | `MultiaddrConversion.swift` | Multiaddr ↔ SocketAddress conversion |
 | `TLS/SwiftQUICTLSProvider.swift` | libp2p TLS 1.3 provider |
 | `TLS/LibP2PCertificateHelper.swift` | X.509 certificate generation |
+| `QUICHolePunch.swift` | NAT traversal coordinator for QUIC hole punching |
 
 ## Usage
 
@@ -199,6 +200,7 @@ streams initiated by the remote peer.
 |---------|--------|-------|
 | 0-RTT connection establishment | ✅ | `ClientSessionCache`でセッションチケットをキャッシュ、`dialSecured`で自動的に0-RTTを試行 |
 | Connection migration | ✅ | `QUICEndpoint.processIncomingPacket`でアドレス変更検出、`QUICMuxedConnection.remoteAddress`を動的プロパティ化 |
+| QUIC hole punching | ✅ | `QUICHolePunchCoordinator`でNAT traversalタイミング制御、アドレス検証、メトリクス追跡 |
 
 ### Pending Features
 
@@ -232,8 +234,9 @@ P2PTransportQUIC
 | `QUICE2ETests.swift` | 20 | E2E接続、マルチストリーム |
 | `MultiaddrConversionTests.swift` | 8 | アドレス変換 |
 | `QuickDebugTest.swift` | 7 | デバッグ用テスト |
+| `QUICHolePunchTests.swift` | 29 | ホールパンチ設定、アドレス検証、エラー、並行安全性 |
 
-**合計: 55テスト** (2026-01-23時点)
+**合計: 84テスト** (2026-02-08時点)
 
 ## References
 

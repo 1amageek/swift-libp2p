@@ -9,6 +9,8 @@ AutoNAT allows a node to determine if it is publicly reachable or behind a Netwo
 ## Protocol IDs
 
 - **AutoNAT v1**: `/libp2p/autonat/1.0.0` - Single protocol for dial requests
+- **AutoNAT v2**: `/libp2p/autonat/2/dial-request` - Nonce-based reachability verification
+- **AutoNAT v2 dial-back**: `/libp2p/autonat/2/dial-back` - Dial-back nonce exchange
 
 ## Dependencies
 
@@ -27,6 +29,10 @@ AutoNAT allows a node to determine if it is publicly reachable or behind a Netwo
 | `AutoNATService.swift` | Main service (client + server combined) |
 | `NATStatus.swift` | NAT status type with confidence |
 | `AutoNATEvent.swift` | Event types |
+| `AutoNATv2Service.swift` | AutoNAT v2 main service (EventEmitting, nonce management, rate limiting) |
+| `AutoNATv2Messages.swift` | AutoNAT v2 message types and wire format codec |
+| `AutoNATv2Handler.swift` | AutoNAT v2 stream handler (client + server) |
+| `AutoNATv2Error.swift` | AutoNAT v2 error types |
 
 ## Wire Protocol
 
@@ -69,7 +75,55 @@ message Message {
 }
 ```
 
-## Flow
+## AutoNAT v2 Wire Protocol
+
+### Message Format
+
+Messages are protobuf-style encoded and length-prefixed.
+
+```
+Message {
+  MessageType type = 1;          // 0=DialRequest, 1=DialResponse, 2=DialBack
+  DialRequest dialRequest = 2;   // if type == 0
+  DialResponse dialResponse = 3; // if type == 1
+  DialBack dialBack = 4;         // if type == 2
+}
+
+DialRequest {
+  bytes address = 1;    // Multiaddr bytes
+  fixed64 nonce = 2;    // Random nonce for verification (8 bytes LE)
+}
+
+DialResponse {
+  uint32 status = 1;    // DialStatus (0=ok, 100=dialError, 101=dialBackError, ...)
+  bytes address = 2;    // Checked address (optional)
+}
+
+DialBack {
+  fixed64 nonce = 1;    // Nonce from original request (8 bytes LE)
+}
+```
+
+### AutoNAT v2 Flow
+
+```
+Client                           Server
+   |                                |
+   |-- open stream (v2) ----------->|
+   |-- DialRequest(addr, nonce) --->|
+   |                                | (dial addr)
+   |                                | (send nonce via dial-back)
+   |<-- DialResponse(status) -------|
+   |-- close stream ----------------|
+```
+
+### AutoNAT v2 Improvements over v1
+
+- **Nonce-based verification**: Proves server actually connected to address
+- **Address-specific**: Check individual addresses instead of all at once
+- **Rate limiting**: Per-server cooldown (default 30s) prevents amplification
+
+## AutoNAT v1 Flow
 
 ### Client → Server
 
@@ -253,7 +307,7 @@ The following protections are now implemented:
 - [ ] **ダイアルバック結果キャッシュ** - 同一ピアへの重複ダイアル防止
 
 ### 低優先度
-- [ ] **AutoNAT v2対応** - より効率的なプロトコル（将来仕様）
+- [x] **AutoNAT v2対応** - ノンスベース検証プロトコル ✅ 2026-02-08
 - [ ] **自動アドレス広告** - NATステータス変化時のIdentify Push連携
 - [x] **並列ダイアルバック** - `dialBackParallel()` で実装済み ✅
 
@@ -278,7 +332,21 @@ The following protections are now implemented:
 | `NATStatusErrorHandlingTests` | 2 | エラー処理 |
 | `ProbeResultTests` | 2 | プローブ結果 |
 
-**合計: 74テスト** (2026-01-23時点)
+| `AutoNATv2NonceTests` | 7 | ノンス生成・検証 |
+| `AutoNATv2ConcurrentNonceTests` | 1 | 並行ノンス操作 |
+| `AutoNATv2ExpiredNonceTests` | 3 | 期限切れノンスクリーンアップ |
+| `AutoNATv2RateLimitingTests` | 4 | クールダウン制限 |
+| `AutoNATv2ReachabilityTests` | 3 | 到達性状態 |
+| `AutoNATv2MessageTests` | 13 | メッセージエンコード/デコード |
+| `AutoNATv2DialStatusTests` | 3 | DialStatusテスト |
+| `AutoNATv2EventTests` | 3 | イベント発行 |
+| `AutoNATv2ShutdownTests` | 4 | EventEmittingシャットダウン |
+| `AutoNATv2ErrorTests` | 2 | エラー型 |
+| `AutoNATv2HandlerTests` | 1 | ハンドラー初期化 |
+| `AutoNATv2ProtocolTests` | 6 | プロトコル定数 |
+| `AutoNATv2MessageTypeTests` | 4 | メッセージ型等値性 |
+
+**合計: 134テスト** (v1: 74, v2: 53, その他: 7) (2026-02-08時点)
 
 ## Codex Review (2026-01-18) - UPDATED 2026-01-23
 

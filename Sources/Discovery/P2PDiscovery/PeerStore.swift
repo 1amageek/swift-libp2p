@@ -339,6 +339,53 @@ public final class MemoryPeerStore: PeerStore, Sendable {
         }
     }
 
+    /// Restores addresses from persistent storage with their original metadata.
+    ///
+    /// Unlike `addAddresses`, this preserves failure counts and does not emit events,
+    /// since the data is being loaded (not newly discovered).
+    /// This method is intended for use by persistence layers (e.g., FilePeerStore).
+    public func restoreAddresses(
+        _ restoredAddresses: [(address: Multiaddr, failureCount: Int)],
+        for peer: PeerID,
+        ttl: Duration?
+    ) {
+        state.withLock { s in
+            let now = ContinuousClock.now
+            let effectiveTTL = ttl ?? configuration.defaultAddressTTL
+            let expiresAt = effectiveTTL.map { now + $0 }
+
+            if var record = s.peers[peer] {
+                for entry in restoredAddresses {
+                    if record.addresses.count < configuration.maxAddressesPerPeer {
+                        record.addresses[entry.address] = AddressRecord(
+                            address: entry.address,
+                            addedAt: now,
+                            lastSeen: now,
+                            failureCount: entry.failureCount,
+                            expiresAt: expiresAt
+                        )
+                    }
+                }
+                record.lastSeen = now
+                s.peers[peer] = record
+                touchPeer(peer, state: &s)
+            } else {
+                var newRecord = PeerRecord(peerID: peer, addedAt: now, lastSeen: now)
+                for entry in restoredAddresses.prefix(configuration.maxAddressesPerPeer) {
+                    newRecord.addresses[entry.address] = AddressRecord(
+                        address: entry.address,
+                        addedAt: now,
+                        lastSeen: now,
+                        failureCount: entry.failureCount,
+                        expiresAt: expiresAt
+                    )
+                }
+                s.peers[peer] = newRecord
+                s.accessOrder.insert(peer)
+            }
+        }
+    }
+
     public func removeAddress(_ address: Multiaddr, for peer: PeerID) async {
         let pendingEvents = state.withLock { s -> [PeerStoreEvent] in
             guard var record = s.peers[peer] else { return [] }

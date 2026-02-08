@@ -1,0 +1,91 @@
+# WebTransport
+
+WebTransport transport for swift-libp2p, enabling browser-based peers.
+
+## Architecture
+
+WebTransport is built on top of QUIC with HTTP/3, providing:
+- **Browser compatibility** via the WebTransport Web API
+- **Built-in TLS 1.3 security** (inherited from QUIC)
+- **Native stream multiplexing** (inherited from QUIC)
+- **Certificate hash verification** for self-signed certificates
+
+```
+┌──────────────────────────────────────────────────┐
+│  WebTransport Session                             │
+├──────────────────────────────────────────────────┤
+│  HTTP/3 (CONNECT + Extended CONNECT)              │
+├──────────────────────────────────────────────────┤
+│  QUIC (TLS 1.3 + Stream Multiplexing)            │
+├──────────────────────────────────────────────────┤
+│  UDP                                              │
+└──────────────────────────────────────────────────┘
+```
+
+## Current Status
+
+**Stub implementation** - HTTP/3 support in swift-quic is required before
+WebTransport connections can be established. The following are implemented:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Protocol constants | Done | Protocol ID, ALPN, cert hash prefix |
+| Error types | Done | All WebTransport-specific errors |
+| Configuration | Done | Cert rotation, streams, timeouts |
+| Certificate generation | Done | SHA-256 hash, multibase encoding |
+| Address validation | Done | Parses WebTransport multiaddrs |
+| Connection stub | Done | State machine, no actual I/O |
+| Transport stub | Done | Returns http3NotAvailable |
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `WebTransportProtocol.swift` | Protocol constants (ID, ALPN, cert limits) |
+| `WebTransportError.swift` | Error type definitions |
+| `WebTransportConfiguration.swift` | Transport configuration |
+| `DeterministicCerts.swift` | Certificate generation and hash verification |
+| `WebTransportConnection.swift` | Connection abstraction (stub) |
+| `WebTransportTransport.swift` | Transport implementation (stub) |
+
+## Multiaddr Format
+
+WebTransport addresses extend QUIC addresses:
+- `/ip4/<ip>/udp/<port>/quic-v1/webtransport/certhash/<hash>`
+- `/ip6/<ip>/udp/<port>/quic-v1/webtransport/certhash/<hash>`
+
+Multiple certhash components may be present for certificate rotation:
+- `/ip4/.../udp/.../quic-v1/webtransport/certhash/<current>/certhash/<next>`
+
+## Certificate Rotation
+
+Browsers require self-signed certificates to be valid for at most 14 days.
+The default rotation interval is 12 days (2-day buffer for clock skew).
+
+During rotation, the server advertises both current and next certificate
+hashes in its multiaddr so that clients can connect during the transition.
+
+## Dependencies
+
+```
+WebTransport
+├── P2PCore (PeerID, Multiaddr, KeyPair)
+├── Crypto (SHA-256 hashing)
+└── Synchronization (Mutex)
+```
+
+## Future Work
+
+When HTTP/3 support is available in swift-quic:
+1. Implement HTTP/3 CONNECT handshake
+2. Implement WebTransport session negotiation
+3. Map WebTransport streams to MuxedStream
+4. Implement certificate rotation with timer
+5. Add SecuredTransport conformance
+
+## References
+
+- [WebTransport Specification](https://www.w3.org/TR/webtransport/)
+- [libp2p WebTransport](https://github.com/libp2p/specs/tree/master/webtransport)
+- [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://www.rfc-editor.org/rfc/rfc9220)
+- [draft-ietf-webtrans-http3: WebTransport over HTTP/3](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/)

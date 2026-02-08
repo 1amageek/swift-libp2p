@@ -9,7 +9,8 @@ Security/
 ├── P2PSecurity/      # Protocol定義のみ
 ├── Noise/            # P2PSecurityNoise（Noise XX）
 ├── TLS/              # P2PSecurityTLS（TLS 1.3、swift-tls使用）
-└── Plaintext/        # P2PSecurityPlaintext（テスト用）
+├── Plaintext/        # P2PSecurityPlaintext（テスト用）
+└── Pnet/             # P2PSecurityPnet（Private Network、PSK + XSalsa20）
 ```
 
 ## 設計原則
@@ -25,6 +26,7 @@ Security/
 | `P2PSecurityNoise` | Noise XXパターン実装 | P2PSecurity, swift-crypto |
 | `P2PSecurityTLS` | TLS 1.3実装（swift-tls使用） | P2PSecurity, swift-tls, swift-certificates, swift-asn1, swift-crypto |
 | `P2PSecurityPlaintext` | テスト用プレーンテキスト | P2PSecurity |
+| `P2PSecurityPnet` | Private Network（PSK + XSalsa20） | P2PCore, Crypto |
 
 ## 主要なプロトコル
 
@@ -43,7 +45,9 @@ public protocol SecurityUpgrader: Sendable {
 
 ## 接続フロー
 ```
-RawConnection
+RawConnection (TCP/QUIC)
+    ↓ PnetProtector.protect()     ← pnet有効時のみ
+RawConnection (pnet encrypted)
     ↓ multistream-select (/tls/1.0.0 or /noise or /plaintext/2.0.0)
     ↓ SecurityUpgrader.secure()
 SecuredConnection (localPeer, remotePeer確定)
@@ -61,6 +65,7 @@ SecuredConnection (localPeer, remotePeer確定)
 - **TLSSecuredConnection**: `Mutex<ConnectionState>` でスレッドセーフ
 - **PlaintextConnection**: initialBufferのみMutex管理
 - **NoiseHandshake**: `struct: Sendable`（値型で所有権が型レベルで明確、`mutating` メソッドで状態遷移）
+- **PnetConnection**: `Mutex<PnetSendState>` + `Mutex<PnetRecvState>` で全二重通信（NoiseConnectionと同パターン）
 
 ### バッファリング戦略
 - NoiseUpgrader/PlaintextUpgrader/TLSUpgrader: ハンドシェイク中に読み込みバッファ生成、SecuredConnectionに初期バッファとして渡す
@@ -130,6 +135,7 @@ TLS 1.3 ハンドシェイク・暗号化/復号は swift-tls が担当。libp2p
 | NoiseIntegrationTests | ✅ 完了 | 423行 | E2Eハンドシェイク、読み書き |
 | TLSCertificateTests | ✅ 完了 | 13テスト | 証明書生成、PeerID抽出、CertificateValidator |
 | PlaintextTests | ✅ 完了 | 300行 | Exchange、双方向通信 |
+| PnetTests | ✅ 完了 | 1025行 | XSalsa20, HSalsa20, PSK解析, 接続テスト |
 
 ## 実装ステータス
 
@@ -139,6 +145,7 @@ TLS 1.3 ハンドシェイク・暗号化/復号は swift-tls が担当。libp2p
 | TLS 1.3 | ✅ 実装済み | swift-tls、libp2p証明書拡張、Go/Rust互換 |
 | Plaintext | ✅ 実装済み | テスト用 |
 | Early Muxer Negotiation (TLS ALPN) | ✅ 実装済み | `EarlyMuxerNegotiating` プロトコル + TLSUpgrader ALPN muxerヒント |
+| Pnet (Private Network) | ✅ 実装済み | PSK + XSalsa20、go-libp2p互換 |
 
 ## 品質向上TODO
 

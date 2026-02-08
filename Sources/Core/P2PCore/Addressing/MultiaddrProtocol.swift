@@ -22,6 +22,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     case memory(String)
     case p2pCircuit
     case webrtcDirect
+    case webtransport
     case certhash(Data)
 
     /// The protocol code as defined in the multiaddr spec.
@@ -44,6 +45,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .memory: return 777  // Custom code for in-memory transport
         case .p2pCircuit: return 290
         case .webrtcDirect: return 276
+        case .webtransport: return 480
         case .certhash: return 466
         }
     }
@@ -68,6 +70,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .memory: return "memory"
         case .p2pCircuit: return "p2p-circuit"
         case .webrtcDirect: return "webrtc-direct"
+        case .webtransport: return "webtransport"
         case .certhash: return "certhash"
         }
     }
@@ -79,7 +82,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .ip6(let addr): return addr
         case .tcp(let port): return String(port)
         case .udp(let port): return String(port)
-        case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect: return nil
+        case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect, .webtransport: return nil
         case .certhash(let hash):
             // Encode as multibase base64url (prefix 'u')
             let base64url = hash.base64EncodedString()
@@ -112,7 +115,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             return bytes
         case .tcp(let port), .udp(let port):
             return Self.encodePort(port)
-        case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect:
+        case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect, .webtransport:
             return Data()
         case .certhash(let hash):
             return Varint.encode(UInt64(hash.count)) + hash
@@ -381,6 +384,9 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case 276: // webrtc-direct
             return (.webrtcDirect, 0)
 
+        case 480: // webtransport
+            return (.webtransport, 0)
+
         case 466: // certhash
             let (length, lengthBytes) = try Varint.decode(data)
             guard length <= 1024 else { throw MultiaddrError.fieldTooLarge }
@@ -495,6 +501,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             return .memory(v)
         case "webrtc-direct":
             return .webrtcDirect
+        case "webtransport":
+            return .webtransport
         case "certhash":
             guard let v = value else { throw MultiaddrError.missingValue }
             // Decode multibase base64url (prefix 'u')

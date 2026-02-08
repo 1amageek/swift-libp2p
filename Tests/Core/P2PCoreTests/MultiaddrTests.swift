@@ -162,6 +162,86 @@ struct MultiaddrTests {
         #expect(addr.protocols.count == multiaddrMaxComponents + 5)
     }
 
+    // MARK: - WebTransport Protocol Tests
+
+    @Test("Parse WebTransport address")
+    func parseWebTransport() throws {
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1/webtransport")
+
+        #expect(addr.protocols.count == 4)
+        #expect(addr.ipAddress == "127.0.0.1")
+        #expect(addr.udpPort == 4433)
+
+        let hasWebtransport = addr.protocols.contains { proto in
+            if case .webtransport = proto { return true }
+            return false
+        }
+        #expect(hasWebtransport)
+    }
+
+    @Test("WebTransport address string roundtrip")
+    func webTransportStringRoundtrip() throws {
+        let original = "/ip4/127.0.0.1/udp/4433/quic-v1/webtransport"
+        let addr = try Multiaddr(original)
+        #expect(addr.description == original)
+    }
+
+    @Test("WebTransport address bytes roundtrip")
+    func webTransportBytesRoundtrip() throws {
+        let addr = try Multiaddr("/ip4/192.168.1.1/udp/4433/quic-v1/webtransport")
+        let bytes = addr.bytes
+        let restored = try Multiaddr(bytes: bytes)
+        #expect(addr == restored)
+    }
+
+    @Test("WebTransport protocol code is 480")
+    func webTransportProtocolCode() {
+        let proto = MultiaddrProtocol.webtransport
+        #expect(proto.code == 480)
+        #expect(proto.name == "webtransport")
+        #expect(proto.valueString == nil)
+        #expect(proto.valueBytes == Data())
+    }
+
+    @Test("WebTransport factory method")
+    func webTransportFactory() {
+        let addr = Multiaddr.webtransport(host: "127.0.0.1", port: 4433)
+        #expect(addr.ipAddress == "127.0.0.1")
+        #expect(addr.udpPort == 4433)
+        #expect(addr.description == "/ip4/127.0.0.1/udp/4433/quic-v1/webtransport")
+    }
+
+    @Test("WebTransport factory method with certhashes")
+    func webTransportFactoryWithCerthashes() {
+        let hash1 = Data([0x12, 0x20] + Array(repeating: UInt8(0xAA), count: 32))
+        let hash2 = Data([0x12, 0x20] + Array(repeating: UInt8(0xBB), count: 32))
+        let addr = Multiaddr.webtransport(host: "10.0.0.1", port: 443, certhashes: [hash1, hash2])
+
+        #expect(addr.protocols.count == 6)  // ip4, udp, quic-v1, webtransport, certhash, certhash
+        let hasWT = addr.protocols.contains { if case .webtransport = $0 { return true }; return false }
+        #expect(hasWT)
+    }
+
+    @Test("WebTransport factory method with IPv6")
+    func webTransportFactoryIPv6() {
+        let addr = Multiaddr.webtransport(host: "::1", port: 4433)
+        #expect(addr.ipAddress == "0:0:0:0:0:0:0:1")
+        #expect(addr.udpPort == 4433)
+
+        let hasWT = addr.protocols.contains { if case .webtransport = $0 { return true }; return false }
+        #expect(hasWT)
+    }
+
+    @Test("WebTransport address with certhash string roundtrip")
+    func webTransportWithCerthashStringRoundtrip() throws {
+        let hashData = Data([0x12, 0x20] + Array(repeating: UInt8(0x42), count: 32))
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(4433), .quicV1, .webtransport, .certhash(hashData)
+        ])
+        let roundtripped = try Multiaddr(addr.description)
+        #expect(addr == roundtripped)
+    }
+
     @Test("SocketAddress init rejects oversized input")
     func socketAddressRejectsOversizedInput() {
         // Create a socket address string larger than multiaddrMaxInputSize

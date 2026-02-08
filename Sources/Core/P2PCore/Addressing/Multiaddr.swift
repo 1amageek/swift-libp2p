@@ -204,6 +204,18 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         return nil
     }
 
+    /// Whether this address contains any DNS components that need resolution.
+    public var hasDNSComponent: Bool {
+        protocols.contains { proto in
+            switch proto {
+            case .dns4, .dns6, .dns, .dnsaddr:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
     // MARK: - Composition
 
     /// Creates a new Multiaddr by appending the given protocol.
@@ -242,7 +254,7 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
     private static let protocolNames: Set<String> = [
         "ip4", "ip6", "tcp", "udp", "quic", "quic-v1", "ws", "wss",
         "p2p", "ipfs", "dns", "dns4", "dns6", "dnsaddr", "unix", "memory",
-        "p2p-circuit", "webrtc-direct", "certhash"
+        "p2p-circuit", "webrtc-direct", "webtransport", "certhash"
     ]
 
     private static func isProtocolName(_ string: String) -> Bool {
@@ -339,6 +351,29 @@ extension Multiaddr {
         } else {
             return Multiaddr(uncheckedProtocols: [.ip4(host), .tcp(port), .wss])
         }
+    }
+
+    /// Creates a WebTransport address.
+    ///
+    /// - Parameters:
+    ///   - host: The IP address
+    ///   - port: The UDP port
+    ///   - certhashes: Optional certificate hashes (multihash-encoded)
+    /// - Returns: A Multiaddr of the form `/ip4/<host>/udp/<port>/quic-v1/webtransport[/certhash/<hash>...]`
+    /// - Note: Factory methods don't validate size since they create known-small addresses.
+    /// - Note: IPv6 addresses are normalized to expanded form.
+    public static func webtransport(host: String, port: UInt16, certhashes: [Data] = []) -> Multiaddr {
+        var protos: [MultiaddrProtocol]
+        if host.contains(":") {
+            let normalized = MultiaddrProtocol.normalizeIPv6(host) ?? host
+            protos = [.ip6(normalized), .udp(port), .quicV1, .webtransport]
+        } else {
+            protos = [.ip4(host), .udp(port), .quicV1, .webtransport]
+        }
+        for hash in certhashes {
+            protos.append(.certhash(hash))
+        }
+        return Multiaddr(uncheckedProtocols: protos)
     }
 
     /// Creates a WebRTC Direct address.

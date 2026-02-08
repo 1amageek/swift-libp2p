@@ -29,6 +29,7 @@ let package = Package(
         .library(name: "P2PSecurityNoise", targets: ["P2PSecurityNoise"]),
         .library(name: "P2PSecurityPlaintext", targets: ["P2PSecurityPlaintext"]),
         .library(name: "P2PSecurityTLS", targets: ["P2PSecurityTLS"]),
+        .library(name: "P2PPnet", targets: ["P2PPnet"]),
 
         // MARK: - Mux
         .library(name: "P2PMux", targets: ["P2PMux"]),
@@ -57,6 +58,9 @@ let package = Package(
         .library(name: "P2PAutoNAT", targets: ["P2PAutoNAT"]),
         .library(name: "P2PKademlia", targets: ["P2PKademlia"]),
         .library(name: "P2PPlumtree", targets: ["P2PPlumtree"]),
+        .library(name: "P2PRendezvous", targets: ["P2PRendezvous"]),
+        .library(name: "P2PHTTP", targets: ["P2PHTTP"]),
+        .library(name: "P2PTransportWebTransport", targets: ["P2PTransportWebTransport"]),
 
         // MARK: - Integration
         .library(name: "P2P", targets: ["P2P"]),
@@ -274,6 +278,20 @@ let package = Package(
             ],
             path: "Tests/Security/TLSTests"
         ),
+        .target(
+            name: "P2PPnet",
+            dependencies: [
+                "P2PCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/Security/Pnet",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PPnetTests",
+            dependencies: ["P2PPnet", "P2PCore"],
+            path: "Tests/Security/PnetTests"
+        ),
 
         // MARK: - Mux
         .target(
@@ -489,6 +507,44 @@ let package = Package(
             name: "P2PPlumtreeTests",
             dependencies: ["P2PPlumtree", "P2PCore", "P2PMux", "P2PProtocols"],
             path: "Tests/Protocols/PlumtreeTests"
+        ),
+        .target(
+            name: "P2PRendezvous",
+            dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
+            path: "Sources/Protocols/Rendezvous",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PRendezvousTests",
+            dependencies: ["P2PRendezvous", "P2PCore", "P2PMux", "P2PProtocols"],
+            path: "Tests/Protocols/RendezvousTests"
+        ),
+        .target(
+            name: "P2PHTTP",
+            dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
+            path: "Sources/Protocols/HTTP",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PHTTPTests",
+            dependencies: ["P2PHTTP", "P2PCore", "P2PMux", "P2PProtocols"],
+            path: "Tests/Protocols/HTTPTests"
+        ),
+
+        // MARK: - WebTransport
+        .target(
+            name: "P2PTransportWebTransport",
+            dependencies: [
+                "P2PCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/Transport/WebTransport",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PTransportWebTransportTests",
+            dependencies: ["P2PTransportWebTransport", "P2PCore"],
+            path: "Tests/Transport/WebTransportTests"
         ),
 
         // MARK: - Integration (depends only on protocols, not implementations)
