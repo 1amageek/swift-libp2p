@@ -2,6 +2,72 @@
 
 > AI向けの開発ガイドライン。人間向けドキュメントは README.md と CONTRIBUTING.md を参照。
 
+## Project Vision
+
+**最終目標**: 自律ロボットが互いを発見し、能力を交換し、協調タスクを交渉・実行できる世界を実現する。
+
+```
+[1] 物理的に発見する     ← swift-libp2p (Discovery + Physical Transports)
+[2] 能力を交換する       ← swift-p2p-capability（将来）
+[3] タスクを交渉する     ← swift-p2p-task（将来）
+[4] 協調実行する         ← swift-p2p-fleet（将来）
+```
+
+**swift-libp2p の責務**: ステップ[1]の全てと、[2]-[4]の通信基盤。IP通信（TCP/QUIC/WebSocket）に加え、物理メディア（BLE/WiFi Direct/LoRa）も Transport として統一管理する。Swarm が全 Transport を抽象化し、上位層は通信手段を意識しない。
+
+### パッケージ構成
+
+```
+Desktop/
+├── swift-libp2p/             # 統一P2P基盤（物理メディア含む）
+│   ├── Swarm: 全Transport統一管理（go-libp2p swarm 相当）
+│   ├── Transport: TCP, QUIC, WS, BLE, WiFi Direct, LoRa
+│   ├── Discovery: mDNS, SWIM, CYCLON, Beacon（物理発見）
+│   ├── Protocol: GossipSub, Kademlia, Propagation（Spray and Wait）
+│   └── Security, Mux, NAT...
+│
+├── swift-p2p-capability/     # [2] 能力記述・照合・交換
+├── swift-p2p-task/           # [3] タスク記述・交渉・合意
+├── swift-p2p-fleet/          # [4] 協調実行・状態同期・障害復旧
+│
+├── swift-quic/               # QUIC transport（別repo）
+├── swift-tls/                # TLS（別repo）
+└── swift-webrtc/             # WebRTC（別repo）
+```
+
+### swift-p2p-discovery からの吸収マッピング
+
+swift-p2p-discovery の6層アーキテクチャは swift-libp2p の既存アーキテクチャに全てマッピングされる:
+
+| Discovery 層 | swift-libp2p での配置先 | 備考 |
+|---|---|---|
+| L0 Medium (TransportAdapter) | `Transport/P2PTransportBLE/` 等 | TCP/QUIC と同列の Transport 実装 |
+| L1 Encoding (Beacon format) | `Discovery/P2PDiscoveryBeacon/` | mDNS/SWIM と同列の Discovery 実装 |
+| L2 Coordination (Trickle) | `Discovery/P2PDiscoveryBeacon/` | Beacon Discovery の内部ロジック |
+| L3 Aggregation (Presence) | `Discovery/P2PDiscoveryBeacon/` | PeerStore 拡張としても機能 |
+| L4 Relay (Mesh routing) | `Protocols/P2PMeshRelay/` | 新概念: 物理メディア間ブリッジ・メッシュルーティング。CircuitRelay とは別の Protocol |
+| L5 Propagation (Spray) | `Protocols/P2PPropagation/` | GossipSub と同列の Protocol 実装 |
+
+### 設計上の重要判断
+
+- **Swarm = 統一接続管理**: go-libp2p の swarm と同じ概念。IP Transport と Physical Transport の両方を管理する
+- **BLE/WiFi/LoRa は Transport**: TCP/QUIC と同じ Transport protocol に準拠させる
+- **Beacon Discovery は DiscoveryService**: mDNS/SWIM と同じ DiscoveryService protocol に準拠させる
+- **Spray and Wait は Protocol**: GossipSub と同じ Protocol パターンで実装する
+- **Physical Mesh Relay は新概念 Protocol**: CircuitRelay（IP中継）とは別の Protocol。物理メディア間ブリッジ（BLE↔WiFi↔LoRa）、動的メッシュルーティング、DTN store-and-forward を担当
+- **上位層 [2][3][4] は Swarm 経由で通信**: BLE か TCP かを意識しない
+- **libp2p 拡張は設計思想に沿う**: libp2p は Transport/Discovery/Protocol の拡張を前提に設計。BLE/WiFi Direct は specs ロードマップの "Visionary" カテゴリに存在
+
+### 参照ドキュメント（swift-p2p-discovery）
+
+物理発見の詳細仕様は swift-p2p-discovery リポジトリの以下を参照:
+
+- `docs/LAYERED_DISCOVERY.md` (v3.1) — 6層アーキテクチャの実装仕様
+- `docs/ARCHITECTURE.md` (v2.1) — 概念設計・将来のアイデア蓄積
+- `docs/REQUIREMENTS.md` — ユースケースと要件定義
+
+---
+
 ## ディレクトリ読み取りルール
 
 **重要**: ディレクトリ配下のコードを読む際は、必ず先にそのディレクトリの`CONTEXT.md`を読むこと。

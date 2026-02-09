@@ -44,6 +44,8 @@ let package = Package(
         .library(name: "P2PDiscoveryMDNS", targets: ["P2PDiscoveryMDNS"]),
         .library(name: "P2PDiscoverySWIM", targets: ["P2PDiscoverySWIM"]),
         .library(name: "P2PDiscoveryCYCLON", targets: ["P2PDiscoveryCYCLON"]),
+        .library(name: "P2PDiscoveryBeacon", targets: ["P2PDiscoveryBeacon"]),
+        .library(name: "P2PDiscoveryWiFiBeacon", targets: ["P2PDiscoveryWiFiBeacon"]),
 
         // MARK: - NAT
         .library(name: "P2PNAT", targets: ["P2PNAT"]),
@@ -379,6 +381,36 @@ let package = Package(
             dependencies: ["P2PDiscovery", "P2PDiscoverySWIM", "P2PDiscoveryMDNS"],
             path: "Tests/Discovery/P2PDiscoveryTests"
         ),
+        .target(
+            name: "P2PDiscoveryBeacon",
+            dependencies: [
+                "P2PDiscovery",
+                "P2PCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/Discovery/Beacon",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PDiscoveryBeaconTests",
+            dependencies: ["P2PDiscoveryBeacon", "P2PCore"],
+            path: "Tests/Discovery/BeaconTests"
+        ),
+        .target(
+            name: "P2PDiscoveryWiFiBeacon",
+            dependencies: [
+                "P2PDiscoveryBeacon",
+                "P2PCore",
+                .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
+            ],
+            path: "Sources/Discovery/WiFiBeacon",
+            exclude: ["CONTEXT.md"]
+        ),
+        .testTarget(
+            name: "P2PDiscoveryWiFiBeaconTests",
+            dependencies: ["P2PDiscoveryWiFiBeacon", "P2PDiscoveryBeacon", "P2PCore"],
+            path: "Tests/Discovery/WiFiBeaconTests"
+        ),
         .testTarget(
             name: "P2PDiscoveryCYCLONTests",
             dependencies: ["P2PDiscoveryCYCLON", "P2PCore"],
@@ -530,7 +562,6 @@ let package = Package(
             dependencies: ["P2PHTTP", "P2PCore", "P2PMux", "P2PProtocols"],
             path: "Tests/Protocols/HTTPTests"
         ),
-
         // MARK: - WebTransport
         .target(
             name: "P2PTransportWebTransport",

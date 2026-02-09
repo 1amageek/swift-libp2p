@@ -24,6 +24,10 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     case webrtcDirect
     case webtransport
     case certhash(Data)
+    case ble(Data)
+    case wifiDirect(Data)
+    case lora(Data)
+    case nfc(Data)
 
     /// The protocol code as defined in the multiaddr spec.
     public var code: UInt64 {
@@ -47,6 +51,10 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .webrtcDirect: return 276
         case .webtransport: return 480
         case .certhash: return 466
+        case .ble: return 0x01B0        // Custom code for BLE transport
+        case .wifiDirect: return 0x01B1 // Custom code for WiFi Direct transport
+        case .lora: return 0x01B2       // Custom code for LoRa transport
+        case .nfc: return 0x01B3        // Custom code for NFC transport
         }
     }
 
@@ -72,6 +80,10 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .webrtcDirect: return "webrtc-direct"
         case .webtransport: return "webtransport"
         case .certhash: return "certhash"
+        case .ble: return "ble"
+        case .wifiDirect: return "wifi-direct"
+        case .lora: return "lora"
+        case .nfc: return "nfc"
         }
     }
 
@@ -83,6 +95,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         case .tcp(let port): return String(port)
         case .udp(let port): return String(port)
         case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect, .webtransport: return nil
+        case .ble(let data), .wifiDirect(let data), .lora(let data), .nfc(let data):
+            return data.map { String(format: "%02x", $0) }.joined()
         case .certhash(let hash):
             // Encode as multibase base64url (prefix 'u')
             let base64url = hash.base64EncodedString()
@@ -117,6 +131,8 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             return Self.encodePort(port)
         case .quic, .quicV1, .ws, .wss, .p2pCircuit, .webrtcDirect, .webtransport:
             return Data()
+        case .ble(let data), .wifiDirect(let data), .lora(let data), .nfc(let data):
+            return Varint.encode(UInt64(data.count)) + data
         case .certhash(let hash):
             return Varint.encode(UInt64(hash.count)) + hash
         case .p2p(let peerID):
@@ -445,6 +461,23 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             let id = String(decoding: start.prefix(len), as: UTF8.self)
             return (.memory(id), lengthBytes + len)
 
+        case 0x01B0, 0x01B1, 0x01B2, 0x01B3: // ble, wifi-direct, lora, nfc
+            let (length, lengthBytes) = try Varint.decode(data)
+            guard length <= 256 else { throw MultiaddrError.fieldTooLarge }
+            let len = Int(length)
+            let start = data.dropFirst(lengthBytes)
+            guard start.count >= len else { throw MultiaddrError.invalidAddress }
+            let addrData = Data(start.prefix(len))
+            let proto: MultiaddrProtocol
+            switch code {
+            case 0x01B0: proto = .ble(addrData)
+            case 0x01B1: proto = .wifiDirect(addrData)
+            case 0x01B2: proto = .lora(addrData)
+            case 0x01B3: proto = .nfc(addrData)
+            default: throw MultiaddrError.unknownProtocol(code)
+            }
+            return (proto, lengthBytes + len)
+
         default:
             throw MultiaddrError.unknownProtocol(code)
         }
@@ -523,6 +556,27 @@ public enum MultiaddrProtocol: Sendable, Hashable {
                 throw MultiaddrError.invalidAddress
             }
             return .certhash(data)
+        case "ble", "wifi-direct", "lora", "nfc":
+            guard let v = value else { throw MultiaddrError.missingValue }
+            // Decode hex string to bytes
+            var bytes = Data()
+            var hex = v[...]
+            while hex.count >= 2 {
+                let byteStr = String(hex.prefix(2))
+                hex = hex.dropFirst(2)
+                guard let byte = UInt8(byteStr, radix: 16) else {
+                    throw MultiaddrError.invalidAddress
+                }
+                bytes.append(byte)
+            }
+            guard hex.isEmpty else { throw MultiaddrError.invalidAddress }
+            switch name {
+            case "ble": return .ble(bytes)
+            case "wifi-direct": return .wifiDirect(bytes)
+            case "lora": return .lora(bytes)
+            case "nfc": return .nfc(bytes)
+            default: throw MultiaddrError.unknownProtocolName(name)
+            }
         default:
             throw MultiaddrError.unknownProtocolName(name)
         }
