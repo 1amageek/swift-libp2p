@@ -19,8 +19,48 @@ struct MultiaddrTests {
         let addr = try Multiaddr("/ip6/::1/tcp/4001")
 
         #expect(addr.protocols.count == 2)
-        #expect(addr.ipAddress == "0:0:0:0:0:0:0:1")
+        #expect(addr.ipAddress == "::1")
         #expect(addr.tcpPort == 4001)
+    }
+
+    @Test("Parse IPv6 with embedded IPv4 notation")
+    func parseIPv6WithEmbeddedIPv4() throws {
+        let addr = try Multiaddr("/ip6/2001:db8::192.0.2.1/tcp/4001")
+
+        #expect(addr.protocols.count == 2)
+        #expect(addr.ipAddress == "2001:db8::c000:201")
+        #expect(addr.tcpPort == 4001)
+    }
+
+    @Test("Parse IPv6 with zone identifier")
+    func parseIPv6WithZoneID() throws {
+        let addr = try Multiaddr("/ip6/fe80::1%en0/tcp/4001")
+
+        #expect(addr.protocols.count == 2)
+        #expect(addr.ipAddress == "fe80::1%en0")
+        #expect(addr.tcpPort == 4001)
+    }
+
+    @Test("IPv6 zone identifier is preserved in string roundtrip")
+    func parseIPv6ZoneIDRoundtrip() throws {
+        let original = "/ip6/fe80::1%en0/tcp/4001"
+        let addr = try Multiaddr(original)
+        #expect(addr.description == original)
+    }
+
+    @Test("Parse canonical ip6zone multiaddr")
+    func parseCanonicalIPv6Zone() throws {
+        let addr = try Multiaddr("/ip6zone/en0/ip6/fe80::1/tcp/4001")
+        #expect(addr.protocols.count == 3)
+        #expect(addr.ipAddress == "fe80::1")
+        #expect(addr.tcpPort == 4001)
+    }
+
+    @Test("ip6zone multiaddr bytes roundtrip")
+    func parseCanonicalIPv6ZoneBytesRoundtrip() throws {
+        let original = try Multiaddr("/ip6zone/en0/ip6/fe80::1/tcp/4001")
+        let restored = try Multiaddr(bytes: original.bytes)
+        #expect(restored == original)
     }
 
     @Test("Parse QUIC address")
@@ -30,6 +70,20 @@ struct MultiaddrTests {
         #expect(addr.protocols.count == 3)
         #expect(addr.ipAddress == "192.168.1.1")
         #expect(addr.udpPort == 4001)
+    }
+
+    @Test("Value token equal to protocol name is parsed as value when required")
+    func parseValueThatLooksLikeProtocolName() throws {
+        let addr = try Multiaddr("/dns/ip4/tcp/4001")
+
+        #expect(addr.protocols.count == 2)
+        #expect({
+            if case .dns(let value) = addr.protocols[0] {
+                return value == "ip4"
+            }
+            return false
+        }())
+        #expect(addr.tcpPort == 4001)
     }
 
     @Test("Parse address with PeerID")
@@ -71,6 +125,20 @@ struct MultiaddrTests {
         let quic = Multiaddr.quic(host: "192.168.1.1", port: 4001)
         #expect(quic.ipAddress == "192.168.1.1")
         #expect(quic.udpPort == 4001)
+    }
+
+    @Test("Checked initializer rejects invalid IPv4 protocol value")
+    func checkedInitializerRejectsInvalidIPv4() {
+        #expect(throws: MultiaddrError.invalidAddress) {
+            _ = try Multiaddr(protocols: [.ip4("999.0.0.1"), .tcp(4001)])
+        }
+    }
+
+    @Test("Checked initializer rejects invalid IPv6 protocol value")
+    func checkedInitializerRejectsInvalidIPv6() {
+        #expect(throws: MultiaddrError.invalidAddress) {
+            _ = try Multiaddr(protocols: [.ip6("::1::"), .tcp(4001)])
+        }
     }
 
     @Test("Encapsulation")
@@ -225,7 +293,7 @@ struct MultiaddrTests {
     @Test("WebTransport factory method with IPv6")
     func webTransportFactoryIPv6() {
         let addr = Multiaddr.webtransport(host: "::1", port: 4433)
-        #expect(addr.ipAddress == "0:0:0:0:0:0:0:1")
+        #expect(addr.ipAddress == "::1")
         #expect(addr.udpPort == 4433)
 
         let hasWT = addr.protocols.contains { if case .webtransport = $0 { return true }; return false }
@@ -263,7 +331,7 @@ struct MultiaddrTests {
         // Valid IPv6 socket address
         let addr2 = Multiaddr(socketAddress: "[::1]:5353", transport: .udp)
         #expect(addr2 != nil)
-        #expect(addr2?.ipAddress == "0:0:0:0:0:0:0:1")
+        #expect(addr2?.ipAddress == "::1")
         #expect(addr2?.udpPort == 5353)
     }
 
@@ -285,7 +353,7 @@ struct MultiaddrTests {
 
         // Compressed IPv6
         let compressed = try Multiaddr("/ip6/::1/tcp/4001")
-        #expect(compressed.ipAddress == "0:0:0:0:0:0:0:1")
+        #expect(compressed.ipAddress == "::1")
     }
 }
 

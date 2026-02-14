@@ -488,6 +488,16 @@ internal final class ConnectionPool: Sendable {
 
     // MARK: - Trimming
 
+    /// Returns a point-in-time trim report without mutating pool state.
+    ///
+    /// Intended for debugging and monitoring.
+    func trimReport() -> ConnectionTrimReport {
+        let now = ContinuousClock.now
+        return state.withLock { state in
+            Self.makeTrimPlan(state: state, limits: configuration.limits, now: now).report
+        }
+    }
+
     /// Trims connections if limits are exceeded.
     ///
     /// Only active (`.connected`) connections are counted against limits.
@@ -500,47 +510,13 @@ internal final class ConnectionPool: Sendable {
     ///
     /// - Returns: List of connections that were trimmed
     func trimIfNeeded() -> [ManagedConnection] {
-        state.withLock { state in
-            // Count only connected entries for limit comparison
-            let activeCount = state.connections.values.filter { $0.state.isConnected }.count
-            let limits = configuration.limits
-
-            guard activeCount > limits.highWatermark else {
+        let now = ContinuousClock.now
+        return state.withLock { state in
+            let plan = Self.makeTrimPlan(state: state, limits: configuration.limits, now: now)
+            guard plan.report.requiresTrim else {
                 return []
             }
-
-            let target = activeCount - limits.lowWatermark
-            let now = ContinuousClock.now
-            let graceCutoff = now - limits.gracePeriod
-
-            // Get trimmable connections sorted by priority (lowest first)
-            // Use partial sort for efficiency when target << total connections
-            let candidates = state.connections.values.filter { managed in
-                // Not protected
-                guard !managed.isProtected else { return false }
-                // Not within grace period
-                guard let connectedAt = managed.connectedAt,
-                      connectedAt < graceCutoff else { return false }
-                // Must be connected
-                guard managed.state.isConnected else { return false }
-                return true
-            }
-
-            let toTrim = Array(candidates).smallest(target, by: { a, b in
-                // Fewer tags = trim first
-                if a.tags.count != b.tags.count {
-                    return a.tags.count < b.tags.count
-                }
-                // Older activity = trim first
-                if a.lastActivity != b.lastActivity {
-                    return a.lastActivity < b.lastActivity
-                }
-                // Inbound before outbound
-                if a.direction != b.direction {
-                    return a.direction == .inbound
-                }
-                return false
-            })
+            let toTrim = plan.toTrim
 
             // Remove them from state
             for managed in toTrim {
@@ -820,6 +796,128 @@ internal final class ConnectionPool: Sendable {
     }
 
     // MARK: - Private Helpers
+
+    private struct TrimPlan: Sendable {
+        let toTrim: [ManagedConnection]
+        let report: ConnectionTrimReport
+    }
+
+    private static func makeTrimPlan(
+        state: PoolState,
+        limits: ConnectionLimits,
+        now: ContinuousClock.Instant
+    ) -> TrimPlan {
+        let allEntries = Array(state.connections.values)
+        let activeEntries = allEntries.filter { $0.state.isConnected }
+        let activeCount = activeEntries.count
+
+        let targetTrimCount: Int
+        if activeCount > limits.highWatermark {
+            targetTrimCount = activeCount - limits.lowWatermark
+        } else {
+            targetTrimCount = 0
+        }
+
+        let graceCutoff = now - limits.gracePeriod
+        let trimmableEntries = activeEntries.filter { managed in
+            Self.trimExclusionReason(for: managed, graceCutoff: graceCutoff) == nil
+        }
+        let prioritized = trimmableEntries.sorted(by: Self.shouldTrimBefore)
+        let toTrim = Array(prioritized.prefix(targetTrimCount))
+        let selectedIDs = Set(toTrim.map(\.id))
+
+        var rankByID: [ConnectionID: Int] = [:]
+        for (index, managed) in prioritized.enumerated() {
+            rankByID[managed.id] = index + 1
+        }
+
+        let candidates = allEntries.map { managed in
+            let exclusionReason = Self.trimExclusionReason(for: managed, graceCutoff: graceCutoff)
+            return ConnectionTrimReport.Candidate(
+                id: managed.id,
+                peer: managed.peer,
+                direction: managed.direction,
+                state: managed.state,
+                tagCount: managed.tags.count,
+                isProtected: managed.isProtected,
+                idleDuration: now - managed.lastActivity,
+                connectedDuration: managed.connectedAt.map { now - $0 },
+                trimRank: rankByID[managed.id],
+                exclusionReason: exclusionReason,
+                selectedForTrim: selectedIDs.contains(managed.id)
+            )
+        }.sorted(by: Self.shouldReportCandidateBefore)
+
+        let report = ConnectionTrimReport(
+            activeConnectionCount: activeCount,
+            totalEntryCount: allEntries.count,
+            highWatermark: limits.highWatermark,
+            lowWatermark: limits.lowWatermark,
+            targetTrimCount: targetTrimCount,
+            trimmableCount: trimmableEntries.count,
+            selectedCount: toTrim.count,
+            candidates: candidates
+        )
+
+        return TrimPlan(toTrim: toTrim, report: report)
+    }
+
+    private static func trimExclusionReason(
+        for managed: ManagedConnection,
+        graceCutoff: ContinuousClock.Instant
+    ) -> ConnectionTrimReport.ExclusionReason? {
+        guard managed.state.isConnected else {
+            return .notConnected
+        }
+        guard !managed.isProtected else {
+            return .protected
+        }
+        guard let connectedAt = managed.connectedAt else {
+            return .missingConnectedAt
+        }
+        if connectedAt >= graceCutoff {
+            return .withinGracePeriod
+        }
+        return nil
+    }
+
+    private static func shouldTrimBefore(_ lhs: ManagedConnection, _ rhs: ManagedConnection) -> Bool {
+        if lhs.tags.count != rhs.tags.count {
+            return lhs.tags.count < rhs.tags.count
+        }
+        if lhs.lastActivity != rhs.lastActivity {
+            return lhs.lastActivity < rhs.lastActivity
+        }
+        if lhs.direction != rhs.direction {
+            return lhs.direction == .inbound
+        }
+        return lhs.id.description < rhs.id.description
+    }
+
+    private static func shouldReportCandidateBefore(
+        _ lhs: ConnectionTrimReport.Candidate,
+        _ rhs: ConnectionTrimReport.Candidate
+    ) -> Bool {
+        if lhs.selectedForTrim != rhs.selectedForTrim {
+            return lhs.selectedForTrim
+        }
+
+        if let lhsRank = lhs.trimRank, let rhsRank = rhs.trimRank, lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+        if lhs.trimRank != nil, rhs.trimRank == nil {
+            return true
+        }
+        if lhs.trimRank == nil, rhs.trimRank != nil {
+            return false
+        }
+
+        if lhs.exclusionReason != rhs.exclusionReason {
+            return (lhs.exclusionReason?.rawValue ?? "") < (rhs.exclusionReason?.rawValue ?? "")
+        }
+
+        return lhs.id.description < rhs.id.description
+    }
 
     /// Refreshes the connected peer cache for a specific peer.
     ///

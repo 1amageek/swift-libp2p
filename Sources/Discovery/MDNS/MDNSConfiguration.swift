@@ -1,6 +1,14 @@
 /// P2PDiscoveryMDNS - mDNS-based peer discovery configuration
 import Foundation
 
+/// Strategy for selecting the mDNS service instance name (peer-name).
+public enum MDNSPeerNameStrategy: Sendable, Equatable {
+    /// Use a random opaque peer-name (recommended by libp2p mDNS spec).
+    case random
+    /// Use the local PeerID as peer-name (legacy behavior).
+    case peerID
+}
+
 /// Configuration for mDNS-based peer discovery.
 public struct MDNSConfiguration: Sendable {
 
@@ -30,6 +38,9 @@ public struct MDNSConfiguration: Sendable {
     /// Agent version string to advertise.
     public var agentVersion: String
 
+    /// How to choose the mDNS service instance name.
+    public var peerNameStrategy: MDNSPeerNameStrategy
+
     public init(
         serviceType: String = "_p2p._udp",
         domain: String = "local",
@@ -38,7 +49,8 @@ public struct MDNSConfiguration: Sendable {
         useIPv6: Bool = true,
         networkInterface: String? = nil,
         ttl: UInt32 = 120,
-        agentVersion: String = "swift-libp2p/1.0"
+        agentVersion: String = "swift-libp2p/1.0",
+        peerNameStrategy: MDNSPeerNameStrategy = .random
     ) {
         self.serviceType = serviceType
         self.domain = domain
@@ -48,6 +60,7 @@ public struct MDNSConfiguration: Sendable {
         self.networkInterface = networkInterface
         self.ttl = ttl
         self.agentVersion = agentVersion
+        self.peerNameStrategy = peerNameStrategy
     }
 
     /// Default configuration.

@@ -99,9 +99,9 @@ Envelopeの署名検証時、ドメイン文字列は検証データに含まれ
 | Domain separation missing | `Record/Envelope.swift` | ✅ N/A | Already implemented correctly: `verify(domain:)` and `record(as:)` both use domain in signature verification |
 | Untrusted length DoS | `Utilities/Varint.swift`, multiple files | ✅ Fixed | UInt64→Int conversion without bounds checks. Added `decodeAsInt()`, `toInt()` helpers and bounds checks |
 | Multiaddr input DoS | `Addressing/Multiaddr.swift` | ✅ Fixed | No input size limits allowed DoS via maliciously large inputs. Added size (1KB) and component (20) limits |
-| Multiaddr parsing heuristic | `Addressing/Multiaddr.swift:38,179` | ⬜ | Hardcoded protocol set omits `p2p-circuit`; can misparse when values match protocol names |
-| Invalid IP silent encoding | `Addressing/MultiaddrProtocol.swift:88,120` | ⬜ | Invalid IPs encoded as empty bytes instead of errors; inconsistent round-trips |
-| IPv6 simplified parser | `Addressing/MultiaddrProtocol.swift:131` | ⬜ | May reject valid forms or mishandle multiple `::` and IPv4-mapped addresses |
+| Multiaddr parsing heuristic | `Addressing/Multiaddr.swift` | ✅ Fixed | String parser now decides value-consumption from protocol metadata (`requiresValue`) instead of next-token guessing |
+| Invalid IP silent encoding | `Addressing/Multiaddr.swift`, `Addressing/MultiaddrProtocol.swift` | ✅ Fixed | Checked initializer validates `ip4`/`ip6` values; invalid addresses fail with `invalidAddress` instead of producing malformed bytes |
+| IPv6 simplified parser | `Addressing/MultiaddrProtocol.swift` | ✅ Fixed | IPv6 parsing switched to `inet_pton(AF_INET6, ...)`, covering embedded IPv4 and zone-ID stripping consistently |
 
 ## Fixes Applied
 
@@ -147,6 +147,25 @@ Envelopeの署名検証時、ドメイン文字列は検証データに含まれ
 - `Integration/P2P/P2P.swift`
 
 **テスト**: `Tests/Core/P2PCoreTests/MultiaddrTests.swift` (VarintTests suite)
+
+### Multiaddr Parsing and IP Validation Hardening (2026-02-14)
+
+**問題**:
+1. 文字列パースが「次トークンが既知プロトコル名か」で値の有無を推測しており、値が `ip4` などと一致するケースで誤解析の可能性
+2. IPv6独自パーサが仕様上有効な表記（埋め込みIPv4など）を取りこぼす可能性
+3. `init(protocols:)` 経由で不正 `ip4`/`ip6` を保持でき、後段のシリアライズ時に不整合を誘発する余地
+
+**解決策**:
+1. `MultiaddrProtocol.requiresValue(name:)` を追加し、値の有無をプロトコル定義で決定
+2. IPv6エンコードを `inet_pton(AF_INET6, ...)` ベースに変更（ゾーンIDは事前除去）
+3. `Multiaddr.init(protocols:)` で `ip4`/`ip6` の妥当性検証を追加（不正値は `invalidAddress`）
+
+**テスト追加**:
+- `Value token equal to protocol name is parsed as value when required`
+- `Parse IPv6 with embedded IPv4 notation`
+- `Parse IPv6 with zone identifier`
+- `Checked initializer rejects invalid IPv4 protocol value`
+- `Checked initializer rejects invalid IPv6 protocol value`
 
 ### Info (Performance)
 | Issue | Location | Description |

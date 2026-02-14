@@ -195,7 +195,14 @@ public final class RelayListener: Listener, Sendable {
         let now = ContinuousClock.now
 
         if expirationTime > now {
-            try? await Task.sleep(until: expirationTime, clock: .continuous)
+            do {
+                try await Task.sleep(until: expirationTime, clock: .continuous)
+            } catch is CancellationError {
+                return
+            } catch {
+                logger.debug("Reservation expiration wait interrupted: \(error)")
+                return
+            }
         }
 
         // Check if we're already closed or cancelled

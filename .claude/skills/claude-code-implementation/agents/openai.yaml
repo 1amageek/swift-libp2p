@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Code Impl"
+  short_description: "Implement via Claude Code with caution+verification flow"
+  default_prompt: "Use Claude Code to implement changes only after CLI preflight checks and explicit cautions. Timebox non-interactive runs, then perform mandatory diff/test verification before completion."

@@ -271,7 +271,10 @@ extension GossipSubMessage {
         let publicKey: PublicKey
         if let keyData = key {
             // Key is provided explicitly
-            guard let pk = try? PublicKey(protobufEncoded: keyData) else {
+            let pk: PublicKey
+            do {
+                pk = try PublicKey(protobufEncoded: keyData)
+            } catch {
                 return false
             }
             // Verify key matches source PeerID
@@ -281,7 +284,13 @@ extension GossipSubMessage {
             publicKey = pk
         } else {
             // Try to extract from PeerID (only works for inline keys)
-            guard let pk = try? source.extractPublicKey() else {
+            let extractedKey: PublicKey?
+            do {
+                extractedKey = try source.extractPublicKey()
+            } catch {
+                return false
+            }
+            guard let pk = extractedKey else {
                 return false
             }
             publicKey = pk

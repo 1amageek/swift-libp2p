@@ -12,16 +12,24 @@ public final class GoWSSHarness: Sendable {
         public let transport: String
         public let security: String
         public let muxer: String
+        public let serverHostname: String
     }
 
     private let containerName: String
     private let port: UInt16
     public let nodeInfo: NodeInfo
+    public let serverCertificatePEM: String
 
-    private init(containerName: String, port: UInt16, nodeInfo: NodeInfo) {
+    private init(
+        containerName: String,
+        port: UInt16,
+        nodeInfo: NodeInfo,
+        serverCertificatePEM: String
+    ) {
         self.containerName = containerName
         self.port = port
         self.nodeInfo = nodeInfo
+        self.serverCertificatePEM = serverCertificatePEM
     }
 
     /// Starts a go-libp2p WSS + Noise test node in Docker
@@ -79,7 +87,11 @@ public final class GoWSSHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
-        try? rmProcess.run()
+        do {
+            try rmProcess.run()
+        } catch {
+            // Best effort cleanup only.
+        }
         rmProcess.waitUntilExit()
 
         // Start container (WSS uses tcp port mapping)
@@ -132,15 +144,16 @@ public final class GoWSSHarness: Sendable {
                     let peerID = String(listenLine[peerIdMatch])
 
                     // Build WSS address with actual exposed port
-                    // Use /wss format which swift-libp2p can parse
-                    let address = "/ip4/127.0.0.1/tcp/\(actualPort)/wss/p2p/\(peerID)"
+                    // Use dns4 localhost so client can perform hostname verification.
+                    let address = "/dns4/localhost/tcp/\(actualPort)/wss/p2p/\(peerID)"
 
                     nodeInfo = NodeInfo(
                         address: address,
                         peerID: peerID,
                         transport: "wss",
                         security: "noise",
-                        muxer: "yamux"
+                        muxer: "yamux",
+                        serverHostname: "localhost"
                     )
                     print("go-libp2p WSS node ready: \(address)")
                     break
@@ -155,13 +168,65 @@ public final class GoWSSHarness: Sendable {
             let stopProcess = Process()
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
-            try? stopProcess.run()
+            do {
+                try stopProcess.run()
+            } catch {
+                // Best effort cleanup only.
+            }
             stopProcess.waitUntilExit()
 
             throw WSSHarnessError.nodeNotReady
         }
 
-        return GoWSSHarness(containerName: containerName, port: actualPort, nodeInfo: info)
+        let certificatePEM: String
+        do {
+            certificatePEM = try readContainerFile(containerName: containerName, filePath: "/cert.pem")
+        } catch {
+            let stopProcess = Process()
+            stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            stopProcess.arguments = ["docker", "stop", containerName]
+            do {
+                try stopProcess.run()
+            } catch {
+                // Best effort cleanup only.
+            }
+            stopProcess.waitUntilExit()
+            throw WSSHarnessError.certificateReadFailed
+        }
+
+        return GoWSSHarness(
+            containerName: containerName,
+            port: actualPort,
+            nodeInfo: info,
+            serverCertificatePEM: certificatePEM
+        )
+    }
+
+    private static func readContainerFile(containerName: String, filePath: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["docker", "exec", containerName, "cat", filePath]
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw WSSHarnessError.certificateReadFailed
+        }
+
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let pem = String(data: data, encoding: .utf8),
+              pem.contains("BEGIN CERTIFICATE"),
+              pem.contains("END CERTIFICATE") else {
+            throw WSSHarnessError.certificateReadFailed
+        }
+
+        return pem
     }
 
     /// Stops the container
@@ -179,7 +244,11 @@ public final class GoWSSHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
-        try? process.run()
+        do {
+            try process.run()
+        } catch {
+            // Best effort cleanup only.
+        }
         process.waitUntilExit()
     }
 }
@@ -188,4 +257,5 @@ public enum WSSHarnessError: Error {
     case dockerBuildFailed
     case dockerRunFailed
     case nodeNotReady
+    case certificateReadFailed
 }

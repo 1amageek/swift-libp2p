@@ -23,7 +23,7 @@ import Synchronization
 ///
 /// await composite.start()
 /// // ... use composite ...
-/// await composite.stop()  // Required: stops internal services
+/// await composite.shutdown()  // Required: shuts down internal services
 /// ```
 ///
 /// **Warning**: Do not share services between multiple CompositeDiscovery instances
@@ -101,18 +101,18 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
         }
     }
 
-    /// Stops forwarding events, cancels all tasks, and stops all internal services.
+    /// Shuts down forwarding events, cancels all tasks, and shuts down all internal services.
     ///
     /// This method performs cleanup in the following order:
     /// 1. Cancels all event forwarding tasks
-    /// 2. Stops all internal discovery services (calls `stop()` on each)
+    /// 2. Shuts down all internal discovery services (calls `shutdown()` on each)
     /// 3. Shuts down the event broadcaster
     ///
     /// This method is idempotent and safe to call multiple times.
     ///
-    /// - Important: After calling `stop()`, the internal services will no longer
+    /// - Important: After calling `shutdown()`, the internal services will no longer
     ///   be usable, even if accessed directly from outside CompositeDiscovery.
-    public func stop() async {
+    public func shutdown() async {
         let (tasks, servicesToStop) = state.withLock { state -> ([Task<Void, Never>], [(any DiscoveryService, Double)]) in
             guard !state.isShutdown else { return ([], []) }
             state.isShutdown = true
@@ -131,7 +131,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
 
         // 2. 内部サービス停止
         for (service, _) in servicesToStop {
-            await service.stop()
+            await service.shutdown()
         }
 
         // 3. Broadcasterシャットダウン

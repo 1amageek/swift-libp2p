@@ -24,18 +24,26 @@ WebTransport is built on top of QUIC with HTTP/3, providing:
 
 ## Current Status
 
-**Stub implementation** - HTTP/3 support in swift-quic is required before
-WebTransport connections can be established. The following are implemented:
+**Implemented over QUIC with WebTransport-compatible address and certificate semantics.**
+Current implementation uses a QUIC stream-based session negotiation shim until
+native HTTP/3 Extended CONNECT is available in `swift-quic`.
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Protocol constants | Done | Protocol ID, ALPN, cert hash prefix |
 | Error types | Done | All WebTransport-specific errors |
 | Configuration | Done | Cert rotation, streams, timeouts |
-| Certificate generation | Done | SHA-256 hash, multibase encoding |
-| Address validation | Done | Parses WebTransport multiaddrs |
-| Connection stub | Done | State machine, no actual I/O |
-| Transport stub | Done | Returns http3NotAvailable |
+| Certificate generation | Done | 12-day certificates + SHA-256 multihash |
+| Address validation | Done | Strict parser for protocol order and certhash |
+| Certificate rotation store | Done | Current/next certificates and advertised hashes |
+| Listener address rotation | Done | Background refresh of advertised `/certhash` values |
+| ALPN verification | Done | Enforces negotiated ALPN `h3` |
+| DNS dial resolution | Done | Resolves `dns`/`dns4`/`dns6` hosts before QUIC dial |
+| Secured transport | Done | `dialSecured` / `listenSecured` |
+| Certificate hash verification | Done | Client verifies remote leaf cert against `/certhash` |
+| Stream mapping | Done | QUIC streams wrapped as WebTransport muxed streams |
+| Session negotiation | Done | QUIC stream framed hello/ack handshake |
+| Listener shutdown | Done | `close()` shuts down endpoint I/O task |
 
 ## Files
 
@@ -44,15 +52,22 @@ WebTransport connections can be established. The following are implemented:
 | `WebTransportProtocol.swift` | Protocol constants (ID, ALPN, cert limits) |
 | `WebTransportError.swift` | Error type definitions |
 | `WebTransportConfiguration.swift` | Transport configuration |
+| `WebTransportAddress.swift` | Strict multiaddr parser and certhash utilities |
+| `WebTransportCertificateStore.swift` | Rotating certificate material (current/next) |
+| `WebTransportSessionNegotiator.swift` | Session negotiation frame protocol |
+| `WebTransportQUICPeerInfo.swift` | QUIC peer extraction helpers |
+| `WebTransportMuxedConnection.swift` | Muxed connection wrapper over QUIC |
+| `WebTransportSecuredListener.swift` | Secured listener for incoming WebTransport peers |
 | `DeterministicCerts.swift` | Certificate generation and hash verification |
-| `WebTransportConnection.swift` | Connection abstraction (stub) |
-| `WebTransportTransport.swift` | Transport implementation (stub) |
+| `WebTransportConnection.swift` | Legacy connection state abstraction |
+| `WebTransportTransport.swift` | Secured transport implementation |
 
 ## Multiaddr Format
 
 WebTransport addresses extend QUIC addresses:
 - `/ip4/<ip>/udp/<port>/quic-v1/webtransport/certhash/<hash>`
 - `/ip6/<ip>/udp/<port>/quic-v1/webtransport/certhash/<hash>`
+- `/dns|dns4|dns6/<host>/udp/<port>/quic-v1/webtransport/certhash/<hash>` (dial only)
 
 Multiple certhash components may be present for certificate rotation:
 - `/ip4/.../udp/.../quic-v1/webtransport/certhash/<current>/certhash/<next>`
@@ -77,11 +92,9 @@ WebTransport
 ## Future Work
 
 When HTTP/3 support is available in swift-quic:
-1. Implement HTTP/3 CONNECT handshake
-2. Implement WebTransport session negotiation
-3. Map WebTransport streams to MuxedStream
-4. Implement certificate rotation with timer
-5. Add SecuredTransport conformance
+1. Replace QUIC stream handshake shim with native HTTP/3 Extended CONNECT
+2. Add WebTransport datagram support
+3. Add browser interop tests (Go/Rust/Web)
 
 ## References
 

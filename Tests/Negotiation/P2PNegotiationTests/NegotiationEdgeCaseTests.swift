@@ -111,6 +111,37 @@ struct NegotiationEdgeCaseTests {
         #expect(writeCount == 2) // header + protocol
     }
 
+    @Test("Negotiate handles fragmented header and protocol responses")
+    func negotiateFragmentedReads() async throws {
+        let headerEncoded = MultistreamSelect.encode(MultistreamSelect.protocolID)
+        let protoEncoded = MultistreamSelect.encode("/test/1.0.0")
+
+        let fragments: [Data] = [
+            headerEncoded.prefix(2),
+            headerEncoded.dropFirst(2),
+            protoEncoded.prefix(1),
+            protoEncoded.dropFirst(1),
+        ].map { Data($0) }
+
+        var readIndex = 0
+        var writeCount = 0
+
+        let result = try await MultistreamSelect.negotiate(
+            protocols: ["/test/1.0.0"],
+            read: {
+                guard readIndex < fragments.count else { throw NegotiationError.invalidMessage }
+                let data = fragments[readIndex]
+                readIndex += 1
+                return data
+            },
+            write: { _ in writeCount += 1 }
+        )
+
+        #expect(result.protocolID == "/test/1.0.0")
+        #expect(writeCount == 2) // header + protocol
+        #expect(readIndex == fragments.count)
+    }
+
     @Test("Handle processes coalesced header+protocol in single read (V1Lazy client)")
     func handleCoalescedLazyClient() async throws {
         // V1Lazy client sends header + protocol in one write
@@ -135,6 +166,37 @@ struct NegotiationEdgeCaseTests {
 
         #expect(result.protocolID == "/test/1.0.0")
         #expect(writtenData.count == 2) // header response + protocol confirmation
+    }
+
+    @Test("Handle processes fragmented header+protocol requests")
+    func handleFragmentedReads() async throws {
+        let headerEncoded = MultistreamSelect.encode(MultistreamSelect.protocolID)
+        let protoEncoded = MultistreamSelect.encode("/test/1.0.0")
+        let combined = headerEncoded + protoEncoded
+
+        let fragments: [Data] = [
+            combined.prefix(3),
+            combined.dropFirst(3).prefix(4),
+            combined.dropFirst(7),
+        ].map { Data($0) }
+
+        var readIndex = 0
+        var writtenData: [Data] = []
+
+        let result = try await MultistreamSelect.handle(
+            supported: ["/test/1.0.0"],
+            read: {
+                guard readIndex < fragments.count else { throw NegotiationError.invalidMessage }
+                let data = fragments[readIndex]
+                readIndex += 1
+                return data
+            },
+            write: { data in writtenData.append(data) }
+        )
+
+        #expect(result.protocolID == "/test/1.0.0")
+        #expect(writtenData.count == 2) // header response + protocol confirmation
+        #expect(readIndex == fragments.count)
     }
 
     // MARK: - V1Lazy Edge Cases
@@ -192,6 +254,58 @@ struct NegotiationEdgeCaseTests {
                 write: { _ in }
             )
         }
+    }
+
+    @Test("V1Lazy batches header and first protocol in one write on success")
+    func v1LazyBatchedFirstWrite() async throws {
+        var writes: [Data] = []
+        var readCalled = false
+
+        let result = try await MultistreamSelect.negotiateLazy(
+            protocols: ["/proto/1.0.0"],
+            read: {
+                guard !readCalled else { throw NegotiationError.invalidMessage }
+                readCalled = true
+                return MultistreamSelect.encode(MultistreamSelect.protocolID)
+                    + MultistreamSelect.encode("/proto/1.0.0")
+            },
+            write: { data in writes.append(data) }
+        )
+
+        #expect(result.protocolID == "/proto/1.0.0")
+        #expect(writes.count == 1)
+
+        let (first, firstConsumed) = try MultistreamSelect.decode(writes[0])
+        #expect(first == MultistreamSelect.protocolID)
+        let remainder = Data(writes[0].dropFirst(firstConsumed))
+        let (second, secondConsumed) = try MultistreamSelect.decode(remainder)
+        #expect(second == "/proto/1.0.0")
+        #expect(firstConsumed + secondConsumed == writes[0].count)
+    }
+
+    @Test("V1Lazy fallback sends second protocol in a separate write")
+    func v1LazyFallbackWritePattern() async throws {
+        var writes: [Data] = []
+        var readIndex = 0
+
+        let responses: [Data] = [
+            MultistreamSelect.encode(MultistreamSelect.protocolID) + MultistreamSelect.encode("na"),
+            MultistreamSelect.encode("/proto/2.0.0")
+        ]
+
+        let result = try await MultistreamSelect.negotiateLazy(
+            protocols: ["/proto/1.0.0", "/proto/2.0.0"],
+            read: {
+                guard readIndex < responses.count else { throw NegotiationError.invalidMessage }
+                defer { readIndex += 1 }
+                return responses[readIndex]
+            },
+            write: { data in writes.append(data) }
+        )
+
+        #expect(result.protocolID == "/proto/2.0.0")
+        #expect(writes.count == 2)
+        #expect(try MultistreamSelect.decode(writes[1]).0 == "/proto/2.0.0")
     }
 
     // MARK: - Handle Edge Cases

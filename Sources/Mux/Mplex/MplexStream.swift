@@ -5,6 +5,8 @@ import P2PCore
 import P2PMux
 import Synchronization
 
+private let logger = Logger(label: "p2p.mux.mplex.stream")
+
 /// Internal state for MplexStream.
 ///
 /// Stream state model (bidirectional, independent):
@@ -217,7 +219,11 @@ public final class MplexStream: MuxedStream, Sendable {
             Task { [weak self] in
                 guard let self else { return }
                 let frame = MplexFrame.reset(id: self.id, isInitiator: self.isInitiator)
-                try? await self.connection.sendFrame(frame)
+                do {
+                    try await self.connection.sendFrame(frame)
+                } catch {
+                    logger.debug("Failed to send reset for overflowed Mplex stream \(self.id): \(error)")
+                }
                 self.connection.removeStream(id: self.id, initiatedLocally: self.isInitiator)
             }
         }

@@ -297,7 +297,7 @@ struct NoiseKATTests {
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
         // Message A: -> e
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         print("Message A (ephemeral): \(messageA.hexString)")
 
         try responder.readMessageA(messageA)

@@ -5,6 +5,8 @@ import P2PCore
 import P2PMux
 import Synchronization
 
+private let logger = Logger(label: "p2p.mux.mplex.connection")
+
 /// Actor for serializing frame writes to the underlying connection.
 ///
 /// This ensures that concurrent writes from multiple streams don't interleave
@@ -320,13 +322,19 @@ public final class MplexConnection: MuxedConnection, Sendable {
         let stream: MplexStream
         switch result {
         case .rejectReuse:
-            let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
-            try? await sendFrame(rstFrame)
+            await sendResetBestEffort(
+                streamID: streamID,
+                initiatedLocally: false,
+                context: "reject reused remote stream ID"
+            )
             return
 
         case .rejectLimit:
-            let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
-            try? await sendFrame(rstFrame)
+            await sendResetBestEffort(
+                streamID: streamID,
+                initiatedLocally: false,
+                context: "reject stream over limit"
+            )
             return
 
         case .accept(let acceptedStream):
@@ -354,8 +362,11 @@ public final class MplexConnection: MuxedConnection, Sendable {
         case .bufferDelivery(let continuation, let deliveredStream):
             guard let continuation = continuation else {
                 // No consumer - reject stream
-                let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
-                try? await sendFrame(rstFrame)
+                await sendResetBestEffort(
+                    streamID: streamID,
+                    initiatedLocally: false,
+                    context: "reject inbound stream with no continuation"
+                )
                 state.withLock { _ = $0.streams.removeValue(forKey: key) }
                 return
             }
@@ -368,8 +379,11 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
             case .dropped:
                 // Buffer full - reject
-                let rstFrame = MplexFrame.reset(id: streamID, isInitiator: false)
-                try? await sendFrame(rstFrame)
+                await sendResetBestEffort(
+                    streamID: streamID,
+                    initiatedLocally: false,
+                    context: "reject dropped inbound stream"
+                )
                 state.withLock { _ = $0.streams.removeValue(forKey: key) }
 
             case .terminated:
@@ -428,6 +442,19 @@ public final class MplexConnection: MuxedConnection, Sendable {
         return MplexStreamKey(id: frame.streamID, initiatedLocally: initiatedLocally)
     }
 
+    private func sendResetBestEffort(
+        streamID: UInt64,
+        initiatedLocally: Bool,
+        context: String
+    ) async {
+        let rstFrame = MplexFrame.reset(id: streamID, isInitiator: initiatedLocally)
+        do {
+            try await sendFrame(rstFrame)
+        } catch {
+            logger.debug("Failed to send Mplex RST (\(context), stream=\(streamID)): \(error)")
+        }
+    }
+
     // MARK: - Shutdown Infrastructure
 
     /// Captured state during shutdown
@@ -451,7 +478,11 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
         func closeAllStreamsGracefully() async {
             for stream in streams {
-                try? await stream.close()
+                do {
+                    try await stream.close()
+                } catch {
+                    logger.debug("Best-effort Mplex stream close failed during shutdown: \(error)")
+                }
             }
         }
     }

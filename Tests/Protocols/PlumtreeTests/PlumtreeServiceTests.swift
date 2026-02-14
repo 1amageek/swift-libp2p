@@ -21,8 +21,8 @@ struct PlumtreeServiceTests {
         #expect(service.protocolIDs == [plumtreeProtocolID])
     }
 
-    @Test("Start and stop lifecycle")
-    func startStopLifecycle() {
+    @Test("Start and shutdown lifecycle")
+    func startShutdownLifecycle() {
         let service = PlumtreeService(
             localPeerID: makePeerID(),
             configuration: .testing
@@ -32,7 +32,7 @@ struct PlumtreeServiceTests {
         service.start()
         #expect(service.isStarted)
 
-        service.stop()
+        service.shutdown()
         #expect(!service.isStarted)
     }
 
@@ -50,7 +50,7 @@ struct PlumtreeServiceTests {
         service.unsubscribe(from: "test-topic")
         #expect(!service.subscribedTopics.contains("test-topic"))
 
-        service.stop()
+        service.shutdown()
     }
 
     @Test("Publish requires started service")
@@ -77,7 +77,7 @@ struct PlumtreeServiceTests {
             try service.publish(data: Data("test".utf8), to: "topic")
         }
 
-        service.stop()
+        service.shutdown()
     }
 
     @Test("Publish rejects oversized messages")
@@ -95,7 +95,7 @@ struct PlumtreeServiceTests {
             try service.publish(data: largeData, to: "topic")
         }
 
-        service.stop()
+        service.shutdown()
     }
 
     @Test("Publish returns message ID")
@@ -110,7 +110,7 @@ struct PlumtreeServiceTests {
         let msgID = try service.publish(data: Data("hello".utf8), to: "topic")
         #expect(!msgID.bytes.isEmpty)
 
-        service.stop()
+        service.shutdown()
     }
 
     @Test("Events stream is multi-consumer")

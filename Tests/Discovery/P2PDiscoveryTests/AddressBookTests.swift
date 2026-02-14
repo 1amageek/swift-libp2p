@@ -109,6 +109,7 @@ struct AddressBookConfigurationTests {
         #expect(config.recencyWeight == 0.2)
         #expect(config.maxFailureCount == 3)
         #expect(config.addressTTL == .seconds(3600))
+        #expect(config.observationHalfLife == .seconds(600))
     }
 
     @Test("Custom configuration preserves values")
@@ -349,6 +350,69 @@ struct DefaultAddressBookScoringTests {
         let sorted = await book.sortedAddresses(for: peer)
         // addr1 should drop due to failures exceeding maxFailureCount (default 3)
         #expect(sorted.last == addr1)
+    }
+
+    @Test("Stale observations decay confidence over time")
+    func staleObservationDecaysConfidence() async {
+        let store = makeStore()
+        let config = AddressBookConfiguration(
+            transportPriority: [.tcp],
+            maxFailureCount: 3,
+            addressTTL: .seconds(3600),
+            transportWeight: 0.2,
+            successWeight: 0.8,
+            recencyWeight: 0.0,
+            observationHalfLife: .milliseconds(50)
+        )
+        let book = DefaultAddressBook(peerStore: store, configuration: config)
+        let peer = makePeer()
+        let addr = Multiaddr.tcp(host: "1.2.3.4", port: 4001)
+
+        await store.addAddress(addr, for: peer)
+        await book.recordSuccess(address: addr, for: peer)
+
+        let freshScore = await book.score(address: addr, for: peer)
+
+        do {
+            try await Task.sleep(for: .milliseconds(220))
+        } catch {
+            Issue.record("Unexpected cancellation while waiting for decay: \(error)")
+        }
+
+        let staleScore = await book.score(address: addr, for: peer)
+        #expect(staleScore < freshScore)
+        #expect(staleScore > 0.5)
+    }
+
+    @Test("Observation decay can be disabled")
+    func observationDecayCanBeDisabled() async {
+        let store = makeStore()
+        let config = AddressBookConfiguration(
+            transportPriority: [.tcp],
+            maxFailureCount: 3,
+            addressTTL: .seconds(3600),
+            transportWeight: 0.2,
+            successWeight: 0.8,
+            recencyWeight: 0.0,
+            observationHalfLife: nil
+        )
+        let book = DefaultAddressBook(peerStore: store, configuration: config)
+        let peer = makePeer()
+        let addr = Multiaddr.tcp(host: "1.2.3.4", port: 4001)
+
+        await store.addAddress(addr, for: peer)
+        await book.recordSuccess(address: addr, for: peer)
+
+        let scoreBefore = await book.score(address: addr, for: peer)
+
+        do {
+            try await Task.sleep(for: .milliseconds(220))
+        } catch {
+            Issue.record("Unexpected cancellation while waiting with decay disabled: \(error)")
+        }
+
+        let scoreAfter = await book.score(address: addr, for: peer)
+        #expect(abs(scoreAfter - scoreBefore) < 0.0001)
     }
 
     @Test("Address reaching maxFailureCount has lower score than address without failures")
@@ -611,6 +675,32 @@ struct PeerStoreAddressLimitsTests {
         let after = await store.addresses(for: peer)
         #expect(after.count == 3)
         #expect(after.contains(addr4))
+    }
+
+    @Test("recordFailure updates LRU order and prevents premature peer eviction")
+    func recordFailureTouchesPeerForLRU() async {
+        let store = makeStore(maxPeers: 2, maxAddressesPerPeer: 3)
+        let peer1 = makePeer()
+        let peer2 = makePeer()
+        let peer3 = makePeer()
+
+        let addr1 = Multiaddr.tcp(host: "10.0.0.1", port: 4001)
+        let addr2 = Multiaddr.tcp(host: "10.0.0.2", port: 4002)
+        let addr3 = Multiaddr.tcp(host: "10.0.0.3", port: 4003)
+
+        await store.addAddress(addr1, for: peer1)
+        await store.addAddress(addr2, for: peer2)
+
+        // Touch peer1 via failure recording so peer2 becomes LRU.
+        await store.recordFailure(address: addr1, for: peer1)
+
+        // Adding a third peer should evict the LRU peer (peer2).
+        await store.addAddress(addr3, for: peer3)
+
+        let peers = Set(await store.allPeers())
+        #expect(peers.contains(peer1))
+        #expect(peers.contains(peer3))
+        #expect(!peers.contains(peer2))
     }
 }
 
@@ -983,7 +1073,7 @@ struct CompositeDiscoveryLifecycleTests {
         let peers = await composite.knownPeers()
         #expect(peers.isEmpty)
 
-        await composite.stop()
+        await composite.shutdown()
     }
 
     @Test("Operations work without calling start")
@@ -996,7 +1086,7 @@ struct CompositeDiscoveryLifecycleTests {
         let peers = await composite.knownPeers()
         #expect(peers.isEmpty)
 
-        await composite.stop()
+        await composite.shutdown()
     }
 
     @Test("Empty services list works")
@@ -1012,7 +1102,7 @@ struct CompositeDiscoveryLifecycleTests {
         let results = try await composite.find(peer: makePeer())
         #expect(results.isEmpty)
 
-        await composite.stop()
+        await composite.shutdown()
     }
 
     @Test("Weighted initialization preserves weights in scoring")
@@ -1037,7 +1127,7 @@ struct CompositeDiscoveryLifecycleTests {
         // Weighted: (3.0 * 1.0 + 1.0 * 1.0) / 2 = 2.0
         #expect(results[0].score == 2.0)
 
-        await composite.stop()
+        await composite.shutdown()
     }
 }
 
@@ -1078,7 +1168,7 @@ struct CompositeDiscoveryObservationTests {
         // Give time for forwarding
         try await Task.sleep(for: .milliseconds(100))
 
-        await composite.stop()
+        await composite.shutdown()
         consumeTask.cancel()
 
         let events = received.withLock { $0 }
@@ -1126,7 +1216,7 @@ struct CompositeDiscoveryObservationTests {
 
         try await Task.sleep(for: .milliseconds(100))
 
-        await composite.stop()
+        await composite.shutdown()
         consumeTask.cancel()
 
         let events = received.withLock { $0 }
@@ -1180,7 +1270,7 @@ struct CompositeDiscoveryObservationTests {
 
         try await Task.sleep(for: .milliseconds(100))
 
-        await composite.stop()
+        await composite.shutdown()
         consumeTask.cancel()
 
         let events = received.withLock { $0 }
@@ -1225,7 +1315,7 @@ private final class FailingDiscoveryService: DiscoveryService, Sendable {
         eventStream
     }
 
-    func stop() async {
+    func shutdown() async {
         eventContinuation.finish()
     }
 }

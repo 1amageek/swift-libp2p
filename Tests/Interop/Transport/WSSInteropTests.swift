@@ -10,6 +10,7 @@
 import Testing
 import Foundation
 import NIOCore
+import NIOSSL
 @testable import P2PTransportWebSocket
 @testable import P2PSecurityNoise
 @testable import P2PMuxYamux
@@ -20,9 +21,26 @@ import NIOCore
 @testable import P2PProtocols
 @testable import P2PIdentify
 
+private enum WSSInteropError: Error {
+    case missingCertificate
+}
+
 /// Interoperability tests for WSS transport with go-libp2p
 @Suite("WSS Transport Interop Tests")
 struct WSSInteropTests {
+
+    private func makeWSSClientTransport(_ harness: GoWSSHarness) throws -> WebSocketTransport {
+        let certificates = try NIOSSLCertificate.fromPEMBytes(Array(harness.serverCertificatePEM.utf8))
+        guard !certificates.isEmpty else {
+            throw WSSInteropError.missingCertificate
+        }
+
+        var clientTLS = TLSConfiguration.makeClientConfiguration()
+        clientTLS.certificateVerification = .fullVerification
+        clientTLS.trustRoots = .certificates(certificates)
+
+        return WebSocketTransport(tlsConfiguration: .init(client: clientTLS))
+    }
 
     // MARK: - Connection Tests
 
@@ -30,14 +48,22 @@ struct WSSInteropTests {
     func connectToGoViaWSS() async throws {
         // Start go-libp2p WSS node
         let harness = try await GoWSSHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer {
+            Task {
+                do {
+                    try await harness.stop()
+                } catch {
+                    // Best effort cleanup only.
+                }
+            }
+        }
 
         let nodeInfo = harness.nodeInfo
         print("[WSS] Node info: \(nodeInfo)")
 
         // Create Swift client
         let keyPair = KeyPair.generateEd25519()
-        let transport = WebSocketTransport()
+        let transport = try makeWSSClientTransport(harness)
 
         // Dial the WSS address
         let address = try Multiaddr(nodeInfo.address)
@@ -79,11 +105,19 @@ struct WSSInteropTests {
     @Test("WSS connection with Yamux muxing", .timeLimit(.minutes(2)))
     func wssWithYamuxMuxing() async throws {
         let harness = try await GoWSSHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer {
+            Task {
+                do {
+                    try await harness.stop()
+                } catch {
+                    // Best effort cleanup only.
+                }
+            }
+        }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
-        let transport = WebSocketTransport()
+        let transport = try makeWSSClientTransport(harness)
 
         // Dial WSS
         let address = try Multiaddr(nodeInfo.address)
@@ -141,11 +175,19 @@ struct WSSInteropTests {
     @Test("Identify go-libp2p node via WSS", .timeLimit(.minutes(2)))
     func identifyGoViaWSS() async throws {
         let harness = try await GoWSSHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer {
+            Task {
+                do {
+                    try await harness.stop()
+                } catch {
+                    // Best effort cleanup only.
+                }
+            }
+        }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
-        let transport = WebSocketTransport()
+        let transport = try makeWSSClientTransport(harness)
 
         // Dial WSS
         let address = try Multiaddr(nodeInfo.address)
@@ -227,11 +269,19 @@ struct WSSInteropTests {
     @Test("Ping go-libp2p node via WSS", .timeLimit(.minutes(2)))
     func pingGoViaWSS() async throws {
         let harness = try await GoWSSHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer {
+            Task {
+                do {
+                    try await harness.stop()
+                } catch {
+                    // Best effort cleanup only.
+                }
+            }
+        }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
-        let transport = WebSocketTransport()
+        let transport = try makeWSSClientTransport(harness)
 
         // Dial WSS
         let address = try Multiaddr(nodeInfo.address)

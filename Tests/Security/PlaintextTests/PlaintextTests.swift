@@ -184,6 +184,32 @@ struct PlaintextHandshakeTests {
         let upgrader = PlaintextUpgrader()
         #expect(upgrader.protocolID == "/plaintext/2.0.0")
     }
+
+    @Test("Handshake rejects oversized length prefix")
+    func handshakeRejectsOversizedLengthPrefix() async {
+        let localKeyPair = KeyPair.generateEd25519()
+        let oversizedLength = UInt64((64 * 1024) + 1)
+        let oversizedPrefix = Varint.encode(oversizedLength)
+
+        let connection = ScriptedMockConnection(
+            readChunks: [ByteBuffer(bytes: oversizedPrefix)]
+        )
+        let upgrader = PlaintextUpgrader()
+
+        do {
+            _ = try await upgrader.secure(
+                connection,
+                localKeyPair: localKeyPair,
+                as: .initiator,
+                expectedPeer: nil
+            )
+            Issue.record("Expected handshake to fail with messageTooLarge")
+        } catch PlaintextError.messageTooLarge {
+            // expected
+        } catch {
+            Issue.record("Expected PlaintextError.messageTooLarge, got \(error)")
+        }
+    }
 }
 
 @Suite("Plaintext Connection Tests", .serialized)
@@ -303,4 +329,44 @@ final class MockConnection: RawConnection, Sendable {
 
 enum MockConnectionError: Error {
     case connectionClosed
+}
+
+/// A scripted mock connection that returns predefined chunks in order.
+final class ScriptedMockConnection: RawConnection, Sendable {
+    var localAddress: Multiaddr? { nil }
+    var remoteAddress: Multiaddr { Multiaddr.tcp(host: "127.0.0.1", port: 0) }
+
+    private struct State {
+        var chunks: [ByteBuffer]
+        var isClosed = false
+    }
+
+    private let state: Mutex<State>
+
+    init(readChunks: [ByteBuffer]) {
+        self.state = Mutex(State(chunks: readChunks))
+    }
+
+    func read() async throws -> ByteBuffer {
+        try state.withLock { s in
+            if s.isClosed {
+                throw MockConnectionError.connectionClosed
+            }
+            guard !s.chunks.isEmpty else {
+                throw MockConnectionError.connectionClosed
+            }
+            return s.chunks.removeFirst()
+        }
+    }
+
+    func write(_ data: ByteBuffer) async throws {
+        let isClosed = state.withLock { $0.isClosed }
+        if isClosed {
+            throw MockConnectionError.connectionClosed
+        }
+    }
+
+    func close() async throws {
+        state.withLock { $0.isClosed = true }
+    }
 }

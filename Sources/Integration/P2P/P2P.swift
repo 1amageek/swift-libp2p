@@ -16,6 +16,29 @@ import P2PPing
 /// Logger for P2P operations.
 private let logger = Logger(label: "p2p.node")
 
+private func runBestEffort(_ context: String, _ operation: () async throws -> Void) async {
+    do {
+        try await operation()
+    } catch is CancellationError {
+        logger.debug("Best-effort operation cancelled: \(context)")
+    } catch {
+        logger.warning("Best-effort operation failed (\(context)): \(error)")
+    }
+}
+
+private func sleepUnlessCancelled(for duration: Duration, context: String) async -> Bool {
+    do {
+        try await Task.sleep(for: duration)
+        return true
+    } catch is CancellationError {
+        logger.debug("Sleep cancelled: \(context)")
+        return false
+    } catch {
+        logger.warning("Sleep failed (\(context)): \(error)")
+        return false
+    }
+}
+
 // MARK: - Configuration
 
 /// Configuration for peer discovery and auto-connection.
@@ -377,8 +400,8 @@ public actor Node: StreamOpener, HandlerRegistry {
         }
     }
 
-    /// Stops the node.
-    public func stop() async {
+    /// Shuts down the node.
+    public func shutdown() async {
         isRunning = false
 
         // Shutdown PeerStore if using MemoryPeerStore (stops GC + releases events)
@@ -548,7 +571,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                 expectedPeer: address.peerID
             )
         } catch {
-            try? await rawConnection.close()
+            await runBestEffort("close raw connection after upgrade failure") {
+                try await rawConnection.close()
+            }
             throw error
         }
 
@@ -557,7 +582,9 @@ public actor Node: StreamOpener, HandlerRegistry {
         // Gating check (secured)
         if let gater = configuration.pool.gater {
             if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                try? await result.connection.close()
+                await runBestEffort("close upgraded connection rejected by secured gater") {
+                    try await result.connection.close()
+                }
                 emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                 throw NodeError.connectionGated(stage: .secured)
             }
@@ -565,7 +592,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Check per-peer limit
         if !pool.canConnectTo(peer: remotePeer) {
-            try? await result.connection.close()
+            await runBestEffort("close upgraded connection rejected by per-peer limit") {
+                try await result.connection.close()
+            }
             throw NodeError.connectionLimitReached
         }
 
@@ -574,7 +603,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             do {
                 try rm.reserveOutboundConnection(to: remotePeer)
             } catch let error as ResourceError {
-                try? await result.connection.close()
+                await runBestEffort("close upgraded connection after outbound resource reservation failure") {
+                    try await result.connection.close()
+                }
                 switch error {
                 case .limitExceeded(let scope, let resource):
                     throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
@@ -653,7 +684,9 @@ public actor Node: StreamOpener, HandlerRegistry {
         // Gating check (secured stage)
         if let gater = configuration.pool.gater {
             if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                try? await muxedConnection.close()
+                await runBestEffort("close secured dial connection rejected by secured gater") {
+                    try await muxedConnection.close()
+                }
                 emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                 throw NodeError.connectionGated(stage: .secured)
             }
@@ -661,7 +694,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Check per-peer limit
         if !pool.canConnectTo(peer: remotePeer) {
-            try? await muxedConnection.close()
+            await runBestEffort("close secured dial connection rejected by per-peer limit") {
+                try await muxedConnection.close()
+            }
             throw NodeError.connectionLimitReached
         }
 
@@ -670,7 +705,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             do {
                 try rm.reserveOutboundConnection(to: remotePeer)
             } catch let error as ResourceError {
-                try? await muxedConnection.close()
+                await runBestEffort("close secured dial connection after outbound resource reservation failure") {
+                    try await muxedConnection.close()
+                }
                 switch error {
                 case .limitExceeded(let scope, let resource):
                     throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
@@ -727,7 +764,11 @@ public actor Node: StreamOpener, HandlerRegistry {
         // Remove and close connection
         let removed = pool.remove(forPeer: peer)
         for managed in removed {
-            try? await managed.connection?.close()
+            if let connection = managed.connection {
+                await runBestEffort("close removed connection during disconnect") {
+                    try await connection.close()
+                }
+            }
             // Release connection resource only for entries with active reservations.
             // Entries in .disconnected/.failed were already released by handleConnectionClosed.
             if managed.state.isConnected {
@@ -785,26 +826,40 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
         } catch {
             configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
-            try? await stream.close()
+            await runBestEffort("close outbound stream after protocol negotiation failure") {
+                try await stream.close()
+            }
             throw error
         }
 
         if result.protocolID != protocolID {
             configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
-            try? await stream.close()
+            await runBestEffort("close outbound stream after protocol mismatch") {
+                try await stream.close()
+            }
             throw NodeError.protocolNegotiationFailed
+        }
+
+        // Preserve bytes that were read ahead during protocol negotiation.
+        let bufferedRemainder = reader.drainRemainder()
+        let negotiationRemainder = result.remainder + bufferedRemainder
+        let negotiatedStream: MuxedStream
+        if negotiationRemainder.isEmpty {
+            negotiatedStream = stream
+        } else {
+            negotiatedStream = BufferedMuxedStream(stream: stream, initialBuffer: negotiationRemainder)
         }
 
         // Wrap stream with resource tracking if resource manager is configured
         if let rm = configuration.resourceManager {
             return ResourceTrackedStream(
-                stream: stream,
+                stream: negotiatedStream,
                 peer: peer,
                 direction: .outbound,
                 resourceManager: rm
             )
         }
-        return stream
+        return negotiatedStream
     }
 
     /// Returns the connection to a peer if connected.
@@ -825,6 +880,13 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// Returns the number of active connections.
     public var connectionCount: Int {
         pool.connectionCount
+    }
+
+    /// Returns a point-in-time report of connection trim decisions.
+    ///
+    /// Useful for diagnostics when tuning pool limits.
+    public func connectionTrimReport() -> ConnectionTrimReport {
+        pool.trimReport()
     }
 
     // MARK: - Tagging & Protection
@@ -927,7 +989,11 @@ public actor Node: StreamOpener, HandlerRegistry {
         emitConnectionEvent(.reconnecting(peer: peer, attempt: attempt, nextDelay: delay))
 
         Task { [weak self] in
-            try? await Task.sleep(for: delay)
+            let slept = await sleepUnlessCancelled(
+                for: delay,
+                context: "reconnect backoff for peer \(peer)"
+            )
+            guard slept else { return }
             await self?.performReconnect(id: id, peer: peer, address: address, attempt: attempt)
         }
     }
@@ -951,13 +1017,17 @@ public actor Node: StreamOpener, HandlerRegistry {
                 let remotePeer = muxedConnection.remotePeer
 
                 guard remotePeer == peer else {
-                    try? await muxedConnection.close()
+                    await runBestEffort("close reconnected secured connection after peer mismatch") {
+                        try await muxedConnection.close()
+                    }
                     throw NodeError.notConnected(peer)
                 }
 
                 if let gater = configuration.pool.gater {
                     if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                        try? await muxedConnection.close()
+                        await runBestEffort("close reconnected secured connection rejected by secured gater") {
+                            try await muxedConnection.close()
+                        }
                         emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                         throw NodeError.connectionGated(stage: .secured)
                     }
@@ -968,7 +1038,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                     do {
                         try rm.reserveOutboundConnection(to: peer)
                     } catch let error as ResourceError {
-                        try? await muxedConnection.close()
+                        await runBestEffort("close reconnected secured connection after outbound resource reservation failure") {
+                            try await muxedConnection.close()
+                        }
                         switch error {
                         case .limitExceeded(let scope, let resource):
                             throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
@@ -1003,7 +1075,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                     expectedPeer: peer
                 )
             } catch {
-                try? await rawConnection.close()
+                await runBestEffort("close raw connection after reconnect upgrade failure") {
+                    try await rawConnection.close()
+                }
                 throw error
             }
 
@@ -1011,14 +1085,18 @@ public actor Node: StreamOpener, HandlerRegistry {
 
             // Verify it's the same peer
             guard remotePeer == peer else {
-                try? await result.connection.close()
+                await runBestEffort("close reconnected upgraded connection after peer mismatch") {
+                    try await result.connection.close()
+                }
                 throw NodeError.notConnected(peer)
             }
 
             // Gating check (secured)
             if let gater = configuration.pool.gater {
                 if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                    try? await result.connection.close()
+                    await runBestEffort("close reconnected upgraded connection rejected by secured gater") {
+                        try await result.connection.close()
+                    }
                     emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                     throw NodeError.connectionGated(stage: .secured)
                 }
@@ -1029,7 +1107,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                 do {
                     try rm.reserveOutboundConnection(to: peer)
                 } catch let error as ResourceError {
-                    try? await result.connection.close()
+                    await runBestEffort("close reconnected upgraded connection after outbound resource reservation failure") {
+                        try await result.connection.close()
+                    }
                     switch error {
                     case .limitExceeded(let scope, let resource):
                         throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
@@ -1081,7 +1161,11 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         idleCheckTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: idleTimeout / 2)
+                let slept = await sleepUnlessCancelled(
+                    for: idleTimeout / 2,
+                    context: "idle check interval"
+                )
+                guard slept else { break }
                 await self?.performIdleCheck()
             }
         }
@@ -1180,23 +1264,69 @@ public actor Node: StreamOpener, HandlerRegistry {
         let idleConnections = pool.idleConnections(threshold: idleTimeout)
         for managed in idleConnections {
             configuration.resourceManager?.releaseConnection(peer: managed.peer, direction: managed.direction)
-            try? await managed.connection?.close()
+            if let connection = managed.connection {
+                await runBestEffort("close idle connection during idle check") {
+                    try await connection.close()
+                }
+            }
             _ = pool.remove(managed.id)
             emit(.peerDisconnected(managed.peer))
             emitConnectionEvent(.disconnected(peer: managed.peer, reason: .idleTimeout))
         }
 
         // 2. Trim if over limits
+        let trimReport = pool.trimReport()
+        if trimReport.requiresTrim && trimReport.selectedCount < trimReport.targetTrimCount {
+            emitConnectionEvent(
+                .trimConstrained(
+                    target: trimReport.targetTrimCount,
+                    selected: trimReport.selectedCount,
+                    trimmable: trimReport.trimmableCount,
+                    active: trimReport.activeConnectionCount
+                )
+            )
+            logger.warning(
+                """
+                Connection trim constrained: target=\(trimReport.targetTrimCount), \
+                selected=\(trimReport.selectedCount), trimmable=\(trimReport.trimmableCount), \
+                active=\(trimReport.activeConnectionCount)
+                """
+            )
+        }
+        let trimContextsByID: [ConnectionID: ConnectionTrimmedContext] = Dictionary(
+            uniqueKeysWithValues: trimReport.candidates.compactMap { candidate -> (ConnectionID, ConnectionTrimmedContext)? in
+                guard candidate.selectedForTrim else { return nil }
+                return (candidate.id, Self.trimContext(for: candidate))
+            }
+        )
+
         let trimmed = pool.trimIfNeeded()
         for managed in trimmed {
             configuration.resourceManager?.releaseConnection(peer: managed.peer, direction: managed.direction)
-            try? await managed.connection?.close()
+            if let connection = managed.connection {
+                await runBestEffort("close trimmed connection during idle check") {
+                    try await connection.close()
+                }
+            }
             emit(.peerDisconnected(managed.peer))
-            emitConnectionEvent(.trimmed(peer: managed.peer, reason: "Connection limit exceeded"))
+            if let context = trimContextsByID[managed.id] {
+                emitConnectionEvent(.trimmedWithContext(peer: managed.peer, context: context))
+            } else {
+                emitConnectionEvent(.trimmed(peer: managed.peer, reason: "Connection limit exceeded"))
+            }
         }
 
         // 3. Cleanup stale entries (failed, old disconnected)
         _ = pool.cleanupStaleEntries(disconnectedThreshold: idleTimeout)
+    }
+
+    private static func trimContext(for candidate: ConnectionTrimReport.Candidate) -> ConnectionTrimmedContext {
+        ConnectionTrimmedContext(
+            rank: candidate.trimRank,
+            tagCount: candidate.tagCount,
+            idleDuration: candidate.idleDuration,
+            direction: candidate.direction
+        )
     }
 
     private func acceptLoop(listener: any Listener, address: Multiaddr) async {
@@ -1222,7 +1352,9 @@ public actor Node: StreamOpener, HandlerRegistry {
         if let gater = configuration.pool.gater {
             let remoteAddress = rawConnection.remoteAddress
             if !gater.interceptAccept(address: remoteAddress) {
-                try? await rawConnection.close()
+                await runBestEffort("close inbound raw connection rejected by accept gater") {
+                    try await rawConnection.close()
+                }
                 emitConnectionEvent(.gated(peer: nil, address: remoteAddress, stage: .accept))
                 return
             }
@@ -1230,7 +1362,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Check inbound limits
         if !pool.canAcceptInbound() {
-            try? await rawConnection.close()
+            await runBestEffort("close inbound raw connection rejected by inbound limit") {
+                try await rawConnection.close()
+            }
             return
         }
 
@@ -1245,7 +1379,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                     expectedPeer: nil
                 )
             } catch {
-                try? await rawConnection.close()
+                await runBestEffort("close inbound raw connection after upgrade failure") {
+                    try await rawConnection.close()
+                }
                 throw error
             }
 
@@ -1255,7 +1391,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             // Gating check (secured)
             if let gater = configuration.pool.gater {
                 if !gater.interceptSecured(peer: remotePeer, direction: .inbound) {
-                    try? await result.connection.close()
+                    await runBestEffort("close inbound upgraded connection rejected by secured gater") {
+                        try await result.connection.close()
+                    }
                     emitConnectionEvent(.gated(peer: remotePeer, address: remoteAddress, stage: .secured))
                     return
                 }
@@ -1263,7 +1401,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
             // Check per-peer limit
             if !pool.canConnectTo(peer: remotePeer) {
-                try? await result.connection.close()
+                await runBestEffort("close inbound upgraded connection rejected by per-peer limit") {
+                    try await result.connection.close()
+                }
                 return
             }
 
@@ -1272,7 +1412,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                 do {
                     try rm.reserveInboundConnection(from: remotePeer)
                 } catch {
-                    try? await result.connection.close()
+                    await runBestEffort("close inbound upgraded connection after inbound resource reservation failure") {
+                        try await result.connection.close()
+                    }
                     return
                 }
             }
@@ -1325,7 +1467,9 @@ public actor Node: StreamOpener, HandlerRegistry {
         // Gating check (accept stage)
         if let gater = configuration.pool.gater {
             if !gater.interceptAccept(address: remoteAddress) {
-                try? await muxedConnection.close()
+                await runBestEffort("close secured inbound connection rejected by accept gater") {
+                    try await muxedConnection.close()
+                }
                 emitConnectionEvent(.gated(peer: nil, address: remoteAddress, stage: .accept))
                 return
             }
@@ -1333,14 +1477,18 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Check inbound limits
         if !pool.canAcceptInbound() {
-            try? await muxedConnection.close()
+            await runBestEffort("close secured inbound connection rejected by inbound limit") {
+                try await muxedConnection.close()
+            }
             return
         }
 
         // Gating check (secured stage)
         if let gater = configuration.pool.gater {
             if !gater.interceptSecured(peer: remotePeer, direction: .inbound) {
-                try? await muxedConnection.close()
+                await runBestEffort("close secured inbound connection rejected by secured gater") {
+                    try await muxedConnection.close()
+                }
                 emitConnectionEvent(.gated(peer: remotePeer, address: remoteAddress, stage: .secured))
                 return
             }
@@ -1348,7 +1496,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Check per-peer limit
         if !pool.canConnectTo(peer: remotePeer) {
-            try? await muxedConnection.close()
+            await runBestEffort("close secured inbound connection rejected by per-peer limit") {
+                try await muxedConnection.close()
+            }
             return
         }
 
@@ -1357,7 +1507,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             do {
                 try rm.reserveInboundConnection(from: remotePeer)
             } catch {
-                try? await muxedConnection.close()
+                await runBestEffort("close secured inbound connection after inbound resource reservation failure") {
+                    try await muxedConnection.close()
+                }
                 return
             }
         }
@@ -1401,7 +1553,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                     do {
                         try rm.reserveInboundStream(from: remotePeer)
                     } catch {
-                        try? await stream.close()
+                        await runBestEffort("close inbound stream after inbound stream resource reservation failure") {
+                            try await stream.close()
+                        }
                         return
                     }
                 }
@@ -1420,10 +1574,20 @@ public actor Node: StreamOpener, HandlerRegistry {
                         write: { try await stream.write(ByteBuffer(bytes: $0)) }
                     )
 
+                    // Preserve bytes read ahead during protocol negotiation for handler consumption.
+                    let bufferedRemainder = reader.drainRemainder()
+                    let negotiationRemainder = result.remainder + bufferedRemainder
+                    let negotiatedStream: MuxedStream
+                    if negotiationRemainder.isEmpty {
+                        negotiatedStream = stream
+                    } else {
+                        negotiatedStream = BufferedMuxedStream(stream: stream, initialBuffer: negotiationRemainder)
+                    }
+
                     // Find and run the handler
                     if let handler = capturedHandlers[result.protocolID] {
                         let context = StreamContext(
-                            stream: stream,
+                            stream: negotiatedStream,
                             remotePeer: remotePeer,
                             remoteAddress: remoteAddress,
                             localPeer: localPeer,
@@ -1431,10 +1595,14 @@ public actor Node: StreamOpener, HandlerRegistry {
                         )
                         await handler(context)
                     } else {
-                        try? await stream.close()
+                        await runBestEffort("close inbound stream for unsupported protocol") {
+                            try await stream.close()
+                        }
                     }
                 } catch {
-                    try? await stream.close()
+                    await runBestEffort("close inbound stream after handler failure") {
+                        try await stream.close()
+                    }
                 }
             }
         }
@@ -1465,6 +1633,56 @@ private final class NodePingProvider: PingProvider, Sendable {
 
 // MARK: - BufferedStreamReader
 
+/// A stream wrapper that returns pre-buffered bytes before reading the underlying stream.
+final class BufferedMuxedStream: MuxedStream, Sendable {
+    private let stream: MuxedStream
+    private let buffer: Mutex<ByteBuffer>
+
+    var id: UInt64 { stream.id }
+    var protocolID: String? { stream.protocolID }
+
+    init(stream: MuxedStream, initialBuffer: Data = Data()) {
+        self.stream = stream
+        self.buffer = Mutex(ByteBuffer(bytes: initialBuffer))
+    }
+
+    func read() async throws -> ByteBuffer {
+        let buffered = buffer.withLock { buffer -> ByteBuffer? in
+            guard buffer.readableBytes > 0 else { return nil }
+            let data = buffer
+            buffer = ByteBuffer()
+            return data
+        }
+
+        if let buffered {
+            return buffered
+        }
+        return try await stream.read()
+    }
+
+    func write(_ data: ByteBuffer) async throws {
+        try await stream.write(data)
+    }
+
+    func closeWrite() async throws {
+        try await stream.closeWrite()
+    }
+
+    func closeRead() async throws {
+        try await stream.closeRead()
+    }
+
+    func close() async throws {
+        try await stream.close()
+    }
+
+    func reset() async throws {
+        try await stream.reset()
+    }
+}
+
+// MARK: - BufferedStreamReader
+
 /// A helper class for reading length-prefixed messages from a stream.
 ///
 /// This class is `Sendable` and can be safely used across actor boundaries.
@@ -1480,6 +1698,15 @@ final class BufferedStreamReader: Sendable {
         self.stream = stream
         self.state = Mutex(Data())
         self.maxMessageSize = maxMessageSize
+    }
+
+    /// Returns and clears any bytes buffered beyond consumed negotiation messages.
+    func drainRemainder() -> Data {
+        state.withLock { buffer in
+            let data = buffer
+            buffer.removeAll(keepingCapacity: false)
+            return data
+        }
     }
 
     /// Result of trying to extract a message from the buffer.

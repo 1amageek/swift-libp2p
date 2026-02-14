@@ -8,8 +8,8 @@
 Discovery/
 ├── P2PDiscovery/     # Protocol定義のみ
 ├── SWIM/             # P2PDiscoverySWIM
-├── CYCLON/           # P2PDiscoveryCYCLON（将来実装）
-└── Plumtree/         # P2PDiscoveryPlumtree（将来実装）
+├── MDNS/             # P2PDiscoveryMDNS
+└── CYCLON/           # P2PDiscoveryCYCLON（将来実装）
 ```
 
 ## 設計原則
@@ -58,6 +58,8 @@ public protocol DiscoveryService: Sendable {
     func find(peer: PeerID) async throws -> [ScoredCandidate]
     func subscribe(to peer: PeerID) -> AsyncStream<Observation>
     func knownPeers() async -> [PeerID]
+    var observations: AsyncStream<Observation> { get }
+    func shutdown() async
 }
 ```
 
@@ -182,14 +184,14 @@ let composite = CompositeDiscovery(services: [
 ])
 await composite.start()
 // ... 使用 ...
-await composite.stop()  // 必須: 内部サービスも停止
+await composite.shutdown()  // 必須: 内部サービスも停止
 ```
 
 **重要な制約**:
 - CompositeDiscoveryは提供されたサービスの所有権を取得する
 - 各サービスインスタンスは1つのCompositeDiscoveryのみが使用すること
 - CompositeDiscoveryに追加後は、サービスを直接使用しないこと
-- `stop()`は必ず呼び出すこと（内部サービスも停止される）
+- `shutdown()`は必ず呼び出すこと（内部サービスも停止される）
 
 ### SWIMの追加型
 - `SWIMMembership` - DiscoveryService実装
@@ -210,12 +212,13 @@ await composite.stop()  // 必須: 内部サービスも停止
 
 ### MDNSDiscovery
 - ローカルネットワークセグメントに限定
-- IPv6リンクローカルアドレスのスコープID未対応
+- A/AAAAフォールバックではスコープ不明なIPv6リンクローカルを除外（誤接続候補を抑制）
+- `dnsaddr` 内の `/ip6/...%zone/...` は保持してパース可能（例: `%en0`）
 - 観察の経過時間によるスコアリングなし
 
 ### CompositeDiscovery
 - 重み付け以外の優先順位付けなし
-- `find()`は順次実行（並列ではない）
+- `find()`はTaskGroupで並列実行（fail-fastではなく部分失敗許容）
 - 失敗サービスのサーキットブレーカーなし
 
 ## 相互運用性ノート
@@ -230,30 +233,29 @@ await composite.stop()  // 必須: 内部サービスも停止
 | DiscoveryTests | ✅ 完了 | 34 | Observation、ScoredCandidate、CompositeDiscovery |
 | SWIMBridgeTests | ✅ 完了 | 20 | 型変換、イベントマッピング |
 | PeerIDServiceCodecTests | ✅ 完了 | 44 | エンコード/デコード、スコアリング |
-| PeerStoreGCTests | ✅ 完了 | 10 | TTL、GC、期限切れフィルタリング |
+| PeerStoreGCTests | ✅ 完了 | 12 | TTL、GC、期限切れフィルタリング |
 | ProtoBookTests | ✅ 完了 | 8 | set/add/remove/supports/peers |
 | KeyBookTests | ✅ 完了 | 8 | set/get/mismatch/extraction/remove |
-| SWIMMembershipTests | ❌ なし | 0 | 統合テストが必要 |
-| MDNSDiscoveryTests | ❌ なし | 0 | 統合テストが必要 |
-| AddressBookTests | ❌ なし | 0 | 追加推奨 |
-
-**合計**: 124テスト実装済み
+| SWIMMembershipIntegrationTests | ✅ 完了 | 13 | SWIM統合・ライフサイクル |
+| MDNSDiscoveryIntegrationTests | ✅ 完了 | 11 | mDNS統合・発見フロー |
+| AddressBookTests | ✅ 完了 | 73 | スコアリング・統合・CompositeDiscovery |
+**合計**: 220+ テスト実装済み
 
 ## 品質向上TODO
 
 ### 高優先度
 - [x] **SWIMBridge変換テスト** - 完了: 20テスト
 - [x] **PeerIDServiceCodecテスト** - 完了: 44テスト
-- [ ] **SWIMMembership統合テスト** - 機能テスト未実装
-- [ ] **MDNSDiscovery統合テスト** - 機能テスト未実装
-- [ ] **AddressBookテスト** - 追加推奨
-- [ ] **PeerStoreテスト** - 追加推奨
+- [x] **SWIMMembership統合テスト** - 実装済み
+- [x] **MDNSDiscovery統合テスト** - 実装済み
+- [x] **AddressBookテスト** - 実装済み
+- [x] **PeerStoreテスト** - 実装済み
 
 ### 中優先度
-- [ ] **時間ベースのスコア減衰** - 古い観察の信頼度低下
-- [ ] **IPv6リンクローカルスコープID対応** - mDNSでの正確なアドレス処理
-- [ ] **SWIMTransportAdapterメッセージエラーログ** - 現在はsilent skip
-- [ ] **CompositeDiscoveryの並列find()** - 現在は順次実行
+- [x] **時間ベースのスコア減衰** - `AddressBookConfiguration.observationHalfLife` を追加し、古い観察スコアを半減期ベースで中立値へ減衰
+- [x] **ip6zoneのバイナリ相互運用対応** - `MultiaddrProtocol.ip6zone` (code: 42) を実装し `%zone` を `/ip6zone/<zone>/ip6/<addr>` として保持
+- [x] **SWIMTransportAdapterメッセージエラーログ** - malformed datagramを silent skip せず debug ログ出力
+- [x] **CompositeDiscoveryの並列find()** - 並列実行 + 回帰テスト追加済み
 
 ### 低優先度
 - [ ] **CYCLON実装** - ランダムピアサンプリング
@@ -281,37 +283,40 @@ Discovery層のすべてのサービスは **EventBroadcaster（多消費者）*
 
 ### ライフサイクルメソッド統一
 
-すべてのDiscoveryServiceは `func stop() async` を実装すること。
+すべてのDiscoveryServiceは `func shutdown() async` を実装すること。
 
 | サービス | 現状 | 修正状況 |
 |---------|------|----------|
-| SWIMMembership | `func stop() async` | ✅ そのまま |
-| MDNSDiscovery | `func stop() async` | ✅ そのまま |
-| CYCLONDiscovery | `func stop() async` | ✅ `async` 追加完了 |
-| CompositeDiscovery | `func stop() async` | ✅ `async` 追加、内部サービス停止を実装完了 |
+| SWIMMembership | `func shutdown() async` | ✅ 実装済み |
+| MDNSDiscovery | `func shutdown() async` | ✅ 実装済み |
+| CYCLONDiscovery | `func shutdown() async` | ✅ 実装済み |
+| CompositeDiscovery | `func shutdown() async` | ✅ 実装済み（内部サービスも停止） |
 
-**理由**: 内部で非同期リソース（`await transport.stop()`, `await browser.stop()`）を停止する必要がある。
+**理由**: 内部で非同期リソース（`await transport.shutdown()`, `await browser.shutdown()`）を停止する必要がある。
 
-## Codex Review (2026-01-18, Updated 2026-02-03)
+## Codex Review (2026-01-18, Updated 2026-02-14)
 
 ### Warning
 | Issue | Location | Status | Resolution |
 |-------|----------|--------|------------|
 | ~~Advertised address unroutable~~ | ~~SWIM/SWIMMembership.swift:90-118~~ | ✅ FALSE POSITIVE | Already validated by `resolveAdvertisedHost()`; 0.0.0.0 used for binding only |
 | AsyncStream permanently closed | MDNSDiscovery/CompositeDiscovery | ✅ BY DESIGN | Services are single-use; documented in lifecycle section |
-| ~~knownServices not cleared on stop~~ | ~~MDNSDiscovery.swift:95-103~~ | ✅ FIXED | `knownServices.removeAll()` already present; `sequenceNumber` reset added to all Discovery services |
+| ~~knownServices not cleared on stop~~ | ~~MDNSDiscovery.swift:95-103~~ | ✅ FIXED | `knownServicesByPeerID` / name-index maps and `sequenceNumber` are reset on shutdown |
 | ~~Division by zero possible~~ | ~~AddressBook.swift:247-289~~ | ✅ FALSE POSITIVE | All divisions properly guarded; uses weighted sum not division |
 | ~~Multiaddr type mismatch~~ | ~~PeerIDServiceCodec.swift:78-97~~ | ✅ FIXED | Now uses `dnsaddr=` TXT attributes per libp2p mDNS spec (2026-02-03) |
 
 ### Info
-| Issue | Location | Description |
-|-------|----------|-------------|
-| LRU eviction timing | `P2PDiscovery/PeerStore.swift:351-364` | `recordFailure` doesn't call `touchPeer`; failed peers evicted early |
-| Sequential find() | `P2PDiscovery/CompositeDiscovery.swift:110-125` | Services queried sequentially; parallel execution would improve latency |
-| Fingerprinting surface | `MDNS/PeerIDServiceCodec.swift:36-48` | mDNS broadcasts PeerID allowing LAN device enumeration |
-| Browser errors silently ignored | `MDNS/MDNSDiscovery.swift:177-190` | Errors from ServiceBrowser are logged but not propagated |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| LRU eviction timing | `P2PDiscovery/PeerStore.swift` | ✅ Fixed | `recordFailure()` でも `touchPeer()` を呼び、失敗記録後に不当にLRU削除される問題を解消 |
+| Sequential find() | `P2PDiscovery/CompositeDiscovery.swift` | ✅ Fixed | `find()` は `TaskGroup` で並列照会。回帰テストで並列性を検証 |
+| Peer-name privacy divergence | `MDNS/MDNSConfiguration.swift` / `MDNS/MDNSDiscovery.swift` | ✅ Fixed | Default is random peer-name (`peerNameStrategy = .random`); legacy `.peerID` is opt-in compatibility mode |
+| Browser error propagation | `MDNS/MDNSDiscovery.swift:193-199` | ✅ Fixed | Browser errors are stored and surfaced via `find()` as `MDNSDiscoveryError.browserError` when no candidate is available |
+| Link-local IPv6 fallback ambiguity | `MDNS/PeerIDServiceCodec.swift` | ✅ Mitigated | A/AAAA fallback now skips scope-less link-local IPv6 (`fe80::/10`) to avoid unusable candidates |
+| Time-based observation decay | `P2PDiscovery/AddressBook.swift` | ✅ Fixed | Added half-life-based confidence decay (`observationHalfLife`) to reduce stale score bias |
+| SWIM malformed message visibility | `SWIM/SWIMTransportAdapter.swift` | ✅ Fixed | Decode failures and missing sender address are now logged at debug level instead of silent skip |
 
-## libp2p mDNS Specification Compliance (2026-02-03)
+## libp2p mDNS Specification Compliance (2026-02-14)
 
 ### TXTRecord Redesign (swift-mdns)
 
@@ -362,6 +367,12 @@ dnsaddr=/ip6/fe80::1/tcp/4001/p2p/QmPeerId
 - decode()と一貫性を保つ
 - dnsaddr属性優先、A/AAAAフォールバック
 
+### peer-name戦略（仕様準拠 + 互換モード）
+
+- 既定値は `MDNSPeerNameStrategy.random` で、service instance name はランダム文字列を使用。
+- `decode()` / `toObservation()` は service name へ依存せず、`dnsaddr`（優先）→ `pk` → legacy service name の順でPeerIDを推定。
+- 互換目的で `MDNSPeerNameStrategy.peerID` を選択可能（明示 opt-in）。
+
 ### Multiaddr拡張
 
 `hasPeerID`プロパティを追加:
@@ -390,7 +401,7 @@ do {
 
 ### テスト追加
 
-PeerIDServiceCodecTests.swiftに12個の新しいテストを追加:
+PeerIDServiceCodecTests.swiftに追加した主なテスト:
 
 1. `encodeDnsaddrAttributes` - dnsaddr属性のエンコード
 2. `encodePreservesP2PComponent` - p2pコンポーネントの保持
@@ -402,11 +413,14 @@ PeerIDServiceCodecTests.swiftに12個の新しいテストを追加:
 8. `decodePrefersDnsaddr` - dnsaddr優先
 9. `toObservationDnsaddr` - observationでのdnsaddr使用
 10. `toObservationFallback` - observationでのフォールバック
-11-12. 既存テストの期待値修正（TCP only, with p2p component）
+11. `decodeWithOpaqueServiceName` - opaque peer-nameでもdnsaddrで復元
+12. `inferPeerIDPrefersDnsaddr` - peerID推定優先順序
+13. `inferPeerIDFallbackToServiceName` - legacy互換
+14. `encodeCustomServiceName` - service name override
 
 ### 影響範囲
 
 - **swift-mdns**: TXTRecord構造体のみ（後方互換性あり）
 - **swift-libp2p**: PeerIDServiceCodec, DCUtRProtobuf, Multiaddr
 - **破壊的変更**: なし（既存APIはすべて維持）
-- **仕様準拠**: libp2p mDNS specification完全準拠
+- **仕様準拠**: libp2p mDNS specificationに既定設定で準拠（legacy peer-name互換モードは任意）

@@ -19,7 +19,7 @@ struct SWIMBridgeTests {
         let memberID = SWIMBridge.toMemberID(peerID: peerID, address: address)
 
         #expect(memberID.id == peerID.description)
-        #expect(memberID.address == address.description)
+        #expect(memberID.address == "127.0.0.1:7946")
     }
 
     @Test("Convert MemberID back to PeerID")

@@ -273,26 +273,11 @@ struct MultistreamSelectTests {
         let (outerLength, outerLengthBytes) = try Varint.decode(lsResponse)
         let inner = lsResponse.dropFirst(outerLengthBytes)
 
-        // Inner should contain: <len>/noise\n<len>/yamux/1.0.0\n\n
+        // Inner should contain newline-delimited protocols with final blank line.
+        // Format: /noise\n/yamux/1.0.0\n\n
         #expect(inner.count == Int(outerLength))
-
-        // Parse first protocol
-        let (proto1Len, proto1LenBytes) = try Varint.decode(Data(inner))
-        let proto1Data = inner.dropFirst(proto1LenBytes).prefix(Int(proto1Len))
-        let proto1 = String(decoding: proto1Data, as: UTF8.self)
-        #expect(proto1 == "/noise\n")
-
-        // Parse second protocol
-        let afterProto1 = inner.dropFirst(proto1LenBytes + Int(proto1Len))
-        let (proto2Len, proto2LenBytes) = try Varint.decode(Data(afterProto1))
-        let proto2Data = afterProto1.dropFirst(proto2LenBytes).prefix(Int(proto2Len))
-        let proto2 = String(decoding: proto2Data, as: UTF8.self)
-        #expect(proto2 == "/yamux/1.0.0\n")
-
-        // Verify final newline
-        let afterProto2 = afterProto1.dropFirst(proto2LenBytes + Int(proto2Len))
-        #expect(afterProto2.count == 1)
-        #expect(afterProto2.first == UInt8(ascii: "\n"))
+        let decoded = String(decoding: inner, as: UTF8.self)
+        #expect(decoded == "/noise\n/yamux/1.0.0\n\n")
     }
 
     @Test("Responder ls response for single protocol")
@@ -318,17 +303,8 @@ struct MultistreamSelectTests {
         let (outerLength, outerLengthBytes) = try Varint.decode(lsResponse)
         let inner = lsResponse.dropFirst(outerLengthBytes)
         #expect(inner.count == Int(outerLength))
-
-        // Should contain: <len>/noise\n\n
-        let (protoLen, protoLenBytes) = try Varint.decode(Data(inner))
-        let protoData = inner.dropFirst(protoLenBytes).prefix(Int(protoLen))
-        let proto = String(decoding: protoData, as: UTF8.self)
-        #expect(proto == "/noise\n")
-
-        // Final newline
-        let remaining = inner.dropFirst(protoLenBytes + Int(protoLen))
-        #expect(remaining.count == 1)
-        #expect(remaining.first == UInt8(ascii: "\n"))
+        let decoded = String(decoding: inner, as: UTF8.self)
+        #expect(decoded == "/noise\n\n")
     }
 
     @Test("Responder ls response for empty protocol list")

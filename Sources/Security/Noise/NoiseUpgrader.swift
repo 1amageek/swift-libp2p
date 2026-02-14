@@ -99,7 +99,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         readBuffer: inout Data
     ) async throws -> PeerID {
         // Send Message A: -> e
-        let messageA = handshake.writeMessageA()
+        let messageA = try handshake.writeMessageA()
         let framedA = try encodeNoiseMessage(messageA)
         try await connection.write(ByteBuffer(bytes: framedA))
 

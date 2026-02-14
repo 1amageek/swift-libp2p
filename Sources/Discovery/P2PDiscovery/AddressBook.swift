@@ -82,6 +82,11 @@ public struct AddressBookConfiguration: Sendable {
     /// Weight for recency in scoring (0.0-1.0).
     public var recencyWeight: Double
 
+    /// Half-life for confidence decay of stale observations.
+    ///
+    /// `nil` disables confidence decay.
+    public var observationHalfLife: Duration?
+
     /// Creates a configuration.
     public init(
         transportPriority: [TransportType] = [.tcp, .quic, .udp, .webSocket, .webSocketSecure, .memory],
@@ -89,7 +94,8 @@ public struct AddressBookConfiguration: Sendable {
         addressTTL: Duration = .seconds(3600),
         transportWeight: Double = 0.4,
         successWeight: Double = 0.4,
-        recencyWeight: Double = 0.2
+        recencyWeight: Double = 0.2,
+        observationHalfLife: Duration? = .seconds(600)
     ) {
         self.transportPriority = transportPriority
         self.maxFailureCount = maxFailureCount
@@ -97,6 +103,7 @@ public struct AddressBookConfiguration: Sendable {
         self.transportWeight = transportWeight
         self.successWeight = successWeight
         self.recencyWeight = recencyWeight
+        self.observationHalfLife = observationHalfLife
     }
 
     /// Default configuration.
@@ -202,10 +209,11 @@ public final class DefaultAddressBook: AddressBook, Sendable {
             let transportScore = calculateTransportScore(for: address)
             let successScore = calculateSuccessScore(record: record)
             let recencyScore = calculateRecencyScore(record: record)
-            let addressScore = transportScore * configuration.transportWeight
+            let weightedScore = transportScore * configuration.transportWeight
                 + successScore * configuration.successWeight
                 + recencyScore * configuration.recencyWeight
-            scoredAddresses.append((address, addressScore))
+            let decayedScore = applyObservationDecay(weightedScore, record: record)
+            scoredAddresses.append((address, clamp(decayedScore)))
         }
 
         // Sort by score descending
@@ -234,7 +242,8 @@ public final class DefaultAddressBook: AddressBook, Sendable {
             + configuration.successWeight * successScore
             + configuration.recencyWeight * recencyScore
 
-        return min(max(total, 0.0), 1.0)
+        let decayed = applyObservationDecay(total, record: record)
+        return clamp(decayed)
     }
 
     // MARK: - Private Methods
@@ -296,8 +305,8 @@ public final class DefaultAddressBook: AddressBook, Sendable {
         let elapsed = now - record.lastSeen
 
         // Convert to seconds for comparison
-        let elapsedSeconds = elapsed.components.seconds
-        let ttlSeconds = configuration.addressTTL.components.seconds
+        let elapsedSeconds = durationToSeconds(elapsed)
+        let ttlSeconds = durationToSeconds(configuration.addressTTL)
 
         // Guard against zero TTL (would cause division by zero)
         guard ttlSeconds > 0 else {
@@ -309,7 +318,39 @@ public final class DefaultAddressBook: AddressBook, Sendable {
         }
 
         // Linear decay from 1.0 to 0.0 over TTL
-        return 1.0 - (Double(elapsedSeconds) / Double(ttlSeconds))
+        return 1.0 - (elapsedSeconds / ttlSeconds)
+    }
+
+    /// Applies time-based confidence decay to stale observations.
+    ///
+    /// Decay pulls old scores towards neutral (0.5) using half-life semantics.
+    private func applyObservationDecay(_ score: Double, record: AddressRecord?) -> Double {
+        guard let record,
+              let halfLife = configuration.observationHalfLife else { return score }
+
+        let halfLifeSeconds = durationToSeconds(halfLife)
+        guard halfLifeSeconds > 0 else { return 0.5 }
+
+        let elapsed = ContinuousClock.now - record.lastSeen
+        let elapsedSeconds = max(0.0, durationToSeconds(elapsed))
+        if elapsedSeconds == 0 {
+            return score
+        }
+
+        let decayFactor = Foundation.exp(-Self.ln2 * (elapsedSeconds / halfLifeSeconds))
+        let neutralScore = 0.5
+        return neutralScore + ((score - neutralScore) * decayFactor)
+    }
+
+    private static let ln2 = Foundation.log(2.0)
+
+    private func durationToSeconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) + (Double(components.attoseconds) / 1_000_000_000_000_000_000.0)
+    }
+
+    private func clamp(_ score: Double) -> Double {
+        min(max(score, 0.0), 1.0)
     }
 }
 

@@ -136,7 +136,8 @@ public final class SystemDNSResolver: DNSResolver, Sendable {
                         }
                     }
 
-                    let ip = String(cString: buffer)
+                    let ipBytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                    let ip = String(decoding: ipBytes, as: UTF8.self)
                     if !ip.isEmpty && !addresses.contains(ip) {
                         addresses.append(ip)
                     }

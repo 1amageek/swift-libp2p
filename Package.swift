@@ -367,6 +367,7 @@ let package = Package(
                 "P2PCore",
                 .product(name: "SWIM", package: "swift-SWIM"),
                 .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/Discovery/SWIM"
         ),
@@ -404,7 +405,7 @@ let package = Package(
                 .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
             ],
             path: "Sources/Discovery/WiFiBeacon",
-            exclude: ["CONTEXT.md"]
+            exclude: ["CONTEXT.md", "README.md"]
         ),
         .testTarget(
             name: "P2PDiscoveryWiFiBeaconTests",
@@ -567,6 +568,11 @@ let package = Package(
             name: "P2PTransportWebTransport",
             dependencies: [
                 "P2PCore",
+                "P2PTransport",
+                "P2PMux",
+                "P2PTransportQUIC",
+                .product(name: "QUIC", package: "swift-quic"),
+                .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/Transport/WebTransport",

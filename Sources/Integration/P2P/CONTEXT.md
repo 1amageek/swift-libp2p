@@ -95,12 +95,13 @@ public actor Node {
     public var peerID: PeerID { get }
     public var connectedPeers: [PeerID] { get }
     public var connectionCount: Int { get }
+    public func connectionTrimReport() -> ConnectionTrimReport
     public var supportedProtocols: [String] { get }
     public var events: AsyncStream<NodeEvent> { get }
 
     // Lifecycle
     public func start() async throws
-    public func stop() async
+    public func shutdown() async
 
     // Protocol handlers
     public func handle(_ protocolID: String, handler: @escaping StreamHandler)
@@ -129,7 +130,9 @@ public enum NodeEvent: Sendable {
 ### ConnectionEvent
 接続の詳細なライフサイクルイベント（`Connection/ConnectionEvent.swift` 参照）:
 - `connected`, `disconnected`, `reconnecting`, `reconnected`
-- `gated`, `trimmed`, `healthCheckFailed`, `reconnectionFailed`
+- `gated`, `trimmed`, `trimmedWithContext`, `trimConstrained`, `healthCheckFailed`, `reconnectionFailed`
+- `trimmedWithContext` で構造化 `ConnectionTrimmedContext`（rank/tags/idle/direction）を提供し、`trimmed(reason:)` は後方互換として維持
+- `trimConstrained` は `target/selected/trimmable/active` を通知し、トリム不足を監視可能
 
 ### ConnectionUpgrader
 ```swift
@@ -265,10 +268,19 @@ try await stream.write(Data("Hello".utf8))
 3. **イベント駆動**
    - `events` AsyncStreamで状態変化を通知
    - 接続/切断イベントをリアルタイムで取得可能
+   - `events` は遅延初期化され、最初にアクセスされるまでイベントは破棄される
 
 4. **アップグレードパイプラインの抽象化**
    - `ConnectionUpgrader` プロトコルで抽象化
    - `NegotiatingUpgrader` がデフォルト実装
+
+### Event Stream挙動
+
+- `Node.events` は最初のアクセス時に `AsyncStream.makeStream()` で生成される（lazy）。
+- 2回目以降の `events` アクセスは同一ストリームを返す（`_events` を再利用）。
+- `emit(_:)` は `eventContinuation` が存在する場合のみ `yield` するため、購読前イベントは保持されない。
+- `shutdown()` 時に `eventContinuation.finish()` を呼び、`eventContinuation = nil` / `_events = nil` へリセットする。
+- `shutdown()` 後に再度 `events` を参照すると新しいストリームが再生成される。
 
 ---
 
@@ -328,6 +340,9 @@ discoveryタスクは継続的なポーリングループを維持（5秒間隔�
 `idleTimeout / 2`間隔で実行し、以下を実行:
 1. **アイドル接続のクローズ**: `idleTimeout`間活動のない接続を切断
 2. **制限超過時のトリム**: `connectionCount > highWatermark`なら`lowWatermark`までトリム
+   - `ConnectionTrimReport` を先に取得し、`selected < target` の場合は制約状態を警告ログ出力
+   - 同時に `trimConstrained` イベントを発火し、監視側で集計可能
+   - 可能な場合は `trimmedWithContext` を発火し、監視側が文字列パース不要で利用可能
 3. **古いエントリのクリーンアップ**: 失敗/切断エントリを削除
 
 ### 再接続フロー
@@ -342,14 +357,15 @@ discoveryタスクは継続的なポーリングループを維持（5秒間隔�
 
 ```
 Tests/Integration/P2PTests/
-├── P2PTests.swift              # 13テスト (Node, Config, Upgrader, Events)
+├── P2PTests.swift              # 27テスト (Node, Config, Upgrader, Events, buffered negotiation, error coverage, trim report API, structured trim events)
 ├── BackoffStrategyTests.swift  # 12テスト (exponential, constant, linear, jitter, presets)
 ├── ReconnectionPolicyTests.swift # 13テスト (config presets, shouldReconnect, delay)
 ├── HealthMonitorTests.swift    # 11テスト (monitoring lifecycle, health check, config)
-└── ConnectionPoolTests.swift   # 17テスト (add/remove, query, limits, tags, protection)
+├── ConnectionPoolTests.swift   # 25テスト (add/remove, query, limits, tags, protection, trim priority, trim report inspection)
+└── NodeE2ETests.swift          # 18テスト (memory transport full-stack, events, protocols, mesh, limits, structured trim/constrained events)
 ```
 
-**合計: 136テスト** (2026-02-06時点。E2Eテスト含む)
+**合計: 160テスト** (2026-02-14時点。E2Eテスト含む)
 
 ## 未実装機能
 
@@ -363,17 +379,17 @@ Tests/Integration/P2PTests/
 
 ### 高優先度
 - [x] **Early Muxer Negotiation** - TLS ALPN でmuxerヒントを渡し、muxerネゴシエーションを省略
-- [ ] **UpgradeError/NodeErrorの包括的テスト** - エラーパステスト追加
+- [x] **UpgradeError/NodeErrorの包括的テスト** - `P2PTests` に UpgradeError の到達経路テスト（noMuxers/connectionClosed/messageTooLarge/invalidVarint）と NodeError の関連値保持テストを追加
 - [x] **再接続ロジックのユニットテスト** - ReconnectionPolicyTests + BackoffStrategyTests ✅ 2026-02-06
 
 ### 中優先度
 - [x] **Resource Manager** - マルチスコープのリソース制限 ✅ 2026-01-30 (GAP-9)
-- [ ] **接続トリムアルゴリズムの検証テスト** - タグ、保護、優先度のテスト
-- [ ] **イベントストリームの挙動ドキュメント化** - 最初のアクセスでストリーム作成
+- [x] **接続トリムアルゴリズムの検証テスト** - `ConnectionPoolTests` に watermark / protected / tags / oldest activity / grace period の回帰テストを追加
+- [x] **イベントストリームの挙動ドキュメント化** - lazy初期化、購読前イベント破棄、shutdown時finish/resetを明記
 
 ### 低優先度
-- [ ] **グレース期間の強制確認** - 現在未検証
-- [ ] **トリムアルゴリズム検査API** - デバッグ/監視用
+- [x] **グレース期間の強制確認** - `ConnectionPoolTests.trimIfNeeded does not trim connections within grace period` で検証
+- [x] **トリムアルゴリズム検査API** - `ConnectionTrimReport` と `Node.connectionTrimReport()` を追加。`trimIfNeeded()` と共有ロジックで候補・除外理由・選定順を可視化
 
 ## Fixes Applied
 
@@ -390,6 +406,14 @@ Tests/Integration/P2PTests/
 **変更**: `ConnectionUpgrader` の initiator 側で `MultistreamSelect.negotiate()` を `MultistreamSelect.negotiateLazy()` に変更。Security negotiation と Muxer negotiation の2箇所。Responder 側は変更不要（V1 Lazy は V1 と後方互換）
 
 **修正ファイル**: `ConnectionUpgrader.swift`
+
+### Stream negotiation remainder継承修正 (2026-02-14)
+
+**問題**: `Node.newStream` / inbound handler が multistream-select 中の先読みバイトを保持せず、アプリケーション層の先頭データを取りこぼす可能性があった
+
+**解決策**: `BufferedStreamReader.drainRemainder()` と `BufferedMuxedStream` を追加し、`NegotiationResult.remainder` と合わせて次段の `MuxedStream` に確実に引き継ぐ
+
+**修正ファイル**: `P2P.swift`
 
 ## Codex Review (2026-01-18) - UPDATED 2026-01-22
 

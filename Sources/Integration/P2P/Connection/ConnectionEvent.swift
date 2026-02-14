@@ -54,6 +54,22 @@ public enum ConnectionEvent: Sendable {
     ///   - reason: Why this connection was selected for trimming
     case trimmed(peer: PeerID, reason: String)
 
+    /// A connection was trimmed due to resource limits (structured context).
+    ///
+    /// - Parameters:
+    ///   - peer: The peer whose connection was trimmed
+    ///   - context: Machine-readable trim context (rank/tags/idle/direction)
+    case trimmedWithContext(peer: PeerID, context: ConnectionTrimmedContext)
+
+    /// Trim was required but could not reach target due to constraints.
+    ///
+    /// - Parameters:
+    ///   - target: Desired number of trims to reach low watermark
+    ///   - selected: Number of candidates actually selected
+    ///   - trimmable: Number of currently trimmable connections
+    ///   - active: Current active connection count
+    case trimConstrained(target: Int, selected: Int, trimmable: Int, active: Int)
+
     /// Health check failed for a peer.
     ///
     /// This is emitted when ping failures exceed the threshold.
@@ -81,11 +97,14 @@ extension ConnectionEvent {
              .reconnecting(let peer, _, _),
              .reconnected(let peer, _),
              .reconnectionFailed(let peer, _),
-             .trimmed(let peer, _),
+             .trimmed(peer: let peer, reason: _),
+             .trimmedWithContext(peer: let peer, context: _),
              .healthCheckFailed(let peer):
             return peer
         case .gated(let peer, _, _):
             return peer
+        case .trimConstrained:
+            return nil
         }
     }
 
@@ -102,10 +121,39 @@ extension ConnectionEvent {
     /// Whether this is a negative event (connection lost/failed).
     public var isNegative: Bool {
         switch self {
-        case .disconnected, .reconnectionFailed, .trimmed, .healthCheckFailed, .gated:
+        case .disconnected, .reconnectionFailed,
+             .trimmed(peer: _, reason: _),
+             .trimmedWithContext(peer: _, context: _),
+             .trimConstrained,
+             .healthCheckFailed, .gated:
             return true
         default:
             return false
+        }
+    }
+
+    /// Human-readable trim reason when event is `trimmed`.
+    public var trimReason: String? {
+        switch self {
+        case .trimmed(peer: _, reason: let reason):
+            return reason
+        case .trimmedWithContext(peer: _, context: let context):
+            let rank = context.rank.map(String.init) ?? "n/a"
+            return "Connection limit exceeded (rank=\(rank), tags=\(context.tagCount), idle=\(context.idleDuration), direction=\(context.direction))"
+        default:
+            return nil
+        }
+    }
+
+    /// Structured trim context when available.
+    public var trimContext: ConnectionTrimmedContext? {
+        switch self {
+        case .trimmed(peer: _, reason: _):
+            return nil
+        case .trimmedWithContext(peer: _, context: let context):
+            return context
+        default:
+            return nil
         }
     }
 }
@@ -125,8 +173,13 @@ extension ConnectionEvent: CustomStringConvertible {
             return "reconnected(\(peer), attempt: \(attempt))"
         case .reconnectionFailed(let peer, let attempts):
             return "reconnectionFailed(\(peer), attempts: \(attempts))"
-        case .trimmed(let peer, let reason):
+        case .trimmed(peer: let peer, reason: let reason):
             return "trimmed(\(peer), reason: \(reason))"
+        case .trimmedWithContext(peer: let peer, context: let context):
+            let rank = context.rank.map(String.init) ?? "n/a"
+            return "trimmedWithContext(\(peer), rank: \(rank), tags: \(context.tagCount), idle: \(context.idleDuration), direction: \(context.direction))"
+        case .trimConstrained(let target, let selected, let trimmable, let active):
+            return "trimConstrained(target: \(target), selected: \(selected), trimmable: \(trimmable), active: \(active))"
         case .healthCheckFailed(let peer):
             return "healthCheckFailed(\(peer))"
         case .gated(let peer, let address, let stage):

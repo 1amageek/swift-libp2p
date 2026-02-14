@@ -3,6 +3,7 @@ import Foundation
 import SWIM
 import NIOUDPTransport
 import NIOCore
+import Logging
 import Synchronization
 
 /// Adapts NIOUDPTransport to SWIM's SWIMTransport protocol.
@@ -19,6 +20,7 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
 
     private let udpTransport: NIOUDPTransport
     private let messageContinuation: AsyncStream<(SWIMMessage, MemberID)>.Continuation
+    private let logger: Logger
 
     private struct State: Sendable {
         var receiveTask: Task<Void, Never>?
@@ -34,6 +36,7 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
     ///   - host: The host address to bind to (default: "0.0.0.0").
     public init(port: Int, host: String = "0.0.0.0") {
         self._localAddress = "\(host):\(port)"
+        self.logger = Logger(label: "p2p.discovery.swim.transport")
 
         // Use specific bind address for custom host
         let config: UDPConfiguration
@@ -71,8 +74,8 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
         state.withLock { $0.receiveTask = task }
     }
 
-    /// Stops the transport.
-    public func stop() async {
+    /// Shuts down the transport.
+    public func shutdown() async {
         let task = state.withLock { state -> Task<Void, Never>? in
             let t = state.receiveTask
             state.receiveTask = nil
@@ -80,7 +83,7 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
         }
         task?.cancel()
 
-        await udpTransport.stop()
+        await udpTransport.shutdown()
         messageContinuation.finish()
     }
 
@@ -98,6 +101,7 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
         for await datagram in udpTransport.incomingDatagrams {
             // Get sender address
             guard let senderAddress = datagram.remoteAddress.hostPortString else {
+                logger.debug("Dropping datagram with missing remote address")
                 continue
             }
 
@@ -106,7 +110,11 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
                 let senderID = MemberID(address: senderAddress)
                 messageContinuation.yield((message, senderID))
             } catch {
-                // Skip malformed messages
+                logger.debug("Dropping malformed SWIM datagram", metadata: [
+                    "sender": "\(senderAddress)",
+                    "sizeBytes": "\(datagram.data.count)",
+                    "error": "\(error)",
+                ])
                 continue
             }
         }

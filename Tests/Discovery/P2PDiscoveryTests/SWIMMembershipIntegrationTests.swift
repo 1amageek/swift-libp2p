@@ -10,8 +10,8 @@ struct SWIMMembershipIntegrationTests {
 
     // MARK: - Basic Membership
 
-    @Test("Single node starts and stops")
-    func singleNodeStartStop() async throws {
+    @Test("Single node starts and shuts down")
+    func singleNodeStartShutdown() async throws {
         let peer = KeyPair.generateEd25519().peerID
 
         let config = SWIMMembershipConfiguration(
@@ -26,7 +26,7 @@ struct SWIMMembershipIntegrationTests {
         )
 
         try await membership.start()
-        await membership.stop()
+        await membership.shutdown()
 
         #expect(Bool(true))
     }
@@ -54,13 +54,6 @@ struct SWIMMembershipIntegrationTests {
         try await membership1.start()
         try await membership2.start()
 
-        defer {
-            Task {
-                await membership1.stop()
-                await membership2.stop()
-            }
-        }
-
         // Join peer2 to peer1
         let peer1Addr = try Multiaddr("/ip4/127.0.0.1/udp/17947")
         try await membership2.join(seeds: [(peer1, peer1Addr)])
@@ -76,6 +69,9 @@ struct SWIMMembershipIntegrationTests {
         // Note: SWIM protocol may take time to propagate
         _ = known1
         _ = known2
+
+        await membership1.shutdown()
+        await membership2.shutdown()
 
         #expect(Bool(true))
     }
@@ -96,10 +92,6 @@ struct SWIMMembershipIntegrationTests {
 
         try await membership.start()
 
-        defer {
-            Task { await membership.stop() }
-        }
-
         // Announce addresses
         let addresses = [
             try Multiaddr("/ip4/192.168.1.100/tcp/4001"),
@@ -107,6 +99,8 @@ struct SWIMMembershipIntegrationTests {
         ]
 
         try await membership.announce(addresses: addresses)
+
+        await membership.shutdown()
 
         // Should complete without error
         #expect(Bool(true))
@@ -137,13 +131,6 @@ struct SWIMMembershipIntegrationTests {
         try await membership1.start()
         try await membership2.start()
 
-        defer {
-            Task {
-                await membership1.stop()
-                await membership2.stop()
-            }
-        }
-
         // Join peer2 to peer1
         let peer1Addr = try Multiaddr("/ip4/127.0.0.1/udp/17950")
         try await membership2.join(seeds: [(peer1, peer1Addr)])
@@ -156,6 +143,9 @@ struct SWIMMembershipIntegrationTests {
 
         // May or may not find depending on SWIM propagation timing
         _ = candidates
+
+        await membership1.shutdown()
+        await membership2.shutdown()
     }
 
     // MARK: - Subscribe Operation
@@ -175,32 +165,31 @@ struct SWIMMembershipIntegrationTests {
 
         try await membership.start()
 
-        defer {
-            Task { await membership.stop() }
-        }
-
         // Create subscription for target peer
         let subscription = membership.subscribe(to: targetPeer)
 
         // Subscription should be created without error
         _ = subscription
+
+        await membership.shutdown()
     }
 
     // MARK: - Observation Events
 
     @Test("observations stream emits events")
     func observationsStreamEmitsEvents() async throws {
+        // Use ports far from other tests to avoid bind conflicts from NIO socket cleanup timing
         let peer1 = KeyPair.generateEd25519().peerID
         let peer2 = KeyPair.generateEd25519().peerID
 
         let config1 = SWIMMembershipConfiguration(
-            port: 17953,
+            port: 18053,
             bindHost: "127.0.0.1",
             advertisedHost: "127.0.0.1"
         )
 
         let config2 = SWIMMembershipConfiguration(
-            port: 17954,
+            port: 18054,
             bindHost: "127.0.0.1",
             advertisedHost: "127.0.0.1"
         )
@@ -211,15 +200,8 @@ struct SWIMMembershipIntegrationTests {
         try await membership1.start()
         try await membership2.start()
 
-        defer {
-            Task {
-                await membership1.stop()
-                await membership2.stop()
-            }
-        }
-
         // Join peer2 to peer1
-        let peer1Addr = try Multiaddr("/ip4/127.0.0.1/udp/17953")
+        let peer1Addr = try Multiaddr("/ip4/127.0.0.1/udp/18053")
         try await membership2.join(seeds: [(peer1, peer1Addr)])
 
         // Wait for observations
@@ -238,12 +220,15 @@ struct SWIMMembershipIntegrationTests {
 
         // May or may not receive observation (timing dependent)
         _ = observationReceived
+
+        await membership1.shutdown()
+        await membership2.shutdown()
     }
 
     // MARK: - Lifecycle Tests
 
-    @Test("stop() is idempotent")
-    func stopIsIdempotent() async throws {
+    @Test("shutdown() is idempotent")
+    func shutdownIsIdempotent() async throws {
         let peer = KeyPair.generateEd25519().peerID
 
         let config = SWIMMembershipConfiguration(
@@ -255,8 +240,8 @@ struct SWIMMembershipIntegrationTests {
         let membership = SWIMMembership(localPeerID: peer, configuration: config)
 
         try await membership.start()
-        await membership.stop()
-        await membership.stop()  // Second stop should be safe
+        await membership.shutdown()
+        await membership.shutdown()  // Second shutdown should be safe
 
         #expect(Bool(true))
     }
@@ -275,10 +260,6 @@ struct SWIMMembershipIntegrationTests {
 
         try await membership.start()
 
-        defer {
-            Task { await membership.stop() }
-        }
-
         // Second start should throw
         do {
             try await membership.start()
@@ -287,12 +268,14 @@ struct SWIMMembershipIntegrationTests {
             // Expected error
             #expect(Bool(true))
         }
+
+        await membership.shutdown()
     }
 
     // MARK: - Join Operation
 
-    @Test("join() with empty peers succeeds")
-    func joinWithEmptyPeersSucceeds() async throws {
+    @Test("join() with empty peers throws error")
+    func joinWithEmptyPeersThrows() async throws {
         let peer = KeyPair.generateEd25519().peerID
 
         let config = SWIMMembershipConfiguration(
@@ -305,14 +288,15 @@ struct SWIMMembershipIntegrationTests {
 
         try await membership.start()
 
-        defer {
-            Task { await membership.stop() }
+        // SWIM protocol requires at least one seed member
+        do {
+            try await membership.join(seeds: [])
+            Issue.record("Expected joinFailed error for empty seeds")
+        } catch {
+            #expect(Bool(true))
         }
 
-        // Join with no peers (creates single-node cluster)
-        try await membership.join(seeds: [])
-
-        #expect(Bool(true))
+        await membership.shutdown()
     }
 
     @Test("join() before start throws error")
@@ -354,7 +338,7 @@ struct SWIMMembershipIntegrationTests {
         let membership = SWIMMembership(localPeerID: peer, configuration: config)
 
         try await membership.start()
-        await membership.stop()
+        await membership.shutdown()
 
         #expect(Bool(true))
     }
@@ -372,7 +356,7 @@ struct SWIMMembershipIntegrationTests {
         let membership = SWIMMembership(localPeerID: peer, configuration: config)
 
         try await membership.start()
-        await membership.stop()
+        await membership.shutdown()
 
         #expect(Bool(true))
     }
@@ -394,7 +378,7 @@ struct SWIMMembershipIntegrationTests {
         do {
             try await membership.start()
             // May or may not throw depending on validation
-            await membership.stop()
+            await membership.shutdown()
         } catch {
             // Expected error for unroutable address
             #expect(Bool(true))

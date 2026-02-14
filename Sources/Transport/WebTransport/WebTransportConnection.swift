@@ -1,8 +1,7 @@
 /// WebTransport connection abstraction.
 ///
-/// This is a stub implementation that defines the connection interface
-/// for WebTransport. The actual HTTP/3 session management will be
-/// implemented when HTTP/3 support is available in swift-quic.
+/// This is a lightweight state container used by tests and legacy call sites.
+/// The active WebTransport data path uses `WebTransportMuxedConnection`.
 
 import Synchronization
 import P2PCore
@@ -23,9 +22,9 @@ import P2PCore
 ///
 /// ## Current Status
 ///
-/// This is a stub implementation. Actual connection management requires
-/// HTTP/3 support in the underlying QUIC library. All attempts to use
-/// the connection will result in `WebTransportError.http3NotAvailable`.
+/// Connection and stream I/O for WebTransport is implemented in
+/// `WebTransportMuxedConnection`. This type intentionally models only
+/// connection lifecycle state.
 public final class WebTransportConnection: Sendable {
 
     /// The state of a WebTransport connection.

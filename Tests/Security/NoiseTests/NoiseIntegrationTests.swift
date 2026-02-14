@@ -122,6 +122,31 @@ struct NoiseIntegrationTests {
         try await responder.close()
     }
 
+    @Test("NoiseConnection supports concurrent full-duplex exchange", .timeLimit(.minutes(1)))
+    func testNoiseConnectionConcurrentFullDuplex() async throws {
+        let (initiator, responder) = try await createSecuredPair()
+
+        let initiatorMessage = Data("initiator-concurrent".utf8)
+        let responderMessage = Data("responder-concurrent".utf8)
+
+        async let initiatorTask: Void = {
+            try await initiator.write(ByteBuffer(bytes: initiatorMessage))
+            let received = try await initiator.read()
+            #expect(Data(buffer: received) == responderMessage)
+        }()
+
+        async let responderTask: Void = {
+            try await responder.write(ByteBuffer(bytes: responderMessage))
+            let received = try await responder.read()
+            #expect(Data(buffer: received) == initiatorMessage)
+        }()
+
+        _ = try await (initiatorTask, responderTask)
+
+        try await initiator.close()
+        try await responder.close()
+    }
+
     @Test("NoiseConnection handles large data spanning multiple frames", .timeLimit(.minutes(1)))
     func testNoiseConnectionLargeData() async throws {
         let (initiator, responder) = try await createSecuredPair()
@@ -214,7 +239,11 @@ struct NoiseIntegrationTests {
                 Issue.record("Expected peer mismatch error")
             } catch {
                 // Expected - close connection to unblock responder
-                try? await clientConn.close()
+                do {
+                    try await clientConn.close()
+                } catch {
+                    // Best-effort cleanup for expected failure path.
+                }
             }
         }()
 

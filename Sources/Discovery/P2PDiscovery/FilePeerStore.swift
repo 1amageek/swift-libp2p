@@ -60,7 +60,7 @@ private struct StoredAddress: Codable, Sendable {
 /// let store = FilePeerStore(configuration: config)
 /// try await store.start()  // loads data, starts periodic flush
 /// // ... use store ...
-/// await store.stop()       // final flush, cleanup
+/// await store.shutdown()    // final flush, cleanup
 /// ```
 public actor FilePeerStore: PeerStore {
 
@@ -103,8 +103,8 @@ public actor FilePeerStore: PeerStore {
         }
     }
 
-    /// Stops periodic flush and performs a final flush.
-    public func stop() async {
+    /// Shuts down periodic flush and performs a final flush.
+    public func shutdown() async {
         flushTask?.cancel()
         flushTask = nil
         do {

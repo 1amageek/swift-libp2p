@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import NIOCore
+import NIOSSL
 @testable import P2PCore
 @testable import P2PTransport
 @testable import P2PTransportWebSocket
@@ -148,7 +149,11 @@ struct WebSocketTransportTests {
 
         // Clean up
         for conn in clientConns + serverConns {
-            try? await conn.close()
+            do {
+                try await conn.close()
+            } catch {
+                Issue.record("Failed to close connection during cleanup: \(error)")
+            }
         }
         try await listener.close()
     }
@@ -194,7 +199,11 @@ struct WebSocketTransportTests {
 
         // Clean up
         for conn in clientConns + serverConns {
-            try? await conn.close()
+            do {
+                try await conn.close()
+            } catch {
+                Issue.record("Failed to close connection during cleanup: \(error)")
+            }
         }
         try await listener.close()
     }
@@ -302,9 +311,13 @@ struct WebSocketTransportTests {
     @Test("canDial returns true for WS addresses", .timeLimit(.minutes(1)))
     func testCanDialWS() {
         let transport = WebSocketTransport()
+        let peerID = KeyPair.generateEd25519().peerID
 
         #expect(transport.canDial(.ws(host: "127.0.0.1", port: 4001)))
         #expect(transport.canDial(.ws(host: "192.168.1.1", port: 80)))
+        #expect(transport.canDial(Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(4001), .ws])))
+        #expect(transport.canDial(Multiaddr(uncheckedProtocols: [.dns("example.com"), .tcp(80), .ws])))
+        #expect(transport.canDial(Multiaddr(uncheckedProtocols: [.ip4("127.0.0.1"), .tcp(4001), .ws, .p2p(peerID)])))
         // TCP-only (no /ws) should fail
         #expect(!transport.canDial(.tcp(host: "127.0.0.1", port: 4001)))
         // Memory should fail
@@ -314,9 +327,12 @@ struct WebSocketTransportTests {
     @Test("canListen returns true for WS addresses", .timeLimit(.minutes(1)))
     func testCanListenWS() {
         let transport = WebSocketTransport()
+        let peerID = KeyPair.generateEd25519().peerID
 
         #expect(transport.canListen(.ws(host: "0.0.0.0", port: 4001)))
         #expect(transport.canListen(.ws(host: "127.0.0.1", port: 0)))
+        #expect(!transport.canListen(Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(4001), .ws])))
+        #expect(!transport.canListen(Multiaddr(uncheckedProtocols: [.ip4("127.0.0.1"), .tcp(4001), .ws, .p2p(peerID)])))
         // TCP-only should fail
         #expect(!transport.canListen(.tcp(host: "0.0.0.0", port: 4001)))
         // Memory should fail
@@ -330,6 +346,9 @@ struct WebSocketTransportTests {
         let protocols = transport.protocols
         #expect(protocols.contains(["ip4", "tcp", "ws"]))
         #expect(protocols.contains(["ip6", "tcp", "ws"]))
+        #expect(protocols.contains(["dns", "tcp", "ws"]))
+        #expect(protocols.contains(["dns4", "tcp", "ws"]))
+        #expect(protocols.contains(["dns6", "tcp", "ws"]))
     }
 
     @Test("Unsupported address throws error", .timeLimit(.minutes(1)))
@@ -374,29 +393,100 @@ struct WebSocketTransportTests {
 
         #expect(protocols.contains(["ip4", "tcp", "wss"]))
         #expect(protocols.contains(["ip6", "tcp", "wss"]))
+        #expect(protocols.contains(["dns", "tcp", "wss"]))
+        #expect(protocols.contains(["dns4", "tcp", "wss"]))
+        #expect(protocols.contains(["dns6", "tcp", "wss"]))
         // Note: /tls/ws format is NOT supported because `tls` is not a valid
         // Multiaddr protocol. Use /wss format instead.
     }
 
-    @Test("canDial returns true for WSS addresses")
+    @Test("canDial allows WSS only for DNS hostnames")
     func testCanDialWSS() {
         let transport = WebSocketTransport()
 
-        // /wss format
+        // IP literal WSS is rejected to preserve hostname verification semantics.
         let wssAddr = Multiaddr.wss(host: "127.0.0.1", port: 443)
-        #expect(transport.canDial(wssAddr))
+        #expect(!transport.canDial(wssAddr))
 
-        // IPv6 WSS
+        // IPv6 literal WSS is also rejected.
         let wss6Addr = Multiaddr.wss(host: "::1", port: 443)
-        #expect(transport.canDial(wss6Addr))
+        #expect(!transport.canDial(wss6Addr))
+
+        // DNS WSS
+        let dnsWss = Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(443), .wss])
+        #expect(transport.canDial(dnsWss))
     }
 
-    @Test("canListen returns true for WSS addresses")
+    @Test("canListen returns false for WSS addresses without server TLS configuration")
     func testCanListenWSS() {
         let transport = WebSocketTransport()
 
-        #expect(transport.canListen(Multiaddr.wss(host: "0.0.0.0", port: 443)))
-        #expect(transport.canListen(Multiaddr.wss(host: "127.0.0.1", port: 0)))
+        #expect(!transport.canListen(Multiaddr.wss(host: "0.0.0.0", port: 443)))
+        #expect(!transport.canListen(Multiaddr.wss(host: "127.0.0.1", port: 0)))
+        #expect(!transport.canListen(Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(443), .wss])))
+    }
+
+    @Test("Listen WSS without server TLS configuration throws explicit error", .timeLimit(.minutes(1)))
+    func testListenWSSRequiresServerTLSConfiguration() async throws {
+        let transport = WebSocketTransport()
+
+        do {
+            _ = try await transport.listen(.wss(host: "127.0.0.1", port: 0))
+            Issue.record("Expected secureListenerRequiresServerTLSConfiguration")
+        } catch let error as WebSocketTransportError {
+            if case .secureListenerRequiresServerTLSConfiguration = error {
+                // Expected
+            } else {
+                Issue.record("Expected secureListenerRequiresServerTLSConfiguration, got \(error)")
+            }
+        }
+    }
+
+    @Test("Dial WSS rejects insecure client TLS configuration", .timeLimit(.minutes(1)))
+    func testDialWSSRejectsInsecureClientTLSConfiguration() async throws {
+        var insecureClient = TLSConfiguration.makeClientConfiguration()
+        insecureClient.certificateVerification = .none
+
+        let transport = WebSocketTransport(
+            tlsConfiguration: .init(client: insecureClient)
+        )
+
+        #expect(!transport.canDial(.wss(host: "127.0.0.1", port: 443)))
+
+        do {
+            _ = try await transport.dial(.wss(host: "127.0.0.1", port: 443))
+            Issue.record("Expected insecureClientTLSConfiguration")
+        } catch let error as WebSocketTransportError {
+            if case .insecureClientTLSConfiguration = error {
+                // Expected
+            } else {
+                Issue.record("Expected insecureClientTLSConfiguration, got \(error)")
+            }
+        }
+    }
+
+    @Test("Dial WSS rejects no-hostname-verification client TLS configuration", .timeLimit(.minutes(1)))
+    func testDialWSSRejectsNoHostnameVerificationTLSConfiguration() async throws {
+        var insecureClient = TLSConfiguration.makeClientConfiguration()
+        insecureClient.certificateVerification = .noHostnameVerification
+
+        let transport = WebSocketTransport(
+            tlsConfiguration: .init(client: insecureClient)
+        )
+
+        let dnsAddress = Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(443), .wss])
+        #expect(!transport.canDial(dnsAddress))
+
+        do {
+            _ = try await transport.dial(dnsAddress)
+            Issue.record("Expected insecureClientTLSConfiguration")
+        } catch let error as WebSocketTransportError {
+            if case .insecureClientTLSConfiguration = error {
+                // Expected
+            } else {
+                Issue.record("Expected insecureClientTLSConfiguration, got \(error)")
+            }
+        }
     }
 
     @Test("WSS Multiaddr factory")
@@ -417,13 +507,57 @@ struct WebSocketTransportTests {
         #expect(hasWSS6)
     }
 
-    @Test("Dial WSS to non-existent server throws connection error", .timeLimit(.minutes(1)))
+    @Test("Dial WSS to non-existent DNS server throws connection error", .timeLimit(.minutes(1)))
     func testDialWSSConnectionRefused() async throws {
         let transport = WebSocketTransport()
-        let addr = Multiaddr.wss(host: "127.0.0.1", port: 59999)
+        let addr = Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(59999), .wss])
 
         await #expect(throws: Error.self) {
             _ = try await transport.dial(addr)
         }
+    }
+
+    @Test("Dial WSS with IP literal is rejected", .timeLimit(.minutes(1)))
+    func testDialWSSWithIPLiteralRejected() async throws {
+        let transport = WebSocketTransport()
+
+        do {
+            _ = try await transport.dial(.wss(host: "127.0.0.1", port: 443))
+            Issue.record("Expected secureDialRequiresDNSHostname")
+        } catch let error as WebSocketTransportError {
+            if case .secureDialRequiresDNSHostname = error {
+                // Expected
+            } else {
+                Issue.record("Expected secureDialRequiresDNSHostname, got \(error)")
+            }
+        }
+    }
+
+    @Test("Dial WS supports dns4 hostname addresses", .timeLimit(.minutes(1)))
+    func testDialWSSupportsDNS4Hostname() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+        let port = listener.localAddress.tcpPort
+
+        guard let port else {
+            Issue.record("Expected listener tcp port")
+            try await listener.close()
+            return
+        }
+
+        let dnsAddress = Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(port), .ws])
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(dnsAddress)
+        let serverConn = try await acceptTask
+
+        let payload = Data("ws-dns-hostname".utf8)
+        try await clientConn.write(ByteBuffer(bytes: payload))
+        let read = try await serverConn.read()
+        #expect(Data(buffer: read) == payload)
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
     }
 }

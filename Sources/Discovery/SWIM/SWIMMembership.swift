@@ -218,16 +218,16 @@ public actor SWIMMembership: DiscoveryService {
         return result
     }
 
-    /// Stops the SWIM membership service.
-    public func stop() async {
+    /// Shuts down the SWIM membership service.
+    public func shutdown() async {
         guard isStarted else { return }
 
         forwardTask?.cancel()
         forwardTask = nil
 
         await swim?.leave()
-        await swim?.stop()
-        await transport?.stop()
+        await swim?.shutdown()
+        await transport?.shutdown()
 
         swim = nil
         transport = nil

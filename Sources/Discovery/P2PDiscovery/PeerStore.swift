@@ -469,6 +469,7 @@ public final class MemoryPeerStore: PeerStore, Sendable {
             record.addresses[address] = addrRecord
             record.lastSeen = now
             s.peers[peer] = record
+            touchPeer(peer, state: &s)
             return .addressUpdated(peer, address)
         }
         if let event {

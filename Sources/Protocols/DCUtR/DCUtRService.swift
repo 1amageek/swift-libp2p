@@ -208,7 +208,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
                 // Wait before retry (exponential backoff)
                 if attempt < configuration.maxAttempts {
                     let backoff = Duration.seconds(Double(1 << (attempt - 1)))
-                    try? await Task.sleep(for: backoff)
+                    try await Task.sleep(for: backoff)
                 }
             }
         }
@@ -279,7 +279,11 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
             throw DCUtRError.allDialsFailed
 
         } catch {
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch {
+                // Best effort cleanup only.
+            }
             if let dcutrError = error as? DCUtRError {
                 throw dcutrError
             }
@@ -343,7 +347,11 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
 
         } catch {
             emit(.holePunchFailed(peer: peer, reason: error.localizedDescription))
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch {
+                // Best effort cleanup only.
+            }
         }
     }
 

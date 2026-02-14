@@ -293,7 +293,11 @@ public final class FileProviderStorage: ProviderStorage, Sendable {
         guard let providers, !providers.isEmpty else {
             // Remove file if no providers
             if fileManager.fileExists(atPath: path.path) {
-                try? fileManager.removeItem(at: path)
+                do {
+                    try fileManager.removeItem(at: path)
+                } catch {
+                    // Best effort cleanup only.
+                }
             }
             return
         }
@@ -318,7 +322,11 @@ public final class FileProviderStorage: ProviderStorage, Sendable {
 
         guard !persistedProviders.isEmpty else {
             if fileManager.fileExists(atPath: path.path) {
-                try? fileManager.removeItem(at: path)
+                do {
+                    try fileManager.removeItem(at: path)
+                } catch {
+                    // Best effort cleanup only.
+                }
             }
             return
         }
@@ -424,7 +432,11 @@ public final class FileProviderStorage: ProviderStorage, Sendable {
                         result[persistedSet.key] = keyProviders
                     } else {
                         // Remove file with no valid providers
-                        try? fileManager.removeItem(at: file)
+                        do {
+                            try fileManager.removeItem(at: file)
+                        } catch {
+                            // Best effort cleanup only.
+                        }
                     }
                 } catch {
                     // Skip corrupt files

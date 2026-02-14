@@ -31,8 +31,8 @@ struct MDNSDiscoveryIntegrationTests {
 
         defer {
             Task {
-                await discovery1.stop()
-                await discovery2.stop()
+                await discovery1.shutdown()
+                await discovery2.shutdown()
             }
         }
 
@@ -85,7 +85,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery.start()
 
         defer {
-            Task { await discovery.stop() }
+            Task { await discovery.shutdown() }
         }
 
         // Announce multiple addresses
@@ -122,8 +122,8 @@ struct MDNSDiscoveryIntegrationTests {
 
         defer {
             Task {
-                await discovery1.stop()
-                await discovery2.stop()
+                await discovery1.shutdown()
+                await discovery2.shutdown()
             }
         }
 
@@ -164,8 +164,8 @@ struct MDNSDiscoveryIntegrationTests {
 
         defer {
             Task {
-                await discovery1.stop()
-                await discovery2.stop()
+                await discovery1.shutdown()
+                await discovery2.shutdown()
             }
         }
 
@@ -198,7 +198,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery.start()
 
         defer {
-            Task { await discovery.stop() }
+            Task { await discovery.shutdown() }
         }
 
         // Create subscription for target peer
@@ -210,15 +210,15 @@ struct MDNSDiscoveryIntegrationTests {
 
     // MARK: - Lifecycle Tests
 
-    @Test("stop() cleans up resources")
-    func stopCleansUpResources() async throws {
+    @Test("shutdown() cleans up resources")
+    func shutdownCleansUpResources() async throws {
         let peer = KeyPair.generateEd25519().peerID
         var config = MDNSConfiguration()
         config.useIPv6 = false  // Disable IPv6 (single socket limitation)
 
         let discovery = MDNSDiscovery(localPeerID: peer, configuration: config)
         try await discovery.start()
-        await discovery.stop()
+        await discovery.shutdown()
 
         // Should complete without hanging
         #expect(Bool(true))
@@ -234,11 +234,11 @@ struct MDNSDiscoveryIntegrationTests {
 
         // First cycle
         try await discovery.start()
-        await discovery.stop()
+        await discovery.shutdown()
 
         // Second cycle (should handle idempotency)
         try await discovery.start()
-        await discovery.stop()
+        await discovery.shutdown()
 
         #expect(Bool(true))
     }
@@ -257,7 +257,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery.start()
 
         defer {
-            Task { await discovery.stop() }
+            Task { await discovery.shutdown() }
         }
 
         // Should start without error
@@ -275,7 +275,7 @@ struct MDNSDiscoveryIntegrationTests {
 
         let discovery4 = MDNSDiscovery(localPeerID: peer, configuration: config4)
         try await discovery4.start()
-        await discovery4.stop()
+        await discovery4.shutdown()
 
         // Note: IPv6 only and dual-stack tests are skipped due to single socket limitation
         // TODO: Implement separate IPv4/IPv6 transports in swift-mDNS
@@ -303,7 +303,7 @@ struct MDNSDiscoveryIntegrationTests {
         }
 
         try await discovery.start()
-        await discovery.stop()
+        await discovery.shutdown()
     }
 
     @Test("Invalid multiaddr in announce is handled")
@@ -316,7 +316,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery.start()
 
         defer {
-            Task { await discovery.stop() }
+            Task { await discovery.shutdown() }
         }
 
         // Create valid multiaddr

@@ -42,7 +42,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
         var discoveryContinuation: AsyncStream<RawDiscovery>.Continuation?
         var boundPort: Int?
         var localAddress: SocketAddress?
-        var isShutdown: Bool = false
+        var isStopped: Bool = false
     }
 
     private let state: Mutex<AdapterState>
@@ -58,12 +58,12 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
 
     /// A stream of raw discoveries received from WiFi multicast.
     /// Returns the same stream on every call (single consumer pattern).
-    /// After shutdown, returns an already-finished stream.
+    /// After stop, returns an already-finished stream.
     public var discoveries: AsyncStream<RawDiscovery> {
         state.withLock { s in
             if let existing = s.discoveryStream { return existing }
-            // Fix #2: After shutdown, return an immediately-finished stream
-            if s.isShutdown {
+            // After stop, return an immediately-finished stream
+            if s.isStopped {
                 let (stream, continuation) = AsyncStream<RawDiscovery>.makeStream()
                 continuation.finish()
                 return stream
@@ -77,7 +77,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
 
     /// Starts broadcasting the given beacon payload via UDP multicast.
     /// Also starts the receive loop if not already running.
-    /// Throws `TransportAdapterError.mediumNotAvailable` if called after shutdown.
+    /// Throws `TransportAdapterError.mediumNotAvailable` if called after stop.
     public func startBeacon(_ payload: Data) async throws {
         guard payload.count <= characteristics.maxBeaconSize else {
             throw TransportAdapterError.beaconTooLarge(
@@ -96,8 +96,8 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
         }
 
         let action: StartAction = state.withLock { s in
-            // Fix #3: Reject after shutdown
-            guard !s.isShutdown else { return .rejected }
+            // Reject after stop
+            guard !s.isStopped else { return .rejected }
             s.beaconPayload = payload
             if s.udpTransport == nil {
                 return .createTransport
@@ -130,7 +130,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
                     on: configuration.networkInterface
                 )
             } catch {
-                await transport.stop()
+                await transport.shutdown()
                 throw WiFiBeaconError.bindFailed(underlying: error)
             }
 
@@ -144,9 +144,9 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
                 await self.transmitLoop(transport: transport)
             }
 
-            // Fix #3: Check isShutdown again after async work to handle TOCTOU race
+            // Check isStopped again after async work to handle TOCTOU race
             let shutdownDuringSetup = state.withLock { s -> Bool in
-                if s.isShutdown {
+                if s.isStopped {
                     return true
                 }
                 s.udpTransport = transport
@@ -168,7 +168,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
                 } catch {
                     // Best effort
                 }
-                await transport.stop()
+                await transport.shutdown()
             }
 
         case .restartTransmit:
@@ -213,7 +213,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
             s.discoveryStream = nil
             s.localAddress = nil
             s.boundPort = nil
-            s.isShutdown = true
+            s.isStopped = true
             return result
         }
 
@@ -229,27 +229,27 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
             } catch {
                 // Best effort
             }
-            await transport.stop()
+            await transport.shutdown()
         }
 
         continuation?.finish()
     }
 
-    // Fix #5: deinit also stops the transport via detached Task
+    // deinit also stops the transport via detached Task
     deinit {
         let (continuation, transmitTask, receiveTask, transport) = state.withLock { s in
             let result = (s.discoveryContinuation, s.transmitTask, s.receiveTask, s.udpTransport)
             s.discoveryContinuation = nil
             s.discoveryStream = nil
             s.udpTransport = nil
-            s.isShutdown = true
+            s.isStopped = true
             return result
         }
         transmitTask?.cancel()
         receiveTask?.cancel()
         continuation?.finish()
         if let transport {
-            Task { await transport.stop() }
+            Task { await transport.shutdown() }
         }
     }
 
@@ -259,7 +259,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
         for await datagram in transport.incomingDatagrams {
             guard !Task.isCancelled else { break }
 
-            // Fix #1: Filter self-beacons when loopback is disabled.
+            // Filter self-beacons when loopback is disabled.
             // NIOUDPTransport always sets IP_MULTICAST_LOOP=1, so we filter here.
             if !configuration.loopback {
                 let localAddr = state.withLock { $0.localAddress }

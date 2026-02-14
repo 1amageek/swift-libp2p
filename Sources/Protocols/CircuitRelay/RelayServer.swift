@@ -593,7 +593,14 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
 
     private func scheduleReservationCleanup(peer: PeerID, at expiration: ContinuousClock.Instant) {
         let task = Task { [weak self] in
-            try? await Task.sleep(until: expiration, clock: .continuous)
+            do {
+                try await Task.sleep(until: expiration, clock: .continuous)
+            } catch is CancellationError {
+                return
+            } catch {
+                logger.debug("Cleanup sleep interrupted for \(peer): \(error)")
+                return
+            }
             guard let self else { return }
             self.cleanupExpiredReservation(peer: peer)
             self.serverState.withLock { s in

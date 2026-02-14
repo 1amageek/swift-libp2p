@@ -32,7 +32,7 @@ struct FilePeerStoreTests {
         #expect(addresses.count == 1)
         #expect(addresses.first == addr)
 
-        await store.stop()
+        await store.shutdown()
     }
 
     @Test("flush persists to disk", .timeLimit(.minutes(1)))
@@ -48,13 +48,13 @@ struct FilePeerStoreTests {
         try await store1.start()
         await store1.addAddresses([addr], for: peer, ttl: nil)
         try await store1.flush()
-        await store1.stop()
+        await store1.shutdown()
 
         // Read back in new store
         let store2 = FilePeerStore(configuration: .init(directory: dir))
         try await store2.start()
         let addresses = await store2.addresses(for: peer)
-        await store2.stop()
+        await store2.shutdown()
 
         #expect(addresses.count == 1)
         #expect(addresses.first == addr)
@@ -78,7 +78,7 @@ struct FilePeerStoreTests {
         let peers = await store.allPeers()
         #expect(peers.isEmpty)
 
-        await store.stop()
+        await store.shutdown()
     }
 
     @Test("events pass through from memory store", .timeLimit(.minutes(1)))
@@ -101,7 +101,7 @@ struct FilePeerStoreTests {
             }
         }
 
-        await store.stop()
+        await store.shutdown()
     }
 
     @Test("start creates directory if missing", .timeLimit(.minutes(1)))
@@ -115,7 +115,7 @@ struct FilePeerStoreTests {
         try await store.start()
 
         #expect(FileManager.default.fileExists(atPath: dir.path))
-        await store.stop()
+        await store.shutdown()
     }
 
     @Test("multiple peers persist correctly", .timeLimit(.minutes(1)))
@@ -133,13 +133,13 @@ struct FilePeerStoreTests {
         await store1.addAddresses([addr1], for: peer1, ttl: nil)
         await store1.addAddresses([addr2], for: peer2, ttl: nil)
         try await store1.flush()
-        await store1.stop()
+        await store1.shutdown()
 
         let store2 = FilePeerStore(configuration: .init(directory: dir))
         try await store2.start()
         let count = await store2.peerCount()
         #expect(count == 2)
-        await store2.stop()
+        await store2.shutdown()
     }
 
     @Test("remove address persists", .timeLimit(.minutes(1)))
@@ -156,14 +156,14 @@ struct FilePeerStoreTests {
         await store1.addAddresses([addr1, addr2], for: peer, ttl: nil)
         await store1.removeAddress(addr1, for: peer)
         try await store1.flush()
-        await store1.stop()
+        await store1.shutdown()
 
         let store2 = FilePeerStore(configuration: .init(directory: dir))
         try await store2.start()
         let addresses = await store2.addresses(for: peer)
         #expect(addresses.count == 1)
         #expect(addresses.first == addr2)
-        await store2.stop()
+        await store2.shutdown()
     }
 
     @Test("record success and failure persist", .timeLimit(.minutes(1)))
@@ -185,7 +185,7 @@ struct FilePeerStoreTests {
         #expect(record?.failureCount == 1)
         #expect(record?.lastSuccess != nil)
 
-        await store.stop()
+        await store.shutdown()
     }
 
     @Test("peer count matches stored peers", .timeLimit(.minutes(1)))
@@ -214,7 +214,7 @@ struct FilePeerStoreTests {
         let allPeers = await store.allPeers()
         #expect(allPeers.count == 3)
 
-        await store.stop()
+        await store.shutdown()
     }
 
     @Test("failureCount persists across store restarts", .timeLimit(.minutes(1)))
@@ -239,7 +239,7 @@ struct FilePeerStoreTests {
         #expect(record1?.failureCount == 3)
 
         try await store1.flush()
-        await store1.stop()
+        await store1.shutdown()
 
         // Load in a new store and verify failureCount is preserved
         let store2 = FilePeerStore(configuration: .init(directory: dir))
@@ -247,7 +247,7 @@ struct FilePeerStoreTests {
         let record2 = await store2.addressRecord(addr, for: peer)
         #expect(record2 != nil)
         #expect(record2?.failureCount == 3)
-        await store2.stop()
+        await store2.shutdown()
     }
 
     @Test("empty store produces no file before flush", .timeLimit(.minutes(1)))
@@ -261,11 +261,11 @@ struct FilePeerStoreTests {
         let filePath = dir.appendingPathComponent("peerstore.json").path
         #expect(!FileManager.default.fileExists(atPath: filePath))
 
-        await store.stop()
+        await store.shutdown()
     }
 
-    @Test("stop performs final flush", .timeLimit(.minutes(1)))
-    func stopPerformsFinalFlush() async throws {
+    @Test("shutdown performs final flush", .timeLimit(.minutes(1)))
+    func shutdownPerformsFinalFlush() async throws {
         let dir = tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -275,14 +275,14 @@ struct FilePeerStoreTests {
         let store1 = FilePeerStore(configuration: .init(directory: dir))
         try await store1.start()
         await store1.addAddresses([addr], for: peer, ttl: nil)
-        // stop() should flush without explicit flush()
-        await store1.stop()
+        // shutdown() should flush without explicit flush()
+        await store1.shutdown()
 
         let store2 = FilePeerStore(configuration: .init(directory: dir))
         try await store2.start()
         let addresses = await store2.addresses(for: peer)
         #expect(addresses.count == 1)
         #expect(addresses.first == addr)
-        await store2.stop()
+        await store2.shutdown()
     }
 }

@@ -19,6 +19,8 @@ This directory contains components for connection pool management, automatic rec
 | `ReconnectionPolicy.swift` | struct | Reconnection behavior settings |
 | `ConnectionGater.swift` | protocol | Connection filtering interface |
 | `ConnectionPool.swift` | class | Central connection state manager (internal) |
+| `ConnectionTrimReport.swift` | struct | Trim decision inspection snapshot for diagnostics |
+| `ConnectionTrimmedContext.swift` | struct | Structured metadata for `ConnectionEvent.trimmedWithContext` |
 | `HealthMonitor.swift` | actor | Ping-based health checking |
 | `ConnectionEvent.swift` | enum | Connection-related events |
 

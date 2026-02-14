@@ -224,7 +224,7 @@ struct NoiseHandshake: Sendable {
     private var symmetricState: NoiseSymmetricState
 
     // Initiator methods
-    mutating func writeMessageA() -> Data           // mixHash(e) + encryptAndHash(empty)
+    mutating func writeMessageA() throws -> Data    // mixHash(e) + encryptAndHash(empty)
     mutating func readMessageB(_ data: Data) throws -> NoisePayload
     mutating func writeMessageC() throws -> Data
 
@@ -417,13 +417,13 @@ Tests/Security/NoiseTests/
 - [libp2p Noise Spec](https://github.com/libp2p/specs/blob/master/noise/README.md)
 - [rust-libp2p noise](https://github.com/libp2p/rust-libp2p/tree/master/transports/noise)
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18, Updated 2026-02-14)
 
 ### Warning
 | Issue | Location | Status | Description |
 |-------|----------|--------|-------------|
 | X25519 small-order keys | `NoiseCryptoState.swift` | ✅ Fixed | CryptoKit doesn't reject small-order public keys; can yield all-zero shared secret, weakening handshake. **Fix**: Added `validateX25519PublicKey()` to check 8 known small-order points + all-zero shared secret check in `noiseKeyAgreement()` |
-| Read/write lock contention | `NoiseConnection.swift` | ⬜ | Single `Mutex` guards both send and recv cipher state, serializing read/write. Consider separate locks for send vs recv |
+| Read/write lock contention | `NoiseConnection.swift` | ✅ Fixed | `sendState`/`recvState` の Mutex を分離済み。read/write は別ロックで並行実行可能。回帰テスト `testNoiseConnectionConcurrentFullDuplex` で同時双方向通信を検証 |
 
 ### Info
 | Issue | Location | Description |

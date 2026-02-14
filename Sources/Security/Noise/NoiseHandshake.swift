@@ -68,7 +68,7 @@ struct NoiseHandshake: Sendable {
     /// Pattern: `-> e`
     /// - Sends ephemeral public key
     /// - Per Noise spec, calls encryptAndHash on empty payload
-    mutating func writeMessageA() -> Data {
+    mutating func writeMessageA() throws -> Data {
         let ephemeralPub = Data(localEphemeralKey.publicKey.rawRepresentation)
 
         // Mix ephemeral into hash
@@ -79,7 +79,7 @@ struct NoiseHandshake: Sendable {
         // encryptAndHash(empty) which does mixHash(empty ciphertext).
         // Since no key is set yet, encryptAndHash returns empty but still does mixHash(empty).
         // This is required for compatibility with go-libp2p/flynn-noise.
-        _ = try? symmetricState.encryptAndHash(Data())
+        _ = try symmetricState.encryptAndHash(Data())
 
         return ephemeralPub
     }

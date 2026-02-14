@@ -11,7 +11,7 @@ import P2PDiscovery
 ///
 /// Uses `Class + Mutex` pattern (not Actor) per project conventions.
 /// Uses `EventBroadcaster` for multi-consumer observation streams (Discovery layer convention).
-/// Lifecycle: `func stop() async` (Discovery layer convention).
+/// Lifecycle: `func shutdown() async` (Discovery layer convention).
 public final class BeaconDiscovery: DiscoveryService, Sendable {
 
     // MARK: - Properties
@@ -86,11 +86,11 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
         }
     }
 
-    /// Stops the beacon discovery service and releases operational resources.
+    /// Shuts down the beacon discovery service and releases operational resources.
     ///
-    /// After calling `stop()`, the service will not emit new observations.
+    /// After calling `shutdown()`, the service will not emit new observations.
     /// This method is idempotent and safe to call multiple times.
-    public func stop() async {
+    public func shutdown() async {
         let task = state.withLock { s -> Task<Void, Never>? in
             guard s.isRunning else { return nil }
             s.isRunning = false

@@ -408,7 +408,7 @@ Tests/Protocols/GossipSubTests/
 - [rust-libp2p gossipsub](https://github.com/libp2p/rust-libp2p/tree/master/protocols/gossipsub)
 - [go-libp2p-pubsub](https://github.com/libp2p/go-libp2p-pubsub)
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18, Updated 2026-02-14)
 
 ### Warning
 | Issue | Location | Status | Description |
@@ -417,9 +417,9 @@ Tests/Protocols/GossipSubTests/
 | Non-cryptographic hash in MessageID | `Core/MessageID.swift` | ✅ N/A | Already uses SHA-256 (cryptographic hash), not Swift Hasher |
 
 ### Info
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Publish doesn't enforce maxMessageSize | `Router/GossipSubRouter.swift:469-488` | Oversized local messages can be constructed and sent |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| Publish doesn't enforce maxMessageSize | `Router/GossipSubRouter.swift` | ✅ Fixed | `publish()` 冒頭で `configuration.maxMessageSize` を検証し、超過時は `messageTooLarge` を返す。`routerPublishRejectsOversizedData` で回帰確認 |
 
 ## Fixes Applied
 

@@ -47,7 +47,7 @@ public final class WebSocketConnection: RawConnection, Sendable {
             state.withLock { s in
                 // Check buffer first (avoid data loss on close)
                 if s.readBuffer.readableBytes > 0 {
-                    var buffer = s.readBuffer
+                    let buffer = s.readBuffer
                     let count = buffer.readableBytes
                     s.readBuffer = ByteBuffer()
                     wsConnectionLogger.debug("read(): Returning buffered data (\(count) bytes)")
@@ -80,9 +80,8 @@ public final class WebSocketConnection: RawConnection, Sendable {
         }
 
         wsConnectionLogger.debug("write(): Writing \(data.readableBytes) bytes to \(self._remoteAddress)")
-        var buffer = data
         let maskKey: WebSocketMaskingKey? = isClient ? .random() : nil
-        let frame = WebSocketFrame(fin: true, opcode: .binary, maskKey: maskKey, data: buffer)
+        let frame = WebSocketFrame(fin: true, opcode: .binary, maskKey: maskKey, data: data)
         try await channel.writeAndFlush(frame)
         wsConnectionLogger.debug("write(): Write completed")
     }
@@ -317,20 +316,21 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
 // MARK: - Multiaddr conversion helpers
 
 extension SocketAddress {
-    /// Converts a SocketAddress to a WebSocket Multiaddr (/ip4|ip6/<host>/tcp/<port>/ws).
-    func toWebSocketMultiaddr() -> Multiaddr? {
+    /// Converts a SocketAddress to a WebSocket Multiaddr.
+    ///
+    /// - Parameter secure: `true` for `/wss`, `false` for `/ws`
+    func toWebSocketMultiaddr(secure: Bool = false) -> Multiaddr? {
         switch self {
         case .v4(let addr):
             let ip = addr.host
             let port = UInt16(self.port ?? 0)
-            return Multiaddr(uncheckedProtocols: [.ip4(ip), .tcp(port), .ws])
+            return Multiaddr(uncheckedProtocols: [.ip4(ip), .tcp(port), secure ? .wss : .ws])
         case .v6(let addr):
             let ip = addr.host
             let port = UInt16(self.port ?? 0)
-            return Multiaddr(uncheckedProtocols: [.ip6(ip), .tcp(port), .ws])
+            return Multiaddr(uncheckedProtocols: [.ip6(ip), .tcp(port), secure ? .wss : .ws])
         case .unixDomainSocket:
             return nil
         }
     }
 }
-

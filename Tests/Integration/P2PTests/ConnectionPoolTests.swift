@@ -51,14 +51,16 @@ struct ConnectionPoolTests {
         lowWatermark: Int = 80,
         maxInbound: Int? = nil,
         maxOutbound: Int? = nil,
-        maxPerPeer: Int = 2
+        maxPerPeer: Int = 2,
+        gracePeriod: Duration = .seconds(30)
     ) -> ConnectionPool {
         let limits = ConnectionLimits(
             highWatermark: highWatermark,
             lowWatermark: lowWatermark,
             maxConnectionsPerPeer: maxPerPeer,
             maxInbound: maxInbound,
-            maxOutbound: maxOutbound
+            maxOutbound: maxOutbound,
+            gracePeriod: gracePeriod
         )
         return ConnectionPool(configuration: PoolConfiguration(limits: limits))
     }
@@ -339,5 +341,192 @@ struct ConnectionPoolTests {
         pool.resetRetryCount(id)
         let managed = pool.managedConnection(id)
         #expect(managed?.retryCount == 0)
+    }
+
+    // MARK: - Trimming
+
+    @Test("trimIfNeeded reduces active connections toward low watermark")
+    func trimReducesToLowWatermark() {
+        let pool = makePool(highWatermark: 3, lowWatermark: 2, gracePeriod: .zero)
+
+        for _ in 0..<4 {
+            let (peer, addr, conn) = makeMockConnection()
+            pool.add(conn, for: peer, address: addr, direction: .outbound)
+        }
+
+        #expect(pool.connectionCount == 4)
+        let trimmed = pool.trimIfNeeded()
+
+        #expect(trimmed.count == 2)
+        #expect(pool.connectionCount == 2)
+    }
+
+    @Test("trimIfNeeded never trims protected connections")
+    func trimRespectsProtection() {
+        let pool = makePool(highWatermark: 2, lowWatermark: 1, gracePeriod: .zero)
+
+        let (protectedPeer, protectedAddr, protectedConn) = makeMockConnection()
+        pool.add(protectedConn, for: protectedPeer, address: protectedAddr, direction: .outbound)
+        pool.protect(protectedPeer)
+
+        var otherPeers: [PeerID] = []
+        for _ in 0..<2 {
+            let (peer, addr, conn) = makeMockConnection()
+            otherPeers.append(peer)
+            pool.add(conn, for: peer, address: addr, direction: .outbound)
+        }
+
+        let trimmed = pool.trimIfNeeded()
+
+        #expect(trimmed.count == 2)
+        #expect(pool.isConnected(to: protectedPeer))
+        for peer in otherPeers {
+            #expect(!pool.isConnected(to: peer))
+        }
+    }
+
+    @Test("trimIfNeeded trims fewer tags first")
+    func trimPrefersFewerTags() {
+        let pool = makePool(highWatermark: 2, lowWatermark: 1, gracePeriod: .zero)
+
+        let (peerNoTag, addrNoTag, connNoTag) = makeMockConnection()
+        pool.add(connNoTag, for: peerNoTag, address: addrNoTag, direction: .outbound)
+
+        let (peerOneTag, addrOneTag, connOneTag) = makeMockConnection()
+        pool.add(connOneTag, for: peerOneTag, address: addrOneTag, direction: .outbound)
+        pool.tag(peerOneTag, with: "relay")
+
+        let (peerTwoTags, addrTwoTags, connTwoTags) = makeMockConnection()
+        pool.add(connTwoTags, for: peerTwoTags, address: addrTwoTags, direction: .outbound)
+        pool.tag(peerTwoTags, with: "relay")
+        pool.tag(peerTwoTags, with: "bootstrap")
+
+        let trimmed = pool.trimIfNeeded()
+        let trimmedPeers = Set(trimmed.map(\.peer))
+
+        #expect(trimmedPeers.contains(peerNoTag))
+        #expect(trimmedPeers.contains(peerOneTag))
+        #expect(!trimmedPeers.contains(peerTwoTags))
+        #expect(pool.isConnected(to: peerTwoTags))
+    }
+
+    @Test("trimIfNeeded trims oldest activity first when tags are equal")
+    func trimPrefersOlderActivity() async {
+        let pool = makePool(highWatermark: 2, lowWatermark: 2, gracePeriod: .zero)
+
+        let (oldPeer, oldAddr, oldConn) = makeMockConnection()
+        pool.add(oldConn, for: oldPeer, address: oldAddr, direction: .outbound)
+        do {
+            try await Task.sleep(for: .milliseconds(5))
+        } catch {
+            Issue.record("Unexpected cancellation during trim test sleep #1: \(error)")
+        }
+
+        let (midPeer, midAddr, midConn) = makeMockConnection()
+        pool.add(midConn, for: midPeer, address: midAddr, direction: .outbound)
+        do {
+            try await Task.sleep(for: .milliseconds(5))
+        } catch {
+            Issue.record("Unexpected cancellation during trim test sleep #2: \(error)")
+        }
+
+        let (newPeer, newAddr, newConn) = makeMockConnection()
+        pool.add(newConn, for: newPeer, address: newAddr, direction: .outbound)
+
+        let trimmed = pool.trimIfNeeded()
+
+        #expect(trimmed.count == 1)
+        #expect(trimmed.first?.peer == oldPeer)
+        #expect(!pool.isConnected(to: oldPeer))
+        #expect(pool.isConnected(to: midPeer))
+        #expect(pool.isConnected(to: newPeer))
+    }
+
+    @Test("trimIfNeeded does not trim connections within grace period")
+    func trimRespectsGracePeriod() {
+        let pool = makePool(highWatermark: 1, lowWatermark: 0, gracePeriod: .seconds(60))
+
+        let (peer1, addr1, conn1) = makeMockConnection()
+        pool.add(conn1, for: peer1, address: addr1, direction: .outbound)
+
+        let (peer2, addr2, conn2) = makeMockConnection()
+        pool.add(conn2, for: peer2, address: addr2, direction: .outbound)
+
+        let trimmed = pool.trimIfNeeded()
+
+        #expect(trimmed.isEmpty)
+        #expect(pool.connectionCount == 2)
+    }
+
+    // MARK: - Trim Inspection
+
+    @Test("trimReport includes selection and exclusion reasons")
+    func trimReportIncludesSelectionAndExclusions() {
+        let pool = makePool(highWatermark: 2, lowWatermark: 1, gracePeriod: .seconds(60))
+
+        let (protectedPeer, protectedAddr, protectedConn) = makeMockConnection()
+        pool.add(protectedConn, for: protectedPeer, address: protectedAddr, direction: .outbound)
+        pool.protect(protectedPeer)
+
+        let (candidatePeer1, candidateAddr1, candidateConn1) = makeMockConnection()
+        pool.add(candidateConn1, for: candidatePeer1, address: candidateAddr1, direction: .outbound)
+
+        let (candidatePeer2, candidateAddr2, candidateConn2) = makeMockConnection()
+        pool.add(candidateConn2, for: candidatePeer2, address: candidateAddr2, direction: .outbound)
+
+        let connectingPeer = randomPeerID()
+        let connectingAddr = try! Multiaddr("/ip4/127.0.0.1/tcp/4010")
+        _ = pool.addConnecting(for: connectingPeer, address: connectingAddr, direction: .outbound)
+
+        let report = pool.trimReport()
+        #expect(report.activeConnectionCount == 3)
+        #expect(report.totalEntryCount == 4)
+        #expect(report.targetTrimCount == 2)
+        #expect(report.trimmableCount == 0)
+        #expect(report.selectedCount == 0)
+        #expect(report.requiresTrim)
+
+        let byPeer = Dictionary(uniqueKeysWithValues: report.candidates.map { ($0.peer, $0) })
+        #expect(byPeer[protectedPeer]?.exclusionReason == .protected)
+        #expect(byPeer[candidatePeer1]?.exclusionReason == .withinGracePeriod)
+        #expect(byPeer[candidatePeer2]?.exclusionReason == .withinGracePeriod)
+        #expect(byPeer[connectingPeer]?.exclusionReason == .notConnected)
+    }
+
+    @Test("trimReport selection matches trimIfNeeded result")
+    func trimReportMatchesTrimExecution() async {
+        let pool = makePool(highWatermark: 2, lowWatermark: 2, gracePeriod: .zero)
+
+        let (oldPeer, oldAddr, oldConn) = makeMockConnection()
+        pool.add(oldConn, for: oldPeer, address: oldAddr, direction: .outbound)
+        do {
+            try await Task.sleep(for: .milliseconds(5))
+        } catch {
+            Issue.record("Unexpected cancellation during trim report test sleep #1: \(error)")
+        }
+
+        let (newerPeer, newerAddr, newerConn) = makeMockConnection()
+        pool.add(newerConn, for: newerPeer, address: newerAddr, direction: .outbound)
+        do {
+            try await Task.sleep(for: .milliseconds(5))
+        } catch {
+            Issue.record("Unexpected cancellation during trim report test sleep #2: \(error)")
+        }
+
+        let (newestPeer, newestAddr, newestConn) = makeMockConnection()
+        pool.add(newestConn, for: newestPeer, address: newestAddr, direction: .outbound)
+
+        let report = pool.trimReport()
+        #expect(report.requiresTrim)
+        #expect(report.targetTrimCount == 1)
+
+        let planned = report.candidates.filter(\.selectedForTrim)
+        #expect(planned.count == 1)
+        #expect(planned.first?.peer == oldPeer)
+        #expect(planned.first?.trimRank == 1)
+
+        let trimmed = pool.trimIfNeeded()
+        #expect(trimmed.count == 1)
+        #expect(trimmed.first?.peer == oldPeer)
     }
 }

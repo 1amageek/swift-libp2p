@@ -150,7 +150,11 @@ public final class FileRecordStorage: RecordStorage, Sendable {
 
                 if s.records.count >= maxRecords {
                     // Remove the file we just wrote since we cannot cache it
-                    try? FileManager.default.removeItem(at: filePath)
+                    do {
+                        try FileManager.default.removeItem(at: filePath)
+                    } catch {
+                        // Best effort cleanup only.
+                    }
                     return
                 }
             }
@@ -165,7 +169,11 @@ public final class FileRecordStorage: RecordStorage, Sendable {
 
             if cached.expiresAt <= ContinuousClock.now {
                 s.records.removeValue(forKey: key)
-                try? FileManager.default.removeItem(at: cached.filePath)
+                do {
+                    try FileManager.default.removeItem(at: cached.filePath)
+                } catch {
+                    // Best effort cleanup only.
+                }
                 return nil
             }
 
@@ -176,7 +184,11 @@ public final class FileRecordStorage: RecordStorage, Sendable {
     public func remove(_ key: Data) throws {
         state.withLock { s in
             if let cached = s.records.removeValue(forKey: key) {
-                try? FileManager.default.removeItem(at: cached.filePath)
+                do {
+                    try FileManager.default.removeItem(at: cached.filePath)
+                } catch {
+                    // Best effort cleanup only.
+                }
             }
         }
     }
@@ -224,7 +236,11 @@ public final class FileRecordStorage: RecordStorage, Sendable {
 
         // Remove files outside of lock
         for fileURL in filesToRemove {
-            try? FileManager.default.removeItem(at: fileURL)
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch {
+                // Best effort cleanup only.
+            }
         }
 
         return removed
@@ -317,7 +333,11 @@ public final class FileRecordStorage: RecordStorage, Sendable {
                     let expiresAt = persisted.expiresAtInstant
                     // Skip expired records, remove their files
                     guard expiresAt > now else {
-                        try? fileManager.removeItem(at: file)
+                        do {
+                            try fileManager.removeItem(at: file)
+                        } catch {
+                            // Best effort cleanup only.
+                        }
                         continue
                     }
 

@@ -819,6 +819,13 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// - Returns: The published message
     /// - Throws: `GossipSubError.signingKeyRequired` if signing is enabled but no key provided
     public func publish(_ data: Data, to topic: Topic) throws -> GossipSubMessage {
+        guard data.count <= configuration.maxMessageSize else {
+            throw GossipSubError.messageTooLarge(
+                size: data.count,
+                maxSize: configuration.maxMessageSize
+            )
+        }
+
         // Build message
         var builder = GossipSubMessage.Builder(data: data, topic: topic)
             .source(localPeerID)

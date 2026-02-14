@@ -163,7 +163,7 @@ init -> startBeacon(_:) -> [broadcasting + receiving] -> stopBeacon() -> [receiv
 1. Use the **Class + Mutex** pattern (not Actor)
 2. **`discoveries`** uses the single-consumer pattern (returns the same stream)
 3. **`shutdown()`** must call both `continuation.finish()` and set `stream = nil`
-4. **Reject operations after shutdown** via an `isShutdown` flag
+4. **Reject operations after shutdown** via an `isStopped` flag
 5. **`deinit`** should also release resources (safety net for missed shutdown)
 
 ```swift
@@ -176,7 +176,7 @@ public final class MyBLEAdapter: TransportAdapter, Sendable {
     public var discoveries: AsyncStream<RawDiscovery> {
         state.withLock { s in
             if let existing = s.discoveryStream { return existing }
-            if s.isShutdown {
+            if s.isStopped {
                 let (stream, continuation) = AsyncStream<RawDiscovery>.makeStream()
                 continuation.finish()
                 return stream
@@ -193,7 +193,7 @@ public final class MyBLEAdapter: TransportAdapter, Sendable {
             let c = s.discoveryContinuation
             s.discoveryContinuation = nil
             s.discoveryStream = nil
-            s.isShutdown = true
+            s.isStopped = true
             return c
         }
         // Release media-specific resources here

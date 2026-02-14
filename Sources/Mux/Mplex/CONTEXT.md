@@ -73,12 +73,9 @@ private actor MplexFrameWriter  // Mplex 固有名
 
 **対応**: 一貫性のため汎用名に変更を検討
 
-### INFO: shutdown での try? 使用
+### INFO: best-effort cleanup
 
-**場所**: `MplexConnection.swift:306, 339, 344, 373, 387, 448`
+**場所**: `MplexConnection.swift`, `MplexStream.swift`
 
-```swift
-try? await sendFrame(rstFrame)  // シャットダウン時は許容
-```
-
-**補足**: シャットダウン中のエラーは無視して良いケース。CLAUDE.md のガイドラインとは異なるが、このコンテキストでは適切。
+**現状**: シャットダウン時や拒否応答時の `sendFrame` / `stream.close()` は
+`do-catch` で明示処理し、失敗理由を debug ログに記録する。

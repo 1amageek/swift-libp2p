@@ -42,12 +42,16 @@ public enum MultistreamSelect {
         read: () async throws -> Data,
         write: (Data) async throws -> Void
     ) async throws -> NegotiationResult {
+        var buffer = Data()
+
         // Send multistream header
         try await write(encode(protocolID))
 
         // Read multistream header response
-        var buffer = try await read()
-        let (headerString, headerConsumed) = try decode(buffer)
+        let (headerString, headerConsumed) = try await readNextMessage(
+            buffer: &buffer,
+            read: read
+        )
         guard headerString == protocolID else {
             throw NegotiationError.protocolMismatch
         }
@@ -56,10 +60,10 @@ public enum MultistreamSelect {
         // Try each protocol
         for proto in protocols {
             try await write(encode(proto))
-            if buffer.isEmpty {
-                buffer = try await read()
-            }
-            let (decoded, consumed) = try decode(buffer)
+            let (decoded, consumed) = try await readNextMessage(
+                buffer: &buffer,
+                read: read
+            )
             buffer = Data(buffer.dropFirst(consumed))
 
             if decoded == proto {
@@ -106,19 +110,22 @@ public enum MultistreamSelect {
         batch.append(encode(firstProtocol))
         try await write(batch)
 
-        // Read response — may contain header + protocol response coalesced
-        var buffer = try await read()
-        let (headerString, headerConsumed) = try decode(buffer)
+        // Read response — may contain header + protocol response coalesced or fragmented
+        var buffer = Data()
+        let (headerString, headerConsumed) = try await readNextMessage(
+            buffer: &buffer,
+            read: read
+        )
         guard headerString == protocolID else {
             throw NegotiationError.protocolMismatch
         }
         buffer = Data(buffer.dropFirst(headerConsumed))
 
         // Read protocol response (may already be in buffer from coalesced read)
-        if buffer.isEmpty {
-            buffer = try await read()
-        }
-        let (decoded, consumed) = try decode(buffer)
+        let (decoded, consumed) = try await readNextMessage(
+            buffer: &buffer,
+            read: read
+        )
         buffer = Data(buffer.dropFirst(consumed))
 
         if decoded == firstProtocol {
@@ -128,10 +135,10 @@ public enum MultistreamSelect {
             // First protocol rejected - fall back to remaining protocols
             for proto in protocols.dropFirst() {
                 try await write(encode(proto))
-                if buffer.isEmpty {
-                    buffer = try await read()
-                }
-                let (responseDecoded, responseConsumed) = try decode(buffer)
+                let (responseDecoded, responseConsumed) = try await readNextMessage(
+                    buffer: &buffer,
+                    read: read
+                )
                 buffer = Data(buffer.dropFirst(responseConsumed))
 
                 if responseDecoded == proto {
@@ -164,10 +171,15 @@ public enum MultistreamSelect {
         read: () async throws -> Data,
         write: (Data) async throws -> Void
     ) async throws -> NegotiationResult {
+        let supportedSet = Set(supported)
+
         // Read and respond to multistream header
         // Buffer handles coalesced TCP reads (e.g., V1Lazy sends header + protocol in one write)
-        var buffer = try await read()
-        let (headerString, headerConsumed) = try decode(buffer)
+        var buffer = Data()
+        let (headerString, headerConsumed) = try await readNextMessage(
+            buffer: &buffer,
+            read: read
+        )
         guard headerString == protocolID else {
             throw NegotiationError.protocolMismatch
         }
@@ -185,34 +197,92 @@ public enum MultistreamSelect {
                 throw NegotiationError.tooManyAttempts
             }
 
-            if buffer.isEmpty {
-                buffer = try await read()
-            }
-            let (requested, consumed) = try decode(buffer)
+            let (requested, consumed) = try await readNextMessage(
+                buffer: &buffer,
+                read: read
+            )
             buffer = Data(buffer.dropFirst(consumed))
 
-            if supported.contains(requested) {
+            if supportedSet.contains(requested) {
                 try await write(encode(requested))
                 return NegotiationResult(protocolID: requested, remainder: buffer)
             } else if requested == "ls" {
-                // List supported protocols per multistream-select spec:
-                // Format: <outer-length> <proto1-len>/proto1\n <proto2-len>/proto2\n ... \n
-                // Each protocol is an embedded multistream message with its own varint length
-                // Estimate: each proto ~40 bytes + varint overhead
-                var inner = Data(capacity: supported.count * 48 + 1)
-                for proto in supported {
-                    let protoMessage = Data((proto + "\n").utf8)
-                    inner.append(contentsOf: Varint.encode(UInt64(protoMessage.count)))
-                    inner.append(protoMessage)
-                }
-                // Final terminating newline
-                inner.append(UInt8(ascii: "\n"))
-
-                var outer = Varint.encode(UInt64(inner.count))
-                outer.append(inner)
-                try await write(outer)
+                // ls response must be newline-delimited protocol IDs inside a single
+                // multistream length prefix (no nested per-protocol varints).
+                // Keep the historical trailing blank line for compatibility.
+                let body = supported.map { "\($0)\n" }.joined() + "\n"
+                let payload = Data(body.utf8)
+                var response = Varint.encode(UInt64(payload.count))
+                response.append(payload)
+                try await write(response)
             } else {
                 try await write(encode("na"))
+            }
+        }
+    }
+
+    // MARK: - Internal Decoding
+
+    private enum DecodeAttempt {
+        case message(String, consumed: Int)
+        case needMoreData
+    }
+
+    private static func decodeAttempt(_ data: Data) throws -> DecodeAttempt {
+        let (length, lengthBytes) = try Varint.decode(data)
+
+        // Validate message size to prevent memory exhaustion attacks
+        guard length <= UInt64(Int.max) else {
+            throw NegotiationError.messageTooLarge(size: Int.max, max: maxMessageSize)
+        }
+        let messageLength = Int(length)
+        if messageLength > maxMessageSize {
+            throw NegotiationError.messageTooLarge(size: messageLength, max: maxMessageSize)
+        }
+
+        let totalConsumed = lengthBytes + messageLength
+        guard data.count >= totalConsumed else {
+            return .needMoreData
+        }
+        let content = data.dropFirst(lengthBytes).prefix(messageLength)
+
+        // Use strict UTF-8 decoding to reject invalid sequences
+        guard var string = String(data: Data(content), encoding: .utf8) else {
+            throw NegotiationError.invalidUtf8
+        }
+
+        // Multistream-select spec requires messages to end with newline
+        guard string.hasSuffix("\n") else {
+            throw NegotiationError.invalidMessage
+        }
+        string.removeLast()
+
+        return .message(string, consumed: totalConsumed)
+    }
+
+    private static func readNextMessage(
+        buffer: inout Data,
+        read: () async throws -> Data
+    ) async throws -> (String, Int) {
+        while true {
+            do {
+                let attempt = try decodeAttempt(buffer)
+                switch attempt {
+                case .message(let string, let consumed):
+                    return (string, consumed)
+                case .needMoreData:
+                    let chunk = try await read()
+                    guard !chunk.isEmpty else {
+                        throw NegotiationError.invalidMessage
+                    }
+                    buffer.append(chunk)
+                }
+            } catch VarintError.insufficientData {
+                let chunk = try await read()
+                guard !chunk.isEmpty else {
+                    throw NegotiationError.invalidMessage
+                }
+                buffer.append(chunk)
             }
         }
     }
@@ -231,36 +301,11 @@ public enum MultistreamSelect {
     /// - Returns: The decoded protocol string and number of bytes consumed
     /// - Throws: `NegotiationError` or `VarintError` if decoding fails
     public static func decode(_ data: Data) throws -> (String, Int) {
-        let (length, lengthBytes) = try Varint.decode(data)
-
-        // Validate message size to prevent memory exhaustion attacks
-        // Check against Int.max first to prevent crash, then check maxMessageSize
-        guard length <= UInt64(Int.max) else {
-            throw NegotiationError.messageTooLarge(size: Int.max, max: maxMessageSize)
-        }
-        let messageLength = Int(length)
-        if messageLength > maxMessageSize {
-            throw NegotiationError.messageTooLarge(size: messageLength, max: maxMessageSize)
-        }
-
-        let totalConsumed = lengthBytes + messageLength
-        guard data.count >= totalConsumed else {
+        let attempt = try decodeAttempt(data)
+        guard case .message(let string, let consumed) = attempt else {
             throw NegotiationError.invalidMessage
         }
-        let content = data.dropFirst(lengthBytes).prefix(messageLength)
-
-        // Use strict UTF-8 decoding to reject invalid sequences
-        guard var string = String(data: Data(content), encoding: .utf8) else {
-            throw NegotiationError.invalidUtf8
-        }
-
-        // Multistream-select spec requires messages to end with newline
-        guard string.hasSuffix("\n") else {
-            throw NegotiationError.invalidMessage
-        }
-        string.removeLast()
-
-        return (string, totalConsumed)
+        return (string, consumed)
     }
 }
 

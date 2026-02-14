@@ -96,7 +96,11 @@ public final class MemoryListener: Listener, Sendable {
 
         // Close pending connections so dialers don't hang
         for conn in pendingConns {
-            try? await conn.close()
+            do {
+                try await conn.close()
+            } catch {
+                // Best effort cleanup only.
+            }
         }
 
         // Unregister from hub
@@ -127,7 +131,11 @@ public final class MemoryListener: Listener, Sendable {
         // Close connection outside of lock if listener was closed
         if shouldClose {
             Task {
-                try? await connection.close()
+                do {
+                    try await connection.close()
+                } catch {
+                    // Best effort cleanup only.
+                }
             }
         }
     }

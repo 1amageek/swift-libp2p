@@ -11,12 +11,45 @@ public enum SWIMBridge {
 
     /// Creates a SWIM MemberID from a PeerID and address.
     ///
+    /// Extracts host and port from the Multiaddr to produce a `host:port` string
+    /// compatible with `SWIMTransportAdapter.send()` which uses `SocketAddress(hostPort:)`.
+    ///
     /// - Parameters:
     ///   - peerID: The peer ID.
     ///   - address: The multiaddress for this peer.
-    /// - Returns: A SWIM MemberID.
+    /// - Returns: A SWIM MemberID with address in `host:port` format.
     public static func toMemberID(peerID: PeerID, address: Multiaddr) -> MemberID {
-        MemberID(id: peerID.description, address: address.description)
+        let hostPort = extractHostPort(from: address) ?? address.description
+        return MemberID(id: peerID.description, address: hostPort)
+    }
+
+    /// Extracts `host:port` from a Multiaddr (e.g., `/ip4/127.0.0.1/udp/17947` → `"127.0.0.1:17947"`).
+    ///
+    /// Supports `/ip4/.../udp/...` and `/ip4/.../tcp/...` (and ip6 equivalents).
+    ///
+    /// - Parameter address: The multiaddress to extract from.
+    /// - Returns: A `host:port` string, or nil if extraction fails.
+    private static func extractHostPort(from address: Multiaddr) -> String? {
+        var host: String?
+        var port: UInt16?
+
+        for proto in address.protocols {
+            switch proto {
+            case .ip4(let addr):
+                host = addr
+            case .ip6(let addr):
+                host = addr
+            case .udp(let p):
+                port = p
+            case .tcp(let p):
+                port = p
+            default:
+                break
+            }
+        }
+
+        guard let h = host, let p = port else { return nil }
+        return "\(h):\(p)"
     }
 
     /// Creates a PeerID from a SWIM MemberID.
@@ -24,15 +57,41 @@ public enum SWIMBridge {
     /// - Parameter memberID: The SWIM member ID.
     /// - Returns: A PeerID, or nil if parsing fails.
     public static func toPeerID(memberID: MemberID) -> PeerID? {
-        try? PeerID(string: memberID.id)
+        do {
+            return try PeerID(string: memberID.id)
+        } catch {
+            return nil
+        }
     }
 
     /// Creates a Multiaddr from a MemberID's address.
     ///
+    /// Handles both `host:port` format (from toMemberID) and Multiaddr string format.
+    ///
     /// - Parameter memberID: The SWIM member ID.
     /// - Returns: A Multiaddr, or nil if parsing fails.
     public static func toMultiaddr(memberID: MemberID) -> Multiaddr? {
-        try? Multiaddr(memberID.address)
+        let address = memberID.address
+
+        // Try host:port format first (produced by toMemberID)
+        if !address.hasPrefix("/"), let lastColon = address.lastIndex(of: ":") {
+            let host = String(address[address.startIndex..<lastColon])
+            let portStr = String(address[address.index(after: lastColon)...])
+            if let port = UInt16(portStr) {
+                do {
+                    return try Multiaddr("/ip4/\(host)/udp/\(port)")
+                } catch {
+                    return nil
+                }
+            }
+        }
+
+        // Fall back to Multiaddr string format
+        do {
+            return try Multiaddr(address)
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - Member -> ScoredCandidate Conversion

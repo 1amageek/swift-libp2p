@@ -2,10 +2,16 @@
 /// https://github.com/multiformats/multiaddr/blob/master/protocols.csv
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 /// A protocol component in a Multiaddr.
 public enum MultiaddrProtocol: Sendable, Hashable {
     case ip4(String)
+    case ip6zone(String)
     case ip6(String)
     case tcp(UInt16)
     case udp(UInt16)
@@ -33,6 +39,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     public var code: UInt64 {
         switch self {
         case .ip4: return 4
+        case .ip6zone: return 42
         case .ip6: return 41
         case .tcp: return 6
         case .udp: return 273
@@ -62,6 +69,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     public var name: String {
         switch self {
         case .ip4: return "ip4"
+        case .ip6zone: return "ip6zone"
         case .ip6: return "ip6"
         case .tcp: return "tcp"
         case .udp: return "udp"
@@ -91,6 +99,7 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     public var valueString: String? {
         switch self {
         case .ip4(let addr): return addr
+        case .ip6zone(let zone): return zone
         case .ip6(let addr): return addr
         case .tcp(let port): return String(port)
         case .udp(let port): return String(port)
@@ -122,6 +131,9 @@ public enum MultiaddrProtocol: Sendable, Hashable {
                 preconditionFailure("Invalid IPv4 address stored in MultiaddrProtocol.ip4: \(addr)")
             }
             return bytes
+        case .ip6zone(let zone):
+            let bytes = Data(zone.utf8)
+            return Varint.encode(UInt64(bytes.count)) + bytes
         case .ip6(let addr):
             guard let bytes = Self.encodeIPv6(addr) else {
                 preconditionFailure("Invalid IPv6 address stored in MultiaddrProtocol.ip6: \(addr)")
@@ -158,75 +170,15 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     // MARK: - Encoding Helpers
 
     private static func encodeIPv4(_ address: String) -> Data? {
-        // Single-pass parsing without string allocation
-        var bytes = Data(capacity: 4)
-        var current: UInt16 = 0
-        var digitCount = 0
-        var byteCount = 0
-
-        for char in address.utf8 {
-            if char == UInt8(ascii: ".") {
-                guard digitCount > 0, digitCount <= 3, current <= 255 else { return nil }
-                bytes.append(UInt8(current))
-                byteCount += 1
-                current = 0
-                digitCount = 0
-            } else if char >= UInt8(ascii: "0") && char <= UInt8(ascii: "9") {
-                digitCount += 1
-                guard digitCount <= 3 else { return nil }
-                current = current * 10 + UInt16(char - UInt8(ascii: "0"))
-                guard current <= 255 else { return nil }
-            } else {
-                return nil  // Invalid character
-            }
+        var addr = in_addr()
+        let result = address.withCString { cString in
+            inet_pton(AF_INET, cString, &addr)
         }
+        guard result == 1 else { return nil }
 
-        // Last byte
-        guard digitCount > 0, digitCount <= 3, current <= 255, byteCount == 3 else { return nil }
-        bytes.append(UInt8(current))
-
-        return bytes
-    }
-
-    /// Parses colon-separated hex groups from an IPv6 address substring.
-    ///
-    /// - Parameter substring: A substring containing hex groups separated by colons
-    /// - Returns: Array of UInt16 values, or empty array on parse error
-    private static func parseIPv6Groups(_ substring: Substring) -> [UInt16] {
-        var groups: [UInt16] = []
-        var current: UInt16 = 0
-        var digitCount = 0
-
-        for char in substring.utf8 {
-            if char == UInt8(ascii: ":") {
-                guard digitCount > 0, digitCount <= 4 else { return [] }
-                groups.append(current)
-                current = 0
-                digitCount = 0
-            } else {
-                // Parse hex digit
-                let value: UInt16
-                if char >= UInt8(ascii: "0") && char <= UInt8(ascii: "9") {
-                    value = UInt16(char - UInt8(ascii: "0"))
-                } else if char >= UInt8(ascii: "a") && char <= UInt8(ascii: "f") {
-                    value = UInt16(char - UInt8(ascii: "a") + 10)
-                } else if char >= UInt8(ascii: "A") && char <= UInt8(ascii: "F") {
-                    value = UInt16(char - UInt8(ascii: "A") + 10)
-                } else {
-                    return []  // Invalid character
-                }
-
-                digitCount += 1
-                guard digitCount <= 4 else { return [] }
-                current = (current << 4) | value
-            }
+        return withUnsafeBytes(of: &addr.s_addr) { bytes in
+            Data(bytes)
         }
-
-        // Last group
-        guard digitCount > 0, digitCount <= 4 else { return [] }
-        groups.append(current)
-
-        return groups
     }
 
     private static func encodeIPv6(_ address: String) -> Data? {
@@ -237,102 +189,30 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         } else {
             cleanAddress = address
         }
+        guard !cleanAddress.isEmpty else { return nil }
 
-        // 2. Validate: only one :: allowed (optimized single-pass check)
-        var doubleColonCount = 0
-        var i = cleanAddress.startIndex
-        while i < cleanAddress.endIndex {
-            if cleanAddress[i] == ":" {
-                let next = cleanAddress.index(after: i)
-                if next < cleanAddress.endIndex && cleanAddress[next] == ":" {
-                    doubleColonCount += 1
-                    guard doubleColonCount <= 1 else { return nil }
-                    i = cleanAddress.index(after: next)
-                    continue
-                }
-            }
-            i = cleanAddress.index(after: i)
+        var addr = in6_addr()
+        let result = cleanAddress.withCString { cString in
+            inet_pton(AF_INET6, cString, &addr)
         }
+        guard result == 1 else { return nil }
 
-        // 3. Handle IPv4-mapped IPv6 (::ffff:192.0.2.1 or ::ffff:c0a8:101)
-        if cleanAddress.lowercased().hasPrefix("::ffff:") {
-            let suffix = String(cleanAddress.dropFirst(7))
-            // Check if it's IPv4 dotted notation
-            if suffix.contains(".") {
-                if let ipv4Bytes = encodeIPv4(suffix) {
-                    var bytes = Data(repeating: 0, count: 16)
-                    bytes[10] = 0xff
-                    bytes[11] = 0xff
-                    bytes[12] = ipv4Bytes[0]
-                    bytes[13] = ipv4Bytes[1]
-                    bytes[14] = ipv4Bytes[2]
-                    bytes[15] = ipv4Bytes[3]
-                    return bytes
-                }
-                return nil
-            }
-            // Fall through to normal hex parsing for ::ffff:c0a8:101 format
+        return withUnsafeBytes(of: &addr) { bytes in
+            Data(bytes)
         }
-
-        // 4. Handle :: expansion - optimized parsing
-        var bytes = Data(count: 16)
-
-        if let doubleColonRange = cleanAddress.range(of: "::") {
-            // Split by :: without string allocation
-            let beforeDouble = cleanAddress[..<doubleColonRange.lowerBound]
-            let afterDouble = cleanAddress[doubleColonRange.upperBound...]
-
-            // Parse left groups
-            var leftGroups: [UInt16] = []
-            if !beforeDouble.isEmpty {
-                leftGroups = parseIPv6Groups(beforeDouble)
-                guard !leftGroups.isEmpty || beforeDouble == "" else { return nil }
-            }
-
-            // Parse right groups
-            var rightGroups: [UInt16] = []
-            if !afterDouble.isEmpty {
-                rightGroups = parseIPv6Groups(afterDouble)
-                guard !rightGroups.isEmpty || afterDouble == "" else { return nil }
-            }
-
-            let missing = 8 - leftGroups.count - rightGroups.count
-            guard missing >= 0 else { return nil }
-
-            // Write groups to bytes
-            for (idx, group) in leftGroups.enumerated() {
-                bytes[idx * 2] = UInt8(group >> 8)
-                bytes[idx * 2 + 1] = UInt8(group & 0xFF)
-            }
-            for (idx, group) in rightGroups.enumerated() {
-                let offset = (leftGroups.count + missing + idx) * 2
-                bytes[offset] = UInt8(group >> 8)
-                bytes[offset + 1] = UInt8(group & 0xFF)
-            }
-        } else {
-            // No :: - parse all 8 groups
-            let groups = parseIPv6Groups(cleanAddress[...])
-            guard groups.count == 8 else { return nil }
-
-            for (idx, group) in groups.enumerated() {
-                bytes[idx * 2] = UInt8(group >> 8)
-                bytes[idx * 2 + 1] = UInt8(group & 0xFF)
-            }
-        }
-
-        return bytes
     }
 
-    /// Normalizes an IPv6 address to expanded form (e.g., "::1" → "0:0:0:0:0:0:0:1").
+    /// Normalizes an IPv6 address to RFC 5952 compressed form (e.g., "::1", "fe80::1").
     ///
     /// This function:
     /// - Expands `::` shorthand to full 8 groups
     /// - Strips zone IDs (e.g., `%eth0`)
     /// - Handles IPv4-mapped addresses (e.g., `::ffff:192.0.2.1`)
     /// - Rejects invalid addresses (multiple `::`, malformed groups)
+    /// - Compresses the longest run of zero groups per RFC 5952
     ///
     /// - Parameter address: The IPv6 address string to normalize
-    /// - Returns: The normalized IPv6 address in expanded form, or nil if invalid or too long (>64 chars with zone)
+    /// - Returns: The normalized IPv6 address in RFC 5952 compressed form, or nil if invalid or too long (>64 chars with zone)
     static func normalizeIPv6(_ address: String) -> String? {
         // Max IPv6 address length with zone ID is ~64 chars
         guard address.count <= 64 else { return nil }
@@ -345,12 +225,72 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             groups.append(value)
         }
 
-        // Build expanded string (always 8 groups separated by colons)
-        return groups.map { String($0, radix: 16) }.joined(separator: ":")
+        return compressIPv6(groups)
+    }
+
+    /// Compresses 8 IPv6 groups into RFC 5952 form.
+    ///
+    /// RFC 5952 rules:
+    /// - Find the longest run of consecutive zero groups (minimum length 2)
+    /// - If tied, use the first occurrence
+    /// - Replace with "::"
+    /// - Leading zeros in each group are suppressed
+    static func compressIPv6(_ groups: [UInt16]) -> String {
+        // Find the longest run of consecutive zero groups
+        var bestStart = -1
+        var bestLen = 0
+        var curStart = -1
+        var curLen = 0
+
+        for i in 0..<8 {
+            if groups[i] == 0 {
+                if curStart == -1 { curStart = i }
+                curLen += 1
+                if curLen > bestLen {
+                    bestStart = curStart
+                    bestLen = curLen
+                }
+            } else {
+                curStart = -1
+                curLen = 0
+            }
+        }
+
+        // Only compress runs of 2 or more zeros (RFC 5952 §4.2.3)
+        if bestLen < 2 {
+            bestStart = -1
+            bestLen = 0
+        }
+
+        // Build compressed string
+        var parts: [String] = []
+        var i = 0
+        while i < 8 {
+            if i == bestStart {
+                // Insert "::" marker
+                if i == 0 { parts.append("") }
+                parts.append("")
+                i += bestLen
+                if i == 8 { parts.append("") }
+            } else {
+                parts.append(String(groups[i], radix: 16))
+                i += 1
+            }
+        }
+
+        return parts.joined(separator: ":")
     }
 
     private static func encodePort(_ port: UInt16) -> Data {
         Data([UInt8(port >> 8), UInt8(port & 0xFF)])
+    }
+
+    static func isValidIPv4(_ address: String) -> Bool {
+        encodeIPv4(address) != nil
+    }
+
+    static func isValidIPv6(_ address: String) -> Bool {
+        encodeIPv6(address) != nil
     }
 
     // MARK: - Decoding
@@ -363,14 +303,24 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             let addr = data.prefix(4).map { String($0) }.joined(separator: ".")
             return (.ip4(addr), 4)
 
+        case 42: // ip6zone
+            let (length, lengthBytes) = try Varint.decode(data)
+            guard length <= 1024 else { throw MultiaddrError.fieldTooLarge }
+            let len = Int(length)
+            let start = data.dropFirst(lengthBytes)
+            guard start.count >= len else { throw MultiaddrError.invalidAddress }
+            let zone = String(decoding: start.prefix(len), as: UTF8.self)
+            guard isValidZoneID(zone) else { throw MultiaddrError.invalidAddress }
+            return (.ip6zone(zone), lengthBytes + len)
+
         case 41: // ip6
             guard data.count >= 16 else { throw MultiaddrError.invalidAddress }
-            var parts: [String] = []
+            var groups: [UInt16] = []
             for i in 0..<8 {
                 let value = UInt16(data[i * 2]) << 8 | UInt16(data[i * 2 + 1])
-                parts.append(String(value, radix: 16))
+                groups.append(value)
             }
-            return (.ip6(parts.joined(separator: ":")), 16)
+            return (.ip6(compressIPv6(groups)), 16)
 
         case 6: // tcp
             guard data.count >= 2 else { throw MultiaddrError.invalidAddress }
@@ -484,14 +434,41 @@ public enum MultiaddrProtocol: Sendable, Hashable {
     }
 
     /// Creates a protocol from its name and value string.
+    static func requiresValue(name: String) -> Bool? {
+        switch name {
+        case "ip4", "ip6zone", "ip6", "tcp", "udp", "p2p", "ipfs",
+             "dns", "dns4", "dns6", "dnsaddr", "unix", "memory",
+             "certhash", "ble", "wifi-direct", "lora", "nfc":
+            return true
+        case "quic", "quic-v1", "ws", "wss", "p2p-circuit", "webrtc-direct", "webtransport":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    /// Creates a protocol from its name and value string.
     public static func parse(name: String, value: String?) throws -> MultiaddrProtocol {
         switch name {
         case "ip4":
             guard let v = value else { throw MultiaddrError.missingValue }
             guard encodeIPv4(v) != nil else { throw MultiaddrError.invalidAddress }
             return .ip4(v)
+        case "ip6zone":
+            guard let v = value else { throw MultiaddrError.missingValue }
+            guard isValidZoneID(v) else { throw MultiaddrError.invalidAddress }
+            return .ip6zone(v)
         case "ip6":
             guard let v = value else { throw MultiaddrError.missingValue }
+            if let percent = v.firstIndex(of: "%") {
+                let base = String(v[..<percent])
+                let zoneStart = v.index(after: percent)
+                let zone = String(v[zoneStart...])
+                guard !zone.isEmpty else { throw MultiaddrError.invalidAddress }
+                guard zone.utf8.count <= 32 else { throw MultiaddrError.invalidAddress }
+                guard let normalized = normalizeIPv6(base) else { throw MultiaddrError.invalidAddress }
+                return .ip6("\(normalized)%\(zone)")
+            }
             guard let normalized = normalizeIPv6(v) else { throw MultiaddrError.invalidAddress }
             return .ip6(normalized)
         case "tcp":
@@ -580,5 +557,10 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         default:
             throw MultiaddrError.unknownProtocolName(name)
         }
+    }
+
+    public static func isValidZoneID(_ zone: String) -> Bool {
+        guard !zone.isEmpty, zone.utf8.count <= 32 else { return false }
+        return !zone.contains("/")
     }
 }

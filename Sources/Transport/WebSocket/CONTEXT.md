@@ -8,7 +8,15 @@ NIOWebSocket + NIOHTTP1 を使用した WebSocket トランスポート実装。
 ## Multiaddr 形式
 - `/ip4/<host>/tcp/<port>/ws` (code 477)
 - `/ip6/<host>/tcp/<port>/ws`
-- TLS なし（`.wss` code 478 は将来追加可能）
+- `/dns|dns4|dns6/<host>/tcp/<port>/ws`（dialのみ）
+- `/ip4|ip6|dns|dns4|dns6/<host>/tcp/<port>/wss` (code 478, secure)
+- `.../p2p/<peer>` サフィックスは dial 時のみ許可（listen は拒否）
+
+### WSS の制約
+- `dial(.wss(...))` はクライアント TLS 構成が `.fullVerification` の場合のみ許可
+- `dial(.wss(...))` は DNS ホスト名のみ許可（IP リテラルは拒否）
+- `listen(.wss(...))` はサーバー TLS 構成を明示的に渡した場合のみ許可
+- `canListen(.wss(...))` は server TLS 設定がない場合 `false`
 
 ## ファイル構成
 
@@ -23,7 +31,8 @@ NIOWebSocket + NIOHTTP1 を使用した WebSocket トランスポート実装。
 ### Transport vs SecuredTransport
 - `Transport` を実装（TCP と同様）
 - `SecuredTransport` ではない（QUIC/WebRTC とは異なる）
-- WebSocket は暗号化を提供しないため、Security 層でのアップグレードが必要
+- `ws` は暗号化を提供しないため、Security 層でのアップグレードが必要
+- `wss` はトランスポートレベル TLS を提供するが、libp2p の Security 層（Noise/TLS）とは独立
 
 ### クライアント: Typed API
 - `NIOTypedWebSocketClientUpgrader<UpgradeResult>` 使用

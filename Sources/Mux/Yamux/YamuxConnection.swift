@@ -5,6 +5,8 @@ import P2PCore
 import P2PMux
 import Synchronization
 
+private let logger = Logger(label: "p2p.mux.yamux.connection")
+
 /// Threshold for compacting the read buffer (64KB)
 private let readBufferCompactThreshold = 64 * 1024
 
@@ -227,7 +229,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
         // Send GoAway (best effort)
         let frame = YamuxFrame.goAway(reason: .normal)
-        try? await sendFrame(frame)
+        await sendFrameBestEffort(frame, context: "connection close go-away")
 
         // Close all streams gracefully (sends FIN frames)
         await capture.closeAllStreamsGracefully()
@@ -253,6 +255,25 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     }
 
     // MARK: - Private
+
+    private func sendFrameBestEffort(_ frame: YamuxFrame, context: String) async {
+        do {
+            try await sendFrame(frame)
+        } catch {
+            logger.debug("Best-effort Yamux frame send failed (\(context)): \(error)")
+        }
+    }
+
+    private func sendResetBestEffort(streamID: UInt32, context: String) async {
+        let rstFrame = YamuxFrame(
+            type: .data,
+            flags: .rst,
+            streamID: streamID,
+            length: 0,
+            data: nil
+        )
+        await sendFrameBestEffort(rstFrame, context: context)
+    }
 
     private func readLoop() async {
         do {
@@ -328,14 +349,10 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
             if !isValidStreamID {
                 // Protocol violation: invalid stream ID
-                let rstFrame = YamuxFrame(
-                    type: .data,
-                    flags: .rst,
+                await sendResetBestEffort(
                     streamID: frame.streamID,
-                    length: 0,
-                    data: nil
+                    context: "invalid remote stream id"
                 )
-                try? await sendFrame(rstFrame)
                 return
             }
 
@@ -374,38 +391,26 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             switch result {
             case .rejectGoAway:
                 // GoAway received - reject new streams
-                let rstFrame = YamuxFrame(
-                    type: .data,
-                    flags: .rst,
+                await sendResetBestEffort(
                     streamID: frame.streamID,
-                    length: 0,
-                    data: nil
+                    context: "reject new stream after go-away"
                 )
-                try? await sendFrame(rstFrame)
                 return
 
             case .rejectReuse:
                 // Protocol violation: stream ID reuse
-                let rstFrame = YamuxFrame(
-                    type: .data,
-                    flags: .rst,
+                await sendResetBestEffort(
                     streamID: frame.streamID,
-                    length: 0,
-                    data: nil
+                    context: "reject reused stream id"
                 )
-                try? await sendFrame(rstFrame)
                 return
 
             case .rejectLimit:
                 // Stream limit exceeded - reject with RST
-                let rstFrame = YamuxFrame(
-                    type: .data,
-                    flags: .rst,
+                await sendResetBestEffort(
                     streamID: frame.streamID,
-                    length: 0,
-                    data: nil
+                    context: "reject stream over max concurrent limit"
                 )
-                try? await sendFrame(rstFrame)
                 return
 
             case .accept(let acceptedStream):
@@ -451,14 +456,10 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             case .bufferDelivery(let continuation, let deliveredStream):
                 guard let continuation = continuation else {
                     // No consumer available - reject stream
-                    let rstFrame = YamuxFrame(
-                        type: .data,
-                        flags: .rst,
+                    await sendResetBestEffort(
                         streamID: frame.streamID,
-                        length: 0,
-                        data: nil
+                        context: "reject inbound stream with no continuation"
                     )
-                    try? await sendFrame(rstFrame)
                     state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
                     return
                 }
@@ -480,14 +481,10 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
                 case .dropped:
                     // Buffer full - reject with RST (proper backpressure)
-                    let rstFrame = YamuxFrame(
-                        type: .data,
-                        flags: .rst,
+                    await sendResetBestEffort(
                         streamID: frame.streamID,
-                        length: 0,
-                        data: nil
+                        context: "reject dropped inbound stream"
                     )
-                    try? await sendFrame(rstFrame)
                     state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
 
                 case .terminated:
@@ -508,28 +505,20 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                 if !accepted {
                     // Protocol violation: data exceeded receive window
                     // Send RST frame and remove stream
-                    let rstFrame = YamuxFrame(
-                        type: .data,
-                        flags: .rst,
+                    await sendResetBestEffort(
                         streamID: frame.streamID,
-                        length: 0,
-                        data: nil
+                        context: "reject stream data beyond receive window"
                     )
-                    try? await sendFrame(rstFrame)
                     state.withLock { state in
                         _ = state.streams.removeValue(forKey: streamID)
                     }
                 }
             } else if !frame.flags.contains(.syn) {
                 // Data for unknown stream (not a new stream) - send RST
-                let rstFrame = YamuxFrame(
-                    type: .data,
-                    flags: .rst,
+                await sendResetBestEffort(
                     streamID: frame.streamID,
-                    length: 0,
-                    data: nil
+                    context: "reject data for unknown stream"
                 )
-                try? await sendFrame(rstFrame)
             }
         }
 
@@ -615,7 +604,11 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         /// Closes all streams gracefully (for user-initiated close).
         func closeAllStreamsGracefully() async {
             for stream in streams {
-                try? await stream.close()
+                do {
+                    try await stream.close()
+                } catch {
+                    logger.debug("Best-effort Yamux stream close failed during shutdown: \(error)")
+                }
             }
         }
     }
@@ -706,7 +699,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         }
 
         let frame = YamuxFrame.ping(opaque: pingID, ack: false)
-        try? await sendFrame(frame)
+        await sendFrameBestEffort(frame, context: "keep-alive ping")
     }
 
     private func handleKeepAliveTimeout() async {
@@ -714,6 +707,10 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         abruptShutdown(error: .keepAliveTimeout)
 
         // Close underlying connection
-        try? await underlying.close()
+        do {
+            try await underlying.close()
+        } catch {
+            logger.debug("Best-effort close failed after keep-alive timeout: \(error)")
+        }
     }
 }

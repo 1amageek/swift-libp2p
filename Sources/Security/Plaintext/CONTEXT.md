@@ -85,6 +85,7 @@ public final class PlaintextConnection: SecuredConnection, Sendable {
 | `insufficientData` | Exchangeメッセージのデコード中にデータ不足 |
 | `invalidExchange` | Exchangeメッセージに必須フィールド（peerID、pubkey）がない |
 | `peerIDMismatch` | 公開鍵から導出したPeerIDと主張されたPeerIDが不一致 |
+| `messageTooLarge` | Exchange長プレフィックスが上限（64KB）を超過 |
 
 ### SecurityErrorへのラッピング
 `PlaintextUpgrader`は`PlaintextError`を`SecurityError`にラップして投げる:
@@ -123,12 +124,12 @@ throw SecurityError.peerMismatch(expected: expected, actual: actual)
 ## 参照
 - [Plaintext 2.0 Spec](https://github.com/libp2p/specs/blob/master/plaintext/README.md)
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18, Updated 2026-02-14)
 
 ### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Unbounded handshake size | `PlaintextUpgrader.swift:readLengthPrefixedMessage` | No maximum cap on Exchange size; peer can advertise huge length causing memory/CPU DoS. Enforce max size (e.g., few KB) |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| Unbounded handshake size | `PlaintextUpgrader.swift:readLengthPrefixedMessage` | ✅ Fixed | `maxPlaintextHandshakeSize` (64KB) を導入し、超過時は `messageTooLarge` で即失敗。回帰テスト `handshakeRejectsOversizedLengthPrefix` を追加 |
 
 ### Info
 | Issue | Location | Description |

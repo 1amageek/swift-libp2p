@@ -66,8 +66,8 @@ public actor CYCLONDiscovery: DiscoveryService {
         ])
     }
 
-    /// Stops the shuffle loop and cleans up.
-    public func stop() async {
+    /// Shuts down the shuffle loop and cleans up.
+    public func shutdown() async {
         guard isStarted else { return }
         shuffleTask?.cancel()
         shuffleTask = nil

@@ -86,8 +86,8 @@ struct NodeE2ETests {
         #expect(serverPeers.contains(clientPeerID))
 
         // Cleanup
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -109,8 +109,8 @@ struct NodeE2ETests {
         let connectedPeer = try await client.connect(to: addrWithPeerID)
         #expect(connectedPeer == serverKeyPair.peerID)
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -155,8 +155,8 @@ struct NodeE2ETests {
         }
         #expect(hasConnectedEvent)
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -212,8 +212,8 @@ struct NodeE2ETests {
         #expect(messages.contains(testMessage))
 
         try await stream.close()
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -231,20 +231,34 @@ struct NodeE2ETests {
         // Register echo handler
         await server.handle("/test/echo/1.0.0") { context in
             echoCount.withLock { $0 += 1 }
-            if let data = try? await context.stream.read() {
-                try? await context.stream.write(data)
+            do {
+                let data = try await context.stream.read()
+                try await context.stream.write(data)
+            } catch {
+                // Connection closed or stream failed.
             }
-            try? await context.stream.close()
+            do {
+                try await context.stream.close()
+            } catch {
+                // Ignore close failures in test handler cleanup.
+            }
         }
 
         // Register reverse handler
         await server.handle("/test/reverse/1.0.0") { context in
             reverseCount.withLock { $0 += 1 }
-            if let data = try? await context.stream.read() {
+            do {
+                let data = try await context.stream.read()
                 let reversedBytes = Array(Data(buffer: data).reversed())
-                try? await context.stream.write(ByteBuffer(bytes: reversedBytes))
+                try await context.stream.write(ByteBuffer(bytes: reversedBytes))
+            } catch {
+                // Connection closed or stream failed.
             }
-            try? await context.stream.close()
+            do {
+                try await context.stream.close()
+            } catch {
+                // Ignore close failures in test handler cleanup.
+            }
         }
 
         try await server.start()
@@ -271,8 +285,8 @@ struct NodeE2ETests {
         #expect(echoCount.withLock { $0 } == 1)
         #expect(reverseCount.withLock { $0 } == 1)
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -303,8 +317,8 @@ struct NodeE2ETests {
         #expect(result.rtt > .zero)
         #expect(result.rtt < .seconds(5)) // Should be fast with MemoryTransport
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -343,8 +357,8 @@ struct NodeE2ETests {
             #expect(stats.avg <= stats.max)
         }
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -383,10 +397,155 @@ struct NodeE2ETests {
         let serverConnCount = await server.connectionCount
         #expect(serverConnCount == 3)
 
-        await client1.stop()
-        await client2.stop()
-        await client3.stop()
-        await server.stop()
+        await client1.shutdown()
+        await client2.shutdown()
+        await client3.shutdown()
+        await server.shutdown()
+        hub.reset()
+    }
+
+    @Test("Trim emits structured context event", .timeLimit(.minutes(1)))
+    func testTrimEmitsStructuredContextEvent() async throws {
+        let hub = MemoryHub()
+        let serverAddr = Multiaddr.memory(id: "server-trim-context")
+
+        let serverPool = PoolConfiguration(
+            limits: ConnectionLimits(
+                highWatermark: 1,
+                lowWatermark: 1,
+                maxConnectionsPerPeer: 2,
+                maxInbound: nil,
+                maxOutbound: nil,
+                gracePeriod: .zero
+            ),
+            reconnectionPolicy: .disabled,
+            idleTimeout: .seconds(2)
+        )
+        let server = makeNode(
+            name: "server-trim-context",
+            hub: hub,
+            listenAddress: serverAddr,
+            pool: serverPool
+        )
+        let client1 = makeNode(name: "client-trim-context-1", hub: hub)
+        let client2 = makeNode(name: "client-trim-context-2", hub: hub)
+
+        let trimmedContexts = Mutex<[ConnectionTrimmedContext]>([])
+        let eventTask = Task { @Sendable in
+            for await event in await server.events {
+                guard case .connection(let connectionEvent) = event else { continue }
+                guard case .trimmedWithContext(peer: _, context: let context) = connectionEvent else { continue }
+                trimmedContexts.withLock { $0.append(context) }
+                break
+            }
+        }
+
+        try await server.start()
+        try await client1.start()
+        try await client2.start()
+
+        _ = try await client1.connect(to: serverAddr)
+        _ = try await client2.connect(to: serverAddr)
+
+        var observed = false
+        for _ in 0..<60 {
+            observed = trimmedContexts.withLock { !$0.isEmpty }
+            if observed {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        eventTask.cancel()
+
+        #expect(observed)
+        let contexts = trimmedContexts.withLock { $0 }
+        #expect(!contexts.isEmpty)
+        if let context = contexts.first {
+            #expect(context.rank != nil)
+            #expect(context.tagCount == 0)
+            #expect(context.direction == .inbound)
+            #expect(context.idleDuration >= .zero)
+        }
+
+        await client1.shutdown()
+        await client2.shutdown()
+        await server.shutdown()
+        hub.reset()
+    }
+
+    @Test("Trim constrained emits summary event", .timeLimit(.minutes(1)))
+    func testTrimConstrainedEvent() async throws {
+        let hub = MemoryHub()
+        let serverAddr = Multiaddr.memory(id: "server-trim-constrained")
+
+        let serverPool = PoolConfiguration(
+            limits: ConnectionLimits(
+                highWatermark: 1,
+                lowWatermark: 1,
+                maxConnectionsPerPeer: 2,
+                maxInbound: nil,
+                maxOutbound: nil,
+                gracePeriod: .seconds(60)
+            ),
+            reconnectionPolicy: .disabled,
+            idleTimeout: .seconds(2)
+        )
+        let server = makeNode(
+            name: "server-trim-constrained",
+            hub: hub,
+            listenAddress: serverAddr,
+            pool: serverPool
+        )
+        let client1 = makeNode(name: "client-trim-constrained-1", hub: hub)
+        let client2 = makeNode(name: "client-trim-constrained-2", hub: hub)
+
+        let constrainedEvents = Mutex<[(target: Int, selected: Int, trimmable: Int, active: Int)]>([])
+        let eventTask = Task { @Sendable in
+            for await event in await server.events {
+                guard case .connection(let connectionEvent) = event else { continue }
+                guard case .trimConstrained(
+                    target: let target,
+                    selected: let selected,
+                    trimmable: let trimmable,
+                    active: let active
+                ) = connectionEvent else { continue }
+                constrainedEvents.withLock { $0.append((target, selected, trimmable, active)) }
+                break
+            }
+        }
+
+        try await server.start()
+        try await client1.start()
+        try await client2.start()
+
+        _ = try await client1.connect(to: serverAddr)
+        _ = try await client2.connect(to: serverAddr)
+
+        var observed = false
+        for _ in 0..<60 {
+            observed = constrainedEvents.withLock { !$0.isEmpty }
+            if observed {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        eventTask.cancel()
+
+        #expect(observed)
+        let events = constrainedEvents.withLock { $0 }
+        #expect(!events.isEmpty)
+        if let event = events.first {
+            #expect(event.target == 1)
+            #expect(event.selected == 0)
+            #expect(event.trimmable == 0)
+            #expect(event.active >= 2)
+        }
+
+        await client1.shutdown()
+        await client2.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -430,9 +589,9 @@ struct NodeE2ETests {
         #expect(node3Peers.contains(peer1))
         #expect(node3Peers.contains(peer2))
 
-        await node1.stop()
-        await node2.stop()
-        await node3.stop()
+        await node1.shutdown()
+        await node2.shutdown()
+        await node3.shutdown()
         hub.reset()
     }
 
@@ -465,8 +624,8 @@ struct NodeE2ETests {
         #expect(connCount == 0)
         #expect(!connPeers.contains(serverPeerID))
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -505,8 +664,8 @@ struct NodeE2ETests {
         let wasReceived = disconnectReceived.withLock { $0 }
         #expect(wasReceived)
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -540,8 +699,8 @@ struct NodeE2ETests {
             _ = try await client.connect(to: serverAddr)
         }
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -574,8 +733,8 @@ struct NodeE2ETests {
             _ = try await client.connect(to: serverAddr)
         }
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -586,36 +745,51 @@ struct NodeE2ETests {
         let hub = MemoryHub()
         let serverAddr = Multiaddr.memory(id: "server13")
 
-        // Server with maxConnectionsPerPeer = 1
-        let serverConfig = NodeConfiguration(
-            listenAddresses: [serverAddr],
-            transports: [MemoryTransport(hub: hub)],
-            security: [PlaintextUpgrader()],
-            muxers: [YamuxMuxer()],
-            pool: PoolConfiguration(
-                limits: ConnectionLimits(maxConnectionsPerPeer: 1)
-            ),
-            healthCheck: nil
+        // Client enforces maxConnectionsPerPeer = 1 and dials the same peer twice.
+        let clientPool = PoolConfiguration(
+            limits: ConnectionLimits(maxConnectionsPerPeer: 1),
+            reconnectionPolicy: .disabled,
+            idleTimeout: .seconds(300)
         )
-        let server = Node(configuration: serverConfig)
-
-        let client = makeNode(name: "client", hub: hub)
+        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr)
+        let client = makeNode(name: "client", hub: hub, pool: clientPool)
 
         try await server.start()
         try await client.start()
+        let serverPeerID = await server.peerID
+        let addrWithPeerID = try Multiaddr("\(serverAddr)/p2p/\(serverPeerID)")
 
         // First connection should succeed
-        _ = try await client.connect(to: serverAddr)
+        _ = try await client.connect(to: addrWithPeerID)
         let clientConnCount = await client.connectionCount
         #expect(clientConnCount == 1)
 
-        // Second connection to same peer should fail (from client's perspective
-        // it will succeed but server will reject at per-peer limit)
-        // Actually, the client has the connection, not the server limiting it
-        // Let me think about this test differently...
+        // Second connection to same peer should be rejected by per-peer limit.
+        do {
+            _ = try await client.connect(to: addrWithPeerID)
+            Issue.record("Expected second connect to fail with connectionLimitReached")
+        } catch NodeError.connectionLimitReached {
+            // Expected path.
+        } catch {
+            Issue.record("Expected NodeError.connectionLimitReached, got \(error)")
+        }
 
-        await client.stop()
-        await server.stop()
+        // Existing connection must remain healthy and singular.
+        let finalClientConnCount = await client.connectionCount
+        #expect(finalClientConnCount == 1)
+
+        var serverSettledToSingleConnection = false
+        for _ in 0..<20 {
+            if await server.connectionCount == 1 {
+                serverSettledToSingleConnection = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(serverSettledToSingleConnection)
+
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -648,7 +822,11 @@ struct NodeE2ETests {
 
                 try await context.stream.close()
             } catch {
-                try? await context.stream.close()
+                do {
+                    try await context.stream.close()
+                } catch {
+                    // Ignore close failures in test handler cleanup.
+                }
             }
         }
 
@@ -675,8 +853,8 @@ struct NodeE2ETests {
         #expect(String(buffer: response2) == "Goodbye, Bob!")
 
         try await stream.close()
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 
@@ -695,10 +873,17 @@ struct NodeE2ETests {
         // Simple echo handler
         await server.handle("/test/concurrent/1.0.0") { context in
             requestCount.withLock { $0 += 1 }
-            if let data = try? await context.stream.read() {
-                try? await context.stream.write(data)
+            do {
+                let data = try await context.stream.read()
+                try await context.stream.write(data)
+            } catch {
+                // Connection closed or stream failed.
             }
-            try? await context.stream.close()
+            do {
+                try await context.stream.close()
+            } catch {
+                // Ignore close failures in test handler cleanup.
+            }
         }
 
         try await server.start()
@@ -734,8 +919,8 @@ struct NodeE2ETests {
         try await Task.sleep(for: .milliseconds(100))
         #expect(requestCount.withLock { $0 } == 5)
 
-        await client.stop()
-        await server.stop()
+        await client.shutdown()
+        await server.shutdown()
         hub.reset()
     }
 }

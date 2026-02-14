@@ -16,6 +16,23 @@ import QUICCrypto
 /// TLS 1.3 provider for libp2p using swift-quic's pure Swift implementation
 public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
 
+    // MARK: - Certificate Material
+
+    /// TLS certificate material used by the QUIC TLS provider.
+    ///
+    /// This is used by transports that need stable certificate hashes
+    /// (for example WebTransport `/certhash` verification) and by
+    /// certificate rotation logic.
+    public struct CertificateMaterial: Sendable {
+        public let certificateDER: Data
+        public let signingKey: SigningKey
+
+        public init(certificateDER: Data, signingKey: SigningKey) {
+            self.certificateDER = certificateDER
+            self.signingKey = signingKey
+        }
+    }
+
     // MARK: - Properties
 
     /// The underlying TLS 1.3 handler from swift-quic
@@ -41,19 +58,43 @@ public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
     ///   - expectedRemotePeerID: If set, the handshake will fail if the remote
     ///     peer's ID doesn't match (used for dial security)
     /// - Throws: `TLSCertificateError` if certificate generation fails
-    public init(localKeyPair: KeyPair, expectedRemotePeerID: PeerID? = nil) throws {
+    public convenience init(localKeyPair: KeyPair, expectedRemotePeerID: PeerID? = nil) throws {
+        try self.init(
+            localKeyPair: localKeyPair,
+            expectedRemotePeerID: expectedRemotePeerID,
+            alpnProtocols: ["libp2p"],
+            certificateMaterial: nil
+        )
+    }
+
+    /// Creates a new libp2p TLS provider with custom ALPN and certificate material.
+    ///
+    /// - Parameters:
+    ///   - localKeyPair: The libp2p identity key pair
+    ///   - expectedRemotePeerID: Optional expected remote peer ID
+    ///   - alpnProtocols: ALPN protocols to advertise (default is `["libp2p"]`)
+    ///   - certificateMaterial: Optional pre-generated certificate material
+    /// - Throws: `TLSCertificateError` if certificate generation or setup fails
+    public init(
+        localKeyPair: KeyPair,
+        expectedRemotePeerID: PeerID? = nil,
+        alpnProtocols: [String] = ["libp2p"],
+        certificateMaterial: CertificateMaterial? = nil
+    ) throws {
         self.localKeyPair = localKeyPair
 
-        // Generate libp2p certificate
-        let (certificateDER, signingKey) = try LibP2PCertificateHelper.generateCertificate(
-            keyPair: localKeyPair
-        )
+        let material: CertificateMaterial
+        if let provided = certificateMaterial {
+            material = provided
+        } else {
+            material = try Self.generateCertificateMaterial(for: localKeyPair)
+        }
 
         // Configure TLS with libp2p settings
         var config = TLSConfiguration()
-        config.signingKey = signingKey
-        config.certificateChain = [certificateDER]
-        config.alpnProtocols = ["libp2p"]
+        config.signingKey = material.signingKey
+        config.certificateChain = [material.certificateDER]
+        config.alpnProtocols = alpnProtocols
         config.verifyPeer = false  // We do our own verification via libp2p extension
         config.allowSelfSigned = true
 
@@ -74,6 +115,24 @@ public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
         // Create the underlying TLS handler
         self.tlsHandler = TLS13Handler(configuration: config)
         self.state = Mutex(ProviderState(expectedRemotePeerID: expectedRemotePeerID))
+    }
+
+    /// Generates certificate material suitable for `SwiftQUICTLSProvider`.
+    ///
+    /// - Parameters:
+    ///   - keyPair: The libp2p identity key pair.
+    ///   - validityDays: Certificate validity period in days (default: 365).
+    /// - Returns: TLS certificate material.
+    /// - Throws: `TLSCertificateError` if generation fails.
+    public static func generateCertificateMaterial(
+        for keyPair: KeyPair,
+        validityDays: Int = 365
+    ) throws -> CertificateMaterial {
+        let (certificateDER, signingKey) = try LibP2PCertificateHelper.generateCertificate(
+            keyPair: keyPair,
+            validityDays: validityDays
+        )
+        return CertificateMaterial(certificateDER: certificateDER, signingKey: signingKey)
     }
 
     // MARK: - libp2p Certificate Validation
@@ -147,6 +206,11 @@ public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
     public var remotePeerID: PeerID? {
         // Single source of truth: certificate validator callback result
         tlsHandler.validatedPeerInfo as? PeerID
+    }
+
+    /// The remote peer certificate chain (DER), available after certificate message processing.
+    public var peerCertificates: [Data]? {
+        tlsHandler.peerCertificates
     }
 
     // MARK: - TLS13Provider Protocol

@@ -24,10 +24,31 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
     ///
     /// - Parameter protocols: The protocol components
     /// - Throws: `MultiaddrError.tooManyComponents` if components exceed limit
+    /// - Throws: `MultiaddrError.invalidAddress` when IP protocol values are invalid
     public init(protocols: [MultiaddrProtocol]) throws {
         guard protocols.count <= multiaddrMaxComponents else {
             throw MultiaddrError.tooManyComponents(count: protocols.count, max: multiaddrMaxComponents)
         }
+
+        for proto in protocols {
+            switch proto {
+            case .ip4(let address):
+                guard MultiaddrProtocol.isValidIPv4(address) else {
+                    throw MultiaddrError.invalidAddress
+                }
+            case .ip6zone(let zone):
+                guard MultiaddrProtocol.isValidZoneID(zone) else {
+                    throw MultiaddrError.invalidAddress
+                }
+            case .ip6(let address):
+                guard MultiaddrProtocol.isValidIPv6(address) else {
+                    throw MultiaddrError.invalidAddress
+                }
+            default:
+                continue
+            }
+        }
+
         self.protocols = protocols
     }
 
@@ -69,18 +90,17 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
             }
 
             let name = String(parts[index])
+            guard let requiresValue = MultiaddrProtocol.requiresValue(name: name) else {
+                throw MultiaddrError.unknownProtocolName(name)
+            }
 
-            // Check if this protocol has a value
             let value: String?
-            if index + 1 < parts.count {
-                let nextPart = String(parts[index + 1])
-                // If the next part looks like a protocol name, this one has no value
-                if Self.isProtocolName(nextPart) {
-                    value = nil
-                } else {
-                    value = nextPart
-                    index += 1
+            if requiresValue {
+                guard index + 1 < parts.count else {
+                    throw MultiaddrError.missingValue
                 }
+                value = String(parts[index + 1])
+                index += 1
             } else {
                 value = nil
             }
@@ -249,17 +269,6 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         return self
     }
 
-    // MARK: - Helpers
-
-    private static let protocolNames: Set<String> = [
-        "ip4", "ip6", "tcp", "udp", "quic", "quic-v1", "ws", "wss",
-        "p2p", "ipfs", "dns", "dns4", "dns6", "dnsaddr", "unix", "memory",
-        "p2p-circuit", "webrtc-direct", "webtransport", "certhash"
-    ]
-
-    private static func isProtocolName(_ string: String) -> Bool {
-        protocolNames.contains(string)
-    }
 }
 
 public enum MultiaddrError: Error, Equatable {

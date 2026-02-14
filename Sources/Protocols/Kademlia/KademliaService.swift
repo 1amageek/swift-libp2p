@@ -616,7 +616,11 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
     private func handleStream(_ context: StreamContext) async {
         // Client mode: reject all inbound queries
         guard shouldAcceptInbound() else {
-            try? await context.stream.close()
+            do {
+                try await context.stream.close()
+            } catch {
+                logger.debug("Kademlia: failed to close inbound stream in client mode: \(error)")
+            }
             return
         }
 
@@ -634,7 +638,11 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             }
 
             guard data.readableBytes <= maxMessageSize else {
-                try? await stream.close()
+                do {
+                    try await stream.close()
+                } catch {
+                    logger.debug("Kademlia: failed to close oversized inbound stream: \(error)")
+                }
                 return
             }
 
@@ -651,7 +659,11 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             logger.warning("Kademlia stream handler error from \(context.remotePeer): \(error)")
         }
 
-        try? await context.stream.close()
+        do {
+            try await context.stream.close()
+        } catch {
+            logger.debug("Kademlia: failed to close handled inbound stream: \(error)")
+        }
     }
 
     private func handleMessage(_ message: KademliaMessage, from peer: PeerID) async throws -> KademliaMessage {
@@ -1228,11 +1240,19 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
                 let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
                 return try KademliaProtobuf.decode(Data(buffer: responseData))
             }
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch {
+                logger.debug("Kademlia: failed to close outbound stream after successful request: \(error)")
+            }
             return response
         } catch {
             // Ensure stream is closed on timeout or any error
-            try? await stream.close()
+            do {
+                try await stream.close()
+            } catch {
+                logger.debug("Kademlia: failed to close outbound stream after request failure: \(error)")
+            }
             throw error
         }
     }

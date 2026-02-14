@@ -15,10 +15,14 @@ public actor MDNSDiscovery: DiscoveryService {
 
     private let localPeerID: PeerID
     private let configuration: MDNSConfiguration
+    private let advertisedServiceName: String
     private var browser: ServiceBrowser?
     private var advertiser: ServiceAdvertiser?
 
-    private var knownServices: [String: Service] = [:]
+    private var knownServicesByPeerID: [PeerID: Service] = [:]
+    private var peerIDByServiceName: [String: PeerID] = [:]
+    private var serviceNameByPeerID: [PeerID: String] = [:]
+    private var lastBrowserError: DNSError?
     private var sequenceNumber: UInt64 = 0
     private var isStarted = false
     private var forwardTask: Task<Void, Never>?
@@ -38,6 +42,12 @@ public actor MDNSDiscovery: DiscoveryService {
     ) {
         self.localPeerID = localPeerID
         self.configuration = configuration
+        switch configuration.peerNameStrategy {
+        case .random:
+            self.advertisedServiceName = "p2p-\(UUID().uuidString.lowercased())"
+        case .peerID:
+            self.advertisedServiceName = localPeerID.description
+        }
     }
 
     deinit {
@@ -78,6 +88,7 @@ public actor MDNSDiscovery: DiscoveryService {
         try await browser.browse(for: configuration.fullServiceType)
 
         isStarted = true
+        lastBrowserError = nil
 
         // Start event forwarding task
         forwardTask = Task { [weak self] in
@@ -86,22 +97,25 @@ public actor MDNSDiscovery: DiscoveryService {
         }
     }
 
-    /// Stops the mDNS discovery service.
-    public func stop() async {
+    /// Shuts down the mDNS discovery service.
+    public func shutdown() async {
         guard isStarted else { return }
 
         forwardTask?.cancel()
         forwardTask = nil
 
-        await browser?.stop()
-        await advertiser?.stop()
+        await browser?.shutdown()
+        await advertiser?.shutdown()
 
         // Clear references to allow new instances on next start()
         browser = nil
         advertiser = nil
 
         isStarted = false
-        knownServices.removeAll()
+        knownServicesByPeerID.removeAll()
+        peerIDByServiceName.removeAll()
+        serviceNameByPeerID.removeAll()
+        lastBrowserError = nil
         sequenceNumber = 0
         // Note: Don't shutdown broadcaster here - it can be reused
     }
@@ -121,7 +135,8 @@ public actor MDNSDiscovery: DiscoveryService {
             peerID: localPeerID,
             addresses: addresses,
             port: port,
-            configuration: configuration
+            configuration: configuration,
+            serviceName: advertisedServiceName
         )
 
         try await advertiser.register(service)
@@ -129,11 +144,13 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Finds candidates for a specific peer.
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
-        let targetName = peer.description
-
-        if let service = knownServices[targetName] {
+        if let service = knownServicesByPeerID[peer] {
             let candidate = try PeerIDServiceCodec.decode(service: service, observer: localPeerID)
             return [candidate]
+        }
+
+        if let browserError = lastBrowserError {
+            throw MDNSDiscoveryError.browserError(browserError)
         }
 
         return []
@@ -163,14 +180,7 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Returns all known peer IDs.
     public func knownPeers() async -> [PeerID] {
-        knownServices.compactMap { (name, _) in
-            do {
-                return try PeerID(string: name)
-            } catch {
-                // Service names are validated at storage time; this should not occur
-                return nil
-            }
-        }.filter { $0 != localPeerID }
+        Array(knownServicesByPeerID.keys).filter { $0 != localPeerID }
     }
 
     /// Returns all observations as a stream (for general subscription).
@@ -195,9 +205,8 @@ public actor MDNSDiscovery: DiscoveryService {
             case .removed(let service):
                 handleServiceRemoved(service)
 
-            case .error:
-                // Log error but continue
-                break
+            case .error(let error):
+                lastBrowserError = error
             }
         }
     }
@@ -215,7 +224,13 @@ public actor MDNSDiscovery: DiscoveryService {
                 observer: localPeerID,
                 sequenceNumber: sequenceNumber
             )
-            knownServices[service.name] = service
+            lastBrowserError = nil
+            if let previousName = serviceNameByPeerID[observation.subject], previousName != service.name {
+                peerIDByServiceName.removeValue(forKey: previousName)
+            }
+            knownServicesByPeerID[observation.subject] = service
+            peerIDByServiceName[service.name] = observation.subject
+            serviceNameByPeerID[observation.subject] = service.name
             broadcaster.emit(observation)
         } catch {
             // Invalid service name - not a valid libp2p peer, skip
@@ -234,7 +249,13 @@ public actor MDNSDiscovery: DiscoveryService {
                 observer: localPeerID,
                 sequenceNumber: sequenceNumber
             )
-            knownServices[service.name] = service
+            lastBrowserError = nil
+            if let previousName = serviceNameByPeerID[observation.subject], previousName != service.name {
+                peerIDByServiceName.removeValue(forKey: previousName)
+            }
+            knownServicesByPeerID[observation.subject] = service
+            peerIDByServiceName[service.name] = observation.subject
+            serviceNameByPeerID[observation.subject] = service.name
             broadcaster.emit(observation)
         } catch {
             // Invalid service name - not a valid libp2p peer, skip
@@ -244,20 +265,45 @@ public actor MDNSDiscovery: DiscoveryService {
     private func handleServiceRemoved(_ service: Service) {
         guard service.name != localPeerID.description else { return }
 
-        knownServices.removeValue(forKey: service.name)
         sequenceNumber += 1
+        lastBrowserError = nil
 
-        do {
-            let observation = try PeerIDServiceCodec.toObservation(
-                service: service,
-                kind: .unreachable,
-                observer: localPeerID,
-                sequenceNumber: sequenceNumber
-            )
-            broadcaster.emit(observation)
-        } catch {
-            // Invalid service name - already removed from known services
+        var removedPeerID = peerIDByServiceName.removeValue(forKey: service.name)
+
+        if removedPeerID == nil {
+            do {
+                removedPeerID = try PeerIDServiceCodec.inferPeerID(from: service)
+            } catch {
+                // Cannot identify removed peer
+            }
         }
+
+        guard let peerID = removedPeerID else {
+            return
+        }
+
+        serviceNameByPeerID.removeValue(forKey: peerID)
+        let knownService = knownServicesByPeerID.removeValue(forKey: peerID)
+
+        var hints: [Multiaddr] = []
+        if let knownService {
+            do {
+                let candidate = try PeerIDServiceCodec.decode(service: knownService, observer: localPeerID)
+                hints = candidate.addresses
+            } catch {
+                hints = []
+            }
+        }
+
+        let observation = Observation(
+            subject: peerID,
+            observer: localPeerID,
+            kind: .unreachable,
+            hints: hints,
+            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
+            sequenceNumber: sequenceNumber
+        )
+        broadcaster.emit(observation)
     }
 
     private func extractPort(from addresses: [Multiaddr]) -> UInt16? {
@@ -285,4 +331,6 @@ public enum MDNSDiscoveryError: Error, Sendable {
     case alreadyStarted
     /// Failed to parse peer ID from service name.
     case invalidPeerID(String)
+    /// Service browser reported an operational error.
+    case browserError(DNSError)
 }

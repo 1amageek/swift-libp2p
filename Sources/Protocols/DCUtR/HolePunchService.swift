@@ -310,7 +310,7 @@ public final class HolePunchService: EventEmitting, Sendable {
 
         // Ensure cleanup on exit: remove peer from active set
         defer {
-            serviceState.withLock { state in
+            _ = serviceState.withLock { state in
                 state.activePunches.remove(peer)
             }
         }

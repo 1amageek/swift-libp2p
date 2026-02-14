@@ -46,7 +46,7 @@ Tag(1B) + PeerIDLen(2B) + PeerID(var) + Nonce(4B) + EnvelopeLen(2B) + Envelope(v
 ### Concurrency Model
 - All types use `Class + Mutex` (not Actor) per project convention
 - `EventBroadcaster` for BeaconDiscovery (Discovery layer = multi-consumer)
-- `func stop() async` lifecycle (Discovery layer convention)
+- `func shutdown() async` lifecycle (Discovery layer convention)
 
 ## File Organization
 

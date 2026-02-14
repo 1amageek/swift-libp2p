@@ -70,8 +70,8 @@ public final class HeartbeatManager: Sendable {
         }
     }
 
-    /// Stops the heartbeat.
-    public func stop() {
+    /// Shuts down the heartbeat.
+    public func shutdown() {
         state.withLock { state in
             state.isRunning = false
             state.task?.cancel()

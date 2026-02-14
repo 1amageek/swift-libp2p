@@ -93,10 +93,10 @@ public protocol DiscoveryService: Sendable {
     /// Stream of all observations.
     var observations: AsyncStream<Observation> { get }
 
-    /// Stops the discovery service and releases operational resources.
+    /// Shuts down the discovery service and releases operational resources.
     ///
-    /// After calling `stop()`, the service should not emit new observations.
+    /// After calling `shutdown()`, the service should not emit new observations.
     /// This method is idempotent and safe to call multiple times.
-    /// Restart after `stop()` is not currently supported.
-    func stop() async
+    /// Restart after `shutdown()` is not currently supported.
+    func shutdown() async
 }

@@ -26,7 +26,7 @@ SwiftNIOを使用したTCPトランスポートの実装。
 | コンポーネント | 責務 |
 |-------------|------|
 | `TCPReadHandler` | ChannelInboundHandler - チャネル読み込みハンドリング |
-| `TCPAcceptHandler` | ChannelInboundHandler - 接続受け入れハンドリング |
+| `HandlerCollector` | listener 遅延バインディング時の handler 収集と callback 伝播 |
 
 ## 実装ノート
 
@@ -67,19 +67,19 @@ public final class TCPTransport: Transport, Sendable {
 - 接続タイムアウトの適切な設定
 - バックプレッシャー処理
 
-## Codex Review (2026-01-18)
+## Codex Review (2026-01-18, Updated 2026-02-14)
 
 ### Warning
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Concurrent read deadlock | `TCPConnection.swift:37-51` | `read()` overwrites `readContinuation` without checking if one is already waiting; earlier callers can hang forever |
-| Concurrent accept deadlock | `TCPListener.swift:61-74` | `accept()` overwrites `acceptContinuation` without guarding; earlier acceptors may hang |
-| Buffered data loss on close | `TCPConnection.swift:37-47,90-98` | `channelInactive()` sets `isClosed=true`; subsequent `read()` throws even if `readBuffer` has data |
-| Unbounded inbound buffering | `TCPConnection.swift:9-11`, `TCPListener.swift:37-44` | Memory/DoS risk: accumulates all inbound bytes with `autoRead=true` and no backpressure |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| Concurrent read deadlock | `TCPConnection.swift` | ✅ Fixed | `readWaiters` queue に変更し、同時 `read()` を FIFO で処理 |
+| Concurrent accept deadlock | `TCPListener.swift` | ✅ Fixed | `acceptWaiters` queue に変更し、同時 `accept()` を FIFO で処理 |
+| Buffered data loss on close | `TCPConnection.swift` | ✅ Fixed | `read()` が close 判定前に `readBuffer` を返すため、close 直前の受信データを回収可能 |
+| Unbounded inbound buffering | `TCPConnection.swift` | ✅ Fixed | `tcpMaxReadBufferSize` 上限を導入し、オーバーフロー時は接続を閉じて waiters を失敗復帰 |
 
 ### Info
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Pending connections leak | `TCPListener.swift:79-88,91-98` | `close()` doesn't close pending accepted-but-unhandled connections |
-| No local isClosed check in write | `TCPConnection.swift:56-60` | Relies on NIO to throw; consider early reject for clearer errors |
-| Port 0 fallback | `TCPConnection.swift:143-154` | `toMultiaddr()` falls back to port 0 if nil; can produce invalid multiaddr |
+| Issue | Location | Status | Description |
+|-------|----------|--------|-------------|
+| Pending connections leak | `TCPListener.swift` | ✅ Fixed | `close()` が pending 接続も順次 close してリークを防止 |
+| No local isClosed check in write | `TCPConnection.swift` | ✅ Fixed | `write()` 冒頭でローカル close 状態を検査し即時エラー化 |
+| Port 0 fallback | `TCPConnection.swift` | ✅ Fixed | `SocketAddress.toMultiaddr()` は port 欠落時に `nil` を返し、不正 `/tcp/0` 生成を回避 |

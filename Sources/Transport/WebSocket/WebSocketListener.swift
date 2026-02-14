@@ -6,6 +6,7 @@ import NIOCore
 import NIOPosix
 import NIOHTTP1
 import NIOWebSocket
+@preconcurrency import NIOSSL
 import Synchronization
 import os
 
@@ -45,45 +46,33 @@ public final class WebSocketListener: Listener, Sendable {
     static func bind(
         host: String,
         port: UInt16,
-        group: EventLoopGroup
+        group: EventLoopGroup,
+        secure: Bool = false,
+        sslContext: NIOSSLContext? = nil
     ) async throws -> WebSocketListener {
         wsListenerLogger.debug("bind(): Binding to \(host):\(port)")
 
         let connectionCallback = ConnectionCallback()
 
+        if secure, sslContext == nil {
+            throw TransportError.unsupportedOperation("WSS listener requires TLS context")
+        }
+
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { [connectionCallback] channel in
-                let wsUpgrader = NIOWebSocketServerUpgrader(
-                    maxFrameSize: wsMaxFrameSize,
-                    shouldUpgrade: { channel, head in
-                        channel.eventLoop.makeSucceededFuture(HTTPHeaders())
-                    },
-                    upgradePipelineHandler: { [connectionCallback] channel, head in
-                        let handler = WebSocketFrameHandler(isClient: false)
-                        return channel.pipeline.addHandler(handler).map {
-                            let localAddr = channel.localAddress?.toWebSocketMultiaddr()
-                            let remoteAddr = channel.remoteAddress?.toWebSocketMultiaddr()
-                                ?? Multiaddr(uncheckedProtocols: [.ip4("0.0.0.0"), .tcp(0), .ws])
-
-                            let connection = WebSocketConnection(
-                                channel: channel,
-                                isClient: false,
-                                localAddress: localAddr,
-                                remoteAddress: remoteAddr
-                            )
-                            handler.setConnection(connection)
-                            connectionCallback.deliver(connection)
-                        }
+                return channel.eventLoop.makeCompletedFuture {
+                    if let sslContext {
+                        let sslHandler = NIOSSLServerHandler(context: sslContext)
+                        try channel.pipeline.syncOperations.addHandler(sslHandler)
                     }
-                )
-
-                return channel.pipeline.configureHTTPServerPipeline(
-                    withServerUpgrade: (
-                        upgraders: [wsUpgrader],
-                        completionHandler: { _ in }
+                }.flatMap {
+                    Self.configureWebSocketPipeline(
+                        channel: channel,
+                        connectionCallback: connectionCallback,
+                        secure: secure
                     )
-                )
+                }
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(.autoRead, value: true)
@@ -91,8 +80,10 @@ public final class WebSocketListener: Listener, Sendable {
         let serverChannel = try await bootstrap.bind(host: host, port: Int(port)).get()
 
         guard let socketAddress = serverChannel.localAddress,
-              let localAddr = socketAddress.toWebSocketMultiaddr() else {
-            throw TransportError.unsupportedAddress(Multiaddr.ws(host: host, port: port))
+              let localAddr = socketAddress.toWebSocketMultiaddr(secure: secure) else {
+            throw TransportError.unsupportedAddress(
+                secure ? Multiaddr.wss(host: host, port: port) : Multiaddr.ws(host: host, port: port)
+            )
         }
 
         wsListenerLogger.debug("bind(): Bound successfully to \(localAddr)")
@@ -108,6 +99,43 @@ public final class WebSocketListener: Listener, Sendable {
         wsListenerLogger.debug("bind(): Listener ready")
 
         return listener
+    }
+
+    private static func configureWebSocketPipeline(
+        channel: Channel,
+        connectionCallback: ConnectionCallback,
+        secure: Bool
+    ) -> EventLoopFuture<Void> {
+        let wsUpgrader = NIOWebSocketServerUpgrader(
+            maxFrameSize: wsMaxFrameSize,
+            shouldUpgrade: { channel, _ in
+                channel.eventLoop.makeSucceededFuture(HTTPHeaders())
+            },
+            upgradePipelineHandler: { [connectionCallback] channel, _ in
+                let handler = WebSocketFrameHandler(isClient: false)
+                return channel.pipeline.addHandler(handler).map {
+                    let localAddr = channel.localAddress?.toWebSocketMultiaddr(secure: secure)
+                    let remoteAddr = channel.remoteAddress?.toWebSocketMultiaddr(secure: secure)
+                        ?? Multiaddr(uncheckedProtocols: [.ip4("0.0.0.0"), .tcp(0), secure ? .wss : .ws])
+
+                    let connection = WebSocketConnection(
+                        channel: channel,
+                        isClient: false,
+                        localAddress: localAddr,
+                        remoteAddress: remoteAddr
+                    )
+                    handler.setConnection(connection)
+                    connectionCallback.deliver(connection)
+                }
+            }
+        )
+
+        return channel.pipeline.configureHTTPServerPipeline(
+            withServerUpgrade: (
+                upgraders: [wsUpgrader],
+                completionHandler: { _ in }
+            )
+        )
     }
 
     public func accept() async throws -> any RawConnection {

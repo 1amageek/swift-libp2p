@@ -18,10 +18,39 @@ enum WebSocketUpgradeResult: Sendable {
     case notUpgraded
 }
 
+/// TLS configuration for secure WebSocket (`wss`) transport.
+public struct WebSocketTLSConfiguration: Sendable {
+    /// Client-side TLS configuration used by `dial(_:)` with `/wss`.
+    public var client: TLSConfiguration
+
+    /// Server-side TLS configuration used by `listen(_:)` with `/wss`.
+    /// If nil, `listen(.wss(...))` fails with an explicit error.
+    public var server: TLSConfiguration?
+
+    /// Creates a TLS configuration for WebSocket transport.
+    public init(
+        client: TLSConfiguration = WebSocketTLSConfiguration.defaultSecureClientConfiguration(),
+        server: TLSConfiguration? = nil
+    ) {
+        self.client = client
+        self.server = server
+    }
+
+    /// Secure default for `wss`: certificate chain + hostname verification.
+    public static func defaultSecureClientConfiguration() -> TLSConfiguration {
+        var config = TLSConfiguration.makeClientConfiguration()
+        config.certificateVerification = .fullVerification
+        return config
+    }
+}
+
 /// Errors specific to WebSocket transport.
 public enum WebSocketTransportError: Error {
     case upgradeFailed
     case tlsConfigurationFailed(String)
+    case secureListenerRequiresServerTLSConfiguration
+    case insecureClientTLSConfiguration
+    case secureDialRequiresDNSHostname
 }
 
 /// Maximum WebSocket frame size (1MB), matching the read buffer limit.
@@ -34,12 +63,13 @@ let wsMaxFrameSize = 1024 * 1024
 ///
 /// Multiaddr formats:
 /// - `/ip4/<host>/tcp/<port>/ws` - Insecure WebSocket
-/// - `/ip4/<host>/tcp/<port>/wss` - Secure WebSocket (TLS)
-/// - `/ip4/<host>/tcp/<port>/tls/ws` - TLS + WebSocket (alternative format)
+/// - `/ip4|ip6|dns|dns4|dns6/<host>/tcp/<port>/ws` - Insecure WebSocket
+/// - `/ip4|ip6|dns|dns4|dns6/<host>/tcp/<port>/wss` - Secure WebSocket (TLS)
 public final class WebSocketTransport: Transport, Sendable {
 
     private let group: EventLoopGroup
     private let ownsGroup: Bool
+    private let tlsConfiguration: WebSocketTLSConfiguration
 
     /// The protocols this transport supports.
     ///
@@ -49,8 +79,14 @@ public final class WebSocketTransport: Transport, Sendable {
         [
             ["ip4", "tcp", "ws"],
             ["ip6", "tcp", "ws"],
+            ["dns", "tcp", "ws"],
+            ["dns4", "tcp", "ws"],
+            ["dns6", "tcp", "ws"],
             ["ip4", "tcp", "wss"],
             ["ip6", "tcp", "wss"],
+            ["dns", "tcp", "wss"],
+            ["dns4", "tcp", "wss"],
+            ["dns6", "tcp", "wss"],
         ]
     }
 
@@ -58,12 +94,28 @@ public final class WebSocketTransport: Transport, Sendable {
     public init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
         self.ownsGroup = true
+        self.tlsConfiguration = WebSocketTLSConfiguration()
+    }
+
+    /// Creates a WebSocketTransport with custom TLS configuration.
+    public init(tlsConfiguration: WebSocketTLSConfiguration) {
+        self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+        self.ownsGroup = true
+        self.tlsConfiguration = tlsConfiguration
     }
 
     /// Creates a WebSocketTransport with an existing EventLoopGroup.
     public init(group: EventLoopGroup) {
         self.group = group
         self.ownsGroup = false
+        self.tlsConfiguration = WebSocketTLSConfiguration()
+    }
+
+    /// Creates a WebSocketTransport with an existing EventLoopGroup and custom TLS settings.
+    public init(group: EventLoopGroup, tlsConfiguration: WebSocketTLSConfiguration) {
+        self.group = group
+        self.ownsGroup = false
+        self.tlsConfiguration = tlsConfiguration
     }
 
     deinit {
@@ -77,12 +129,16 @@ public final class WebSocketTransport: Transport, Sendable {
     }
 
     public func dial(_ address: Multiaddr) async throws -> any RawConnection {
-        guard let (host, port, isSecure) = extractHostPort(from: address) else {
+        guard let (host, port, isSecure, isIPAddress) = extractHostPort(
+            from: address,
+            allowDNS: true,
+            allowPeerID: true
+        ) else {
             throw TransportError.unsupportedAddress(address)
         }
 
         if isSecure {
-            return try await dialSecure(host: host, port: port, address: address)
+            return try await dialSecure(host: host, port: port, isIPAddress: isIPAddress, address: address)
         } else {
             return try await dialInsecure(host: host, port: port, address: address)
         }
@@ -100,25 +156,43 @@ public final class WebSocketTransport: Transport, Sendable {
                 }
             }
 
-        return try await completeUpgrade(upgradeResult: upgradeResult, address: address)
+        return try await completeUpgrade(
+            upgradeResult: upgradeResult,
+            address: address,
+            isSecure: false
+        )
     }
 
     /// Dial secure WebSocket (wss://)
-    private func dialSecure(host: String, port: UInt16, address: Multiaddr) async throws -> any RawConnection {
+    private func dialSecure(
+        host: String,
+        port: UInt16,
+        isIPAddress: Bool,
+        address: Multiaddr
+    ) async throws -> any RawConnection {
         wsTransportLogger.debug("dial(): Connecting to wss://\(host):\(port)")
 
+        // Enforce strict certificate + hostname verification for secure WebSocket.
+        if case .fullVerification = tlsConfiguration.client.certificateVerification {
+            // expected
+        } else {
+            throw WebSocketTransportError.insecureClientTLSConfiguration
+        }
+
+        // Hostname verification requires a DNS hostname.
+        // IP literals are rejected for secure dial to avoid unverifiable TLS identity.
+        if isIPAddress {
+            throw WebSocketTransportError.secureDialRequiresDNSHostname
+        }
+
         // Configure TLS
-        var tlsConfig = TLSConfiguration.makeClientConfiguration()
-        tlsConfig.certificateVerification = .none  // For interop testing; production should verify
+        let tlsConfig = tlsConfiguration.client
         let sslContext: NIOSSLContext
         do {
             sslContext = try NIOSSLContext(configuration: tlsConfig)
         } catch {
             throw WebSocketTransportError.tlsConfigurationFailed(String(describing: error))
         }
-
-        // Check if host is an IP address (SNI doesn't work with IP addresses)
-        let isIPAddress = host.contains(":") || host.split(separator: ".").allSatisfy { Int($0) != nil }
 
         let upgradeResult: EventLoopFuture<WebSocketUpgradeResult> = try await ClientBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
@@ -127,12 +201,7 @@ public final class WebSocketTransport: Transport, Sendable {
                     // Add TLS handler first
                     let sslHandler: NIOSSLClientHandler
                     do {
-                        if isIPAddress {
-                            // IP addresses cannot use SNI
-                            sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: nil)
-                        } else {
-                            sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
-                        }
+                        sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
                     } catch {
                         throw WebSocketTransportError.tlsConfigurationFailed(String(describing: error))
                     }
@@ -143,7 +212,11 @@ public final class WebSocketTransport: Transport, Sendable {
                 }
             }
 
-        return try await completeUpgrade(upgradeResult: upgradeResult, address: address)
+        return try await completeUpgrade(
+            upgradeResult: upgradeResult,
+            address: address,
+            isSecure: true
+        )
     }
 
     /// Configure WebSocket upgrade pipeline
@@ -193,11 +266,12 @@ public final class WebSocketTransport: Transport, Sendable {
     /// Complete WebSocket upgrade and return connection
     private func completeUpgrade(
         upgradeResult: EventLoopFuture<WebSocketUpgradeResult>,
-        address: Multiaddr
+        address: Multiaddr,
+        isSecure: Bool
     ) async throws -> any RawConnection {
         switch try await upgradeResult.get() {
         case .websocket(let channel, let handler):
-            let localAddr = channel.localAddress?.toWebSocketMultiaddr()
+            let localAddr = channel.localAddress?.toWebSocketMultiaddr(secure: isSecure)
             let connection = WebSocketConnection(
                 channel: channel,
                 isClient: true,
@@ -215,30 +289,83 @@ public final class WebSocketTransport: Transport, Sendable {
     }
 
     public func listen(_ address: Multiaddr) async throws -> any Listener {
-        guard let (host, port, isSecure) = extractHostPort(from: address) else {
+        guard let (host, port, isSecure, _) = extractHostPort(
+            from: address,
+            allowDNS: false,
+            allowPeerID: false
+        ) else {
             throw TransportError.unsupportedAddress(address)
         }
 
-        // WSS listener requires certificate configuration
         if isSecure {
-            wsTransportLogger.warning("WSS listener not yet implemented, using insecure WS")
+            guard let serverTLS = tlsConfiguration.server else {
+                throw WebSocketTransportError.secureListenerRequiresServerTLSConfiguration
+            }
+
+            let sslContext: NIOSSLContext
+            do {
+                sslContext = try NIOSSLContext(configuration: serverTLS)
+            } catch {
+                throw WebSocketTransportError.tlsConfigurationFailed(String(describing: error))
+            }
+
+            return try await WebSocketListener.bind(
+                host: host,
+                port: port,
+                group: group,
+                secure: true,
+                sslContext: sslContext
+            )
         }
 
         let listener = try await WebSocketListener.bind(
             host: host,
             port: port,
-            group: group
+            group: group,
+            secure: false,
+            sslContext: nil
         )
 
         return listener
     }
 
     public func canDial(_ address: Multiaddr) -> Bool {
-        extractHostPort(from: address) != nil
+        guard let (_, _, isSecure, isIPAddress) = extractHostPort(
+            from: address,
+            allowDNS: true,
+            allowPeerID: true
+        ) else {
+            return false
+        }
+
+        if isSecure {
+            if isIPAddress {
+                return false
+            }
+            if case .fullVerification = tlsConfiguration.client.certificateVerification {
+                // expected
+            } else {
+                return false
+            }
+        }
+
+        return true
     }
 
     public func canListen(_ address: Multiaddr) -> Bool {
-        extractHostPort(from: address) != nil
+        guard let (_, _, isSecure, _) = extractHostPort(
+            from: address,
+            allowDNS: false,
+            allowPeerID: false
+        ) else {
+            return false
+        }
+
+        if isSecure {
+            return tlsConfiguration.server != nil
+        }
+
+        return true
     }
 
     // MARK: - Private helpers
@@ -249,23 +376,60 @@ public final class WebSocketTransport: Transport, Sendable {
     /// Supported formats:
     /// - `/ip4/<host>/tcp/<port>/ws` - insecure
     /// - `/ip4/<host>/tcp/<port>/wss` - secure (TLS)
+    /// - `/dns|dns4|dns6/<host>/tcp/<port>/ws` - insecure (dial only)
+    /// - `/dns|dns4|dns6/<host>/tcp/<port>/wss` - secure (dial only)
+    /// - `.../p2p/<peer>` suffix is accepted only for dial/canDial.
     ///
     /// Note: `/tls/ws` format is NOT supported because `tls` is not a valid
     /// Multiaddr protocol.
-    private func extractHostPort(from address: Multiaddr) -> (String, UInt16, Bool)? {
-        guard let ip = address.ipAddress,
-              let port = address.tcpPort
-        else { return nil }
-
-        let hasWS = address.protocols.contains { if case .ws = $0 { return true } else { return false } }
-        let hasWSS = address.protocols.contains { if case .wss = $0 { return true } else { return false } }
-
-        if hasWSS {
-            return (ip, port, true)
-        } else if hasWS {
-            return (ip, port, false)
+    private func extractHostPort(
+        from address: Multiaddr,
+        allowDNS: Bool,
+        allowPeerID: Bool
+    ) -> (host: String, port: UInt16, isSecure: Bool, isIPAddress: Bool)? {
+        let protocols = address.protocols
+        guard protocols.count >= 3, protocols.count <= 4 else {
+            return nil
         }
 
-        return nil
+        if protocols.count == 4 {
+            guard allowPeerID else { return nil }
+            guard case .p2p = protocols[3] else {
+                return nil
+            }
+        }
+
+        let host: String
+        let isIPAddress: Bool
+        switch protocols[0] {
+        case .ip4(let ip):
+            host = ip
+            isIPAddress = true
+        case .ip6(let ip):
+            host = ip
+            isIPAddress = true
+        case .dns(let domain), .dns4(let domain), .dns6(let domain):
+            guard allowDNS else { return nil }
+            host = domain
+            isIPAddress = false
+        default:
+            return nil
+        }
+
+        guard case .tcp(let port) = protocols[1] else {
+            return nil
+        }
+
+        let isSecure: Bool
+        switch protocols[2] {
+        case .ws:
+            isSecure = false
+        case .wss:
+            isSecure = true
+        default:
+            return nil
+        }
+
+        return (host, port, isSecure, isIPAddress)
     }
 }

@@ -115,7 +115,7 @@ mutating func writeMessageA() -> Data {
     // Per Noise spec, WriteMessage always calls EncryptAndHash on the payload.
     // For message A, there's no payload (empty), but we still need to call
     // encryptAndHash(empty) which does mixHash(empty ciphertext).
-    _ = try? symmetricState.encryptAndHash(Data())  // ← 追加
+    _ = try symmetricState.encryptAndHash(Data())  // ← 追加
 
     return ephemeralPub
 }
@@ -276,8 +276,11 @@ let requestHead = HTTPRequestHead(
 
 ### サポートする Multiaddr フォーマット
 - `/ip4/<host>/tcp/<port>/ws` - 非セキュア WebSocket
+- `/ip6/<host>/tcp/<port>/ws` - 非セキュア WebSocket
+- `/dns|dns4|dns6/<host>/tcp/<port>/ws` - 非セキュア WebSocket（dialのみ）
 - `/ip4/<host>/tcp/<port>/wss` - セキュア WebSocket (TLS)
-- `/ip4/<host>/tcp/<port>/tls/ws` - TLS + WebSocket（代替フォーマット）
+- `/ip6/<host>/tcp/<port>/wss` - セキュア WebSocket (TLS)
+- `/dns|dns4|dns6/<host>/tcp/<port>/wss` - セキュア WebSocket（dialのみ）
 
 ### 実装詳細
 
@@ -308,17 +311,22 @@ public var protocols: [[String]] {
     [
         ["ip4", "tcp", "ws"],
         ["ip6", "tcp", "ws"],
+        ["dns", "tcp", "ws"],
+        ["dns4", "tcp", "ws"],
+        ["dns6", "tcp", "ws"],
         ["ip4", "tcp", "wss"],       // 追加
         ["ip6", "tcp", "wss"],       // 追加
-        ["ip4", "tcp", "tls", "ws"], // 追加
-        ["ip6", "tcp", "tls", "ws"], // 追加
+        ["dns", "tcp", "wss"],       // 追加
+        ["dns4", "tcp", "wss"],      // 追加
+        ["dns6", "tcp", "wss"],      // 追加
     ]
 }
 
 private func dialSecure(host: String, port: UInt16, address: Multiaddr) async throws -> any RawConnection {
     // TLS 設定
     var tlsConfig = TLSConfiguration.makeClientConfiguration()
-    tlsConfig.certificateVerification = .none  // Interop テスト用
+    tlsConfig.certificateVerification = .fullVerification
+    tlsConfig.trustRoots = .certificates(serverCertificates)
     let sslContext = try NIOSSLContext(configuration: tlsConfig)
 
     // TLS ハンドラを先に追加、その後 WebSocket アップグレード
@@ -333,8 +341,10 @@ private func dialSecure(host: String, port: UInt16, address: Multiaddr) async th
 - go-libp2p WebSocket Interop: ✅ 全4テストパス
 
 ### 制限事項
-- WSS Listener は未実装（サーバー証明書設定が必要）
-- 証明書検証は無効化（Interop テスト用）
+- WSS Listener は実装済み（サーバー TLS 設定が必須）
+- WSS dial は `certificateVerification == .fullVerification` を要求
+- WSS dial は DNS ホスト名のみ許可（IP リテラル拒否）
+- Interop では go ノードの自己署名証明書を trust roots に注入して接続
 
 ### 関連ファイル
 - `Sources/Transport/WebSocket/WebSocketTransport.swift` - WSS dial 実装
@@ -356,22 +366,20 @@ NIOSSLExtraError.cannotUseIPAddressInSNI: IP addresses cannot validly be used fo
 ### 根本原因
 TLS の SNI（Server Name Indication）拡張は IP アドレスをサポートしていない（RFC 6066）。`NIOSSLClientHandler` に IP アドレスを `serverHostname` として渡すとエラーになる。
 
-### 解決策
-接続先が IP アドレスかどうかを判定し、IP アドレスの場合は `serverHostname: nil` を設定:
+### 現在の方針（更新）
+IP アドレス接続を許可するとホスト名検証が成立しないため、`wss` は DNS ホスト名のみ許可:
 
 ```swift
-// Check if host is an IP address (SNI doesn't work with IP addresses)
-let isIPAddress = host.contains(":") || host.split(separator: ".").allSatisfy { Int($0) != nil }
-
-if isIPAddress {
-    sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: nil)
+if case .fullVerification = tlsConfiguration.client.certificateVerification {
+    // OK
 } else {
-    sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
+    throw WebSocketTransportError.insecureClientTLSConfiguration
 }
 ```
 
 ### 修正されたファイル
-- `Sources/Transport/WebSocket/WebSocketTransport.swift` - IP アドレス検出と SNI 無効化
+- `Sources/Transport/WebSocket/WebSocketTransport.swift` - DNS 必須 + fullVerification 必須
+- `Tests/Interop/Harnesses/GoWSSHarness.swift` - `/dns4/localhost/.../wss` に変更
 
 ---
 

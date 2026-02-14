@@ -33,10 +33,12 @@ public enum LibP2PCertificateHelper {
     /// - Is valid for 1 year
     ///
     /// - Parameter keyPair: The libp2p identity key pair
+    /// - Parameter validityDays: Certificate validity period in days (default: 365)
     /// - Returns: Tuple of (certificate DER, signing key)
     /// - Throws: Error if certificate generation fails
     public static func generateCertificate(
-        keyPair: KeyPair
+        keyPair: KeyPair,
+        validityDays: Int = 365
     ) throws -> (certificateDER: Data, signingKey: SigningKey) {
 
         // 1. Generate ephemeral P-256 key pair for TLS
@@ -62,7 +64,8 @@ public enum LibP2PCertificateHelper {
         let certificateDER = try buildCertificate(
             signingKey: signingKey,
             spkiDER: spkiDER,
-            libp2pExtension: signedKeyDER
+            libp2pExtension: signedKeyDER,
+            validityDays: validityDays
         )
 
         return (certificateDER, signingKey)
@@ -164,7 +167,8 @@ public enum LibP2PCertificateHelper {
     private static func buildCertificate(
         signingKey: SigningKey,
         spkiDER: Data,
-        libp2pExtension: Data
+        libp2pExtension: Data,
+        validityDays: Int
     ) throws -> Data {
         // TBSCertificate ::= SEQUENCE {
         //     version [0] EXPLICIT INTEGER DEFAULT v1,
@@ -198,8 +202,9 @@ public enum LibP2PCertificateHelper {
 
         // Validity
         let now = Date()
+        let boundedValidityDays = max(1, validityDays)
         let notBefore = now.addingTimeInterval(-3600)  // 1 hour ago
-        let notAfter = now.addingTimeInterval(365 * 24 * 3600)  // 1 year
+        let notAfter = now.addingTimeInterval(TimeInterval(boundedValidityDays * 24 * 3600))
         let validity = ASN1Builder.sequence([
             ASN1Builder.utcTime(notBefore),
             ASN1Builder.utcTime(notAfter)

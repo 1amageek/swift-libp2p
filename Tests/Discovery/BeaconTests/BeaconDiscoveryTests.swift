@@ -12,21 +12,21 @@ struct BeaconDiscoveryTests {
         return BeaconDiscovery(configuration: config)
     }
 
-    @Test("start and stop", .timeLimit(.minutes(1)))
-    func startAndStop() async {
+    @Test("start and shutdown", .timeLimit(.minutes(1)))
+    func startAndShutdown() async {
         let service = makeService()
         service.start()
         // Should not crash on double start
         service.start()
-        await service.stop()
+        await service.shutdown()
     }
 
-    @Test("stop is idempotent", .timeLimit(.minutes(1)))
-    func stopIsIdempotent() async {
+    @Test("shutdown is idempotent", .timeLimit(.minutes(1)))
+    func shutdownIsIdempotent() async {
         let service = makeService()
         service.start()
-        await service.stop()
-        await service.stop() // second stop should not crash
+        await service.shutdown()
+        await service.shutdown() // second shutdown should not crash
     }
 
     @Test("encode beacon tier1")
@@ -135,7 +135,7 @@ struct BeaconDiscoveryTests {
             physicalFingerprint: nil
         )
         service.processDiscovery(discovery)
-        await service.stop()
+        await service.shutdown()
     }
 
     @Test("process discovery invalid beacon")

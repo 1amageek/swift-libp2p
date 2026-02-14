@@ -25,7 +25,11 @@ public final class MemoryKeyBook: KeyBook, Sendable {
         let stored = state.withLock { $0[peer] }
         if let stored { return stored }
         // Fallback: extract from identity-encoded PeerID
-        return try? peer.extractPublicKey()
+        do {
+            return try peer.extractPublicKey()
+        } catch {
+            return nil
+        }
     }
 
     public func setPublicKey(_ key: PublicKey, for peer: PeerID) async throws {

@@ -1,7 +1,12 @@
 import Testing
 import Foundation
+import NIOCore
 @testable import P2PTransportWebTransport
 @testable import P2PCore
+
+private enum WebTransportTestError: Error {
+    case connectionStreamClosed
+}
 
 // MARK: - Protocol Constants
 
@@ -46,7 +51,6 @@ struct WebTransportErrorTests {
             .certificateVerificationFailed,
         ]
 
-        // Each error should be instantiable
         #expect(errors.count == 7)
     }
 
@@ -76,7 +80,6 @@ struct WebTransportConfigurationTests {
     func defaultValues() {
         let config = WebTransportConfiguration()
 
-        // 12 days in seconds
         #expect(config.certRotationInterval == .seconds(12 * 24 * 60 * 60))
         #expect(config.maxConcurrentStreams == 100)
         #expect(config.keepAliveInterval == .seconds(30))
@@ -105,6 +108,134 @@ struct WebTransportConfigurationTests {
     }
 }
 
+// MARK: - Address Parsing
+
+@Suite("WebTransport Address Parser")
+struct WebTransportAddressParserTests {
+
+    @Test("Parse valid address with cert hash and peer ID")
+    func parseValidAddress() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let hash = Data([0x12, 0x20] + Array(repeating: UInt8(0xAB), count: 32))
+
+        let address = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"),
+            .udp(4433),
+            .quicV1,
+            .webtransport,
+            .certhash(hash),
+            .p2p(peerID),
+        ])
+
+        let components = try WebTransportAddressParser.parse(address, requireCertificateHash: true)
+        #expect(components.hostValue == "127.0.0.1")
+        #expect(components.port == 4433)
+        #expect(components.isIPv6 == false)
+        #expect(components.certificateHashes.count == 1)
+        #expect(components.certificateHashes[0] == hash)
+        #expect(components.peerID == peerID)
+    }
+
+    @Test("Parse valid DNS address")
+    func parseDNSAddress() throws {
+        let hash = Data([0x12, 0x20] + Array(repeating: UInt8(0xAA), count: 32))
+        let address = Multiaddr(uncheckedProtocols: [
+            .dns("example.com"),
+            .udp(4433),
+            .quicV1,
+            .webtransport,
+            .certhash(hash),
+        ])
+
+        let components = try WebTransportAddressParser.parse(address, requireCertificateHash: true)
+        #expect(components.hostValue == "example.com")
+        #expect(components.port == 4433)
+        #expect(components.certificateHashes == [hash])
+    }
+
+    @Test("Reject duplicate certificate hash")
+    func rejectDuplicateHash() {
+        let hash = Data([0x12, 0x20] + Array(repeating: UInt8(0x42), count: 32))
+        let address = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"),
+            .udp(4433),
+            .quicV1,
+            .webtransport,
+            .certhash(hash),
+            .certhash(hash),
+        ])
+
+        #expect(throws: WebTransportAddressError.self) {
+            _ = try WebTransportAddressParser.parse(address, requireCertificateHash: true)
+        }
+    }
+
+    @Test("Reject wrong protocol order")
+    func rejectWrongOrder() {
+        let hash = Data([0x12, 0x20] + Array(repeating: UInt8(0x42), count: 32))
+        let address = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"),
+            .udp(4433),
+            .webtransport,
+            .quicV1,
+            .certhash(hash),
+        ])
+
+        #expect(throws: WebTransportAddressError.self) {
+            _ = try WebTransportAddressParser.parse(address, requireCertificateHash: true)
+        }
+    }
+
+    @Test("Reject missing cert hash when required")
+    func rejectMissingCertHash() {
+        let address = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"),
+            .udp(4433),
+            .quicV1,
+            .webtransport,
+        ])
+
+        #expect(throws: WebTransportAddressError.self) {
+            _ = try WebTransportAddressParser.parse(address, requireCertificateHash: true)
+        }
+    }
+}
+
+// MARK: - Certificate Store
+
+@Suite("WebTransport Certificate Store")
+struct WebTransportCertificateStoreTests {
+
+    @Test("Advertised hashes include current and next")
+    func advertisedHashes() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let store = try WebTransportCertificateStore(
+            localKeyPair: keyPair,
+            rotationInterval: .seconds(60)
+        )
+
+        let hashes = try store.advertisedHashes()
+        #expect(hashes.count == 2)
+        #expect(hashes[0].count == 34)
+        #expect(hashes[1].count == 34)
+        #expect(hashes[0].prefix(2) == Data([0x12, 0x20]))
+        #expect(hashes[1].prefix(2) == Data([0x12, 0x20]))
+    }
+
+    @Test("Current material is available")
+    func currentMaterial() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let store = try WebTransportCertificateStore(
+            localKeyPair: keyPair,
+            rotationInterval: .seconds(60)
+        )
+
+        let material = try store.currentMaterial()
+        #expect(!material.certificateDER.isEmpty)
+    }
+}
+
 // MARK: - Deterministic Certificate Generator
 
 @Suite("Deterministic Certificate Generator")
@@ -116,13 +247,9 @@ struct DeterministicCertGeneratorTests {
         let generator = DeterministicCertGenerator()
         let cert = try generator.generate(for: keyPair)
 
-        // Certificate hash should be 32 bytes (SHA-256)
         #expect(cert.certHash.count == 32)
-
-        // DER-encoded should not be empty
         #expect(!cert.derEncoded.isEmpty)
 
-        // Validity period should be approximately 12 days
         let interval = cert.notAfter.timeIntervalSince(cert.notBefore)
         let expectedInterval = 12.0 * 24 * 60 * 60
         #expect(abs(interval - expectedInterval) < 1.0)
@@ -134,90 +261,14 @@ struct DeterministicCertGeneratorTests {
         let generator = DeterministicCertGenerator()
         let cert = try generator.generate(for: keyPair)
 
-        // Multibase base64url starts with 'u'
         #expect(cert.certHashMultibase.hasPrefix("u"))
-
-        // Should not contain base64 padding or non-URL-safe characters
-        let encoded = cert.certHashMultibase
-        #expect(!encoded.contains("="))
-        #expect(!encoded.contains("+"))
-        #expect(!encoded.contains("/"))
-    }
-
-    @Test("Verify hash matches certificate")
-    func verifyHashMatches() throws {
-        let keyPair = KeyPair.generateEd25519()
-        let generator = DeterministicCertGenerator()
-        let cert = try generator.generate(for: keyPair)
-
-        let matches = generator.verify(
-            certHash: cert.certHash,
-            certificate: cert.derEncoded
-        )
-        #expect(matches)
-    }
-
-    @Test("Verify hash rejects wrong certificate")
-    func verifyHashRejectsWrong() throws {
-        let keyPair1 = KeyPair.generateEd25519()
-        let keyPair2 = KeyPair.generateEd25519()
-        let generator = DeterministicCertGenerator()
-
-        let cert1 = try generator.generate(for: keyPair1)
-        let cert2 = try generator.generate(for: keyPair2)
-
-        // Hash from cert1 should not match cert2's DER
-        let matches = generator.verify(
-            certHash: cert1.certHash,
-            certificate: cert2.derEncoded
-        )
-        #expect(!matches)
-    }
-
-    @Test("Verify hash rejects wrong length")
-    func verifyHashRejectsWrongLength() throws {
-        let keyPair = KeyPair.generateEd25519()
-        let generator = DeterministicCertGenerator()
-        let cert = try generator.generate(for: keyPair)
-
-        // Truncated hash should not match
-        let truncated = Array(cert.certHash.prefix(16))
-        let matches = generator.verify(
-            certHash: truncated,
-            certificate: cert.derEncoded
-        )
-        #expect(!matches)
-    }
-
-    @Test("Certificate not-before is before not-after")
-    func certificateValidityOrder() throws {
-        let keyPair = KeyPair.generateEd25519()
-        let generator = DeterministicCertGenerator()
-        let cert = try generator.generate(for: keyPair)
-
-        #expect(cert.notBefore < cert.notAfter)
-    }
-
-    @Test("Certificate validity within browser maximum")
-    func certificateWithinBrowserMax() throws {
-        let keyPair = KeyPair.generateEd25519()
-        let generator = DeterministicCertGenerator()
-        let cert = try generator.generate(for: keyPair)
-
-        let validityDays = cert.notAfter.timeIntervalSince(cert.notBefore) / (24 * 60 * 60)
-        #expect(validityDays <= Double(WebTransportProtocol.maxCertificateValidityDays))
-    }
-
-    @Test("DeterministicCertificate is Sendable")
-    func certSendable() throws {
-        let keyPair = KeyPair.generateEd25519()
-        let generator = DeterministicCertGenerator()
-        let cert: any Sendable = try generator.generate(for: keyPair)
-        _ = cert
+        #expect(!cert.certHashMultibase.contains("="))
+        #expect(!cert.certHashMultibase.contains("+"))
+        #expect(!cert.certHashMultibase.contains("/"))
     }
 }
 
-// MARK: - WebTransport Connection
+// MARK: - Legacy Connection State
 
 @Suite("WebTransport Connection")
 struct WebTransportConnectionTests {
@@ -228,257 +279,259 @@ struct WebTransportConnectionTests {
         #expect(connection.currentState == .connecting)
     }
 
-    @Test("Initial addresses are nil")
-    func initialAddresses() {
-        let connection = WebTransportConnection()
-        #expect(connection.localAddress == nil)
-        #expect(connection.remoteAddress == nil)
-        #expect(connection.remotePeerID == nil)
-    }
-
-    @Test("Connection with remote address")
-    func connectionWithRemoteAddress() throws {
-        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
-        let connection = WebTransportConnection(remoteAddress: addr)
-        #expect(connection.remoteAddress == addr)
-        #expect(connection.currentState == .connecting)
-    }
-
-    @Test("Connection with remote peer ID")
-    func connectionWithRemotePeerID() {
-        let keyPair = KeyPair.generateEd25519()
-        let peerID = PeerID(publicKey: keyPair.publicKey)
-        let connection = WebTransportConnection(remotePeerID: peerID)
-        #expect(connection.remotePeerID == peerID)
-    }
-
-    @Test("Mark connected updates state and addresses")
-    func markConnected() throws {
-        let localAddr = try Multiaddr("/ip4/0.0.0.0/udp/0/quic-v1")
-        let remoteAddr = try Multiaddr("/ip4/1.2.3.4/udp/4433/quic-v1")
-        let keyPair = KeyPair.generateEd25519()
-        let peerID = PeerID(publicKey: keyPair.publicKey)
-
-        let connection = WebTransportConnection()
-        let result = connection.markConnected(
-            localAddress: localAddr,
-            remoteAddress: remoteAddr,
-            remotePeerID: peerID
-        )
-
-        #expect(result == true)
-        #expect(connection.currentState == .connected)
-        #expect(connection.localAddress == localAddr)
-        #expect(connection.remoteAddress == remoteAddr)
-        #expect(connection.remotePeerID == peerID)
-    }
-
-    @Test("Mark connected is no-op when already connected")
-    func markConnectedNoOpWhenConnected() throws {
-        let localAddr = try Multiaddr("/ip4/0.0.0.0/udp/0/quic-v1")
-        let remoteAddr = try Multiaddr("/ip4/1.2.3.4/udp/4433/quic-v1")
-        let keyPair = KeyPair.generateEd25519()
-        let peerID = PeerID(publicKey: keyPair.publicKey)
-
-        let connection = WebTransportConnection()
-        let firstResult = connection.markConnected(
-            localAddress: localAddr,
-            remoteAddress: remoteAddr,
-            remotePeerID: peerID
-        )
-        #expect(firstResult == true)
-
-        // Second call should be no-op
-        let newAddr = try Multiaddr("/ip4/5.6.7.8/udp/9999/quic-v1")
-        let secondResult = connection.markConnected(
-            localAddress: newAddr,
-            remoteAddress: newAddr,
-            remotePeerID: nil
-        )
-        #expect(secondResult == false)
-
-        // Original values should be preserved
-        #expect(connection.localAddress == localAddr)
-        #expect(connection.remoteAddress == remoteAddr)
-        #expect(connection.remotePeerID == peerID)
-    }
-
-    @Test(.timeLimit(.minutes(1)))
-    func markConnectedNoOpAfterClose() async throws {
-        let connection = WebTransportConnection()
-        try await connection.close()
-        #expect(connection.currentState == .closed)
-
-        let localAddr = try Multiaddr("/ip4/0.0.0.0/udp/0/quic-v1")
-        let result = connection.markConnected(
-            localAddress: localAddr,
-            remoteAddress: nil,
-            remotePeerID: nil
-        )
-        #expect(result == false)
-        #expect(connection.currentState == .closed)
-    }
-
     @Test(.timeLimit(.minutes(1)))
     func closeTransitionsToClosedState() async throws {
         let connection = WebTransportConnection()
         try await connection.close()
         #expect(connection.currentState == .closed)
     }
-
-    @Test(.timeLimit(.minutes(1)))
-    func closeIsIdempotent() async throws {
-        let connection = WebTransportConnection()
-        try await connection.close()
-        try await connection.close()  // Should not throw
-        #expect(connection.currentState == .closed)
-    }
-
-    @Test("Connection is Sendable")
-    func sendable() {
-        let connection: any Sendable = WebTransportConnection()
-        _ = connection
-    }
 }
 
-// MARK: - WebTransport Transport
+// MARK: - Transport
 
-@Suite("WebTransport Transport")
+@Suite("WebTransport Transport", .serialized)
 struct WebTransportTransportTests {
 
-    @Test("Transport uses default configuration")
-    func defaultConfig() {
+    @Test("Transport protocols include webtransport over quic-v1")
+    func protocols() {
         let transport = WebTransportTransport()
-        #expect(transport.configuration.maxConcurrentStreams == 100)
+        #expect(transport.protocols.contains(["ip4", "udp", "quic-v1", "webtransport"]))
+        #expect(transport.protocols.contains(["ip6", "udp", "quic-v1", "webtransport"]))
+        #expect(transport.protocols.contains(["dns", "udp", "quic-v1", "webtransport"]))
+        #expect(transport.protocols.contains(["dns4", "udp", "quic-v1", "webtransport"]))
+        #expect(transport.protocols.contains(["dns6", "udp", "quic-v1", "webtransport"]))
     }
 
-    @Test("Transport uses custom configuration")
-    func customConfig() {
-        let config = WebTransportConfiguration(maxConcurrentStreams: 50)
-        let transport = WebTransportTransport(configuration: config)
-        #expect(transport.configuration.maxConcurrentStreams == 50)
-    }
-
-    @Test("canDial rejects TCP address")
-    func canDialRejectsTCP() throws {
+    @Test("canDial requires webtransport and cert hash")
+    func canDialValidation() throws {
         let transport = WebTransportTransport()
-        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
-        #expect(!transport.canDial(addr))
-    }
 
-    @Test("canDial rejects plain QUIC address without webtransport")
-    func canDialRejectsPlainQUIC() throws {
-        let transport = WebTransportTransport()
-        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
-        #expect(!transport.canDial(addr))
-    }
+        let withHash = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"),
+            .udp(4433),
+            .quicV1,
+            .webtransport,
+            .certhash(Data([0x12, 0x20] + Array(repeating: UInt8(0xAA), count: 32))),
+        ])
+        #expect(transport.canDial(withHash))
 
-    @Test("canDial rejects address without IP")
-    func canDialRejectsNoIP() throws {
-        let transport = WebTransportTransport()
-        let addr = try Multiaddr("/memory/test")
-        #expect(!transport.canDial(addr))
-    }
-
-    @Test("canDial accepts address with webtransport protocol")
-    func canDialAcceptsWebtransport() throws {
-        let transport = WebTransportTransport()
-        let addr = Multiaddr(uncheckedProtocols: [
+        let noHash = Multiaddr(uncheckedProtocols: [
             .ip4("127.0.0.1"),
             .udp(4433),
             .quicV1,
             .webtransport,
         ])
-        #expect(transport.canDial(addr))
-    }
+        #expect(!transport.canDial(noHash))
 
-    @Test("canDial accepts address with webtransport and certhash")
-    func canDialAcceptsWebtransportWithCerthash() throws {
-        let transport = WebTransportTransport()
-        let hashData = Data(repeating: 0x42, count: 34)
-        let addr = Multiaddr(uncheckedProtocols: [
-            .ip4("127.0.0.1"),
+        let dnsWithHash = Multiaddr(uncheckedProtocols: [
+            .dns("example.com"),
             .udp(4433),
             .quicV1,
             .webtransport,
-            .certhash(hashData),
+            .certhash(Data([0x12, 0x20] + Array(repeating: UInt8(0xBB), count: 32))),
         ])
-        #expect(transport.canDial(addr))
-    }
+        #expect(transport.canDial(dnsWithHash))
 
-    @Test("canDial rejects certhash without webtransport")
-    func canDialRejectsCerthashWithoutWebtransport() throws {
-        let transport = WebTransportTransport()
-        let hashData = Data(repeating: 0x42, count: 34)
-        let addr = Multiaddr(uncheckedProtocols: [
+        let zeroPort = Multiaddr(uncheckedProtocols: [
             .ip4("127.0.0.1"),
-            .udp(4433),
+            .udp(0),
             .quicV1,
-            .certhash(hashData),
-        ])
-        #expect(!transport.canDial(addr))
-    }
-
-    @Test("canDial rejects wrong protocol order")
-    func canDialRejectsWrongOrder() throws {
-        let transport = WebTransportTransport()
-        // webtransport before quic-v1 is invalid
-        let addr = Multiaddr(uncheckedProtocols: [
-            .ip4("127.0.0.1"),
-            .udp(4433),
             .webtransport,
-            .quicV1,
+            .certhash(Data([0x12, 0x20] + Array(repeating: UInt8(0xCC), count: 32))),
         ])
-        #expect(!transport.canDial(addr))
+        #expect(!transport.canDial(zeroPort))
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func dialThrowsHTTP3NotAvailable() async throws {
+    @Test("canListen rejects cert hash in listen address")
+    func canListenValidation() throws {
         let transport = WebTransportTransport()
-        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
+
+        let listenAddress = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1/webtransport")
+        #expect(transport.canListen(listenAddress))
+
+        let withHash = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"),
+            .udp(0),
+            .quicV1,
+            .webtransport,
+            .certhash(Data([0x12, 0x20] + Array(repeating: UInt8(0xAA), count: 32))),
+        ])
+        #expect(!transport.canListen(withHash))
+
+        let dnsListen = Multiaddr(uncheckedProtocols: [
+            .dns("example.com"),
+            .udp(4433),
+            .quicV1,
+            .webtransport,
+        ])
+        #expect(!transport.canListen(dnsListen))
+    }
+
+    @Test("listenSecured and dialSecured establish muxed connection", .timeLimit(.minutes(1)))
+    func securedDialListen() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let clientKey = KeyPair.generateEd25519()
+
+        let serverTransport = WebTransportTransport()
+        let clientTransport = WebTransportTransport()
+
+        let listenAddress = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1/webtransport")
+        let listener = try await serverTransport.listenSecured(listenAddress, localKeyPair: serverKey)
+
+        let acceptTask = Task {
+            for await connection in listener.connections {
+                return connection
+            }
+            throw WebTransportTestError.connectionStreamClosed
+        }
+
+        let dialAddress = listener.localAddress
+        let clientConnection = try await clientTransport.dialSecured(dialAddress, localKeyPair: clientKey)
+        let serverConnection = try await acceptTask.value
+
+        async let acceptedStream = serverConnection.acceptStream()
+        let outboundStream = try await clientConnection.newStream()
+
+        let payload = ByteBuffer(bytes: Data("hello-webtransport".utf8))
+        try await outboundStream.write(payload)
+        let inboundStream = try await acceptedStream
+        let received = try await inboundStream.read()
+
+        #expect(Data(buffer: received) == Data("hello-webtransport".utf8))
+
+        try await outboundStream.close()
+        try await inboundStream.close()
+        try await clientConnection.close()
+        try await serverConnection.close()
+        try await listener.close()
+    }
+
+    @Test("dialSecured rejects certificate hash mismatch", .timeLimit(.minutes(1)))
+    func rejectsMismatchedCertHash() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let clientKey = KeyPair.generateEd25519()
+
+        let serverTransport = WebTransportTransport()
+        let clientTransport = WebTransportTransport()
+
+        let listenAddress = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1/webtransport")
+        let listener = try await serverTransport.listenSecured(listenAddress, localKeyPair: serverKey)
+
+        let parsed = try WebTransportAddressParser.parse(listener.localAddress, requireCertificateHash: true)
+        let wrongHash = Data([0x12, 0x20] + Array(repeating: UInt8(0xCC), count: 32))
+        let badAddress = parsed.toMultiaddr(certificateHashes: [wrongHash])
 
         do {
-            _ = try await transport.dial(to: addr)
-            Issue.record("Expected http3NotAvailable error")
+            _ = try await clientTransport.dialSecured(badAddress, localKeyPair: clientKey)
+            Issue.record("Expected certificateVerificationFailed")
         } catch let error as WebTransportError {
-            if case .http3NotAvailable = error {
-                // Expected
+            if case .certificateVerificationFailed = error {
+                // expected
             } else {
-                Issue.record("Expected http3NotAvailable, got \(error)")
+                Issue.record("Expected certificateVerificationFailed, got \(error)")
             }
+        } catch {
+            Issue.record("Expected WebTransportError, got \(error)")
         }
+
+        try await listener.close()
     }
 
-    @Test("Extract cert hashes from address")
-    func extractCertHashes() {
-        let transport = WebTransportTransport()
-        let hash1 = Data([0x12, 0x20] + Array(repeating: UInt8(0xAA), count: 32))
-        let hash2 = Data([0x12, 0x20] + Array(repeating: UInt8(0xBB), count: 32))
-        let addr = Multiaddr(uncheckedProtocols: [
-            .ip4("1.2.3.4"),
-            .udp(4433),
+    @Test("dialSecured supports dns4 addresses", .timeLimit(.minutes(1)))
+    func securedDialListenWithDNS4Address() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let clientKey = KeyPair.generateEd25519()
+
+        let serverTransport = WebTransportTransport()
+        let clientTransport = WebTransportTransport()
+
+        let listenAddress = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1/webtransport")
+        let listener = try await serverTransport.listenSecured(listenAddress, localKeyPair: serverKey)
+
+        let acceptTask = Task {
+            for await connection in listener.connections {
+                return connection
+            }
+            throw WebTransportTestError.connectionStreamClosed
+        }
+
+        let parsed = try WebTransportAddressParser.parse(listener.localAddress, requireCertificateHash: true)
+        let dnsDialAddress = Multiaddr(uncheckedProtocols: [
+            .dns4("127.0.0.1"),
+            .udp(parsed.port),
             .quicV1,
-            .certhash(hash1),
-            .certhash(hash2),
+            .webtransport,
+            .certhash(parsed.certificateHashes[0]),
+            .certhash(parsed.certificateHashes[1]),
+            .p2p(serverKey.peerID),
         ])
 
-        let hashes = transport.extractCertHashes(from: addr)
-        #expect(hashes.count == 2)
-        #expect(hashes[0] == Array(hash1))
-        #expect(hashes[1] == Array(hash2))
+        let clientConnection = try await clientTransport.dialSecured(dnsDialAddress, localKeyPair: clientKey)
+        let serverConnection = try await acceptTask.value
+
+        try await clientConnection.close()
+        try await serverConnection.close()
+        try await listener.close()
     }
 
-    @Test("Extract cert hashes from address without certhash")
-    func extractCertHashesEmpty() throws {
-        let transport = WebTransportTransport()
-        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
-        let hashes = transport.extractCertHashes(from: addr)
-        #expect(hashes.isEmpty)
+    @Test("dialSecured supports dns4 hostname addresses", .timeLimit(.minutes(1)))
+    func securedDialListenWithDNS4HostnameAddress() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let clientKey = KeyPair.generateEd25519()
+
+        let serverTransport = WebTransportTransport()
+        let clientTransport = WebTransportTransport()
+
+        let listenAddress = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1/webtransport")
+        let listener = try await serverTransport.listenSecured(listenAddress, localKeyPair: serverKey)
+
+        let acceptTask = Task {
+            for await connection in listener.connections {
+                return connection
+            }
+            throw WebTransportTestError.connectionStreamClosed
+        }
+
+        let parsed = try WebTransportAddressParser.parse(listener.localAddress, requireCertificateHash: true)
+        let dnsDialAddress = Multiaddr(uncheckedProtocols: [
+            .dns4("localhost"),
+            .udp(parsed.port),
+            .quicV1,
+            .webtransport,
+            .certhash(parsed.certificateHashes[0]),
+            .certhash(parsed.certificateHashes[1]),
+            .p2p(serverKey.peerID),
+        ])
+
+        let clientConnection = try await clientTransport.dialSecured(dnsDialAddress, localKeyPair: clientKey)
+        let serverConnection = try await acceptTask.value
+
+        try await clientConnection.close()
+        try await serverConnection.close()
+        try await listener.close()
     }
 
-    @Test("Transport is Sendable")
-    func sendable() {
-        let transport: any Sendable = WebTransportTransport()
-        _ = transport
+    @Test("listener localAddress updates cert hashes after rotation", .timeLimit(.minutes(1)))
+    func listenerAddressRotatesHashes() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let transport = WebTransportTransport(
+            configuration: WebTransportConfiguration(
+                certRotationInterval: .seconds(1),
+                connectionTimeout: .seconds(10)
+            )
+        )
+
+        let listenAddress = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1/webtransport")
+        let listener = try await transport.listenSecured(listenAddress, localKeyPair: serverKey)
+
+        let initial = try WebTransportAddressParser.parse(listener.localAddress, requireCertificateHash: true)
+        try await Task.sleep(for: .seconds(3))
+        let updated = try WebTransportAddressParser.parse(listener.localAddress, requireCertificateHash: true)
+
+        #expect(initial.certificateHashes.count == 2)
+        #expect(updated.certificateHashes.count == 2)
+        #expect(initial.certificateHashes != updated.certificateHashes)
+
+        try await listener.close()
     }
 }

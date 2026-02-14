@@ -151,29 +151,44 @@ public final class TCPConnection: RawConnection, Sendable {
     // Called by TCPReadHandler when data is received
     fileprivate func dataReceived(_ data: ByteBuffer) {
         tcpLogger.debug("dataReceived(): Received \(data.readableBytes) bytes")
-        let (waiter, bufferSize) = state.withLock { s -> (CheckedContinuation<ByteBuffer, Error>?, Int) in
+        enum ReceiveAction {
+            case deliver(CheckedContinuation<ByteBuffer, Error>)
+            case buffered(Int)
+            case overflow([CheckedContinuation<ByteBuffer, Error>])
+        }
+
+        let action: ReceiveAction = state.withLock { s in
             // FIFO: dequeue the first waiter if any
             if !s.readWaiters.isEmpty {
-                return (s.readWaiters.removeFirst(), 0)
+                return .deliver(s.readWaiters.removeFirst())
             } else {
                 // Buffer size limit for DoS protection
                 if s.readBuffer.readableBytes + data.readableBytes > tcpMaxReadBufferSize {
-                    // Drop data if buffer is full (backpressure)
-                    return (nil, -1)  // -1 indicates buffer full
+                    s.isClosed = true
+                    s.readBuffer = ByteBuffer()
+                    let waiters = s.readWaiters
+                    s.readWaiters.removeAll()
+                    return .overflow(waiters)
                 }
                 var mutableData = data
                 s.readBuffer.writeBuffer(&mutableData)
-                return (nil, s.readBuffer.readableBytes)
+                return .buffered(s.readBuffer.readableBytes)
             }
         }
-        // Log and resume waiter outside of lock to avoid deadlock
-        if let waiter = waiter {
+
+        // Execute action outside of lock to avoid deadlock.
+        switch action {
+        case .deliver(let waiter):
             tcpLogger.debug("dataReceived(): Delivering to waiting reader")
             waiter.resume(returning: data)
-        } else if bufferSize == -1 {
-            tcpLogger.warning("dataReceived(): Buffer full, dropping data")
-        } else {
+        case .buffered(let bufferSize):
             tcpLogger.debug("dataReceived(): Buffering data (buffer size: \(bufferSize))")
+        case .overflow(let waiters):
+            tcpLogger.error("dataReceived(): Buffer overflow (\(tcpMaxReadBufferSize) bytes), closing connection")
+            for waiter in waiters {
+                waiter.resume(throwing: TransportError.connectionClosed)
+            }
+            channel.close(promise: nil)
         }
     }
 
@@ -391,15 +406,18 @@ final class TCPReadHandler: ChannelInboundHandler, Sendable {
 extension SocketAddress {
     /// Converts a SocketAddress to a Multiaddr.
     func toMultiaddr() -> Multiaddr? {
+        guard let rawPort = self.port,
+              let port = UInt16(exactly: rawPort) else {
+            return nil
+        }
+
         switch self {
         case .v4(let addr):
             let ip = addr.host
-            let port = UInt16(self.port ?? 0)
             // Safe: exactly 2 components
             return Multiaddr(uncheckedProtocols: [.ip4(ip), .tcp(port)])
         case .v6(let addr):
             let ip = addr.host
-            let port = UInt16(self.port ?? 0)
             // Safe: exactly 2 components
             return Multiaddr(uncheckedProtocols: [.ip6(ip), .tcp(port)])
         case .unixDomainSocket:

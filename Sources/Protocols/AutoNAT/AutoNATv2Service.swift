@@ -424,7 +424,7 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
 
     /// Removes a pending check by nonce (e.g., on failure or timeout).
     func removePendingCheck(nonce: UInt64) {
-        serviceState.withLock { state in
+        _ = serviceState.withLock { state in
             state.pendingChecks.removeValue(forKey: nonce)
         }
     }
@@ -483,7 +483,7 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
 
     /// Emits an event.
     private func emit(_ event: Event) {
-        eventState.withLock { state in
+        _ = eventState.withLock { state in
             state.continuation?.yield(event)
         }
     }

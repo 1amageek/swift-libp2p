@@ -194,6 +194,34 @@ struct MessageSigningTests {
         #expect(message.key == nil)
     }
 
+    @Test("Router publish rejects data over maxMessageSize")
+    func routerPublishRejectsOversizedData() throws {
+        let privateKey = PrivateKey.generateEd25519()
+        let peerID = privateKey.publicKey.peerID
+
+        var config = GossipSubConfiguration()
+        config.maxMessageSize = 8
+        config.signMessages = false
+
+        let router = GossipSubRouter(
+            localPeerID: peerID,
+            signingKey: nil,
+            configuration: config
+        )
+
+        _ = try router.subscribe(to: Topic("test"))
+
+        let oversized = Data(repeating: 0xAB, count: 9)
+        do {
+            _ = try router.publish(oversized, to: Topic("test"))
+            Issue.record("Expected publish to fail with messageTooLarge")
+        } catch let error as GossipSubError {
+            #expect(error == .messageTooLarge(size: 9, maxSize: 8))
+        } catch {
+            Issue.record("Expected GossipSubError.messageTooLarge, got \(error)")
+        }
+    }
+
     // MARK: - Service Tests
 
     @Test("Service with KeyPair enables signing")
@@ -205,7 +233,7 @@ struct MessageSigningTests {
 
         let service = GossipSubService(keyPair: keyPair, configuration: config)
         service.start()
-        defer { service.stop() }
+        defer { service.shutdown() }
 
         #expect(service.localPeerID == keyPair.peerID)
     }
@@ -220,7 +248,7 @@ struct MessageSigningTests {
             configuration: .testing
         )
         service.start()
-        defer { service.stop() }
+        defer { service.shutdown() }
 
         #expect(service.localPeerID == keyPair.peerID)
     }

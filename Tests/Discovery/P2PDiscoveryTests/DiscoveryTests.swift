@@ -11,6 +11,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
 
     private let _knownPeers: [PeerID]
     private let _candidates: [PeerID: [ScoredCandidate]]
+    private let findDelay: Duration?
     private let eventContinuation: AsyncStream<Observation>.Continuation
     private let eventStream: AsyncStream<Observation>
 
@@ -36,10 +37,12 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
 
     init(
         knownPeers: [PeerID] = [],
-        candidates: [PeerID: [ScoredCandidate]] = [:]
+        candidates: [PeerID: [ScoredCandidate]] = [:],
+        findDelay: Duration? = nil
     ) {
         self._knownPeers = knownPeers
         self._candidates = candidates
+        self.findDelay = findDelay
         self.state = Mutex(MockState())
 
         let (stream, continuation) = AsyncStream<Observation>.makeStream()
@@ -52,6 +55,13 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
     }
 
     func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        if let findDelay {
+            do {
+                try await Task.sleep(for: findDelay)
+            } catch {
+                throw error
+            }
+        }
         state.withLock { $0.findCalls.append(peer) }
         return _candidates[peer] ?? []
     }
@@ -81,7 +91,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
         eventStream
     }
 
-    func stop() async {
+    func shutdown() async {
         state.withLock { $0.stopCalled = true }
         eventContinuation.finish()
     }
@@ -386,6 +396,34 @@ struct CompositeDiscoveryTests {
         #expect(results[0].score == 1.5)
     }
 
+    @Test("Find queries services in parallel")
+    func findRunsInParallel() async throws {
+        let targetPeer = PeerID.test(1)
+        let addr1 = try testMultiaddr(4001)
+        let addr2 = try testMultiaddr(4002)
+
+        let candidate1 = ScoredCandidate(peerID: targetPeer, addresses: [addr1], score: 0.7)
+        let candidate2 = ScoredCandidate(peerID: targetPeer, addresses: [addr2], score: 0.8)
+
+        let service1 = MockDiscoveryService(
+            candidates: [targetPeer: [candidate1]],
+            findDelay: .milliseconds(150)
+        )
+        let service2 = MockDiscoveryService(
+            candidates: [targetPeer: [candidate2]],
+            findDelay: .milliseconds(150)
+        )
+        let composite = CompositeDiscovery(services: [service1, service2])
+
+        let start = ContinuousClock.now
+        let results = try await composite.find(peer: targetPeer)
+        let elapsed = ContinuousClock.now - start
+
+        #expect(results.count == 1)
+        // Parallel should be ~150ms; sequential would be ~300ms.
+        #expect(elapsed < .milliseconds(260))
+    }
+
     @Test("Find returns empty for unknown peer")
     func findReturnsEmptyForUnknown() async throws {
         let knownPeer = PeerID.test(1)
@@ -465,39 +503,39 @@ struct CompositeDiscoveryTests {
         #expect(results[2].score == 0.3)
     }
 
-    @Test("CompositeDiscovery stops child services")
-    func compositeStopsChildServices() async {
+    @Test("CompositeDiscovery shuts down child services")
+    func compositeShutdownsChildServices() async {
         let mock1 = MockDiscoveryService()
         let mock2 = MockDiscoveryService()
         let composite = CompositeDiscovery(services: [mock1, mock2])
 
         await composite.start()
-        await composite.stop()
+        await composite.shutdown()
 
         #expect(mock1.stopCalled == true)
         #expect(mock2.stopCalled == true)
     }
 
-    @Test("Stop is idempotent (double stop does not crash)")
-    func stopIsIdempotent() async {
+    @Test("Shutdown is idempotent (double shutdown does not crash)")
+    func shutdownIsIdempotent() async {
         let service = MockDiscoveryService()
         let composite = CompositeDiscovery(services: [service])
 
         // Start to initialize state
         await composite.start()
 
-        // Multiple stops should not crash
-        await composite.stop()
-        await composite.stop()
-        await composite.stop()
+        // Multiple shutdowns should not crash
+        await composite.shutdown()
+        await composite.shutdown()
+        await composite.shutdown()
 
         // Service should still be usable for read operations
         let peers = await composite.knownPeers()
         #expect(peers.isEmpty)
     }
 
-    @Test("Stop terminates observation stream", .timeLimit(.minutes(1)))
-    func stopTerminatesObservationStream() async {
+    @Test("Shutdown terminates observation stream", .timeLimit(.minutes(1)))
+    func shutdownTerminatesObservationStream() async {
         let service = MockDiscoveryService()
         let composite = CompositeDiscovery(services: [service])
 
@@ -519,8 +557,8 @@ struct CompositeDiscoveryTests {
         // Give time for the consumer to start
         try? await Task.sleep(for: .milliseconds(50))
 
-        // Stop should terminate the stream
-        await composite.stop()
+        // Shutdown should terminate the stream
+        await composite.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value

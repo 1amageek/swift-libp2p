@@ -19,12 +19,16 @@
 
 ```
 Desktop/
-├── swift-libp2p/             # 統一P2P基盤（物理メディア含む）
+├── swift-libp2p/             # IP通信基盤（Connection Model）
 │   ├── Swarm: 全Transport統一管理（go-libp2p swarm 相当）
 │   ├── Transport: TCP, QUIC, WS, BLE, WiFi Direct, LoRa
 │   ├── Discovery: mDNS, SWIM, CYCLON, Beacon（物理発見）
-│   ├── Protocol: GossipSub, Kademlia, Propagation（Spray and Wait）
+│   ├── Protocol: GossipSub, Kademlia, Plumtree, CircuitRelay...
 │   └── Security, Mux, NAT...
+│
+├── swift-p2p-mesh/           # 非IP/断続通信基盤（DTN Model）
+│   ├── P2PMeshRelay          # 物理メディア間ブリッジ・メッシュルーティング
+│   └── P2PPropagation        # Spray&Wait + PRoPHET
 │
 ├── swift-p2p-capability/     # [2] 能力記述・照合・交換
 ├── swift-p2p-task/           # [3] タスク記述・交渉・合意
@@ -35,36 +39,26 @@ Desktop/
 └── swift-webrtc/             # WebRTC（別repo）
 ```
 
-### swift-p2p-discovery からの吸収マッピング
+### swift-p2p-discovery からの配置先
 
-swift-p2p-discovery の6層アーキテクチャは swift-libp2p の既存アーキテクチャに全てマッピングされる:
+swift-p2p-discovery の6層アーキテクチャの配置先（詳細は `docs/ARCHITECTURE_DECISION.md`）:
 
-| Discovery 層 | swift-libp2p での配置先 | 備考 |
+| Discovery 層 | 配置先 | 備考 |
 |---|---|---|
-| L0 Medium (TransportAdapter) | `Transport/P2PTransportBLE/` 等 | TCP/QUIC と同列の Transport 実装 |
-| L1 Encoding (Beacon format) | `Discovery/P2PDiscoveryBeacon/` | mDNS/SWIM と同列の Discovery 実装 |
-| L2 Coordination (Trickle) | `Discovery/P2PDiscoveryBeacon/` | Beacon Discovery の内部ロジック |
-| L3 Aggregation (Presence) | `Discovery/P2PDiscoveryBeacon/` | PeerStore 拡張としても機能 |
-| L4 Relay (Mesh routing) | `Protocols/P2PMeshRelay/` | 新概念: 物理メディア間ブリッジ・メッシュルーティング。CircuitRelay とは別の Protocol |
-| L5 Propagation (Spray) | `Protocols/P2PPropagation/` | GossipSub と同列の Protocol 実装 |
+| L0 Medium (TransportAdapter) | swift-libp2p `Discovery/Beacon/` | Beacon 内部の物理メディア抽象 |
+| L1 Encoding (Beacon format) | swift-libp2p `Discovery/Beacon/` | mDNS/SWIM と同列の Discovery |
+| L2 Coordination (Trickle) | swift-libp2p `Discovery/Beacon/` | Beacon Discovery の内部ロジック |
+| L3 Aggregation (Presence) | swift-libp2p `Discovery/Beacon/` | PeerStore 拡張としても機能 |
+| L4 Relay (Mesh routing) | **swift-p2p-mesh** | Connection Model 外（multi-hop relay） |
+| L5 Propagation (Spray) | **swift-p2p-mesh** | Connection Model 外（DTN store-and-forward） |
 
 ### 設計上の重要判断
 
-- **Swarm = 統一接続管理**: go-libp2p の swarm と同じ概念。IP Transport と Physical Transport の両方を管理する
-- **BLE/WiFi/LoRa は Transport**: TCP/QUIC と同じ Transport protocol に準拠させる
-- **Beacon Discovery は DiscoveryService**: mDNS/SWIM と同じ DiscoveryService protocol に準拠させる
-- **Spray and Wait は Protocol**: GossipSub と同じ Protocol パターンで実装する
-- **Physical Mesh Relay は新概念 Protocol**: CircuitRelay（IP中継）とは別の Protocol。物理メディア間ブリッジ（BLE↔WiFi↔LoRa）、動的メッシュルーティング、DTN store-and-forward を担当
+- **Swarm = 統一接続管理**: go-libp2p の swarm と同じ概念。IP Transport と Physical Transport の両方を管理
+- **BLE/WiFi/LoRa は Transport**: TCP/QUIC と同じ Transport protocol に準拠
+- **Beacon Discovery は DiscoveryService**: mDNS/SWIM と同じ DiscoveryService protocol に準拠
+- **MeshRelay/Propagation は swift-p2p-mesh**: libp2p の Connection Model（dial→upgrade→stream）に載らないため分離。不要ではなくモデルが異なる
 - **上位層 [2][3][4] は Swarm 経由で通信**: BLE か TCP かを意識しない
-- **libp2p 拡張は設計思想に沿う**: libp2p は Transport/Discovery/Protocol の拡張を前提に設計。BLE/WiFi Direct は specs ロードマップの "Visionary" カテゴリに存在
-
-### 参照ドキュメント（swift-p2p-discovery）
-
-物理発見の詳細仕様は swift-p2p-discovery リポジトリの以下を参照:
-
-- `docs/LAYERED_DISCOVERY.md` (v3.1) — 6層アーキテクチャの実装仕様
-- `docs/ARCHITECTURE.md` (v2.1) — 概念設計・将来のアイデア蓄積
-- `docs/REQUIREMENTS.md` — ユースケースと要件定義
 
 ---
 
@@ -258,25 +252,25 @@ func doWork() {
 | レイヤー | メソッド | シグネチャ | 理由 |
 |---------|---------|-----------|------|
 | Protocols層 | `shutdown()` | `func shutdown()` | EventEmittingプロトコル準拠 |
-| Discovery層 | `stop()` | `func stop() async` | 非同期リソース（トランスポート/ブラウザ）のクリーンアップ |
+| Discovery層 | `shutdown()` | `func shutdown() async` | 非同期リソース（トランスポート/ブラウザ）のクリーンアップ |
 | Transport/Mux/Security層 | `close()` | `func close() async throws` | I/O完了待ち |
 
 **Discovery層の統一ルール**:
-- すべてのDiscoveryServiceは `func stop() async` を実装
+- すべてのDiscoveryServiceは `func shutdown() async` を実装
 - 理由: 内部で非同期リソース（`await transport.stop()`, `await browser.stop()`）を停止する必要がある
-- `deinit` では `await` 不可のため、`stop()` で明示的に停止
+- `deinit` では `await` 不可のため、`shutdown()` で明示的に停止
 
-**実装状況** (2026-02-03更新):
-- ✅ `SWIMMembership` - `func stop() async` 実装済み
-- ✅ `MDNSDiscovery` - `func stop() async` 実装済み
-- ✅ `CYCLONDiscovery` - `func stop() async` 実装済み
-- ✅ `CompositeDiscovery` - `func stop() async` 実装済み（内部サービスも停止）
+**実装状況** (2026-02-10更新):
+- ✅ `SWIMMembership` - `func shutdown() async` 実装済み
+- ✅ `MDNSDiscovery` - `func shutdown() async` 実装済み
+- ✅ `CYCLONDiscovery` - `func shutdown() async` 実装済み
+- ✅ `CompositeDiscovery` - `func shutdown() async` 実装済み（内部サービスも停止）
 
 **CompositeDiscoveryの重要な制約**:
 - CompositeDiscoveryは提供されたサービスの所有権を取得する
 - 各サービスインスタンスは1つのCompositeDiscoveryのみが使用すること
 - CompositeDiscoveryに追加後は、サービスを直接使用しないこと
-- `stop()`は必ず呼び出すこと（内部サービスも停止される）
+- `shutdown()`は必ず呼び出すこと（内部サービスも停止される）
 
 ### 4. エラーハンドリング
 

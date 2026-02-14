@@ -19,7 +19,7 @@ struct NoiseHandshakeTests {
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
         // Message A: Initiator -> Responder (-> e)
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
 
         // Message B: Responder -> Initiator (<- e, ee, s, es)
@@ -66,11 +66,11 @@ struct NoiseHandshakeTests {
     // MARK: - Message A Tests
 
     @Test("Message A has correct format")
-    func testMessageAFormat() {
+    func testMessageAFormat() throws {
         let keyPair = KeyPair.generateEd25519()
         var initiator = NoiseHandshake(localKeyPair: keyPair, isInitiator: true)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
 
         // Message A should be exactly 32 bytes (ephemeral public key)
         #expect(messageA.count == noisePublicKeySize)
@@ -81,7 +81,7 @@ struct NoiseHandshakeTests {
         let keyPair = KeyPair.generateEd25519()
         var initiator = NoiseHandshake(localKeyPair: keyPair, isInitiator: true)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
 
         // Should be parseable as X25519 public key
         let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: messageA)
@@ -98,7 +98,7 @@ struct NoiseHandshakeTests {
         var initiator = NoiseHandshake(localKeyPair: initiatorKeyPair, isInitiator: true)
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         let messageB = try responder.writeMessageB()
 
@@ -123,7 +123,7 @@ struct NoiseHandshakeTests {
         var initiator = NoiseHandshake(localKeyPair: initiatorKeyPair, isInitiator: true)
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         let messageB = try responder.writeMessageB()
         _ = try initiator.readMessageB(messageB)
@@ -146,7 +146,7 @@ struct NoiseHandshakeTests {
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
         // Complete handshake
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         let messageB = try responder.writeMessageB()
         _ = try initiator.readMessageB(messageB)
@@ -187,7 +187,7 @@ struct NoiseHandshakeTests {
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
         // Complete handshake
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         let messageB = try responder.writeMessageB()
         let payloadB = try initiator.readMessageB(messageB)
@@ -249,7 +249,7 @@ struct NoiseHandshakeTests {
         var initiator = NoiseHandshake(localKeyPair: initiatorKeyPair, isInitiator: true)
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         _ = try responder.writeMessageB()
 
@@ -282,7 +282,7 @@ struct NoiseHandshakeTests {
         var initiator = NoiseHandshake(localKeyPair: initiatorKeyPair, isInitiator: true)
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         var messageB = try responder.writeMessageB()
 
@@ -302,7 +302,7 @@ struct NoiseHandshakeTests {
         var initiator = NoiseHandshake(localKeyPair: initiatorKeyPair, isInitiator: true)
         var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
 
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         let messageB = try responder.writeMessageB()
         _ = try initiator.readMessageB(messageB)
@@ -333,7 +333,7 @@ struct NoiseHandshakeTests {
         #expect(responder.remoteEphemeralKey == nil)
 
         // Complete handshake
-        let messageA = initiator.writeMessageA()
+        let messageA = try initiator.writeMessageA()
         try responder.readMessageA(messageA)
         let messageB = try responder.writeMessageB()
         _ = try initiator.readMessageB(messageB)
@@ -366,7 +366,7 @@ struct NoiseHandshakeTests {
         var initiator1 = NoiseHandshake(localKeyPair: keyPair1, isInitiator: true)
         var responder1 = NoiseHandshake(localKeyPair: keyPair2, isInitiator: false)
 
-        let messageA1 = initiator1.writeMessageA()
+        let messageA1 = try initiator1.writeMessageA()
         try responder1.readMessageA(messageA1)
         let messageB1 = try responder1.writeMessageB()
         _ = try initiator1.readMessageB(messageB1)
@@ -379,7 +379,7 @@ struct NoiseHandshakeTests {
         var initiator2 = NoiseHandshake(localKeyPair: keyPair1, isInitiator: true)
         var responder2 = NoiseHandshake(localKeyPair: keyPair2, isInitiator: false)
 
-        let messageA2 = initiator2.writeMessageA()
+        let messageA2 = try initiator2.writeMessageA()
         try responder2.readMessageA(messageA2)
         let messageB2 = try responder2.writeMessageB()
         _ = try initiator2.readMessageB(messageB2)

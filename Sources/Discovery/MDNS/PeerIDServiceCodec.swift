@@ -24,19 +24,21 @@ public enum PeerIDServiceCodec {
     ///   - addresses: The addresses to advertise.
     ///   - port: The port number.
     ///   - configuration: The mDNS configuration.
+    ///   - serviceName: Optional service instance name override.
     /// - Returns: An mDNS Service ready to be advertised.
     public static func encode(
         peerID: PeerID,
         addresses: [Multiaddr],
         port: UInt16,
-        configuration: MDNSConfiguration
+        configuration: MDNSConfiguration,
+        serviceName: String? = nil
     ) -> Service {
         var txtRecord = TXTRecord()
 
         // Encode public key if available (not all key types support extraction)
         do {
             if let publicKey = try peerID.extractPublicKey() {
-                txtRecord[PeerTXTKey.publicKey] = publicKey.rawBytes.base64EncodedString()
+                txtRecord[PeerTXTKey.publicKey] = publicKey.protobufEncoded.base64EncodedString()
             }
         } catch {
             // Public key not extractable for this key type - omit from TXT record
@@ -66,7 +68,7 @@ public enum PeerIDServiceCodec {
         }
 
         return Service(
-            name: peerID.description,
+            name: serviceName ?? peerID.description,
             type: configuration.serviceType,
             domain: configuration.domain,
             port: port,
@@ -86,13 +88,7 @@ public enum PeerIDServiceCodec {
         service: Service,
         observer: PeerID
     ) throws -> ScoredCandidate {
-        // Parse PeerID from service name (base58 encoded)
-        let peerID: PeerID
-        do {
-            peerID = try PeerID(string: service.name)
-        } catch {
-            throw MDNSDiscoveryError.invalidPeerID(service.name)
-        }
+        let peerID = try inferPeerID(from: service)
 
         var addresses: [Multiaddr] = []
 
@@ -100,7 +96,8 @@ public enum PeerIDServiceCodec {
         let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
         for addrString in dnsaddrValues {
             do {
-                var addr = try Multiaddr(addrString)
+                let normalized = normalizeScopedIPv6InMultiaddr(addrString)
+                var addr = try Multiaddr(normalized)
 
                 // Validate peer ID component
                 if let addrPeerID = addr.peerID {
@@ -132,6 +129,9 @@ public enum PeerIDServiceCodec {
 
             // Add IPv6 addresses
             for ipv6 in service.ipv6Addresses {
+                // Link-local IPv6 addresses require a zone/scope ID for reachability.
+                // Service A/AAAA records do not carry scope information, so skip them.
+                guard !isIPv6LinkLocal(ipv6) else { continue }
                 var addr = try Multiaddr("/ip6/\(ipv6)/tcp/\(port)")
                 addr = try addr.appending(.p2p(peerID))
                 addresses.append(addr)
@@ -163,12 +163,7 @@ public enum PeerIDServiceCodec {
         observer: PeerID,
         sequenceNumber: UInt64
     ) throws -> Observation {
-        let peerID: PeerID
-        do {
-            peerID = try PeerID(string: service.name)
-        } catch {
-            throw MDNSDiscoveryError.invalidPeerID(service.name)
-        }
+        let peerID = try inferPeerID(from: service)
 
         var hints: [Multiaddr] = []
 
@@ -176,7 +171,8 @@ public enum PeerIDServiceCodec {
         let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
         for addrString in dnsaddrValues {
             do {
-                var addr = try Multiaddr(addrString)
+                let normalized = normalizeScopedIPv6InMultiaddr(addrString)
+                var addr = try Multiaddr(normalized)
 
                 // Validate peer ID component
                 if let addrPeerID = addr.peerID {
@@ -203,6 +199,9 @@ public enum PeerIDServiceCodec {
                 hints.append(addr)
             }
             for ipv6 in service.ipv6Addresses {
+                // Link-local IPv6 addresses require a zone/scope ID for reachability.
+                // Service A/AAAA records do not carry scope information, so skip them.
+                guard !isIPv6LinkLocal(ipv6) else { continue }
                 var addr = try Multiaddr("/ip6/\(ipv6)/tcp/\(port)")
                 addr = try addr.appending(.p2p(peerID))
                 hints.append(addr)
@@ -219,7 +218,77 @@ public enum PeerIDServiceCodec {
         )
     }
 
+    /// Infers the peer ID represented by an mDNS service.
+    ///
+    /// Resolution order:
+    /// 1. PeerID embedded in `dnsaddr` TXT values (`/p2p/<peerID>`)
+    /// 2. PeerID derived from `pk` TXT value (protobuf-encoded public key)
+    /// 3. Legacy fallback: parse service instance name as PeerID
+    public static func inferPeerID(from service: Service) throws -> PeerID {
+        if let dnsaddrPeerID = peerIDFromDNSAddrTXT(service: service) {
+            return dnsaddrPeerID
+        }
+
+        if let publicKeyPeerID = peerIDFromPublicKeyTXT(service: service) {
+            return publicKeyPeerID
+        }
+
+        do {
+            return try PeerID(string: service.name)
+        } catch {
+            throw MDNSDiscoveryError.invalidPeerID(service.name)
+        }
+    }
+
     // MARK: - Private Helpers
+
+    private static func peerIDFromDNSAddrTXT(service: Service) -> PeerID? {
+        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
+        var peerIDs = Set<PeerID>()
+
+        for value in dnsaddrValues {
+            do {
+                let normalized = normalizeScopedIPv6InMultiaddr(value)
+                let addr = try Multiaddr(normalized)
+                if let peerID = addr.peerID {
+                    peerIDs.insert(peerID)
+                }
+            } catch {
+                continue
+            }
+        }
+
+        if peerIDs.count == 1 {
+            return peerIDs.first
+        }
+
+        return nil
+    }
+
+    private static func peerIDFromPublicKeyTXT(service: Service) -> PeerID? {
+        guard let encoded = service.txtRecord[PeerTXTKey.publicKey], !encoded.isEmpty else {
+            return nil
+        }
+
+        guard let data = Data(base64Encoded: encoded) else {
+            return nil
+        }
+
+        // Preferred format: protobuf-encoded libp2p public key
+        do {
+            let publicKey = try PublicKey(protobufEncoded: data)
+            return publicKey.peerID
+        } catch {
+            // Backward compatibility: legacy raw Ed25519 bytes
+        }
+
+        do {
+            let publicKey = try PublicKey(keyType: .ed25519, rawBytes: data)
+            return publicKey.peerID
+        } catch {
+            return nil
+        }
+    }
 
     private static func extractProtocols(from addresses: [Multiaddr]) -> [String] {
         var protocols = Set<String>()
@@ -250,5 +319,49 @@ public enum PeerIDServiceCodec {
         }
 
         return min(score, 1.0)
+    }
+
+    private static func isIPv6LinkLocal(_ address: IPv6Address) -> Bool {
+        let leading16 = UInt16((address.hi >> 48) & 0xFFFF)
+        return (leading16 & 0xFFC0) == 0xFE80
+    }
+
+    /// Converts `/ip6/<addr>%<zone>/...` segments to `/ip6zone/<zone>/ip6/<addr>/...`.
+    ///
+    /// This preserves zone information in canonical multiaddr form and keeps
+    /// compatibility with peers that still encode scoped IPv6 as `%zone` in `ip6`.
+    private static func normalizeScopedIPv6InMultiaddr(_ value: String) -> String {
+        let components = value.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !components.isEmpty else { return value }
+
+        var result: [String] = []
+        var index = 0
+
+        while index < components.count {
+            let proto = components[index]
+
+            if proto == "ip6", index + 1 < components.count {
+                let ipValue = components[index + 1]
+                if let percent = ipValue.firstIndex(of: "%") {
+                    let base = String(ipValue[..<percent])
+                    let zoneStart = ipValue.index(after: percent)
+                    let zone = String(ipValue[zoneStart...])
+
+                    if !base.isEmpty, MultiaddrProtocol.isValidZoneID(zone) {
+                        result.append("ip6zone")
+                        result.append(zone)
+                        result.append("ip6")
+                        result.append(base)
+                        index += 2
+                        continue
+                    }
+                }
+            }
+
+            result.append(proto)
+            index += 1
+        }
+
+        return "/" + result.joined(separator: "/")
     }
 }

@@ -149,12 +149,12 @@ public final class GossipSubService: ProtocolService, Sendable {
         serviceState.withLock { $0.isStarted = true }
     }
 
-    /// Stops the GossipSub service.
-    public func stop() {
+    /// Shuts down the GossipSub service.
+    public func shutdown() {
         serviceState.withLock { $0.isStarted = false }
 
         heartbeat.withLock { hb in
-            hb?.stop()
+            hb?.shutdown()
             hb = nil
         }
 
@@ -404,6 +404,14 @@ public final class GossipSubService: ProtocolService, Sendable {
 
     // MARK: - Private Methods
 
+    private func closeStreamBestEffort(_ stream: MuxedStream, context: String) async {
+        do {
+            try await stream.close()
+        } catch {
+            logger.debug("GossipSub stream close failed (\(context)): \(error)")
+        }
+    }
+
     /// Handles an incoming stream.
     private func handleIncomingStream(context: StreamContext, protocolID: String) async {
         let peerID = context.remotePeer
@@ -411,7 +419,7 @@ public final class GossipSubService: ProtocolService, Sendable {
 
         // Determine version
         guard let version = GossipSubVersion(protocolID: protocolID) else {
-            try? await stream.close()
+            await closeStreamBestEffort(stream, context: "unsupported protocol version \(protocolID)")
             return
         }
 
@@ -480,7 +488,7 @@ public final class GossipSubService: ProtocolService, Sendable {
         // Always clean up peer state when stream ends
         handlePeerDisconnected(peerID)
 
-        try? await stream.close()
+        await closeStreamBestEffort(stream, context: "incoming RPC loop ended for peer \(peerID)")
     }
 
     /// Maximum single RPC message size (4 MB).
@@ -549,7 +557,7 @@ public final class GossipSubService: ProtocolService, Sendable {
             try await stream.write(data)
         } catch {
             logger.warning("GossipSub sendRPC failed to \(peerID): \(error)")
-            try? await stream.close()
+            await closeStreamBestEffort(stream, context: "sendRPC failure to peer \(peerID)")
         }
     }
 

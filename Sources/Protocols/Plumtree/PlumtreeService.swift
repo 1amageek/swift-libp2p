@@ -112,8 +112,8 @@ public final class PlumtreeService: ProtocolService, Sendable {
         logger.info("Plumtree started")
     }
 
-    /// Stops the Plumtree service.
-    public func stop() {
+    /// Shuts down the Plumtree service.
+    public func shutdown() {
         let (flushTask, cleanupTask) = serviceState.withLock { s -> (Task<Void, Never>?, Task<Void, Never>?) in
             s.isStarted = false
             let ft = s.flushTask
@@ -129,7 +129,7 @@ public final class PlumtreeService: ProtocolService, Sendable {
         lazyBuffer.clear()
         eventBroadcaster.shutdown()
         messageBroadcaster.shutdown()
-        logger.info("Plumtree stopped")
+        logger.info("Plumtree shut down")
     }
 
     /// Whether the service is started.
@@ -321,7 +321,11 @@ public final class PlumtreeService: ProtocolService, Sendable {
         }
 
         handlePeerDisconnected(peerID)
-        try? await stream.close()
+        do {
+            try await stream.close()
+        } catch {
+            logger.debug("Plumtree stream close failed for \(peerID): \(error)")
+        }
     }
 
     private func processRPC(_ rpc: PlumtreeRPC, from peerID: PeerID) async {

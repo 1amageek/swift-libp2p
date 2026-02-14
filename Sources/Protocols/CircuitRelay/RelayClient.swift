@@ -402,17 +402,18 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
             try await withCheckedThrowingContinuation { continuation in
                 // Create timeout task with the key
                 let timeoutTask = Task { [weak self, waiterKey] in
-                    try? await Task.sleep(for: timeout)
+                    guard let self = self else { return }
+                    guard await self.waitUnlessCancelled(for: timeout, context: "connection wait timeout") else {
+                        return
+                    }
                     guard !Task.isCancelled else { return }
 
                     // Check if waiter is still pending
-                    if let self = self {
-                        let waiter: ConnectionWaiter? = self.clientState.withLock { s in
-                            s.connectionWaiters.removeValue(forKey: waiterKey)
-                        }
-                        if let waiter = waiter {
-                            waiter.continuation.resume(throwing: CircuitRelayError.timeout)
-                        }
+                    let waiter: ConnectionWaiter? = self.clientState.withLock { s in
+                        s.connectionWaiters.removeValue(forKey: waiterKey)
+                    }
+                    if let waiter = waiter {
+                        waiter.continuation.resume(throwing: CircuitRelayError.timeout)
                     }
                 }
 
@@ -537,6 +538,35 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
 
     // MARK: - Message I/O
 
+    @discardableResult
+    private func waitUnlessCancelled(for duration: Duration, context: String) async -> Bool {
+        do {
+            try await Task.sleep(for: duration)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            logger.debug("Sleep interrupted (\(context)): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func waitUntilUnlessCancelled(
+        _ deadline: ContinuousClock.Instant,
+        context: String
+    ) async -> Bool {
+        do {
+            try await Task.sleep(until: deadline, clock: .continuous)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            logger.debug("Sleep interrupted (\(context)): \(error)")
+            return false
+        }
+    }
+
     private func readMessage(from stream: MuxedStream) async throws -> Data {
         do {
             let buffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
@@ -606,7 +636,12 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
                 let now = ContinuousClock.now
 
                 if renewalTime > now {
-                    try? await Task.sleep(until: renewalTime, clock: .continuous)
+                    guard await self.waitUntilUnlessCancelled(
+                        renewalTime,
+                        context: "reservation renewal scheduling"
+                    ) else {
+                        return
+                    }
                 }
 
                 // Check for cancellation
@@ -629,7 +664,12 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
                     // Wait for actual expiration
                     let now = ContinuousClock.now
                     if expiration > now {
-                        try? await Task.sleep(until: expiration, clock: .continuous)
+                        guard await self.waitUntilUnlessCancelled(
+                            expiration,
+                            context: "reservation expiration after renewal failure"
+                        ) else {
+                            return
+                        }
                     }
                     guard !Task.isCancelled else { return }
                     self.handleReservationExpired(relay: relay)
@@ -638,7 +678,12 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
                 // No auto-renewal: just wait for expiration
                 let now = ContinuousClock.now
                 if expiration > now {
-                    try? await Task.sleep(until: expiration, clock: .continuous)
+                    guard await self.waitUntilUnlessCancelled(
+                        expiration,
+                        context: "reservation expiration without auto-renewal"
+                    ) else {
+                        return
+                    }
                 }
                 guard !Task.isCancelled else { return }
                 self.handleReservationExpired(relay: relay)

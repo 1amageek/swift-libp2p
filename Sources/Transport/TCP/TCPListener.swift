@@ -146,7 +146,11 @@ public final class TCPListener: Listener, Sendable {
 
         // Close pending connections to prevent resource leaks
         for conn in pending {
-            try? await conn.close()
+            do {
+                try await conn.close()
+            } catch {
+                tcpListenerLogger.warning("close(): Failed to close pending connection: \(error)")
+            }
         }
 
         try await serverChannel.close()
@@ -187,7 +191,13 @@ public final class TCPListener: Listener, Sendable {
             tcpListenerLogger.debug("connectionAccepted(): Queuing connection (pending: \(count))")
         case .rejected:
             tcpListenerLogger.debug("connectionAccepted(): Rejected (listener closed)")
-            Task { try? await connection.close() }
+            Task {
+                do {
+                    try await connection.close()
+                } catch {
+                    tcpListenerLogger.debug("connectionAccepted(): Rejected connection close failed: \(error)")
+                }
+            }
         }
     }
 }
@@ -249,4 +259,3 @@ private final class HandlerCollector: Sendable {
         }
     }
 }
-

@@ -347,7 +347,11 @@ public struct DefaultRecordValidator: RecordValidator {
 ///         // Extract PeerID from key like "/pk/QmXYZ..."
 ///         guard let keyString = String(data: key, encoding: .utf8),
 ///               keyString.hasPrefix("/pk/") else { return nil }
-///         return try? PeerID(string: String(keyString.dropFirst(4)))
+///         do {
+///             return try PeerID(string: String(keyString.dropFirst(4)))
+///         } catch {
+///             return nil
+///         }
 ///     }
 /// )
 /// ```
@@ -380,12 +384,19 @@ public struct SignedRecordValidator: RecordValidator {
 
     public func validate(record: KademliaRecord, from: PeerID) async throws -> Bool {
         // 1. Parse record.value as Envelope
-        guard let envelope = try? Envelope.unmarshal(record.value) else {
+        let envelope: Envelope
+        do {
+            envelope = try Envelope.unmarshal(record.value)
+        } catch {
             return false
         }
 
         // 2. Verify signature with domain
-        guard (try? envelope.verify(domain: domain)) == true else {
+        do {
+            guard try envelope.verify(domain: domain) else {
+                return false
+            }
+        } catch {
             return false
         }
 
@@ -430,13 +441,26 @@ public struct PublicKeyValidator: RecordValidator {
 
         // 2. Extract expected PeerID from key
         let peerIDPart = String(keyString.dropFirst(Self.namespace.count))
-        guard let expectedPeerID = try? PeerID(string: peerIDPart) else {
+        let expectedPeerID: PeerID
+        do {
+            expectedPeerID = try PeerID(string: peerIDPart)
+        } catch {
             return false
         }
 
         // 3. Parse and verify envelope
-        guard let envelope = try? Envelope.unmarshal(record.value),
-              (try? envelope.verify(domain: Self.domain)) == true else {
+        let envelope: Envelope
+        do {
+            envelope = try Envelope.unmarshal(record.value)
+        } catch {
+            return false
+        }
+
+        do {
+            guard try envelope.verify(domain: Self.domain) else {
+                return false
+            }
+        } catch {
             return false
         }
 

@@ -116,6 +116,6 @@ struct PingPongDemo {
 
         print("Done!")
         try await stream.close()
-        await node.stop()
+        await node.shutdown()
     }
 }
