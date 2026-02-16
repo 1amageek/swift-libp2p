@@ -44,6 +44,7 @@ let package = Package(
         .library(name: "P2PDiscoveryMDNS", targets: ["P2PDiscoveryMDNS"]),
         .library(name: "P2PDiscoverySWIM", targets: ["P2PDiscoverySWIM"]),
         .library(name: "P2PDiscoveryCYCLON", targets: ["P2PDiscoveryCYCLON"]),
+        .library(name: "P2PDiscoveryPlumtree", targets: ["P2PDiscoveryPlumtree"]),
         .library(name: "P2PDiscoveryBeacon", targets: ["P2PDiscoveryBeacon"]),
         .library(name: "P2PDiscoveryWiFiBeacon", targets: ["P2PDiscoveryWiFiBeacon"]),
 
@@ -173,6 +174,7 @@ let package = Package(
                 "P2PCore",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
             ],
             path: "Tests/Transport/P2PTransportTests"
         ),
@@ -201,6 +203,9 @@ let package = Package(
                 "P2PTransportWebSocket",
                 "P2PTransport",
                 "P2PCore",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "NIOWebSocket", package: "swift-nio"),
             ],
             path: "Tests/Transport/WebSocketTests"
         ),
@@ -377,10 +382,21 @@ let package = Package(
             path: "Sources/Discovery/CYCLON",
             exclude: ["CONTEXT.md"]
         ),
+        .target(
+            name: "P2PDiscoveryPlumtree",
+            dependencies: ["P2PDiscovery", "P2PCore", "P2PMux", "P2PProtocols", "P2PPlumtree"],
+            path: "Sources/Discovery/Plumtree",
+            exclude: ["CONTEXT.md"]
+        ),
         .testTarget(
             name: "P2PDiscoveryTests",
             dependencies: ["P2PDiscovery", "P2PDiscoverySWIM", "P2PDiscoveryMDNS"],
             path: "Tests/Discovery/P2PDiscoveryTests"
+        ),
+        .testTarget(
+            name: "P2PDiscoveryPlumtreeTests",
+            dependencies: ["P2PDiscoveryPlumtree", "P2PCore", "P2PPlumtree", "P2PMux", "P2PProtocols"],
+            path: "Tests/Discovery/PlumtreeDiscoveryTests"
         ),
         .target(
             name: "P2PDiscoveryBeacon",

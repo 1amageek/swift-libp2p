@@ -1,6 +1,8 @@
 import Testing
 import Foundation
 import NIOCore
+import NIOEmbedded
+import NIOWebSocket
 import NIOSSL
 @testable import P2PCore
 @testable import P2PTransport
@@ -557,6 +559,398 @@ struct WebSocketTransportTests {
         #expect(Data(buffer: read) == payload)
 
         try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    // MARK: - Buffer Overflow Tests (DoS Protection)
+    // NOTE: WebSocket silently drops frames on overflow (unlike TCP which closes connection).
+    // This is a design inconsistency documented in CONTEXT.md.
+
+    @Test("WS buffer overflow silently drops frames without closing", .timeLimit(.minutes(1)))
+    func testWSBufferOverflowSilentlyDropsFrames() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        let serverConn = try await acceptTask
+
+        // Send many frames to fill server buffer close to 1MB
+        let chunk = ByteBuffer(repeating: 0xCC, count: 64 * 1024)
+        for _ in 0..<16 { // 1MB exactly (fits within limit since check is >)
+            try await clientConn.write(chunk)
+        }
+        try await Task.sleep(for: .milliseconds(200))
+
+        // This frame should be dropped (buffer full)
+        try await clientConn.write(ByteBuffer(string: "dropped"))
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Drain the buffer by reading all 16 chunks
+        var totalRead = 0
+        while totalRead < 1024 * 1024 {
+            let data = try await serverConn.read()
+            totalRead += data.readableBytes
+        }
+
+        // Connection should still be alive after overflow (unlike TCP)
+        let afterOverflow = ByteBuffer(string: "still alive")
+        try await clientConn.write(afterOverflow)
+        let received = try await serverConn.read()
+        #expect(String(buffer: received) == "still alive")
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    // MARK: - WebSocket Close Frame Handshake (RFC 6455)
+
+    @Test("Close frame handshake closes both sides", .timeLimit(.minutes(1)))
+    func testCloseFrameHandshake() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        let serverConn = try await acceptTask
+
+        // Verify communication works first
+        try await clientConn.write(ByteBuffer(string: "before close"))
+        let received = try await serverConn.read()
+        #expect(String(buffer: received) == "before close")
+
+        // Client sends close frame (via close())
+        try await clientConn.close()
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Server should see connection closed
+        await #expect(throws: Error.self) {
+            _ = try await serverConn.read()
+        }
+
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    @Test("Server-initiated close frame handshake", .timeLimit(.minutes(1)))
+    func testServerInitiatedCloseFrameHandshake() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        let serverConn = try await acceptTask
+
+        try await serverConn.close()
+        try await Task.sleep(for: .milliseconds(100))
+
+        await #expect(throws: Error.self) {
+            _ = try await clientConn.read()
+        }
+
+        try await clientConn.close()
+        try await listener.close()
+    }
+
+    // MARK: - Ping/Pong Auto-Response (RFC 6455, EmbeddedChannel)
+
+    @Test("Ping auto-responds with pong (server mode)", .timeLimit(.minutes(1)))
+    func testPingPongAutoResponse() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try await channel.pipeline.addHandler(handler)
+
+        // Inject a ping frame
+        let pingData = ByteBuffer(string: "ping-payload")
+        let pingFrame = WebSocketFrame(fin: true, opcode: .ping, data: pingData)
+        try channel.writeInbound(pingFrame)
+
+        // Read outbound: should be a pong
+        let pongFrame = try channel.readOutbound(as: WebSocketFrame.self)
+        #expect(pongFrame != nil)
+        #expect(pongFrame!.opcode == .pong)
+        #expect(pongFrame!.maskKey == nil) // server frames are NOT masked
+        var pongData = pongFrame!.data
+        #expect(pongData.readString(length: pongData.readableBytes) == "ping-payload")
+
+        try await channel.close()
+    }
+
+    @Test("Client-side pong response is masked", .timeLimit(.minutes(1)))
+    func testPingPongClientSideMasked() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: true)
+        try await channel.pipeline.addHandler(handler)
+
+        let pingData = ByteBuffer(string: "masked-ping")
+        let pingFrame = WebSocketFrame(fin: true, opcode: .ping, data: pingData)
+        try channel.writeInbound(pingFrame)
+
+        let pongFrame = try channel.readOutbound(as: WebSocketFrame.self)
+        #expect(pongFrame != nil)
+        #expect(pongFrame!.opcode == .pong)
+        #expect(pongFrame!.maskKey != nil) // client frames MUST be masked (RFC 6455)
+
+        try await channel.close()
+    }
+
+    // MARK: - Text Frame Handling (EmbeddedChannel)
+
+    @Test("Text frame is delivered as data", .timeLimit(.minutes(1)))
+    func testTextFrameDeliveredAsData() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try await channel.pipeline.addHandler(handler)
+
+        let connection = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 1234)
+        )
+        handler.setConnection(connection)
+
+        // Send text frame (opcode .text)
+        let textData = ByteBuffer(string: "hello text frame")
+        let textFrame = WebSocketFrame(fin: true, opcode: .text, data: textData)
+        try channel.writeInbound(textFrame)
+
+        let received = try await connection.read()
+        #expect(String(buffer: received) == "hello text frame")
+
+        try await channel.close()
+    }
+
+    // MARK: - RFC 6455 Masking Behavior (EmbeddedChannel)
+
+    @Test("Client write produces masked frames", .timeLimit(.minutes(1)))
+    func testClientWriteMasksFrames() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: true)
+        try await channel.pipeline.addHandler(handler)
+
+        let connection = WebSocketConnection(
+            channel: channel,
+            isClient: true,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 5555)
+        )
+        handler.setConnection(connection)
+
+        let data = ByteBuffer(string: "masked data")
+        try await connection.write(data)
+
+        // Read outbound frame
+        let frame = try channel.readOutbound(as: WebSocketFrame.self)
+        #expect(frame != nil)
+        #expect(frame!.opcode == .binary)
+        #expect(frame!.maskKey != nil) // Client frames MUST be masked
+
+        try await channel.close()
+    }
+
+    @Test("Server write produces unmasked frames", .timeLimit(.minutes(1)))
+    func testServerWriteDoesNotMaskFrames() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try await channel.pipeline.addHandler(handler)
+
+        let connection = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 5556)
+        )
+        handler.setConnection(connection)
+
+        let data = ByteBuffer(string: "unmasked data")
+        try await connection.write(data)
+
+        let frame = try channel.readOutbound(as: WebSocketFrame.self)
+        #expect(frame != nil)
+        #expect(frame!.opcode == .binary)
+        #expect(frame!.maskKey == nil) // Server frames MUST NOT be masked
+
+        try await channel.close()
+    }
+
+    // MARK: - Idempotent Close
+
+    @Test("WS double close is idempotent", .timeLimit(.minutes(1)))
+    func testWSIdempotentClose() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        _ = try await acceptTask
+
+        try await clientConn.close()
+        try await clientConn.close() // Must not throw
+
+        try await listener.close()
+    }
+
+    // MARK: - Concurrent Read Waiters
+
+    @Test("WS concurrent reads are served FIFO", .timeLimit(.minutes(1)))
+    func testWSConcurrentReadsFIFO() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        let serverConn = try await acceptTask
+
+        let read1 = Task { try await serverConn.read() }
+        try await Task.sleep(for: .milliseconds(10))
+        let read2 = Task { try await serverConn.read() }
+        try await Task.sleep(for: .milliseconds(10))
+        let read3 = Task { try await serverConn.read() }
+        try await Task.sleep(for: .milliseconds(10))
+
+        try await clientConn.write(ByteBuffer(string: "ws-1"))
+        try await Task.sleep(for: .milliseconds(10))
+        try await clientConn.write(ByteBuffer(string: "ws-2"))
+        try await Task.sleep(for: .milliseconds(10))
+        try await clientConn.write(ByteBuffer(string: "ws-3"))
+
+        let r1 = try await read1.value
+        let r2 = try await read2.value
+        let r3 = try await read3.value
+
+        #expect(String(buffer: r1) == "ws-1")
+        #expect(String(buffer: r2) == "ws-2")
+        #expect(String(buffer: r3) == "ws-3")
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    // MARK: - IPv6 WebSocket
+
+    @Test("IPv6 WebSocket connection", .timeLimit(.minutes(1)))
+    func testWSIPv6Connection() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "::1", port: 0))
+        let listenAddr = listener.localAddress
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listenAddr)
+        let serverConn = try await acceptTask
+
+        let message = ByteBuffer(string: "IPv6 WS test")
+        try await clientConn.write(message)
+        let received = try await serverConn.read()
+        #expect(String(buffer: received) == "IPv6 WS test")
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    // MARK: - Handler Late Binding Tests (EmbeddedChannel)
+
+    @Test("WS handler buffers data before connection is set", .timeLimit(.minutes(1)))
+    func testWSHandlerBuffersDataBeforeConnectionSet() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try await channel.pipeline.addHandler(handler)
+
+        // Send a binary frame before setting connection
+        let data = ByteBuffer(string: "early ws data")
+        let frame = WebSocketFrame(fin: true, opcode: .binary, data: data)
+        try channel.writeInbound(frame)
+
+        // Now set connection
+        let connection = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 7777)
+        )
+        handler.setConnection(connection)
+
+        let received = try await connection.read()
+        #expect(String(buffer: received) == "early ws data")
+
+        try await channel.close()
+    }
+
+    // MARK: - Listener Close Resource Cleanup
+
+    @Test("WS listener close cleans up pending connections", .timeLimit(.minutes(1)))
+    func testWSListenerCloseCleansPendingConnections() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        // Dial but do NOT accept
+        let clientConn = try await transport.dial(listener.localAddress)
+        try await Task.sleep(for: .milliseconds(200))
+
+        // Close listener (should close pending connections)
+        try await listener.close()
+        try await Task.sleep(for: .milliseconds(100))
+
+        await #expect(throws: Error.self) {
+            _ = try await clientConn.read()
+        }
+    }
+
+    // MARK: - Error Handler (EmbeddedChannel)
+
+    @Test("WS errorCaught triggers connection close", .timeLimit(.minutes(1)))
+    func testWSErrorCaughtClosesConnection() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try await channel.pipeline.addHandler(handler)
+
+        let connection = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 8888)
+        )
+        handler.setConnection(connection)
+
+        struct TestError: Error {}
+        channel.pipeline.fireErrorCaught(TestError())
+
+        await #expect(throws: TransportError.self) {
+            _ = try await connection.read()
+        }
+    }
+
+    // MARK: - Buffer Then Error on Close
+
+    @Test("WS read returns buffered data then error on close", .timeLimit(.minutes(1)))
+    func testWSReadReturnsBufferThenErrorOnClose() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        let serverConn = try await acceptTask
+
+        let message = ByteBuffer(string: "ws last message")
+        try await clientConn.write(message)
+        try await Task.sleep(for: .milliseconds(100))
+
+        try await clientConn.close()
+        try await Task.sleep(for: .milliseconds(100))
+
+        // First read: buffered data
+        let received = try await serverConn.read()
+        #expect(String(buffer: received) == "ws last message")
+
+        // Second read: error
+        await #expect(throws: Error.self) {
+            _ = try await serverConn.read()
+        }
+
         try await serverConn.close()
         try await listener.close()
     }
