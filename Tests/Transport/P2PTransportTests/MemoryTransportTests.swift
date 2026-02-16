@@ -198,7 +198,7 @@ struct MemoryTransportTests {
         // Close and try to write
         try await clientConn.close()
 
-        await #expect(throws: MemoryConnection.ConnectionError.self) {
+        await #expect(throws: TransportError.self) {
             try await clientConn.write(ByteBuffer(bytes: Data("should fail".utf8)))
         }
 
@@ -236,7 +236,7 @@ struct MemoryTransportTests {
         let hub = MemoryHub()
         let transport = MemoryTransport(hub: hub)
 
-        await #expect(throws: MemoryHubError.self) {
+        await #expect(throws: TransportError.self) {
             _ = try await transport.dial(.memory(id: "does-not-exist"))
         }
     }
@@ -250,7 +250,7 @@ struct MemoryTransportTests {
         let listener1 = try await transport.listen(.memory(id: "duplicate"))
         _ = listener1  // Silence unused warning
 
-        await #expect(throws: MemoryHubError.self) {
+        await #expect(throws: TransportError.self) {
             _ = try await transport.listen(.memory(id: "duplicate"))
         }
     }
@@ -316,7 +316,7 @@ struct MemoryTransportTests {
 
         // Create a new hub to verify isolation
         let hub3 = MemoryHub()
-        await #expect(throws: MemoryHubError.self) {
+        await #expect(throws: TransportError.self) {
             // A new hub has no listeners, so dial should fail
             _ = try await MemoryTransport(hub: hub3).dial(.memory(id: "same-id"))
         }
@@ -356,7 +356,7 @@ struct MemoryTransportTests {
         try await serverConn.close()
 
         // Client should get an error when trying to write
-        await #expect(throws: MemoryConnection.ConnectionError.self) {
+        await #expect(throws: TransportError.self) {
             try await clientConn.write(ByteBuffer(bytes: Data("after close".utf8)))
         }
     }
@@ -381,7 +381,7 @@ struct MemoryTransportTests {
         try await Task.sleep(for: .milliseconds(10))
 
         // Second read should throw error
-        await #expect(throws: MemoryConnection.ConnectionError.concurrentReadNotSupported) {
+        await #expect(throws: TransportError.self) {
             try await clientConn.read()
         }
 
@@ -405,7 +405,7 @@ struct MemoryTransportTests {
         try await Task.sleep(for: .milliseconds(10))
 
         // Second accept should throw error
-        await #expect(throws: MemoryListenerError.concurrentAcceptNotSupported) {
+        await #expect(throws: TransportError.self) {
             try await listener.accept()
         }
 

@@ -44,13 +44,16 @@ public struct WebSocketTLSConfiguration: Sendable {
     }
 }
 
-/// Errors specific to WebSocket transport.
-public enum WebSocketTransportError: Error {
+/// Internal error for WebSocket failure details.
+internal enum WebSocketDetailError: Error, CustomStringConvertible, Sendable {
     case upgradeFailed
     case tlsConfigurationFailed(String)
-    case secureListenerRequiresServerTLSConfiguration
-    case insecureClientTLSConfiguration
-    case secureDialRequiresDNSHostname
+    var description: String {
+        switch self {
+        case .upgradeFailed: return "WebSocket upgrade failed"
+        case .tlsConfigurationFailed(let msg): return "TLS configuration failed: \(msg)"
+        }
+    }
 }
 
 /// Maximum WebSocket frame size (1MB), matching the read buffer limit.
@@ -176,13 +179,13 @@ public final class WebSocketTransport: Transport, Sendable {
         if case .fullVerification = tlsConfiguration.client.certificateVerification {
             // expected
         } else {
-            throw WebSocketTransportError.insecureClientTLSConfiguration
+            throw TransportError.unsupportedOperation("WSS requires fullVerification TLS configuration")
         }
 
         // Hostname verification requires a DNS hostname.
         // IP literals are rejected for secure dial to avoid unverifiable TLS identity.
         if isIPAddress {
-            throw WebSocketTransportError.secureDialRequiresDNSHostname
+            throw TransportError.unsupportedAddress(address)
         }
 
         // Configure TLS
@@ -191,7 +194,7 @@ public final class WebSocketTransport: Transport, Sendable {
         do {
             sslContext = try NIOSSLContext(configuration: tlsConfig)
         } catch {
-            throw WebSocketTransportError.tlsConfigurationFailed(String(describing: error))
+            throw TransportError.connectionFailed(underlying: WebSocketDetailError.tlsConfigurationFailed(String(describing: error)))
         }
 
         let upgradeResult: EventLoopFuture<WebSocketUpgradeResult> = try await ClientBootstrap(group: group)
@@ -203,7 +206,7 @@ public final class WebSocketTransport: Transport, Sendable {
                     do {
                         sslHandler = try NIOSSLClientHandler(context: sslContext, serverHostname: host)
                     } catch {
-                        throw WebSocketTransportError.tlsConfigurationFailed(String(describing: error))
+                        throw TransportError.connectionFailed(underlying: WebSocketDetailError.tlsConfigurationFailed(String(describing: error)))
                     }
                     try channel.pipeline.syncOperations.addHandler(sslHandler)
 
@@ -284,7 +287,7 @@ public final class WebSocketTransport: Transport, Sendable {
 
         case .notUpgraded:
             wsTransportLogger.error("dial(): WebSocket upgrade failed")
-            throw WebSocketTransportError.upgradeFailed
+            throw TransportError.connectionFailed(underlying: WebSocketDetailError.upgradeFailed)
         }
     }
 
@@ -299,14 +302,14 @@ public final class WebSocketTransport: Transport, Sendable {
 
         if isSecure {
             guard let serverTLS = tlsConfiguration.server else {
-                throw WebSocketTransportError.secureListenerRequiresServerTLSConfiguration
+                throw TransportError.unsupportedOperation("WSS listener requires server TLS configuration")
             }
 
             let sslContext: NIOSSLContext
             do {
                 sslContext = try NIOSSLContext(configuration: serverTLS)
             } catch {
-                throw WebSocketTransportError.tlsConfigurationFailed(String(describing: error))
+                throw TransportError.connectionFailed(underlying: WebSocketDetailError.tlsConfigurationFailed(String(describing: error)))
             }
 
             return try await WebSocketListener.bind(

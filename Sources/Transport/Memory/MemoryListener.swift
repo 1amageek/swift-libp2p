@@ -7,18 +7,12 @@ import Synchronization
 import P2PCore
 import P2PTransport
 
-/// Errors that can occur with memory listeners.
-public enum MemoryListenerError: Error, Sendable {
-    /// Multiple concurrent accepts are not supported.
-    case concurrentAcceptNotSupported
-}
-
 /// An in-memory listener that implements Listener.
 ///
 /// Accepts connections that are routed through a MemoryHub.
 ///
 /// - Important: This listener assumes a single acceptor pattern. Concurrent calls
-///   to `accept()` from multiple tasks will throw `MemoryListenerError.concurrentAcceptNotSupported`.
+///   to `accept()` from multiple tasks will throw `TransportError.unsupportedOperation`.
 public final class MemoryListener: Listener, Sendable {
 
     /// The local address this listener is bound to.
@@ -53,7 +47,7 @@ public final class MemoryListener: Listener, Sendable {
     ///
     /// - Returns: The accepted connection
     /// - Throws: `TransportError.listenerClosed` if the listener is closed,
-    ///           `MemoryListenerError.concurrentAcceptNotSupported` if another accept is already waiting
+    ///           `TransportError.unsupportedOperation` if another accept is already waiting
     public func accept() async throws -> any RawConnection {
         try await withCheckedThrowingContinuation { continuation in
             state.withLock { state in
@@ -63,7 +57,7 @@ public final class MemoryListener: Listener, Sendable {
                 }
 
                 if state.waitingContinuation != nil {
-                    continuation.resume(throwing: MemoryListenerError.concurrentAcceptNotSupported)
+                    continuation.resume(throwing: TransportError.unsupportedOperation("concurrent accept not supported"))
                     return
                 }
 

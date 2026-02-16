@@ -434,12 +434,12 @@ struct WebSocketTransportTests {
 
         do {
             _ = try await transport.listen(.wss(host: "127.0.0.1", port: 0))
-            Issue.record("Expected secureListenerRequiresServerTLSConfiguration")
-        } catch let error as WebSocketTransportError {
-            if case .secureListenerRequiresServerTLSConfiguration = error {
+            Issue.record("Expected unsupportedOperation error")
+        } catch let error as TransportError {
+            if case .unsupportedOperation = error {
                 // Expected
             } else {
-                Issue.record("Expected secureListenerRequiresServerTLSConfiguration, got \(error)")
+                Issue.record("Expected unsupportedOperation, got \(error)")
             }
         }
     }
@@ -457,12 +457,12 @@ struct WebSocketTransportTests {
 
         do {
             _ = try await transport.dial(.wss(host: "127.0.0.1", port: 443))
-            Issue.record("Expected insecureClientTLSConfiguration")
-        } catch let error as WebSocketTransportError {
-            if case .insecureClientTLSConfiguration = error {
+            Issue.record("Expected unsupportedOperation error")
+        } catch let error as TransportError {
+            if case .unsupportedOperation = error {
                 // Expected
             } else {
-                Issue.record("Expected insecureClientTLSConfiguration, got \(error)")
+                Issue.record("Expected unsupportedOperation, got \(error)")
             }
         }
     }
@@ -481,12 +481,12 @@ struct WebSocketTransportTests {
 
         do {
             _ = try await transport.dial(dnsAddress)
-            Issue.record("Expected insecureClientTLSConfiguration")
-        } catch let error as WebSocketTransportError {
-            if case .insecureClientTLSConfiguration = error {
+            Issue.record("Expected unsupportedOperation error")
+        } catch let error as TransportError {
+            if case .unsupportedOperation = error {
                 // Expected
             } else {
-                Issue.record("Expected insecureClientTLSConfiguration, got \(error)")
+                Issue.record("Expected unsupportedOperation, got \(error)")
             }
         }
     }
@@ -525,12 +525,12 @@ struct WebSocketTransportTests {
 
         do {
             _ = try await transport.dial(.wss(host: "127.0.0.1", port: 443))
-            Issue.record("Expected secureDialRequiresDNSHostname")
-        } catch let error as WebSocketTransportError {
-            if case .secureDialRequiresDNSHostname = error {
+            Issue.record("Expected unsupportedAddress error")
+        } catch let error as TransportError {
+            if case .unsupportedAddress = error {
                 // Expected
             } else {
-                Issue.record("Expected secureDialRequiresDNSHostname, got \(error)")
+                Issue.record("Expected unsupportedAddress, got \(error)")
             }
         }
     }

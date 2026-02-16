@@ -57,7 +57,7 @@ public protocol Listener: Sendable {
 | RelayTransport | ✅ 実装済み | Circuit Relay v2ラッパー |
 | QUICTransport | ✅ 実装済み | swift-quic使用（TLS 1.3 + libp2p証明書） |
 | WebRTCTransport | ✅ 実装済み | swift-webrtc使用（DTLS 1.2 + SCTP）、25テスト |
-| WebSocketTransport | ✅ 実装済み | NIOWebSocket使用（HTTP/1.1 Upgrade）、15テスト |
+| WebSocketTransport | ✅ 実装済み | NIOWebSocket使用（HTTP/1.1 Upgrade）、40テスト |
 
 ## 実装ガイドライン
 - `RawConnection`を返す（SecuredConnectionはSecurity層で処理）
@@ -67,23 +67,21 @@ public protocol Listener: Sendable {
 ## エラー型階層
 
 ```
-TransportError (P2PTransport)
+TransportError (P2PTransport) — 全 Transport の公開 API 統一エラー型
 ├── unsupportedAddress(Multiaddr)
 ├── connectionFailed(underlying: Error)
 ├── listenerClosed
-└── timeout
+├── timeout
+├── unsupportedOperation(String)
+├── connectionClosed
+└── addressInUse(Multiaddr)
 
-MemoryHubError (P2PTransportMemory内部)
-├── invalidAddress
-├── noListener
-└── addressInUse
+MemoryHubDetailError (P2PTransportMemory internal)
+└── noListener(Multiaddr)  — connectionFailed の underlying として使用
 
-MemoryListenerError (P2PTransportMemory内部)
-└── concurrentAcceptNotSupported
-
-MemoryConnection.ConnectionError
-├── closed
-└── concurrentReadNotSupported
+WebSocketDetailError (P2PTransportWebSocket internal)
+├── upgradeFailed           — connectionFailed の underlying として使用
+└── tlsConfigurationFailed  — connectionFailed の underlying として使用
 ```
 
 ## シングルリーダー/アクセプター制約
@@ -111,9 +109,9 @@ MemoryConnection.ConnectionError
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **TCPTransportユニットテストの追加** - 現在統合テストのみ
+- [x] **TCPTransportユニットテストの追加** - ✅ 2026-02-16 (12テスト追加: EmbeddedChannel + 統合テスト)
 - [x] **RelayTransportユニットテストの追加** - ✅ 2026-01-23 (18テスト)
-- [ ] **TransportError型の標準化** - 各実装で異なるエラー型が混在
+- [x] **TransportError型の標準化** - ✅ 2026-02-16 Memory/WebSocket を TransportError に統一（QUIC/WebRTC/WebTransport は別タスク）
 
 ### 中優先度
 - [ ] **接続タイムアウトの統一** - Transport共通の設定オプション化
@@ -131,13 +129,13 @@ MemoryConnection.ConnectionError
 |-------|----------|------|
 | MemoryTransportTests | ✅ 実装済み | 基本接続、双方向通信、複数接続 |
 | TransportTests | ⚠️ プレースホルダー | 1テストのみ |
-| TCPTransportTests | ✅ 実装済み | 接続、リッスン、双方向通信 |
+| TCPTransportTests | ✅ 実装済み | 接続、リッスン、双方向通信、overflow、冪等close、EmbeddedChannel (37テスト) |
 | RelayTransportTests | ✅ 実装済み | アドレス解析、RelayListener、RawConnection (18テスト) |
 | QUICTransportTests | ✅ 実装済み | TLS、マルチストリーム、接続管理 (55テスト) |
 | WebRTCTransportTests | ✅ 実装済み | アドレス、接続、E2E (25テスト) |
-| WebSocketTransportTests | ✅ 実装済み | 接続、通信、close挙動、アドレス (15テスト) |
+| WebSocketTransportTests | ✅ 実装済み | 接続、通信、close挙動、アドレス、ping/pong、masking、overflow (40テスト) |
 
-**推奨**: TCPTransportのエラーハンドリングテスト追加
+**推奨**: QUIC/WebRTC/WebTransport の TransportError 標準化（TLS/DTLS 固有のエラー体系が複雑なため別タスク）
 
 ## Codex Review (2026-01-18) - UPDATED 2026-01-23
 
@@ -157,3 +155,24 @@ MemoryConnection.ConnectionError
 |-------|----------|-------------|
 | Port 0 fallback | `TCPReadHandler.channelActive` | Falls back to port 0 if remote address is nil; acceptable for edge cases |
 | Empty Data EOF | `MemoryChannel.swift` | Empty `Data()` as EOF sentinel; documented behavior |
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (86/100)
+- 対象ターゲット: `P2PTransport`, `P2PTransportMemory`, `P2PTransportQUIC`, `P2PTransportTCP`, `P2PTransportWebRTC`, `P2PTransportWebSocket`, `P2PTransportWebTransport`
+- 実装読解範囲: 44 Swift files / 7921 LOC
+- テスト範囲: 73 files / 801 cases / targets 12
+- 公開API: types 59 / funcs 44
+- 参照網羅率: type 0.63 / func 0.7
+- 未参照公開型: 22 件（例: `CertificateMaterial`, `DeterministicCertificate`, `FailingTLSProvider`, `MemoryListener`, `QUICListener`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=5, DispatchQueue=0
+- 評価所見: EventLoopFutureブリッジ実装を含む
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- EventLoopFuture→async/await変換経路の失敗ケースを追加で検証する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

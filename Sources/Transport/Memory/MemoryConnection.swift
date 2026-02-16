@@ -14,17 +14,9 @@ import P2PTransport
 /// Used for testing without actual network I/O.
 ///
 /// - Important: This connection assumes a single reader pattern. Concurrent calls
-///   to `read()` from multiple tasks are not supported and may cause some tasks
-///   to wait indefinitely.
+///   to `read()` from multiple tasks are not supported and will throw
+///   `TransportError.unsupportedOperation`.
 public final class MemoryConnection: RawConnection, Sendable {
-
-    /// Errors that can occur with memory connections.
-    public enum ConnectionError: Error, Sendable {
-        /// The connection is closed.
-        case closed
-        /// Multiple concurrent reads are not supported.
-        case concurrentReadNotSupported
-    }
 
     /// Which side of the channel this connection represents.
     internal enum Side: Sendable {
@@ -74,12 +66,12 @@ public final class MemoryConnection: RawConnection, Sendable {
     /// Reads data from the connection.
     ///
     /// - Returns: The data read, or empty ByteBuffer on EOF from remote
-    /// - Throws: `ConnectionError.closed` if the local side has called close(),
-    ///           `ConnectionError.concurrentReadNotSupported` if another read is already in progress
+    /// - Throws: `TransportError.connectionClosed` if the local side has called close(),
+    ///           `TransportError.unsupportedOperation` if another read is already in progress
     public func read() async throws -> ByteBuffer {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
-            throw ConnectionError.closed
+            throw TransportError.connectionClosed
         }
 
         do {
@@ -90,18 +82,18 @@ public final class MemoryConnection: RawConnection, Sendable {
                 return try await channel.receiveAtB()
             }
         } catch is MemoryChannelError {
-            throw ConnectionError.concurrentReadNotSupported
+            throw TransportError.unsupportedOperation("concurrent read not supported")
         }
     }
 
     /// Writes data to the connection.
     ///
     /// - Parameter data: The data to write
-    /// - Throws: `ConnectionError.closed` if the connection is closed (locally or remotely)
+    /// - Throws: `TransportError.connectionClosed` if the connection is closed (locally or remotely)
     public func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
-            throw ConnectionError.closed
+            throw TransportError.connectionClosed
         }
 
         let success: Bool
@@ -114,7 +106,7 @@ public final class MemoryConnection: RawConnection, Sendable {
 
         // Channel was closed by remote side
         if !success {
-            throw ConnectionError.closed
+            throw TransportError.connectionClosed
         }
     }
 

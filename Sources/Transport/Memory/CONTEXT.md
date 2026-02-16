@@ -52,28 +52,29 @@ hub.reset()  // テスト後のクリーンアップ
 
 ## エラーハンドリング
 
-### MemoryHubError
-- `invalidAddress(Multiaddr)` - メモリアドレスが無効
-- `noListener(Multiaddr)` - アドレスにリスナーが登録されていない
-- `addressInUse(Multiaddr)` - アドレスが既に使用中
-- `listenerClosed` - リスナーが閉じられている
+全公開 API は `TransportError` を投げる（Transport 層統一エラー型）。
 
-### MemoryListenerError
-- `concurrentAcceptNotSupported` - 複数の concurrent accept は非サポート
+| 場面 | TransportError case |
+|------|-------------------|
+| 無効なメモリアドレス | `.unsupportedAddress(addr)` |
+| リスナー未登録 | `.connectionFailed(underlying: MemoryHubDetailError.noListener(addr))` |
+| アドレス重複 | `.addressInUse(addr)` |
+| リスナー閉鎖 | `.listenerClosed` |
+| 接続閉鎖後の read/write | `.connectionClosed` |
+| 同時 accept | `.unsupportedOperation("concurrent accept not supported")` |
+| 同時 read | `.unsupportedOperation("concurrent read not supported")` |
 
-### MemoryConnection.ConnectionError
-- `closed` - 接続が閉じられている
-- `concurrentReadNotSupported` - 複数の concurrent read は非サポート
+`MemoryHubDetailError` は internal エラー型で、`connectionFailed` の underlying に詳細を保持する。
 
 ## 設計上の注意点
 
 ### シングルリーダー/シングルアクセプター
 ```swift
-// BAD: 複数の reader は concurrentReadNotSupported エラーを投げる
+// BAD: 複数の reader は TransportError.unsupportedOperation を投げる
 async let r1 = connection.read()
 async let r2 = connection.read()  // Error!
 
-// BAD: 複数の accepter は concurrentAcceptNotSupported エラーを投げる
+// BAD: 複数の accepter は TransportError.unsupportedOperation を投げる
 async let a1 = listener.accept()
 async let a2 = listener.accept()  // Error!
 ```
@@ -122,3 +123,23 @@ hub.reset()
 
 ### Design Questions
 - EOF semantics: Memory returns empty `Data` on EOF while TCP throws. Consider aligning behavior across transports.
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (100/100)
+- 対象ターゲット: `P2PTransportMemory`
+- 実装読解範囲: 5 Swift files / 744 LOC
+- テスト範囲: 30 files / 488 cases / targets 5
+- 公開API: types 7 / funcs 12
+- 参照網羅率: type 0.86 / func 0.92
+- 未参照公開型: 1 件（例: `MemoryListener`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

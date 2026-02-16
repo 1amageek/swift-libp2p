@@ -48,17 +48,6 @@ public enum TransportError: Error, Sendable {
     case listenerClosed
     case timeout
     case unsupportedOperation(String)
-}
-
-// MARK: - Convenience
-
-extension TransportError {
-    /// A connection was closed.
-    public static let connectionClosed = TransportError.connectionFailed(underlying: ConnectionClosedError())
-}
-
-/// Error indicating a transport connection has been closed.
-public struct ConnectionClosedError: Error, CustomStringConvertible {
-    public var description: String { "Connection closed" }
-    public init() {}
+    case connectionClosed
+    case addressInUse(Multiaddr)
 }

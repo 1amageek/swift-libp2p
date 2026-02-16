@@ -61,21 +61,24 @@ struct TransportTests {
         }
     }
 
-    @Test("TransportError.connectionClosed convenience")
-    func connectionClosedConvenience() {
+    @Test("TransportError.connectionClosed is a distinct case")
+    func connectionClosedCase() {
         let error = TransportError.connectionClosed
-        if case .connectionFailed(let inner) = error {
-            #expect(inner is ConnectionClosedError)
+        if case .connectionClosed = error {
+            // OK
         } else {
-            Issue.record("Expected connectionFailed wrapping ConnectionClosedError")
+            Issue.record("Expected connectionClosed case")
         }
     }
 
-    // MARK: - ConnectionClosedError
-
-    @Test("ConnectionClosedError description")
-    func connectionClosedDescription() {
-        let error = ConnectionClosedError()
-        #expect(error.description == "Connection closed")
+    @Test("TransportError.addressInUse carries the address")
+    func addressInUseCarriesAddr() throws {
+        let addr = try Multiaddr("/ip4/10.0.0.1/tcp/8080")
+        let error = TransportError.addressInUse(addr)
+        if case .addressInUse(let a) = error {
+            #expect(a == addr)
+        } else {
+            Issue.record("Expected addressInUse")
+        }
     }
 }

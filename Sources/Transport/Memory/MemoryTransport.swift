@@ -73,7 +73,7 @@ public final class MemoryTransport: Transport, Sendable {
     ///
     /// - Parameter address: The memory address to dial (e.g., `/memory/server`)
     /// - Returns: A raw connection to the remote endpoint
-    /// - Throws: `MemoryHubError.noListener` if no listener is registered at the address
+    /// - Throws: `TransportError.connectionFailed` if no listener is registered at the address
     public func dial(_ address: Multiaddr) async throws -> any RawConnection {
         try hub.connect(to: address)
     }
@@ -82,7 +82,7 @@ public final class MemoryTransport: Transport, Sendable {
     ///
     /// - Parameter address: The memory address to listen on (e.g., `/memory/server`)
     /// - Returns: A listener for incoming connections
-    /// - Throws: `MemoryHubError.addressInUse` if the address is already in use
+    /// - Throws: `TransportError.addressInUse` if the address is already in use
     public func listen(_ address: Multiaddr) async throws -> any Listener {
         let listener = MemoryListener(address: address, hub: hub)
         try hub.register(listener: listener, at: address)

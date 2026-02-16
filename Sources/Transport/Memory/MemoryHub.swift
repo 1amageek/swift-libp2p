@@ -7,19 +7,14 @@ import Synchronization
 import P2PCore
 import P2PTransport
 
-/// Errors that can occur with the memory hub.
-public enum MemoryHubError: Error, Sendable {
-    /// The address is not a valid memory address.
-    case invalidAddress(Multiaddr)
-
-    /// No listener is registered at the given address.
+/// Internal error for MemoryHub failure details.
+internal enum MemoryHubDetailError: Error, CustomStringConvertible, Sendable {
     case noListener(Multiaddr)
-
-    /// A listener is already registered at the given address.
-    case addressInUse(Multiaddr)
-
-    /// The listener was closed.
-    case listenerClosed
+    var description: String {
+        switch self {
+        case .noListener(let addr): return "No listener registered at \(addr)"
+        }
+    }
 }
 
 /// Central router for in-memory transport connections.
@@ -63,17 +58,17 @@ public final class MemoryHub: Sendable {
     /// - Parameters:
     ///   - listener: The listener to register
     ///   - address: The address to register at
-    /// - Throws: `MemoryHubError.invalidAddress` if not a memory address,
-    ///           `MemoryHubError.addressInUse` if the address is already in use
+    /// - Throws: `TransportError.unsupportedAddress` if not a memory address,
+    ///           `TransportError.addressInUse` if the address is already in use
     public func register(listener: MemoryListener, at address: Multiaddr) throws {
         guard let id = address.memoryID else {
-            throw MemoryHubError.invalidAddress(address)
+            throw TransportError.unsupportedAddress(address)
         }
 
         try listeners.withLock { listeners in
             // Clean up any dead references
             if let existing = listeners[id], existing.listener != nil {
-                throw MemoryHubError.addressInUse(address)
+                throw TransportError.addressInUse(address)
             }
             listeners[id] = WeakListener(listener: listener)
         }
@@ -97,11 +92,11 @@ public final class MemoryHub: Sendable {
     ///
     /// - Parameter address: The address to connect to
     /// - Returns: The local end of the connection
-    /// - Throws: `MemoryHubError.invalidAddress` if not a memory address,
-    ///           `MemoryHubError.noListener` if no listener is registered
+    /// - Throws: `TransportError.unsupportedAddress` if not a memory address,
+    ///           `TransportError.connectionFailed` if no listener is registered
     public func connect(to address: Multiaddr) throws -> MemoryConnection {
         guard let id = address.memoryID else {
-            throw MemoryHubError.invalidAddress(address)
+            throw TransportError.unsupportedAddress(address)
         }
 
         let listener: MemoryListener? = listeners.withLock { listeners in
@@ -109,7 +104,7 @@ public final class MemoryHub: Sendable {
         }
 
         guard let listener = listener else {
-            throw MemoryHubError.noListener(address)
+            throw TransportError.connectionFailed(underlying: MemoryHubDetailError.noListener(address))
         }
 
         // Create the connection pair
