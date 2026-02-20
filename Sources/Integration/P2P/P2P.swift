@@ -4,6 +4,12 @@
 
 import Foundation
 import Synchronization
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 // Protocol abstractions
 @_exported import P2PCore
 @_exported import P2PTransport
@@ -282,8 +288,8 @@ public actor Node: StreamOpener, HandlerRegistry {
     private var discoveryTask: Task<Void, Never>?
     private var acceptTasks: [Task<Void, Never>] = []
 
-    // Auto-connect tracking
-    private var autoConnectCooldowns: [PeerID: ContinuousClock.Instant] = [:]
+    // Dial coordination
+    private nonisolated let dialBackoff = DialBackoff()
     private var discoveryAttachedPeers: Set<PeerID> = []
     private var peerConnectedEmitted: Set<PeerID> = []
 
@@ -291,6 +297,8 @@ public actor Node: StreamOpener, HandlerRegistry {
     private var traversalCoordinator: TraversalCoordinator?
     /// Current listen addresses, accessible synchronously from @Sendable closures.
     private nonisolated let _currentListenAddresses = ListenAddressStore()
+    /// Resolved addresses for external advertisement (0.0.0.0 → actual interface IPs).
+    private nonisolated let _advertisedAddresses = ListenAddressStore()
 
     // Events
     private var eventContinuation: AsyncStream<NodeEvent>.Continuation?
@@ -367,7 +375,6 @@ public actor Node: StreamOpener, HandlerRegistry {
         guard !isRunning else { return }
         isRunning = true
 
-        print("[Node.start] [A] health monitor...")
         // Initialize health monitor if configured
         if let healthConfig = configuration.healthCheck {
             let monitor = HealthMonitor(
@@ -379,40 +386,22 @@ public actor Node: StreamOpener, HandlerRegistry {
             }
             self.healthMonitor = monitor
         }
-        print("[Node.start] [A] done")
 
-        print("[Node.start] [B] idle check task...")
         startIdleCheckTask()
-        print("[Node.start] [B] done")
 
-        print("[Node.start] [C] discovery integration...")
-        if let discovery = configuration.discovery {
-            await setupDiscoveryIntegration(discovery)
-            print("[Node.start] [C] setupDiscoveryIntegration done")
-
-            // Start discovery auto-connect task (reactive via observations stream)
-            if configuration.discoveryConfig.autoConnect {
-                startDiscoveryTask(discovery: discovery)
-                print("[Node.start] [C] startDiscoveryTask done")
-            }
-        }
-        print("[Node.start] [C] done")
-
-        // Start listeners
-        print("[Node.start] [D] starting listeners...")
+        // Start listeners BEFORE discovery so we can accept inbound connections
+        // when peers discover us
         for address in configuration.listenAddresses {
             for transport in configuration.transports {
                 if transport.canListen(address) {
                     do {
                         // SecuredTransport (e.g., QUIC) uses a different listener type
                         if let securedTransport = transport as? SecuredTransport {
-                            print("[Node.start] [D] securedTransport.listenSecured(\(address))...")
                             let listener = try await securedTransport.listenSecured(
                                 address,
                                 localKeyPair: configuration.keyPair
                             )
                             securedListeners.append(listener)
-                            print("[Node.start] [D] securedTransport.listenSecured done")
 
                             // Start secured accept loop
                             let acceptTask = Task { [weak self] in
@@ -422,9 +411,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                             acceptTasks.append(acceptTask)
                         } else {
                             // Standard transport
-                            print("[Node.start] [D] transport.listen(\(address))...")
                             let listener = try await transport.listen(address)
-                            print("[Node.start] [D] transport.listen done: \(listener.localAddress)")
                             listeners.append(listener)
 
                             // Start accept loop
@@ -435,20 +422,45 @@ public actor Node: StreamOpener, HandlerRegistry {
                             acceptTasks.append(acceptTask)
                         }
                     } catch {
-                        print("[Node.start] [D] listen error: \(error)")
                         emit(.listenError(address, error))
                     }
                 }
             }
         }
-        print("[Node.start] [D] done")
+
+        // Fail if no listeners could bind and we had addresses to listen on
+        if listeners.isEmpty && securedListeners.isEmpty && !configuration.listenAddresses.isEmpty {
+            throw NodeError.noListenersBound
+        }
 
         // Update current listen addresses for synchronous access
-        _currentListenAddresses.update(
-            listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
-        )
+        let boundAddresses = listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
+        _currentListenAddresses.update(boundAddresses)
 
-        print("[Node.start] [E] traversal...")
+        // Resolve unspecified addresses (0.0.0.0 / ::) to actual interface IPs
+        let resolved = Self.resolveUnspecifiedAddresses(boundAddresses)
+        _advertisedAddresses.update(resolved)
+
+        // Start discovery AFTER listeners are ready, so announce() has resolved addresses
+        // and we can accept inbound connections from discovered peers
+        if let discovery = configuration.discovery {
+            try await setupDiscoveryIntegration(discovery)
+
+            // Announce resolved addresses to discovery service
+            if !resolved.isEmpty {
+                do {
+                    try await discovery.announce(addresses: resolved)
+                } catch {
+                    logger.warning("[P2P] Discovery announce failed: \(error)")
+                }
+            }
+
+            // Start discovery auto-connect task (reactive via observations stream)
+            if configuration.discoveryConfig.autoConnect {
+                startDiscoveryTask(discovery: discovery)
+            }
+        }
+
         // Initialize traversal orchestration if configured
         if let traversalConfig = configuration.traversal {
             let coordinator = TraversalCoordinator(
@@ -476,9 +488,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
             self.traversalCoordinator = coordinator
         }
-        print("[Node.start] [E] done")
 
-        print("[Node.start] [F] identify...")
         // Register IdentifyService handlers if configured
         if let identify = configuration.identifyService {
             await identify.registerHandlers(
@@ -496,16 +506,12 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
             identify.startMaintenance()
         }
-        print("[Node.start] [F] done")
 
-        print("[Node.start] [G] peerStore GC...")
         // Start PeerStore GC if using MemoryPeerStore
         if let memoryStore = _peerStore as? MemoryPeerStore {
             memoryStore.startGC()
         }
-        print("[Node.start] [G] done")
 
-        print("[Node.start] [H] bootstrap...")
         // Initialize and start bootstrap if configured
         if let bootstrapConfig = configuration.bootstrap, !bootstrapConfig.seeds.isEmpty {
             let connectionProvider = NodeConnectionProvider(node: self)
@@ -524,7 +530,6 @@ public actor Node: StreamOpener, HandlerRegistry {
                 await bootstrap.startAutoBootstrap()
             }
         }
-        print("[Node.start] [H] done — Node.start() complete")
     }
 
     /// Shuts down the node.
@@ -535,6 +540,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         traversalCoordinator?.shutdown()
         traversalCoordinator = nil
         _currentListenAddresses.clear()
+        _advertisedAddresses.clear()
 
         // Shutdown PeerStore if using MemoryPeerStore (stops GC + releases events)
         if let memoryStore = _peerStore as? MemoryPeerStore {
@@ -604,7 +610,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         }
 
         // Clear tracking state
-        autoConnectCooldowns.removeAll()
+        dialBackoff.clear()
         discoveryAttachedPeers.removeAll()
         peerConnectedEmitted.removeAll()
 
@@ -632,6 +638,12 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// - Returns: The remote peer ID
     @discardableResult
     public func connect(to address: Multiaddr) async throws -> PeerID {
+        // 0. Self-connection guard — never dial ourselves
+        let localPeerID = configuration.keyPair.peerID
+        if let targetPeer = address.peerID, targetPeer == localPeerID {
+            throw NodeError.selfDialNotAllowed
+        }
+
         // 1. Gating check (dial)
         if let gater = configuration.pool.gater {
             if !gater.interceptDial(peer: address.peerID, address: address) {
@@ -726,6 +738,14 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         let remotePeer = result.connection.remotePeer
 
+        // Self-connection guard (post-handshake, for addresses without embedded PeerID)
+        if remotePeer == configuration.keyPair.peerID {
+            await runBestEffort("close self-connection after handshake") {
+                try await result.connection.close()
+            }
+            throw NodeError.selfDialNotAllowed
+        }
+
         // Gating check (secured)
         if let gater = configuration.pool.gater {
             if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
@@ -775,6 +795,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
         }
         didConnect = true
+
+        // Clear dial backoff on successful connection
+        dialBackoff.recordSuccess(for: remotePeer)
 
         // Enable auto-reconnect if policy allows
         if configuration.pool.reconnectionPolicy.enabled {
@@ -836,6 +859,14 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         let remotePeer = muxedConnection.remotePeer
 
+        // Self-connection guard (post-handshake)
+        if remotePeer == configuration.keyPair.peerID {
+            await runBestEffort("close self-connection after secured handshake") {
+                try await muxedConnection.close()
+            }
+            throw NodeError.selfDialNotAllowed
+        }
+
         // Gating check (secured stage)
         if let gater = configuration.pool.gater {
             if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
@@ -885,6 +916,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
         }
         didConnect = true
+
+        // Clear dial backoff on successful connection
+        dialBackoff.recordSuccess(for: remotePeer)
 
         // Enable auto-reconnect if policy allows
         if configuration.pool.reconnectionPolicy.enabled {
@@ -1088,6 +1122,14 @@ public actor Node: StreamOpener, HandlerRegistry {
         listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
     }
 
+    /// Returns the resolved addresses suitable for external advertisement.
+    ///
+    /// Unspecified addresses (0.0.0.0, ::) are resolved to actual interface IPs.
+    /// Only includes addresses where the listener bound successfully.
+    public nonisolated var advertisedAddresses: [Multiaddr] {
+        _advertisedAddresses.current
+    }
+
     /// Returns the number of active connections.
     public var connectionCount: Int {
         pool.connectionCount
@@ -1138,6 +1180,96 @@ public actor Node: StreamOpener, HandlerRegistry {
         pool.unprotect(peer)
     }
 
+    // MARK: - Address Resolution
+
+    /// Resolves unspecified addresses (0.0.0.0 / ::) to actual network interface IPs.
+    ///
+    /// For each bound address:
+    /// - If the IP is unspecified (0.0.0.0 or ::), expand it to all matching interface addresses
+    /// - If the IP is already specific, keep it as-is
+    ///
+    /// This implements the equivalent of go-libp2p's `manet.ResolveUnspecifiedAddress`.
+    static func resolveUnspecifiedAddresses(_ boundAddresses: [Multiaddr]) -> [Multiaddr] {
+        var result: [Multiaddr] = []
+        let interfaceIPs = getInterfaceAddresses()
+
+        for addr in boundAddresses {
+            guard addr.isUnspecifiedIP else {
+                result.append(addr)
+                continue
+            }
+
+            // Determine if we need IPv4 or IPv6 interfaces
+            let isIPv6 = addr.protocols.contains { if case .ip6 = $0 { return true }; return false }
+
+            let matchingIPs = interfaceIPs.filter { ip in
+                if isIPv6 {
+                    return ip.contains(":")
+                } else {
+                    return !ip.contains(":")
+                }
+            }
+
+            for ip in matchingIPs {
+                result.append(addr.replacingIPAddress(ip))
+            }
+        }
+
+        return result
+    }
+
+    /// Returns all non-loopback IPv4 and loopback addresses from network interfaces.
+    private static func getInterfaceAddresses() -> [String] {
+        var addresses: [String] = []
+        var hasNonLoopback = false
+
+        var ifaddrs: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddrs) == 0, let firstAddr = ifaddrs else {
+            return ["127.0.0.1"]
+        }
+        defer { freeifaddrs(firstAddr) }
+
+        var current: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let addr = current {
+            let interface = addr.pointee
+            let family = interface.ifa_addr.pointee.sa_family
+
+            if family == sa_family_t(AF_INET) {
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                #if canImport(Darwin)
+                let addrLen = socklen_t(interface.ifa_addr.pointee.sa_len)
+                #else
+                let addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                #endif
+                getnameinfo(
+                    interface.ifa_addr, addrLen,
+                    &hostname, socklen_t(hostname.count),
+                    nil, 0, NI_NUMERICHOST
+                )
+                let ip: String = hostname.withUnsafeBufferPointer { buf in
+                    let len = buf.firstIndex(of: 0) ?? buf.count
+                    return String(decoding: buf[..<len].lazy.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                }
+
+                // Include loopback and non-loopback
+                if ip == "127.0.0.1" {
+                    addresses.append(ip)
+                } else if !ip.isEmpty {
+                    // Non-loopback addresses go first
+                    addresses.insert(ip, at: hasNonLoopback ? 1 : 0)
+                    hasNonLoopback = true
+                }
+            }
+
+            current = interface.ifa_next
+        }
+
+        if addresses.isEmpty {
+            addresses.append("127.0.0.1")
+        }
+        return addresses
+    }
+
     // MARK: - Private Helpers
 
     private func emit(_ event: NodeEvent) {
@@ -1148,21 +1280,15 @@ public actor Node: StreamOpener, HandlerRegistry {
         eventContinuation?.yield(.connection(event))
     }
 
-    private func setupDiscoveryIntegration(_ discovery: any DiscoveryService) async {
-        print("[Node.start] [C1] registerHandler...")
+    private func setupDiscoveryIntegration(_ discovery: any DiscoveryService) async throws {
         if let registrable = discovery as? any NodeDiscoveryHandlerRegistrable {
             await registrable.registerHandler(registry: self)
-            print("[Node.start] [C1] registerHandler done")
         }
-        print("[Node.start] [C2] discovery start...")
         if let startableWithOpener = discovery as? any NodeDiscoveryStartableWithOpener {
             await startableWithOpener.start(using: self)
-            print("[Node.start] [C2] startableWithOpener.start done")
         } else if let startable = discovery as? any NodeDiscoveryStartable {
-            await startable.start()
-            print("[Node.start] [C2] startable.start done")
+            try await startable.start()
         }
-        print("[Node.start] [C2] discovery start done")
     }
 
     private func onPeerConnected(_ peer: PeerID, address: Multiaddr? = nil, isLimited: Bool = false) async {
@@ -1295,8 +1421,15 @@ public actor Node: StreamOpener, HandlerRegistry {
             // from transient disconnections after long-lived connections)
             pool.resetRetryCountIfStable(id)
 
-            // Check if we should reconnect
-            if let address = pool.reconnectAddress(for: peer) {
+            // Check if we should reconnect.
+            // Only the peer with the smaller PeerID initiates reconnection.
+            // This prevents both sides from reconnecting simultaneously,
+            // which would create duplicate connections and trigger
+            // simultaneous connect resolution in a loop.
+            // The larger PeerID side relies on Discovery auto-connect
+            // (with DialBackoff) as a fallback.
+            let localPeerID = configuration.keyPair.peerID
+            if let address = pool.reconnectAddress(for: peer), localPeerID < peer {
                 let retryCount = pool.managedConnection(id)?.retryCount ?? 0
                 let policy = configuration.pool.reconnectionPolicy
 
@@ -1331,6 +1464,9 @@ public actor Node: StreamOpener, HandlerRegistry {
     private func performReconnect(id: ConnectionID, peer: PeerID, address: Multiaddr, attempt: Int) async {
         guard isRunning else { return }
         guard pool.reconnectAddress(for: peer) != nil else { return }
+
+        // Skip if already connected (another path may have succeeded)
+        guard !pool.isConnected(to: peer) else { return }
 
         do {
             guard let transport = configuration.transports.first(where: { $0.canDial(address) }) else {
@@ -1380,6 +1516,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
                 pool.updateConnection(id, connection: muxedConnection)
                 pool.resetRetryCount(id)
+
+                // Clear dial backoff on successful reconnection
+                dialBackoff.recordSuccess(for: remotePeer)
 
                 // Resolve simultaneous connect before emitting events.
                 await resolveSimultaneousConnect(for: remotePeer)
@@ -1456,6 +1595,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             pool.updateConnection(id, connection: result.connection)
             pool.resetRetryCount(id)
 
+            // Clear dial backoff on successful reconnection
+            dialBackoff.recordSuccess(for: remotePeer)
+
             // Resolve simultaneous connect before emitting events.
             await resolveSimultaneousConnect(for: remotePeer)
 
@@ -1474,6 +1616,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             await healthMonitor?.startMonitoring(peer: remotePeer)
 
         } catch {
+            // Record failure in centralized backoff
+            dialBackoff.recordFailure(for: peer)
+
             // Classify the error for reconnection decisions
             let errorCode: DisconnectErrorCode = if error is NegotiationError {
                 .protocolError
@@ -1569,19 +1714,17 @@ public actor Node: StreamOpener, HandlerRegistry {
         hints: [Multiaddr],
         config: DiscoveryConfiguration
     ) async {
-        // Check and set cooldown atomically BEFORE any await
-        // This prevents race conditions where multiple calls bypass cooldown during await
-        let now = ContinuousClock.now
-        if let cooldownUntil = autoConnectCooldowns[peer] {
-            if now < cooldownUntil {
-                return
-            }
-        }
-        // Set cooldown immediately to prevent concurrent attempts
-        autoConnectCooldowns[peer] = now + config.reconnectCooldown
+        // Centralized dial backoff — prevents rapid retries after failures
+        guard !dialBackoff.shouldBackOff(from: peer) else { return }
 
         // Already connected?
         guard !pool.isConnected(to: peer) else { return }
+
+        // Defer to ReconnectionPolicy if it's already handling this peer
+        guard !pool.hasReconnecting(for: peer) else { return }
+
+        // Already dialing?
+        guard !pool.hasPendingDial(to: peer) else { return }
 
         // Add hints to peer store if provided
         if !hints.isEmpty {
@@ -1596,10 +1739,11 @@ public actor Node: StreamOpener, HandlerRegistry {
         // Try to connect
         do {
             try await connect(to: address)
-            // Record success
+            // Record success (also recorded in performDial, but belt-and-suspenders)
             await _addressBook.recordSuccess(address: address, for: peer)
         } catch {
-            // Record failure
+            // Record failure in centralized backoff
+            dialBackoff.recordFailure(for: peer)
             await _addressBook.recordFailure(address: address, for: peer)
         }
     }
@@ -1671,6 +1815,9 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // 3. Cleanup stale entries (failed, old disconnected)
         _ = pool.cleanupStaleEntries(disconnectedThreshold: idleTimeout)
+
+        // 4. Cleanup expired dial backoff entries
+        dialBackoff.cleanup()
     }
 
     private static func trimContext(for candidate: ConnectionTrimReport.Candidate) -> ConnectionTrimmedContext {
@@ -1741,6 +1888,14 @@ public actor Node: StreamOpener, HandlerRegistry {
             let remotePeer = result.connection.remotePeer
             let remoteAddress = result.connection.remoteAddress
 
+            // Self-connection guard (inbound)
+            if remotePeer == configuration.keyPair.peerID {
+                await runBestEffort("close inbound self-connection") {
+                    try await result.connection.close()
+                }
+                return
+            }
+
             // Gating check (secured)
             if let gater = configuration.pool.gater {
                 if !gater.interceptSecured(peer: remotePeer, direction: .inbound) {
@@ -1781,6 +1936,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                 direction: .inbound,
                 isLimited: isRelay
             )
+
+            // Clear dial backoff — peer is reachable (inbound proves connectivity)
+            dialBackoff.recordSuccess(for: remotePeer)
 
             // Resolve simultaneous connect before emitting events.
             await resolveSimultaneousConnect(for: remotePeer)
@@ -1845,6 +2003,14 @@ public actor Node: StreamOpener, HandlerRegistry {
             return
         }
 
+        // Self-connection guard (secured inbound)
+        if remotePeer == configuration.keyPair.peerID {
+            await runBestEffort("close secured inbound self-connection") {
+                try await muxedConnection.close()
+            }
+            return
+        }
+
         // Gating check (secured stage)
         if let gater = configuration.pool.gater {
             if !gater.interceptSecured(peer: remotePeer, direction: .inbound) {
@@ -1885,6 +2051,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             direction: .inbound,
             isLimited: isRelay
         )
+
+        // Clear dial backoff — peer is reachable (inbound proves connectivity)
+        dialBackoff.recordSuccess(for: remotePeer)
 
         // Resolve simultaneous connect before emitting events.
         await resolveSimultaneousConnect(for: remotePeer)
@@ -2163,6 +2332,8 @@ public enum NodeError: Error, Sendable {
     case messageTooLarge(size: Int, max: Int)
     case resourceLimitExceeded(scope: String, resource: String)
     case noAddressesKnown(PeerID)
+    case selfDialNotAllowed
+    case noListenersBound
 }
 
 // MARK: - NodeConnectionProvider

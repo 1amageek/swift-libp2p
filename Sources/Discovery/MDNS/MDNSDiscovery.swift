@@ -2,6 +2,7 @@
 import Foundation
 import P2PCore
 import P2PDiscovery
+import P2PProtocols
 import mDNS
 import Synchronization
 
@@ -9,7 +10,7 @@ import Synchronization
 ///
 /// Uses Multicast DNS (RFC 6762) and DNS-SD (RFC 6763) to discover
 /// and advertise libp2p peers on the local network.
-public actor MDNSDiscovery: DiscoveryService {
+public actor MDNSDiscovery: DiscoveryService, NodeDiscoveryStartable {
 
     // MARK: - Properties
 
@@ -57,10 +58,10 @@ public actor MDNSDiscovery: DiscoveryService {
     // MARK: - Lifecycle
 
     /// Starts the mDNS discovery service.
+    ///
+    /// This method is idempotent — calling it when already started is a no-op.
     public func start() async throws {
-        guard !isStarted else {
-            throw MDNSDiscoveryError.alreadyStarted
-        }
+        guard !isStarted else { return }
 
         // Create browser configuration
         var browserConfig = ServiceBrowser.Configuration()

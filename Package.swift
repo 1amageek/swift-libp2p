@@ -361,6 +361,7 @@ let package = Package(
             dependencies: [
                 "P2PDiscovery",
                 "P2PCore",
+                "P2PProtocols",
                 .product(name: "mDNS", package: "swift-mDNS"),
             ],
             path: "Sources/Discovery/MDNS"

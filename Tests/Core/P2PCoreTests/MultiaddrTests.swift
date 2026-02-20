@@ -357,6 +357,52 @@ struct MultiaddrTests {
     }
 }
 
+@Suite("Multiaddr Address Resolution Tests")
+struct MultiaddrResolutionTests {
+
+    @Test("isUnspecifiedIP detects 0.0.0.0")
+    func isUnspecifiedIPv4() throws {
+        let addr = try Multiaddr("/ip4/0.0.0.0/tcp/4001")
+        #expect(addr.isUnspecifiedIP)
+    }
+
+    @Test("isUnspecifiedIP returns false for specific IP")
+    func isNotUnspecified() throws {
+        let addr = try Multiaddr("/ip4/192.168.1.1/tcp/4001")
+        #expect(!addr.isUnspecifiedIP)
+    }
+
+    @Test("isUnspecifiedIP detects ::")
+    func isUnspecifiedIPv6() throws {
+        let addr = try Multiaddr("/ip6/::/tcp/4001")
+        #expect(addr.isUnspecifiedIP)
+    }
+
+    @Test("isUnspecifiedIP returns false for loopback")
+    func loopbackIsNotUnspecified() throws {
+        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
+        #expect(!addr.isUnspecifiedIP)
+    }
+
+    @Test("replacingIPAddress replaces IPv4")
+    func replacingIPv4() throws {
+        let addr = try Multiaddr("/ip4/0.0.0.0/tcp/4001")
+        let replaced = addr.replacingIPAddress("192.168.3.16")
+        #expect(replaced.description == "/ip4/192.168.3.16/tcp/4001")
+    }
+
+    @Test("replacingIPAddress preserves other components")
+    func replacingPreservesComponents() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let peerID = keyPair.peerID
+        let addr = try Multiaddr("/ip4/0.0.0.0/tcp/4001/p2p/\(peerID)")
+        let replaced = addr.replacingIPAddress("10.0.0.1")
+        #expect(replaced.ipAddress == "10.0.0.1")
+        #expect(replaced.tcpPort == 4001)
+        #expect(replaced.peerID == peerID)
+    }
+}
+
 @Suite("Varint Tests")
 struct VarintTests {
 

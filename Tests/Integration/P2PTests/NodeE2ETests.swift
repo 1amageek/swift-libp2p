@@ -1042,4 +1042,56 @@ struct NodeE2ETests {
         await server.shutdown()
         hub.reset()
     }
+
+    // MARK: - Address Resolution Tests
+
+    @Test("resolveUnspecifiedAddresses expands 0.0.0.0 to interface IPs", .timeLimit(.minutes(1)))
+    func resolveUnspecifiedAddresses() throws {
+        let addr = try Multiaddr("/ip4/0.0.0.0/tcp/52371")
+        let resolved = Node.resolveUnspecifiedAddresses([addr])
+
+        // Should have at least one address (127.0.0.1)
+        #expect(!resolved.isEmpty)
+
+        // No resolved address should contain 0.0.0.0
+        for r in resolved {
+            #expect(r.ipAddress != "0.0.0.0")
+        }
+
+        // All resolved addresses should keep the same port
+        for r in resolved {
+            #expect(r.tcpPort == 52371)
+        }
+
+        // Should contain loopback
+        let hasLoopback = resolved.contains { $0.ipAddress == "127.0.0.1" }
+        #expect(hasLoopback)
+    }
+
+    @Test("resolveUnspecifiedAddresses keeps specific addresses as-is", .timeLimit(.minutes(1)))
+    func resolveSpecificAddresses() throws {
+        let addr = try Multiaddr("/ip4/192.168.1.100/tcp/9000")
+        let resolved = Node.resolveUnspecifiedAddresses([addr])
+
+        #expect(resolved.count == 1)
+        #expect(resolved[0].ipAddress == "192.168.1.100")
+        #expect(resolved[0].tcpPort == 9000)
+    }
+
+    @Test("Node advertises resolved addresses after start", .timeLimit(.minutes(1)))
+    func nodeAdvertisesResolvedAddresses() async throws {
+        let hub = MemoryHub()
+        let server = makeNode(name: "addr-server", hub: hub,
+                              listenAddress: .memory(id: "addr-test"))
+
+        try await server.start()
+
+        // Memory transport addresses don't have unspecified IPs,
+        // so advertisedAddresses should contain the bound address
+        let advertised = server.advertisedAddresses
+        #expect(!advertised.isEmpty)
+
+        await server.shutdown()
+        hub.reset()
+    }
 }

@@ -86,7 +86,7 @@ public protocol NodeDiscoveryHandlerRegistrable: Sendable {
 /// Optional capability for discovery services that can be started directly by Node.
 public protocol NodeDiscoveryStartable: Sendable {
     /// Starts internal background work required by discovery.
-    func start() async
+    func start() async throws
 }
 
 /// Optional capability for discovery services that require a stream opener from Node.

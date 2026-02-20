@@ -224,6 +224,40 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         return nil
     }
 
+    /// Whether this address has an unspecified IP (0.0.0.0 or ::).
+    public var isUnspecifiedIP: Bool {
+        for proto in protocols {
+            switch proto {
+            case .ip4(let addr):
+                return addr == "0.0.0.0"
+            case .ip6(let addr):
+                return addr == "::" || addr == "0000:0000:0000:0000:0000:0000:0000:0000"
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    /// Creates a new Multiaddr by replacing the IP component with the given address.
+    public func replacingIPAddress(_ newIP: String) -> Multiaddr {
+        let newProtocols = protocols.map { proto -> MultiaddrProtocol in
+            switch proto {
+            case .ip4:
+                return .ip4(newIP)
+            case .ip6:
+                if newIP.contains(":") {
+                    return .ip6(newIP)
+                } else {
+                    return .ip4(newIP)
+                }
+            default:
+                return proto
+            }
+        }
+        return Multiaddr(uncheckedProtocols: newProtocols)
+    }
+
     /// Whether this address contains any DNS components that need resolution.
     public var hasDNSComponent: Bool {
         protocols.contains { proto in

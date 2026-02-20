@@ -723,6 +723,23 @@ internal final class ConnectionPool: Sendable {
         }
     }
 
+    /// Checks if any connection to a peer is in `.reconnecting` state.
+    ///
+    /// Used by auto-connect to defer to an active ReconnectionPolicy reconnect.
+    ///
+    /// - Parameter peer: The peer to check
+    /// - Returns: true if any connection entry is reconnecting
+    func hasReconnecting(for peer: PeerID) -> Bool {
+        state.withLock { state in
+            guard let ids = state.peerConnections[peer] else { return false }
+            return ids.contains { id in
+                guard let managed = state.connections[id] else { return false }
+                if case .reconnecting = managed.state { return true }
+                return false
+            }
+        }
+    }
+
     // MARK: - Pending Dials
 
     /// Checks if there's a pending dial to a peer.
