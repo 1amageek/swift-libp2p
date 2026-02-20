@@ -23,7 +23,7 @@ import QUIC
 ///
 /// These tests require Docker to be running.
 /// Run with: swift test --filter RustInteropTests
-@Suite("Rust-libp2p Interop Tests")
+@Suite("Rust-libp2p Interop Tests", .serialized)
 struct RustInteropTests {
 
     // MARK: - Connection Tests
@@ -32,7 +32,7 @@ struct RustInteropTests {
     func sendRawData() async throws {
         // Start rust-libp2p node
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
 
@@ -76,7 +76,7 @@ struct RustInteropTests {
     func connectToGo() async throws {
         // Start rust-libp2p node
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
 
@@ -103,7 +103,7 @@ struct RustInteropTests {
     func identifyGo() async throws {
         print("[TEST] Starting rust-libp2p identify test")
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[TEST] Harness started: \(nodeInfo.address)")
@@ -117,39 +117,6 @@ struct RustInteropTests {
             localKeyPair: keyPair
         )
         print("[TEST] Connection established")
-
-        // rust-libp2p identify behaviour automatically opens a stream to send identify info
-        // We need to accept this incoming stream first
-        async let incomingTask = Task {
-            do {
-                print("[TEST] Waiting for incoming identify push...")
-                let pushStream = try await connection.acceptStream()
-                print("[TEST] Received identify push stream ID: \(pushStream.id)")
-
-                // Handle multistream-select for the push
-                let pushNegotiationResult = try await MultistreamSelect.handle(
-                    supported: [LibP2PProtocol.identifyPush, LibP2PProtocol.identify],
-                    read: { Data(buffer: try await pushStream.read()) },
-                    write: { data in try await pushStream.write(ByteBuffer(bytes: data)) }
-                )
-                print("[TEST] Identify push protocol: \(pushNegotiationResult.protocolID)")
-
-                // Read the identify message
-                let pushData = try await pushStream.read()
-                let pushBytes = Data(buffer: pushData)
-                let (_, pushPrefixBytes) = try Varint.decode(pushBytes)
-                let pushProtobufData = pushBytes.dropFirst(pushPrefixBytes)
-                let pushInfo = try IdentifyProtobuf.decode(Data(pushProtobufData))
-                print("[TEST] Received identify from rust-libp2p: agent=\(pushInfo.agentVersion ?? "unknown")")
-
-                try await pushStream.close()
-            } catch {
-                print("[TEST] Error handling identify push: \(error)")
-            }
-        }
-
-        // Give rust-libp2p time to initiate the identify push
-        try await Task.sleep(for: .milliseconds(100))
 
         // Open stream and negotiate identify protocol
         print("[TEST] Opening new stream...")
@@ -173,15 +140,15 @@ struct RustInteropTests {
 
         #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
 
-        // Wait for identify response
-        try await Task.sleep(for: .seconds(1))
-
-        // Read identify response (server sends immediately after accepting protocol)
-        let data = try await stream.read()
-
-        // libp2p identify uses length-prefixed protobuf messages
-        // Wire format: [varint: message length] [protobuf message]
-        let bytes = Data(buffer: data)
+        // Use remainder when identify response is coalesced with protocol confirmation.
+        let bytes: Data
+        if !negotiationResult.remainder.isEmpty {
+            bytes = negotiationResult.remainder
+        } else {
+            try await Task.sleep(for: .seconds(1))
+            let data = try await stream.read()
+            bytes = Data(buffer: data)
+        }
 
         // Decode length prefix and extract protobuf message
         let (_, prefixBytes) = try Varint.decode(bytes)
@@ -202,7 +169,7 @@ struct RustInteropTests {
     @Test("Verify rust-libp2p PeerID matches public key", .timeLimit(.minutes(2)))
     func verifyGoPeerID() async throws {
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -224,12 +191,15 @@ struct RustInteropTests {
 
         #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
 
-        // Wait a bit to ensure packets are sent
-        try await Task.sleep(for: .seconds(1))
-
-        // Read identify response with length-prefix handling
-        let data = try await stream.read()
-        let bytes = Data(buffer: data)
+        // Use remainder when identify response is coalesced with protocol confirmation.
+        let bytes: Data
+        if !negotiationResult.remainder.isEmpty {
+            bytes = negotiationResult.remainder
+        } else {
+            try await Task.sleep(for: .seconds(1))
+            let data = try await stream.read()
+            bytes = Data(buffer: data)
+        }
 
         // libp2p identify uses length-prefixed protobuf messages
         // Wire format: [varint: message length] [protobuf message]
@@ -257,7 +227,7 @@ struct RustInteropTests {
     @Test("Ping rust-libp2p node", .timeLimit(.minutes(2)))
     func pingGo() async throws {
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -302,7 +272,7 @@ struct RustInteropTests {
     @Test("Multiple pings to rust-libp2p node", .timeLimit(.minutes(2)))
     func multiplePingsToGo() async throws {
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -358,7 +328,7 @@ struct RustInteropTests {
     @Test("Bidirectional stream with rust-libp2p", .timeLimit(.minutes(2)))
     func bidirectionalStream() async throws {
         let harness = try await RustLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -419,8 +389,7 @@ extension RustInteropTests {
         process.standardOutput = pipe
         process.standardError = pipe
 
-        try process.run()
-        process.waitUntilExit()
+        try runProcessWithTimeout(process)
 
         #expect(process.terminationStatus == 0, "Docker should be available")
     }

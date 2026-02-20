@@ -19,7 +19,7 @@ import NIOCore
 @testable import P2PProtocols
 
 /// Interoperability tests for GossipSub protocol
-@Suite("GossipSub Protocol Interop Tests")
+@Suite("GossipSub Protocol Interop Tests", .serialized)
 struct GossipSubInteropTests {
 
     // MARK: - Connection Tests
@@ -30,7 +30,7 @@ struct GossipSubInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .gossipsub(defaultTopic: "test-topic")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         print("[GossipSub] Node info: \(nodeInfo)")
@@ -59,7 +59,7 @@ struct GossipSubInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .gossipsub(defaultTopic: "test-topic")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -93,7 +93,7 @@ struct GossipSubInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .gossipsub(defaultTopic: "test-topic")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -114,16 +114,23 @@ struct GossipSubInteropTests {
 
         #expect(negotiationResult.protocolID.contains("meshsub"))
 
-        // After protocol negotiation, GossipSub nodes exchange control messages
-        // Wait briefly for the peer to send its subscription info
-        try await Task.sleep(for: .milliseconds(500))
+        let topic = Topic("test-topic")
+        let controlRPC = GossipSubRPC.builder()
+            .graft(topic: topic)
+            .prune(topic: topic)
+            .build()
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(GossipSubProtobuf.encode(controlRPC))))
 
-        // The go-libp2p node should send GRAFT messages for topics it's subscribed to
-        // We can check if any data is available
-        print("[GossipSub] Protocol handshake completed, waiting for control messages...")
+        let marker = "gossipsub-control-\(UUID().uuidString)"
+        let publishMessage = try makeSignedMessage(
+            keyPair: keyPair,
+            topic: topic,
+            payload: Data(marker.utf8)
+        )
+        let publishRPC = GossipSubRPC(messages: [publishMessage])
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(GossipSubProtobuf.encode(publishRPC))))
 
-        // Note: Full GRAFT/PRUNE testing requires implementing GossipSub message encoding
-        // This test verifies the basic protocol negotiation path
+        try await waitForLog(in: harness, containing: marker)
 
         try await stream.close()
         try await connection.close()
@@ -136,7 +143,7 @@ struct GossipSubInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .gossipsub(defaultTopic: "test-topic")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -147,18 +154,28 @@ struct GossipSubInteropTests {
             localKeyPair: keyPair
         )
 
-        // Create GossipSub service
-        let gossipSub = GossipSubService(
-            keyPair: keyPair,
-            configuration: GossipSubConfiguration()
+        let stream = try await connection.newStream()
+        defer { closeStream(stream) }
+        let negotiationResult = try await MultistreamSelect.negotiate(
+            protocols: ["/meshsub/1.1.0", "/meshsub/1.0.0"],
+            read: { Data(buffer: try await stream.read()) },
+            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
+        #expect(negotiationResult.protocolID.contains("meshsub"))
 
-        print("[GossipSub] GossipSub service created")
+        let topic = Topic("test-topic")
+        let subscriptionRPC = GossipSubRPC(subscriptions: [.subscribe(to: topic)])
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(GossipSubProtobuf.encode(subscriptionRPC))))
 
-        // The full test would involve:
-        // 1. Registering the GossipSub handler
-        // 2. Subscribing to a topic
-        // 3. Verifying mesh formation with the go-libp2p node
+        let marker = "gossipsub-sub-\(UUID().uuidString)"
+        let message = try makeSignedMessage(
+            keyPair: keyPair,
+            topic: topic,
+            payload: Data(marker.utf8)
+        )
+        let publishRPC = GossipSubRPC(messages: [message])
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(GossipSubProtobuf.encode(publishRPC))))
+        try await waitForLog(in: harness, containing: marker)
 
         try await connection.close()
     }
@@ -171,7 +188,7 @@ struct GossipSubInteropTests {
         let harness1 = try await GoProtocolHarness.start(
             protocol: .gossipsub(defaultTopic: "mesh-test")
         )
-        defer { Task { try? await harness1.stop() } }
+        defer { stopHarness(harness1) }
 
         print("[GossipSub] First node started: \(harness1.nodeInfo.peerID)")
 
@@ -196,12 +213,81 @@ struct GossipSubInteropTests {
         #expect(negotiationResult.protocolID == "/meshsub/1.1.0")
         print("[GossipSub] Mesh protocol negotiated")
 
-        // Check container logs for mesh formation evidence
-        try await Task.sleep(for: .seconds(1))
-        let logs = try await harness1.getLogs()
-        print("[GossipSub] Node logs: \(logs.prefix(500))...")
+        let marker = "gossipsub-mesh-\(UUID().uuidString)"
+        let message = try makeSignedMessage(
+            keyPair: keyPair,
+            topic: Topic("mesh-test"),
+            payload: Data(marker.utf8)
+        )
+        let publishRPC = GossipSubRPC(messages: [message])
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(GossipSubProtobuf.encode(publishRPC))))
+        try await waitForLog(in: harness1, containing: marker)
 
         try await stream.close()
         try await connection.close()
+    }
+}
+
+private enum GossipSubInteropError: Error {
+    case logWaitTimedOut(String)
+}
+
+private func randomSequenceNumber() -> Data {
+    Data((0..<8).map { _ in UInt8.random(in: 0...255) })
+}
+
+private func encodeLengthPrefixed(_ payload: Data) -> Data {
+    var framed = Data()
+    framed.append(contentsOf: Varint.encode(UInt64(payload.count)))
+    framed.append(payload)
+    return framed
+}
+
+private func waitForLog(
+    in harness: GoProtocolHarness,
+    containing marker: String,
+    timeout: Duration = .seconds(15),
+    pollInterval: Duration = .milliseconds(100)
+) async throws {
+    let start = ContinuousClock.now
+    while ContinuousClock.now - start < timeout {
+        let logs = try await harness.getLogs()
+        if logs.contains(marker) {
+            return
+        }
+        try await Task.sleep(for: pollInterval)
+    }
+    throw GossipSubInteropError.logWaitTimedOut(marker)
+}
+
+private func makeSignedMessage(
+    keyPair: KeyPair,
+    topic: Topic,
+    payload: Data
+) throws -> GossipSubMessage {
+    try GossipSubMessage.Builder(data: payload, topic: topic)
+        .source(keyPair.peerID)
+        .sequenceNumber(randomSequenceNumber())
+        .sign(with: keyPair.privateKey)
+        .build()
+}
+
+private func stopHarness(_ harness: GoProtocolHarness) {
+    Task {
+        do {
+            try await harness.stop()
+        } catch {
+            print("[GossipSub] Failed to stop harness: \(error)")
+        }
+    }
+}
+
+private func closeStream(_ stream: MuxedStream) {
+    Task {
+        do {
+            try await stream.close()
+        } catch {
+            print("[GossipSub] Failed to close stream: \(error)")
+        }
     }
 }

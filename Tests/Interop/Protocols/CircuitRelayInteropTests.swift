@@ -19,7 +19,7 @@ import NIOCore
 @testable import P2PProtocols
 
 /// Interoperability tests for Circuit Relay v2 protocol
-@Suite("Circuit Relay v2 Interop Tests")
+@Suite("Circuit Relay v2 Interop Tests", .serialized)
 struct CircuitRelayInteropTests {
 
     // MARK: - Connection Tests
@@ -29,7 +29,7 @@ struct CircuitRelayInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .relay(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         print("[Relay] Node info: \(nodeInfo)")
@@ -55,7 +55,7 @@ struct CircuitRelayInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .relay(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -89,7 +89,7 @@ struct CircuitRelayInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .relay(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -110,36 +110,17 @@ struct CircuitRelayInteropTests {
 
         #expect(negotiationResult.protocolID == "/libp2p/circuit/relay/0.2.0/hop")
 
-        // Build RESERVE message
-        // Circuit Relay v2 HopMessage:
-        // type: 0 = RESERVE, 1 = CONNECT, 2 = STATUS
-        var message = Data()
+        let reserveRequest = HopMessage.reserve()
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(CircuitRelayProtobuf.encode(reserveRequest))))
 
-        // Field 1: type (enum) = RESERVE (0)
-        message.append(0x08)  // tag: field 1, wire type 0
-        message.append(0x00)  // value: 0 (RESERVE)
-
-        // Length prefix the message
-        var request = Data()
-        request.append(UInt8(message.count))
-        request.append(message)
-
-        print("[Relay] Sending RESERVE request")
-        try await stream.write(ByteBuffer(bytes: request))
-
-        // Read response
-        let response = try await stream.read()
-        let responseData = Data(buffer: response)
-
-        // Should receive a HopMessage with type STATUS
-        #expect(responseData.count > 0, "Should receive RESERVE response")
-        print("[Relay] RESERVE response: \(responseData.count) bytes")
-
-        // Parse response - first byte is length, then message
-        if responseData.count >= 2 {
-            let msgType = responseData[1]  // After length byte
-            print("[Relay] Response type byte: \(msgType)")
-        }
+        let responseFrame = Data(buffer: try await stream.read())
+        let responsePayload = try decodeLengthPrefixedMessage(responseFrame)
+        let response = try CircuitRelayProtobuf.decodeHop(responsePayload)
+        #expect(response.type == .status)
+        #expect(response.status == .ok)
+        #expect(response.reservation != nil)
+        #expect(response.reservation?.expiration ?? 0 > 0)
+        print("[Relay] RESERVE response decoded: status=\(String(describing: response.status))")
 
         try await stream.close()
         try await connection.close()
@@ -152,7 +133,7 @@ struct CircuitRelayInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .relay(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -173,51 +154,17 @@ struct CircuitRelayInteropTests {
 
         #expect(negotiationResult.protocolID == "/libp2p/circuit/relay/0.2.0/hop")
 
-        // Build CONNECT message
-        // This requires a target peer - we'll use a dummy peer ID
         let targetPeerID = KeyPair.generateEd25519().peerID
+        let connectRequest = HopMessage.connect(to: targetPeerID)
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(CircuitRelayProtobuf.encode(connectRequest))))
 
-        var message = Data()
-
-        // Field 1: type = CONNECT (1)
-        message.append(0x08)
-        message.append(0x01)
-
-        // Field 2: peer (Peer message with id field)
-        var peerMessage = Data()
-        peerMessage.append(0x0a)  // field 1: id (bytes)
-        let peerBytes = targetPeerID.multihash.bytes
-        if peerBytes.count < 128 {
-            peerMessage.append(UInt8(peerBytes.count))
-        } else {
-            peerMessage.append(UInt8((peerBytes.count & 0x7f) | 0x80))
-            peerMessage.append(UInt8(peerBytes.count >> 7))
-        }
-        peerMessage.append(contentsOf: peerBytes)
-
-        message.append(0x12)  // field 2: peer
-        message.append(UInt8(peerMessage.count))
-        message.append(peerMessage)
-
-        // Length prefix
-        var request = Data()
-        if message.count < 128 {
-            request.append(UInt8(message.count))
-        } else {
-            request.append(UInt8((message.count & 0x7f) | 0x80))
-            request.append(UInt8(message.count >> 7))
-        }
-        request.append(message)
-
-        print("[Relay] Sending CONNECT request for target: \(targetPeerID)")
-        try await stream.write(ByteBuffer(bytes: request))
-
-        // Read response - should be STATUS with error (target not found)
-        let response = try await stream.read()
-        let responseData = Data(buffer: response)
-
-        #expect(responseData.count > 0, "Should receive CONNECT response")
-        print("[Relay] CONNECT response: \(responseData.count) bytes")
+        let responseFrame = Data(buffer: try await stream.read())
+        let responsePayload = try decodeLengthPrefixedMessage(responseFrame)
+        let response = try CircuitRelayProtobuf.decodeHop(responsePayload)
+        #expect(response.type == .status)
+        #expect(response.status != nil)
+        #expect(response.status != .ok)
+        print("[Relay] CONNECT response decoded: status=\(String(describing: response.status))")
 
         try await stream.close()
         try await connection.close()
@@ -230,7 +177,7 @@ struct CircuitRelayInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .relay(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -261,13 +208,10 @@ struct CircuitRelayInteropTests {
 
     @Test("Relay data transfer verification", .timeLimit(.minutes(3)))
     func relayDataTransfer() async throws {
-        // This test verifies the relay can handle data transfer
-        // Full relay chain testing requires multiple nodes
-
         let harness = try await GoProtocolHarness.start(
             protocol: .relay(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -289,32 +233,53 @@ struct CircuitRelayInteropTests {
 
         #expect(reserveNegotiation.protocolID == "/libp2p/circuit/relay/0.2.0/hop")
 
-        // Send RESERVE
-        var reserveMessage = Data()
-        reserveMessage.append(0x08)
-        reserveMessage.append(0x00)
+        let reserveRequest = HopMessage.reserve()
+        try await reserveStream.write(ByteBuffer(bytes: encodeLengthPrefixed(CircuitRelayProtobuf.encode(reserveRequest))))
 
-        var reserveRequest = Data()
-        reserveRequest.append(UInt8(reserveMessage.count))
-        reserveRequest.append(reserveMessage)
+        let responseFrame = Data(buffer: try await reserveStream.read())
+        let responsePayload = try decodeLengthPrefixedMessage(responseFrame)
+        let response = try CircuitRelayProtobuf.decodeHop(responsePayload)
+        #expect(response.type == .status)
+        #expect(response.status == .ok)
 
-        try await reserveStream.write(ByteBuffer(bytes: reserveRequest))
-
-        // Get reservation response
-        let reserveResponse = try await reserveStream.read()
-        let reserveData = Data(buffer: reserveResponse)
-
-        print("[Relay] Reservation response: \(reserveData.count) bytes")
-
-        // Check logs for reservation info
-        try await Task.sleep(for: .seconds(1))
-        let logs = try await harness.getLogs()
-
-        if logs.contains("Reserved") || logs.contains("reservation") {
-            print("[Relay] Reservation successful (confirmed in logs)")
+        if let reservation = response.reservation {
+            #expect(reservation.expiration > 0)
+        } else {
+            Issue.record("Reservation response missing reservation payload")
         }
 
         try await reserveStream.close()
         try await connection.close()
+    }
+}
+
+private enum RelayInteropWireError: Error {
+    case truncatedFrame(expected: Int, actual: Int)
+}
+
+private func encodeLengthPrefixed(_ payload: Data) -> Data {
+    var framed = Data()
+    framed.append(contentsOf: Varint.encode(UInt64(payload.count)))
+    framed.append(payload)
+    return framed
+}
+
+private func decodeLengthPrefixedMessage(_ frame: Data) throws -> Data {
+    let (messageLength, prefixLength) = try Varint.decode(frame)
+    let start = prefixLength
+    let end = start + Int(messageLength)
+    guard end <= frame.count else {
+        throw RelayInteropWireError.truncatedFrame(expected: end, actual: frame.count)
+    }
+    return Data(frame[start..<end])
+}
+
+private func stopHarness(_ harness: GoProtocolHarness) {
+    Task {
+        do {
+            try await harness.stop()
+        } catch {
+            print("[Relay] Failed to stop harness: \(error)")
+        }
     }
 }
