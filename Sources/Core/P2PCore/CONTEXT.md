@@ -193,3 +193,24 @@ Envelopeの署名検証時、ドメイン文字列は検証データに含まれ
 ## 参照
 - [PeerID Spec](https://github.com/libp2p/specs/blob/master/peer-ids/peer-ids.md)
 - [Multiaddr Spec](https://github.com/multiformats/multiaddr)
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (86/100)
+- 対象ターゲット: `P2PCore`
+- 実装読解範囲: 30 Swift files / 4410 LOC
+- テスト範囲: 138 files / 1692 cases / targets 25
+- 公開API: types 46 / funcs 35
+- 参照網羅率: type 0.67 / func 0.86
+- 未参照公開型: 15 件（例: `BandwidthStats`, `Base58Error`, `FramingError`, `HashCode`, `KeyType`）
+- 実装リスク指標: try?=0, forceUnwrap=4, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=2
+- 評価所見: 強制アンラップを含む実装がある / DispatchQueue利用箇所を含む
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- 強制アンラップ箇所に前提条件テストを追加し、回帰時に即検出できるようにする。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

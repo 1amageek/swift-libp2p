@@ -14,12 +14,20 @@ import os
 private let wsListenerLogger = Logger(subsystem: "swift-libp2p", category: "WebSocketListener")
 
 /// A WebSocket listener wrapping a NIO ServerChannel.
+///
+/// Uses NIO's typed WebSocket server upgrader and async bind API.
+/// Incoming connections are delivered through `NIOAsyncChannel`'s inbound stream,
+/// processed in a background accept loop, and queued for `accept()` callers.
 public final class WebSocketListener: Listener, Sendable {
 
     private let serverChannel: Channel
     private let _localAddress: Multiaddr
 
     private let state: Mutex<ListenerState>
+
+    /// Background task that iterates the NIOAsyncChannel inbound stream.
+    /// Cancelled by `close()` to terminate the accept loop and close the server channel.
+    private let acceptTask: Mutex<Task<Void, Never>?>
 
     private struct ListenerState: Sendable {
         var pendingConnections: [WebSocketConnection] = []
@@ -34,15 +42,16 @@ public final class WebSocketListener: Listener, Sendable {
         self.serverChannel = serverChannel
         self._localAddress = localAddress
         self.state = Mutex(ListenerState())
+        self.acceptTask = Mutex(nil)
     }
 
     /// Binds a new WebSocket listener.
     ///
-    /// Uses a late-binding pattern via ConnectionCallback:
-    /// 1. Create ConnectionCallback without listener
-    /// 2. Start server (HTTP + WebSocket upgrade pipeline)
-    /// 3. Create the listener
-    /// 4. Set the listener callback on ConnectionCallback (delivers any queued connections)
+    /// Uses NIO's async `ServerBootstrap.bind()` with a typed WebSocket upgrade pipeline:
+    /// 1. Bind server socket → `NIOAsyncChannel<EventLoopFuture<WebSocketUpgradeResult>, Never>`
+    /// 2. Create the listener
+    /// 3. Start background task iterating inbound connections
+    /// 4. For each upgrade result, create `WebSocketConnection` and deliver to `accept()` waiters
     static func bind(
         host: String,
         port: UInt16,
@@ -52,33 +61,54 @@ public final class WebSocketListener: Listener, Sendable {
     ) async throws -> WebSocketListener {
         wsListenerLogger.debug("bind(): Binding to \(host):\(port)")
 
-        let connectionCallback = ConnectionCallback()
-
         if secure, sslContext == nil {
             throw TransportError.unsupportedOperation("WSS listener requires TLS context")
         }
 
-        let bootstrap = ServerBootstrap(group: group)
+        // Async bind with typed WebSocket upgrade pipeline
+        let asyncServerChannel = try await ServerBootstrap(group: group)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
-            .childChannelInitializer { [connectionCallback] channel in
-                return channel.eventLoop.makeCompletedFuture {
+            .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .childChannelOption(.autoRead, value: true)
+            .bind(host: host, port: Int(port)) { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    // TLS handler (secure only)
                     if let sslContext {
                         let sslHandler = NIOSSLServerHandler(context: sslContext)
                         try channel.pipeline.syncOperations.addHandler(sslHandler)
                     }
-                }.flatMap {
-                    Self.configureWebSocketPipeline(
-                        channel: channel,
-                        connectionCallback: connectionCallback,
-                        secure: secure
+
+                    // Typed WebSocket server upgrader
+                    let wsUpgrader = NIOTypedWebSocketServerUpgrader<WebSocketUpgradeResult>(
+                        maxFrameSize: wsMaxFrameSize,
+                        shouldUpgrade: { channel, _ in
+                            channel.eventLoop.makeSucceededFuture(HTTPHeaders())
+                        },
+                        upgradePipelineHandler: { channel, _ in
+                            channel.eventLoop.makeCompletedFuture {
+                                let handler = WebSocketFrameHandler(isClient: false)
+                                try channel.pipeline.syncOperations.addHandler(handler)
+                                return WebSocketUpgradeResult.websocket(channel, handler)
+                            }
+                        }
                     )
+
+                    let serverUpgradeConfig = NIOTypedHTTPServerUpgradeConfiguration(
+                        upgraders: [wsUpgrader],
+                        notUpgradingCompletionHandler: { channel in
+                            channel.close(promise: nil)
+                            return channel.eventLoop.makeSucceededFuture(.notUpgraded)
+                        }
+                    )
+
+                    return try channel.pipeline.syncOperations
+                        .configureUpgradableHTTPServerPipeline(
+                            configuration: .init(upgradeConfiguration: serverUpgradeConfig)
+                        )
                 }
             }
-            .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
-            .childChannelOption(.autoRead, value: true)
 
-        let serverChannel = try await bootstrap.bind(host: host, port: Int(port)).get()
-
+        let serverChannel = asyncServerChannel.channel
         guard let socketAddress = serverChannel.localAddress,
               let localAddr = socketAddress.toWebSocketMultiaddr(secure: secure) else {
             throw TransportError.unsupportedAddress(
@@ -90,52 +120,50 @@ public final class WebSocketListener: Listener, Sendable {
 
         let listener = WebSocketListener(serverChannel: serverChannel, localAddress: localAddr)
 
-        // Late binding: set the listener callback
-        // Any connections that arrived before this point are queued and will be delivered now
-        connectionCallback.setListener { connection in
-            listener.connectionAccepted(connection)
+        // Start background accept loop
+        let task = Task<Void, Never> {
+            do {
+                try await asyncServerChannel.executeThenClose { inbound in
+                    for try await upgradeResult in inbound {
+                        do {
+                            switch try await upgradeResult.get() {
+                            case .websocket(let ch, let handler):
+                                let local = ch.localAddress?.toWebSocketMultiaddr(secure: secure)
+                                let remote = ch.remoteAddress?.toWebSocketMultiaddr(secure: secure)
+                                    ?? Multiaddr(uncheckedProtocols: [
+                                        .ip4("0.0.0.0"), .tcp(0), secure ? .wss : .ws,
+                                    ])
+
+                                let connection = WebSocketConnection(
+                                    channel: ch,
+                                    isClient: false,
+                                    localAddress: local,
+                                    remoteAddress: remote
+                                )
+                                handler.setConnection(connection)
+                                listener.connectionAccepted(connection)
+
+                            case .notUpgraded:
+                                break
+                            }
+                        } catch {
+                            wsListenerLogger.warning("bind(): Upgrade failed: \(error)")
+                        }
+                    }
+                }
+            } catch {
+                if !(error is CancellationError) {
+                    wsListenerLogger.error("bind(): Accept loop error: \(error)")
+                }
+            }
+            // executeThenClose has closed the server channel
+            listener.acceptLoopEnded()
         }
+        listener.acceptTask.withLock { $0 = task }
 
         wsListenerLogger.debug("bind(): Listener ready")
 
         return listener
-    }
-
-    private static func configureWebSocketPipeline(
-        channel: Channel,
-        connectionCallback: ConnectionCallback,
-        secure: Bool
-    ) -> EventLoopFuture<Void> {
-        let wsUpgrader = NIOWebSocketServerUpgrader(
-            maxFrameSize: wsMaxFrameSize,
-            shouldUpgrade: { channel, _ in
-                channel.eventLoop.makeSucceededFuture(HTTPHeaders())
-            },
-            upgradePipelineHandler: { [connectionCallback] channel, _ in
-                let handler = WebSocketFrameHandler(isClient: false)
-                return channel.pipeline.addHandler(handler).map {
-                    let localAddr = channel.localAddress?.toWebSocketMultiaddr(secure: secure)
-                    let remoteAddr = channel.remoteAddress?.toWebSocketMultiaddr(secure: secure)
-                        ?? Multiaddr(uncheckedProtocols: [.ip4("0.0.0.0"), .tcp(0), secure ? .wss : .ws])
-
-                    let connection = WebSocketConnection(
-                        channel: channel,
-                        isClient: false,
-                        localAddress: localAddr,
-                        remoteAddress: remoteAddr
-                    )
-                    handler.setConnection(connection)
-                    connectionCallback.deliver(connection)
-                }
-            }
-        )
-
-        return channel.pipeline.configureHTTPServerPipeline(
-            withServerUpgrade: (
-                upgraders: [wsUpgrader],
-                completionHandler: { _ in }
-            )
-        )
     }
 
     public func accept() async throws -> any RawConnection {
@@ -202,11 +230,20 @@ public final class WebSocketListener: Listener, Sendable {
             }
         }
 
-        try await serverChannel.close()
+        // Cancel the accept task → executeThenClose exits → server channel closes automatically
+        let task = acceptTask.withLock { t -> Task<Void, Never>? in
+            let current = t
+            t = nil
+            return current
+        }
+        task?.cancel()
+        await task?.value
     }
 
-    // Called by ConnectionCallback when a new WebSocket connection is accepted
-    fileprivate func connectionAccepted(_ connection: WebSocketConnection) {
+    // MARK: - Internal
+
+    /// Called by the background accept loop when a new WebSocket connection is accepted.
+    private func connectionAccepted(_ connection: WebSocketConnection) {
         let remoteAddr = connection.remoteAddress
         wsListenerLogger.debug("connectionAccepted(): New connection from \(remoteAddr)")
 
@@ -246,58 +283,18 @@ public final class WebSocketListener: Listener, Sendable {
             }
         }
     }
-}
 
-// MARK: - ConnectionCallback
-
-/// Late-binding callback for delivering WebSocket connections from the NIO upgrade
-/// pipeline to the listener.
-///
-/// This enables the following pattern:
-/// 1. ConnectionCallback is created before ServerBootstrap.bind()
-/// 2. The NIO upgrade pipeline handler captures connectionCallback
-/// 3. After bind completes, the listener is created
-/// 4. setListener() is called, flushing any connections that arrived during setup
-private final class ConnectionCallback: Sendable {
-    private let state: Mutex<CallbackState>
-
-    private struct CallbackState: Sendable {
-        var listener: (@Sendable (WebSocketConnection) -> Void)?
-        var pending: [WebSocketConnection] = []
-    }
-
-    init() {
-        self.state = Mutex(CallbackState())
-    }
-
-    /// Sets the listener callback. Flushes any buffered connections.
-    func setListener(_ callback: @escaping @Sendable (WebSocketConnection) -> Void) {
-        let pending: [WebSocketConnection] = state.withLock { s in
-            s.listener = callback
-            let p = s.pending
-            s.pending.removeAll()
-            return p
+    /// Called when the background accept loop ends (server channel closed).
+    /// Ensures any remaining waiters are woken with an error.
+    private func acceptLoopEnded() {
+        let waiters = state.withLock { s -> [CheckedContinuation<any RawConnection, Error>] in
+            s.isClosed = true
+            let w = s.acceptWaiters
+            s.acceptWaiters.removeAll()
+            return w
         }
-
-        for conn in pending {
-            wsListenerLogger.debug("ConnectionCallback.setListener: Delivering pending connection")
-            callback(conn)
-        }
-    }
-
-    /// Delivers a connection to the listener, or buffers it if listener is not yet set.
-    func deliver(_ connection: WebSocketConnection) {
-        let callback: (@Sendable (WebSocketConnection) -> Void)? = state.withLock { s in
-            if let cb = s.listener {
-                return cb
-            } else {
-                s.pending.append(connection)
-                return nil
-            }
-        }
-
-        if let callback {
-            callback(connection)
+        for waiter in waiters {
+            waiter.resume(throwing: TransportError.listenerClosed)
         }
     }
 }

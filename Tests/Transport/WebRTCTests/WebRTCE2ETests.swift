@@ -178,7 +178,9 @@ struct WebRTCE2ETests {
         let serverConnection = try await serverTask.value
         try await clientStream.close()
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -230,7 +232,9 @@ struct WebRTCE2ETests {
         // Cleanup
         let serverConnection = try await serverTask.value
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -344,7 +348,9 @@ struct WebRTCE2ETests {
 
         // Cleanup
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 

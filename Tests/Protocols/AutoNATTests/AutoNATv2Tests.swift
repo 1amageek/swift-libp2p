@@ -632,7 +632,7 @@ struct AutoNATv2EventTests {
         }
 
         // Give time for the task to start listening
-        try? await Task.sleep(for: .milliseconds(20))
+        do { try await Task.sleep(for: .milliseconds(20)) } catch { }
 
         service.resetReachability()
 
@@ -673,7 +673,7 @@ struct AutoNATv2ShutdownTests {
         }
 
         // Give time for task to start listening
-        try? await Task.sleep(for: .milliseconds(20))
+        do { try await Task.sleep(for: .milliseconds(20)) } catch { }
 
         service.shutdown()
 
@@ -699,7 +699,7 @@ struct AutoNATv2ShutdownTests {
             await flag.set()
         }
 
-        try? await Task.sleep(for: .milliseconds(20))
+        do { try await Task.sleep(for: .milliseconds(20)) } catch { }
 
         service.shutdown()
         await eventTask.value

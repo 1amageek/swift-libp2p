@@ -23,7 +23,7 @@ import QUIC
 ///
 /// These tests require Docker to be running.
 /// Run with: swift test --filter GoLibp2pInteropTests
-@Suite("go-libp2p Interop Tests")
+@Suite("go-libp2p Interop Tests", .serialized)
 struct GoLibp2pInteropTests {
 
     // MARK: - Connection Tests
@@ -32,7 +32,7 @@ struct GoLibp2pInteropTests {
     func connectToGo() async throws {
         // Start go-libp2p node
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
 
@@ -58,7 +58,7 @@ struct GoLibp2pInteropTests {
     @Test("Identify go-libp2p node", .timeLimit(.minutes(2)))
     func identifyGo() async throws {
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -123,7 +123,7 @@ struct GoLibp2pInteropTests {
     @Test("Verify go-libp2p PeerID matches public key", .timeLimit(.minutes(2)))
     func verifyGoPeerID() async throws {
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -182,7 +182,7 @@ struct GoLibp2pInteropTests {
     @Test("Ping go-libp2p node", .timeLimit(.minutes(2)))
     func pingGo() async throws {
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -227,7 +227,7 @@ struct GoLibp2pInteropTests {
     @Test("Multiple pings to go-libp2p node", .timeLimit(.minutes(2)))
     func multiplePingsToGo() async throws {
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -283,7 +283,7 @@ struct GoLibp2pInteropTests {
     @Test("Bidirectional stream with go-libp2p", .timeLimit(.minutes(2)))
     func bidirectionalStream() async throws {
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -323,7 +323,7 @@ struct GoLibp2pInteropTests {
     func sendRawData() async throws {
         // Start go-libp2p node
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
 
@@ -388,8 +388,7 @@ extension GoLibp2pInteropTests {
         process.standardOutput = pipe
         process.standardError = pipe
 
-        try process.run()
-        process.waitUntilExit()
+        try runProcessWithTimeout(process)
 
         #expect(process.terminationStatus == 0, "Docker should be available")
     }

@@ -176,7 +176,7 @@ struct SWIMMembershipIntegrationTests {
 
     // MARK: - Observation Events
 
-    @Test("observations stream emits events")
+    @Test("observations stream emits events", .timeLimit(.minutes(1)))
     func observationsStreamEmitsEvents() async throws {
         // Use ports far from other tests to avoid bind conflicts from NIO socket cleanup timing
         let peer1 = KeyPair.generateEd25519().peerID
@@ -204,25 +204,27 @@ struct SWIMMembershipIntegrationTests {
         let peer1Addr = try Multiaddr("/ip4/127.0.0.1/udp/18053")
         try await membership2.join(seeds: [(peer1, peer1Addr)])
 
-        // Wait for observations
-        var observationReceived = false
-        let timeout = Date().addingTimeInterval(5.0)
-
-        for await observation in membership1.observations {
-            if observation.subject == peer2 {
-                observationReceived = true
-                break
+        // Wait for observations with a cancellable task
+        let observeTask = Task {
+            for await observation in membership1.observations {
+                if observation.subject == peer2 {
+                    return true
+                }
             }
-            if Date() > timeout {
-                break
-            }
+            return false
         }
 
-        // May or may not receive observation (timing dependent)
-        _ = observationReceived
+        // Give SWIM time to propagate, then cancel the observation task
+        try await Task.sleep(for: .seconds(5))
+        observeTask.cancel()
 
+        // Ensure stream termination even if cancellation alone is delayed.
+        // shutdown() finishes EventBroadcaster streams.
         await membership1.shutdown()
         await membership2.shutdown()
+
+        // May or may not receive observation (timing dependent)
+        _ = await observeTask.result
     }
 
     // MARK: - Lifecycle Tests

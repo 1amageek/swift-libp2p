@@ -118,7 +118,7 @@ struct MemoryTransportTests {
 
         // Clean up
         for conn in clientConns + serverConns {
-            try? await conn.close()
+            do { try await conn.close() } catch { }
         }
         try await listener.close()
     }
@@ -411,6 +411,6 @@ struct MemoryTransportTests {
 
         // Clean up: close listener to cancel waiting task
         try await listener.close()
-        _ = try? await firstAcceptTask.value
+        do { _ = try await firstAcceptTask.value } catch { }
     }
 }

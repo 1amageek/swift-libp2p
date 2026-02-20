@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ipfs/go-cid"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -149,32 +150,22 @@ func handleCommands(ctx context.Context) {
 				fmt.Printf("FIND_NODE_RESULT: %v\n", peers)
 			}
 
-		case "FIND_PROVIDERS":
-			if len(parts) < 2 {
-				log.Printf("FIND_PROVIDERS requires CID")
-				continue
-			}
-			cidStr := parts[1]
+			case "FIND_PROVIDERS":
+				if len(parts) < 2 {
+					log.Printf("FIND_PROVIDERS requires CID")
+					continue
+				}
+				cidStr := parts[1]
 
-			// Parse CID as multihash
-			mh, err := multihash.FromB58String(cidStr)
-			if err != nil {
-				// Try hex
-				mhBytes, err2 := hex.DecodeString(cidStr)
-				if err2 != nil {
+				contentCID, err := parseCIDOrMultihash(cidStr)
+				if err != nil {
 					log.Printf("Invalid CID/multihash: %v", err)
 					continue
 				}
-				mh, err = multihash.Cast(mhBytes)
-				if err != nil {
-					log.Printf("Invalid multihash bytes: %v", err)
-					continue
-				}
-			}
 
-			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			providers := kadDHT.FindProvidersAsync(ctx, mh, 10)
-			cancel()
+				ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				providers := kadDHT.FindProvidersAsync(ctx, contentCID, 10)
+				cancel()
 
 			fmt.Printf("PROVIDERS_START: %s\n", cidStr)
 			for p := range providers {
@@ -182,22 +173,22 @@ func handleCommands(ctx context.Context) {
 			}
 			fmt.Printf("PROVIDERS_END: %s\n", cidStr)
 
-		case "PROVIDE":
-			if len(parts) < 2 {
-				log.Printf("PROVIDE requires CID")
-				continue
-			}
-			cidStr := parts[1]
+			case "PROVIDE":
+				if len(parts) < 2 {
+					log.Printf("PROVIDE requires CID")
+					continue
+				}
+				cidStr := parts[1]
 
-			mh, err := multihash.FromB58String(cidStr)
-			if err != nil {
-				log.Printf("Invalid CID: %v", err)
-				continue
-			}
+				contentCID, err := parseCIDOrMultihash(cidStr)
+				if err != nil {
+					log.Printf("Invalid CID/multihash: %v", err)
+					continue
+				}
 
-			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			err = kadDHT.Provide(ctx, mh, true)
-			cancel()
+				ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				err = kadDHT.Provide(ctx, contentCID, true)
+				cancel()
 
 			if err != nil {
 				fmt.Printf("PROVIDE_ERROR: %v\n", err)
@@ -248,6 +239,30 @@ func handleCommands(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func parseCIDOrMultihash(raw string) (cid.Cid, error) {
+	parsedCID, err := cid.Parse(raw)
+	if err == nil {
+		return parsedCID, nil
+	}
+
+	mh, mhErr := multihash.FromB58String(raw)
+	if mhErr == nil {
+		return cid.NewCidV1(cid.Raw, mh), nil
+	}
+
+	mhBytes, hexErr := hex.DecodeString(raw)
+	if hexErr != nil {
+		return cid.Undef, err
+	}
+
+	castMH, castErr := multihash.Cast(mhBytes)
+	if castErr != nil {
+		return cid.Undef, castErr
+	}
+
+	return cid.NewCidV1(cid.Raw, castMH), nil
 }
 EOF
 

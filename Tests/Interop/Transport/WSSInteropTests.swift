@@ -26,7 +26,7 @@ private enum WSSInteropError: Error {
 }
 
 /// Interoperability tests for WSS transport with go-libp2p
-@Suite("WSS Transport Interop Tests")
+@Suite("WSS Transport Interop Tests", .serialized)
 struct WSSInteropTests {
 
     private func makeWSSClientTransport(_ harness: GoWSSHarness) throws -> WebSocketTransport {

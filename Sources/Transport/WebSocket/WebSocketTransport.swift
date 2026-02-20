@@ -123,10 +123,10 @@ public final class WebSocketTransport: Transport, Sendable {
 
     deinit {
         if ownsGroup {
-            do {
-                try group.syncShutdownGracefully()
-            } catch {
-                wsTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+            group.shutdownGracefully { error in
+                if let error {
+                    wsTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+                }
             }
         }
     }

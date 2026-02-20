@@ -423,7 +423,7 @@ struct MplexStreamTests {
 
     @Test("Protocol ID set and get")
     func protocolIDSetAndGet() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()
@@ -435,6 +435,236 @@ struct MplexStreamTests {
 
         mplexStream.protocolID = "/test/1.0.0"
         #expect(mplexStream.protocolID == "/test/1.0.0")
+
+        try await connection.close()
+    }
+
+    // MARK: - Half-Close Advanced Tests
+
+    @Test("Read after remote closeWrite with buffered data returns data first", .timeLimit(.minutes(1)))
+    func readAfterRemoteCloseWriteWithBufferedData() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Buffer data first, then close from remote
+        injectFrame(mock, MplexFrame.message(id: 0, isInitiator: false, data: Data("buffered-data".utf8)))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Remote closes write side
+        injectFrame(mock, MplexFrame.close(id: 0, isInitiator: false))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // First read should return the buffered data
+        let data = try await stream.read()
+        #expect(String(buffer: data) == "buffered-data")
+
+        // Second read should fail because remote closed and buffer is empty
+        await #expect(throws: MplexError.self) {
+            _ = try await stream.read()
+        }
+
+        try await connection.close()
+    }
+
+    @Test("Write after remote closeRead succeeds (independent directions)", .timeLimit(.minutes(1)))
+    func writeAfterRemoteCloseReadSucceeds() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Remote closes their write side (our read side sees remote close)
+        injectFrame(mock, MplexFrame.close(id: 0, isInitiator: false))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Our write side should still work (directions are independent)
+        mock.clearOutbound()
+        try await stream.write(ByteBuffer(bytes: Data("still-writable".utf8)))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        let outbound = mock.captureOutbound()
+        let hasMessage = outbound.contains { data in
+            guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
+            return frame.flag == .messageInitiator && frame.streamID == 0
+        }
+        #expect(hasMessage)
+
+        try await connection.close()
+    }
+
+    @Test("closeWrite then closeRead produces complete close", .timeLimit(.minutes(1)))
+    func closeWriteThenCloseReadProducesCompleteClose() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+        mock.clearOutbound()
+
+        // Close write side first
+        try await stream.closeWrite()
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Write should fail
+        await #expect(throws: MplexError.self) {
+            try await stream.write(ByteBuffer(bytes: Data("fail".utf8)))
+        }
+
+        // Close read side
+        try await stream.closeRead()
+
+        // Read should fail
+        await #expect(throws: MplexError.self) {
+            _ = try await stream.read()
+        }
+
+        try await connection.close()
+    }
+
+    @Test("Both sides closeWrite makes stream half-closed in both directions", .timeLimit(.minutes(1)))
+    func bothSidesCloseWrite() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Local closes write
+        try await stream.closeWrite()
+
+        // Remote closes write
+        injectFrame(mock, MplexFrame.close(id: 0, isInitiator: false))
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Write should fail (local write closed)
+        await #expect(throws: MplexError.self) {
+            try await stream.write(ByteBuffer(bytes: Data("fail".utf8)))
+        }
+
+        // Read should fail (remote write closed, no buffered data)
+        await #expect(throws: MplexError.self) {
+            _ = try await stream.read()
+        }
+
+        try await connection.close()
+    }
+
+    @Test("closeRead is idempotent", .timeLimit(.minutes(1)))
+    func closeReadIsIdempotent() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Multiple closeRead calls should not crash
+        try await stream.closeRead()
+        try await stream.closeRead()
+        try await stream.closeRead()
+
+        // Read should fail
+        await #expect(throws: MplexError.self) {
+            _ = try await stream.read()
+        }
+
+        // Write should still work (independent directions)
+        try await stream.write(ByteBuffer(bytes: Data("ok".utf8)))
+
+        try await connection.close()
+    }
+
+    @Test("Buffered data returned before remote close signal takes effect", .timeLimit(.minutes(1)))
+    func bufferedDataReturnedBeforeRemoteCloseSignal() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Inject multiple data frames followed by close
+        injectFrame(mock, MplexFrame.message(id: 0, isInitiator: false, data: Data("part1".utf8)))
+        injectFrame(mock, MplexFrame.message(id: 0, isInitiator: false, data: Data("part2".utf8)))
+        injectFrame(mock, MplexFrame.close(id: 0, isInitiator: false))
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        // First read should return all buffered data (part1 + part2)
+        let data = try await stream.read()
+        let str = String(buffer: data)
+        #expect(str == "part1part2")
+
+        // Next read should fail (remote closed, buffer empty)
+        await #expect(throws: MplexError.self) {
+            _ = try await stream.read()
+        }
+
+        try await connection.close()
+    }
+
+    @Test("Double full close on half-closed stream is idempotent", .timeLimit(.minutes(1)))
+    func doubleFullCloseOnHalfClosedStream() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Half-close write first
+        try await stream.closeWrite()
+
+        // Full close (which includes closeWrite again + closeRead)
+        try await stream.close()
+
+        // Second full close should not crash
+        try await stream.close()
+
+        // Operations should fail gracefully
+        await #expect(throws: MplexError.self) {
+            _ = try await stream.read()
+        }
+        await #expect(throws: MplexError.self) {
+            try await stream.write(ByteBuffer(bytes: Data("fail".utf8)))
+        }
+
+        try await connection.close()
+    }
+
+    @Test("Reset cancels pending reads", .timeLimit(.minutes(1)))
+    func resetCancelsPendingReads() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Start multiple pending reads
+        let readTask1 = Task {
+            try await stream.read()
+        }
+        let readTask2 = Task {
+            try await stream.read()
+        }
+        let readTask3 = Task {
+            try await stream.read()
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Reset should cancel all pending reads
+        try await stream.reset()
+
+        // All pending reads should throw
+        await #expect(throws: MplexError.self) {
+            _ = try await readTask1.value
+        }
+        await #expect(throws: MplexError.self) {
+            _ = try await readTask2.value
+        }
+        await #expect(throws: MplexError.self) {
+            _ = try await readTask3.value
+        }
 
         try await connection.close()
     }

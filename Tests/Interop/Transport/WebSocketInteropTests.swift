@@ -21,7 +21,7 @@ import NIOCore
 @testable import P2PIdentify
 
 /// Interoperability tests for WebSocket transport with go-libp2p
-@Suite("WebSocket Transport Interop Tests")
+@Suite("WebSocket Transport Interop Tests", .serialized)
 struct WebSocketInteropTests {
 
     // MARK: - Connection Tests
@@ -30,7 +30,7 @@ struct WebSocketInteropTests {
     func connectToGoViaWS() async throws {
         // Start go-libp2p WebSocket node
         let harness = try await GoWebSocketHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[WS] Node info: \(nodeInfo)")
@@ -79,7 +79,7 @@ struct WebSocketInteropTests {
     @Test("WebSocket connection with Yamux muxing", .timeLimit(.minutes(2)))
     func wsWithYamuxMuxing() async throws {
         let harness = try await GoWebSocketHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -141,7 +141,7 @@ struct WebSocketInteropTests {
     @Test("Identify go-libp2p node via WebSocket", .timeLimit(.minutes(2)))
     func identifyGoViaWS() async throws {
         let harness = try await GoWebSocketHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -227,7 +227,7 @@ struct WebSocketInteropTests {
     @Test("Ping go-libp2p node via WebSocket", .timeLimit(.minutes(2)))
     func pingGoViaWS() async throws {
         let harness = try await GoWebSocketHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()

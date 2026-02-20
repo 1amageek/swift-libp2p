@@ -170,3 +170,23 @@ public protocol MuxedConnection: Sendable {
 ### 低優先度
 - [ ] **ストリーム優先度** - 重要なストリームの優先処理
 - [ ] **フロー制御のチューニングオプション** - ウィンドウサイズの動的調整
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (100/100)
+- 対象ターゲット: `P2PMux`, `P2PMuxMplex`, `P2PMuxYamux`
+- 実装読解範囲: 9 Swift files / 2797 LOC
+- テスト範囲: 90 files / 1274 cases / targets 16
+- 公開API: types 15 / funcs 12
+- 参照網羅率: type 0.93 / func 1.0
+- 未参照公開型: 1 件（例: `MplexFlag`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

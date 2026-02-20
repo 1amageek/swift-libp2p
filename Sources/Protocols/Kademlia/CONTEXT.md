@@ -264,7 +264,7 @@ public enum KademliaEvent {
 
 1. **Unit tests**: Key/distance calculations, k-bucket operations, protobuf encoding
 2. **Integration tests**: Multi-node DHT with MemoryTransport
-3. **Interop tests**: Connect to rust-libp2p/go-libp2p DHT nodes
+3. **Interop tests**: go-libp2p DHT との FIND_NODE / PUT_VALUE / GET_VALUE / GET_PROVIDERS wire 往復を検証（rust は継続中）
 
 ## 既知の制限事項
 
@@ -475,3 +475,23 @@ let kad = KademliaService(
 - `ProtocolInputValidationTests.getValueAcceptsArbitraryKeyLength` - GET_VALUE/GET_PROVIDERS accept any length
 - `ProtocolInputValidationTests.boundaryCondition31Bytes` - Boundary test for 31 bytes
 - `ProtocolInputValidationTests.boundaryCondition33Bytes` - Boundary test for 33 bytes
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (92/100)
+- 対象ターゲット: `P2PKademlia`
+- 実装読解範囲: 23 Swift files / 6573 LOC
+- テスト範囲: 36 files / 306 cases / targets 3
+- 公開API: types 61 / funcs 56
+- 参照網羅率: type 0.66 / func 0.7
+- 未参照公開型: 21 件（例: `DefaultBehavior`, `FileProviderStorageError`, `FileRecordStorageError`, `InsertResult`, `KBucketEntry`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

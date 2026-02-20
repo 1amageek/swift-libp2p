@@ -30,7 +30,7 @@ Sources/Integration/P2P/
 ├── P2P.swift                 # Node, NodeConfiguration, NodeEvent, DiscoveryConfiguration
 ├── ConnectionUpgrader.swift  # 接続アップグレードパイプライン (V1 Lazy対応)
 ├── Connection/               # 接続管理コンポーネント
-│   ├── ConnectionPool.swift      # 接続プール（内部）
+│   ├── ConnectionPool.swift      # 接続プール（内部、isLimited 対応）
 │   ├── ConnectionState.swift     # 接続状態マシン
 │   ├── ConnectionLimits.swift    # 接続制限設定
 │   ├── ConnectionGater.swift     # 接続フィルタリング
@@ -38,6 +38,12 @@ Sources/Integration/P2P/
 │   ├── BackoffStrategy.swift    # リトライ遅延計算 (exponential/constant/linear)
 │   ├── ReconnectionPolicy.swift # 再接続ポリシー
 │   └── ...
+├── Dial/                     # ダイヤル戦略
+│   ├── DefaultDialRanker.swift       # アドレスランキング（リレーグループ対応）
+│   └── SmartDialer.swift             # ランク付き並行ダイヤル
+├── NAT/                      # NAT Traversal
+│   ├── NATTraversalConfiguration.swift  # NAT 設定
+│   └── NATManager.swift                 # NAT 調整 (EventEmitting)
 └── Resource/                 # リソース管理 (GAP-9)
     ├── ResourceManager.swift             # ResourceManager プロトコル
     ├── DefaultResourceManager.swift      # デフォルト実装 (system/peer/protocol 3スコープ)
@@ -255,6 +261,66 @@ try await stream.write(Data("Hello".utf8))
 
 ---
 
+## NAT Traversal アーキテクチャ
+
+### コンポーネント構成
+
+```
+Node (actor)
+ ├── NATManager (Class+Mutex, EventEmitting)
+ │    ├── AutoNATService     — NAT 検出（定期プローブ）
+ │    ├── NATPortMapper      — UPnP/NAT-PMP ポートマッピング（オプション）
+ │    ├── AutoRelay          — リレー予約管理
+ │    ├── DCUtRService       — ホールパンチ調整
+ │    └── HolePunchService   — 実際の TCP/QUIC ホールパンチ
+ ├── SmartDialer (Class+Mutex)
+ │    ├── DefaultDialRanker  — アドレスランキング（リレー遅延対応）
+ │    └── BlackHoleDetector  — 到達不能パス除外
+ └── ConnectionPool
+      └── isLimited flag     — リレー接続の識別
+```
+
+### イベントフロー
+
+```
+AutoNAT → reachabilityChanged → NATManager → AutoRelay.updateReachability()
+                                           → NATPortMapper (オプション)
+                                           → relayAddressesUpdated → Identify Push
+
+Inbound relay connection (isLimited=true)
+  + Identify completed → NATManager → DCUtR.upgradeToDirectConnection()
+```
+
+### ファイル構成
+
+```
+Sources/Integration/P2P/
+├── NAT/
+│   ├── NATTraversalConfiguration.swift  # NAT 設定 (全サービスインスタンス + パラメータ)
+│   └── NATManager.swift                 # NAT 調整 (EventEmitting, Class+Mutex)
+└── Dial/
+    ├── DefaultDialRanker.swift          # アドレスランキング (リレーグループ対応)
+    └── SmartDialer.swift                # ランク付き並行ダイヤル (Happy Eyeballs)
+```
+
+### NodeConfiguration 拡張
+
+```swift
+public struct NodeConfiguration: Sendable {
+    // ... 既存フィールド ...
+    public let natTraversal: NATTraversalConfiguration?  // NAT traversal 設定
+}
+```
+
+### 依存モジュール (NAT 関連)
+
+- `P2PAutoNAT` — AutoNAT v2 プローブ
+- `P2PCircuitRelay` — Circuit Relay v2 クライアント/サーバー
+- `P2PDCUtR` — Direct Connection Upgrade through Relay
+- `P2PNAT` — NAT デバイス検出、ポートマッピング、AutoRelay
+
+---
+
 ## 設計原則
 
 1. **設定は初期化時に完結**
@@ -325,15 +391,19 @@ Node層は推奨される並行性パターンを実証:
 
 ### 自動接続ループ (Discovery統合)
 
-discoveryタスクは継続的なポーリングループを維持（5秒間隔）:
-1. discoveryサービスから既知のピアを取得
-2. 未接続でクールダウン中でないピアに対して:
-   - autoConnectMinScoreの閾値をチェック
-   - 接続を試行
-   - ピアにreconnectCooldownを設定
-3. maxAutoConnectPeersの制限を確認
+Nodeは`DiscoveryService`に対して以下を行う:
+1. 起動時に capability protocol を検出し、必要ならハンドラ登録・start を実行  
+   - `NodeDiscoveryHandlerRegistrable` → `registerHandler(registry:)`
+   - `NodeDiscoveryStartableWithOpener` → `start(using: StreamOpener)`
+   - `NodeDiscoveryStartable` → `start()`
+2. 接続時に capability protocol を検出し、必要なら専用ストリームを接続
+   - `NodeDiscoveryPeerStreamService` の `discoveryProtocolID` で `newStream` を開き、`handlePeerConnected` を通知
+3. 切断時に `handlePeerDisconnected` を通知
 
-クールダウンは`await`の前にアトミックに設定（競合防止）。
+auto-connect自体はリアクティブ:
+1. 起動直後に `knownPeers()` を1回評価
+2. 以降は `observations` ストリームを購読して接続判断
+3. クールダウンは`await`前にアトミック設定（競合防止）
 
 ### アイドルチェックタスク
 
@@ -357,15 +427,21 @@ discoveryタスクは継続的なポーリングループを維持（5秒間隔�
 
 ```
 Tests/Integration/P2PTests/
-├── P2PTests.swift              # 27テスト (Node, Config, Upgrader, Events, buffered negotiation, error coverage, trim report API, structured trim events)
-├── BackoffStrategyTests.swift  # 12テスト (exponential, constant, linear, jitter, presets)
-├── ReconnectionPolicyTests.swift # 13テスト (config presets, shouldReconnect, delay)
-├── HealthMonitorTests.swift    # 11テスト (monitoring lifecycle, health check, config)
-├── ConnectionPoolTests.swift   # 25テスト (add/remove, query, limits, tags, protection, trim priority, trim report inspection)
-└── NodeE2ETests.swift          # 18テスト (memory transport full-stack, events, protocols, mesh, limits, structured trim/constrained events)
+├── ResourceManagerTests.swift      # 51テスト (system/peer/protocol スコープ, tracked stream 解放, 制限超過)
+├── P2PTests.swift                  # 27テスト (Node, Config, Upgrader, Events, buffered negotiation, trim/report API)
+├── ConnectionPoolTests.swift       # 25テスト (add/remove, limits, tags, protection, trim priority/report)
+├── NodeE2ETests.swift              # 18テスト (memory transport full-stack, protocols, limits, trim events)
+├── DiscoveryIntegrationTests.swift # 2テスト (discovery capability hooks: register/start/peer stream/shutdown)
+├── IdentifyIntegrationTests.swift # 4テスト (identify handlers登録, peerConnected/Disconnected通知, shutdown連動)
+├── ReconnectionPolicyTests.swift   # 16テスト (config presets, shouldReconnect, delay)
+├── HealthMonitorTests.swift        # 11テスト (monitoring lifecycle, timeout, callback)
+├── ObservedAddressManagerTests.swift # 11テスト (観測アドレス集約, dedupe, decay)
+├── BackoffStrategyTests.swift      # 11テスト (exponential, constant, linear, jitter, presets)
+├── BlackHoleDetectorTests.swift    # 10テスト (black-hole検出, 状態遷移, 閾値制御)
+└── DialRankerTests.swift           # 6テスト (候補アドレス優先順位付け)
 ```
 
-**合計: 160テスト** (2026-02-14時点。E2Eテスト含む)
+**合計: 188テスト** (2026-02-14時点。E2Eテスト含む)
 
 ## 未実装機能
 
@@ -386,6 +462,8 @@ Tests/Integration/P2PTests/
 - [x] **Resource Manager** - マルチスコープのリソース制限 ✅ 2026-01-30 (GAP-9)
 - [x] **接続トリムアルゴリズムの検証テスト** - `ConnectionPoolTests` に watermark / protected / tags / oldest activity / grace period の回帰テストを追加
 - [x] **イベントストリームの挙動ドキュメント化** - lazy初期化、購読前イベント破棄、shutdown時finish/resetを明記
+- [x] **Discovery capability統合** - Node起動/接続/切断ライフサイクルに discovery の optional hook を接続（register/start/peer stream/shutdown）
+- [x] **Identify Push Node統合** - `NodeConfiguration.identifyService` でハンドラ登録・peerConnected/Disconnected通知・shutdown連動 ✅
 
 ### 低優先度
 - [x] **グレース期間の強制確認** - `ConnectionPoolTests.trimIfNeeded does not trim connections within grace period` で検証
@@ -436,3 +514,23 @@ Tests/Integration/P2PTests/
 | Timeout relies on cooperative cancel | `Connection/HealthMonitor.swift:257` | If `pingProvider.ping` ignores cancellation, I/O continues; concurrent pings accumulate | Low |
 
 These Info-level items are improvement opportunities, not bugs. They can be addressed in future sprints.
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (92/100)
+- 対象ターゲット: `P2P`
+- 実装読解範囲: 30 Swift files / 6434 LOC
+- テスト範囲: 11 files / 188 cases / targets 1
+- 公開API: types 46 / funcs 60
+- 参照網羅率: type 0.63 / func 0.75
+- 未参照公開型: 17 件（例: `AllowAllGater`, `Candidate`, `CompositeGater`, `ConnectionDirection`, `ConnectionID`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

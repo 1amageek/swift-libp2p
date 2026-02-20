@@ -22,7 +22,7 @@ import NIOCore
 @testable import P2PIdentify
 
 /// Full stack integration tests
-@Suite("Full Stack Interop Tests")
+@Suite("Full Stack Interop Tests", .serialized)
 struct FullStackInteropTests {
 
     // MARK: - TCP + Noise + Yamux + Ping
@@ -31,7 +31,7 @@ struct FullStackInteropTests {
     func tcpNoiseYamuxPing() async throws {
         // Start go-libp2p TCP node
         let harness = try await GoTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[FullStack] TCP node: \(nodeInfo.address)")
@@ -113,7 +113,7 @@ struct FullStackInteropTests {
     func quicTlsIdentifyPing() async throws {
         // Start go-libp2p QUIC node
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[FullStack] QUIC node: \(nodeInfo.address)")
@@ -185,7 +185,7 @@ struct FullStackInteropTests {
     @Test("Multi-protocol session", .timeLimit(.minutes(3)))
     func multiProtocolSession() async throws {
         let harness = try await GoLibp2pHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -243,10 +243,10 @@ struct FullStackInteropTests {
     func goRustComparison() async throws {
         // Start both Go and Rust nodes
         let goHarness = try await GoLibp2pHarness.start()
-        defer { Task { try? await goHarness.stop() } }
+        defer { Task { do { try await goHarness.stop() } catch { } } }
 
         let rustHarness = try await RustLibp2pHarness.start()
-        defer { Task { try? await rustHarness.stop() } }
+        defer { Task { do { try await rustHarness.stop() } catch { } } }
 
         let keyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()

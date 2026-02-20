@@ -69,7 +69,7 @@ public protocol Listener: Sendable {
 ```
 TransportError (P2PTransport) — 全 Transport の公開 API 統一エラー型
 ├── unsupportedAddress(Multiaddr)
-├── connectionFailed(underlying: Error)
+├── connectionFailed(underlying: any Error)
 ├── listenerClosed
 ├── timeout
 ├── unsupportedOperation(String)
@@ -83,6 +83,20 @@ WebSocketDetailError (P2PTransportWebSocket internal)
 ├── upgradeFailed           — connectionFailed の underlying として使用
 └── tlsConfigurationFailed  — connectionFailed の underlying として使用
 ```
+
+### connectionFailed の underlying 型に関する設計判断 (2026-02-16)
+
+`connectionFailed(underlying:)` の型を `any Error` から `any Error & Sendable` に変更する案を検討し、**却下**した。
+
+**検討理由**: `TransportError` は `Sendable` だが、`any Error` は `Sendable` を保証しない。型レベルの厳格化が望ましいように見えた。
+
+**却下理由**:
+1. Swift コンパイラは existential `Error` に対する Sendable 違反を現時点で検出しない（Apple 自身のコードベースが `Error` を広く使用しているため、将来も enforcement される保証がない）
+2. 実効ゼロ — 実行時の挙動は変わらない
+3. `catch { error }` が返す `any Error` を `any Error & Sendable` に渡せないため、到達不能コードパス用の `TransportUnderlyingError`（String ラッパー）が必要になり、不要な複雑さが増える
+4. E2E テスト（Identify, Ping）が `underlying` を再帰的に unwrap して POSIX errno を検出するパターンがあり、String ラッパーに変換すると型情報が失われる
+
+**方針**: 将来 Swift が strict concurrency で `Error` existential の Sendable enforcement を導入した場合に対処する。現時点では YAGNI。
 
 ## シングルリーダー/アクセプター制約
 

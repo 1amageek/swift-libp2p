@@ -556,7 +556,7 @@ struct RendezvousServiceEventTests {
             return count
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         service.shutdown()
 
@@ -587,11 +587,11 @@ struct RendezvousServiceEventTests {
             return nil
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         _ = try service.register(namespace: "test-ns")
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
         service.shutdown()
 
         let event = await eventTask.value
@@ -618,11 +618,11 @@ struct RendezvousServiceEventTests {
             return nil
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         service.unregister(namespace: "test-ns")
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
         service.shutdown()
 
         let event = await eventTask.value
@@ -1187,7 +1187,7 @@ struct RendezvousPointEventTests {
             return count
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         point.shutdown()
 
@@ -1220,7 +1220,7 @@ struct RendezvousPointEventTests {
             return collected
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         let peer = KeyPair.generateEd25519().peerID
         _ = try point.register(
@@ -1230,7 +1230,7 @@ struct RendezvousPointEventTests {
             ttl: .seconds(3600)
         )
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
         point.shutdown()
 
         let collected = await eventTask.value
@@ -1273,11 +1273,11 @@ struct RendezvousPointEventTests {
             return nil
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         point.unregister(peer: peer, namespace: "test")
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
         point.shutdown()
 
         let event = await eventTask.value

@@ -115,7 +115,9 @@ struct NoiseCipherState: Sendable {
             // Bytes 4..11 = little-endian counter
             var le = n.littleEndian
             withUnsafeBytes(of: &le) { src in
-                ptr.baseAddress!.advanced(by: 4).copyMemory(from: src.baseAddress!, byteCount: 8)
+                for i in 0..<8 {
+                    ptr[4 + i] = src[i]
+                }
             }
         }
         return withUnsafeBytes(of: &buf) { Data($0) }

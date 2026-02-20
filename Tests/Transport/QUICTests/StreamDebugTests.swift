@@ -378,12 +378,19 @@ struct StreamDebugTests {
         #expect(Data(buffer: response) == Data("Hello QUIC - echoed".utf8))
 
         // Wait for server
-        let serverConnection = try? await serverTask.value
+        let serverConnection: (any MuxedConnection)?
+        do {
+            serverConnection = try await serverTask.value
+        } catch {
+            serverConnection = nil
+        }
 
         // Cleanup
         try await clientStream.close()
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
 
         print("Test completed!")
@@ -465,11 +472,18 @@ struct StreamDebugTests {
         }
 
         // Wait for server
-        let serverConnection = try? await serverTask.value
+        let serverConnection: (any MuxedConnection)?
+        do {
+            serverConnection = try await serverTask.value
+        } catch {
+            serverConnection = nil
+        }
 
         // Cleanup
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
 
         print("Test completed!")

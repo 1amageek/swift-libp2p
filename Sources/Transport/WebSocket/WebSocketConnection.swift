@@ -195,6 +195,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
     private struct HandlerState: Sendable {
         var connection: WebSocketConnection?
         var bufferedData: [ByteBuffer] = []
+        var fragmentedMessage: ByteBuffer?
         var isInactive = false
     }
 
@@ -234,19 +235,54 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
                 frame.data.webSocketUnmask(maskKey)
             }
             if let slice = frame.data.readSlice(length: frame.data.readableBytes) {
-                let conn: WebSocketConnection? = state.withLock { s in
-                    if let connection = s.connection {
-                        return connection
+                let completedMessage: ByteBuffer? = state.withLock { s -> ByteBuffer? in
+                    if frame.fin {
+                        if var fragmented = s.fragmentedMessage {
+                            var tail = slice
+                            fragmented.writeBuffer(&tail)
+                            s.fragmentedMessage = nil
+                            return fragmented
+                        } else {
+                            return slice
+                        }
                     } else {
-                        s.bufferedData.append(slice)
+                        if var fragmented = s.fragmentedMessage {
+                            var chunk = slice
+                            fragmented.writeBuffer(&chunk)
+                            s.fragmentedMessage = fragmented
+                        } else {
+                            s.fragmentedMessage = slice
+                        }
                         return nil
                     }
                 }
-                if let conn {
-                    wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Forwarding \(slice.readableBytes) bytes")
-                    conn.dataReceived(slice)
-                } else {
-                    wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Buffering \(slice.readableBytes) bytes")
+                if let message = completedMessage {
+                    deliverOrBuffer(message)
+                }
+            }
+
+        case .continuation:
+            if let maskKey = frame.maskKey {
+                frame.data.webSocketUnmask(maskKey)
+            }
+            if let slice = frame.data.readSlice(length: frame.data.readableBytes) {
+                let completedMessage: ByteBuffer? = state.withLock { s -> ByteBuffer? in
+                    guard var fragmented = s.fragmentedMessage else {
+                        return nil
+                    }
+
+                    var chunk = slice
+                    fragmented.writeBuffer(&chunk)
+                    if frame.fin {
+                        s.fragmentedMessage = nil
+                        return fragmented
+                    } else {
+                        s.fragmentedMessage = fragmented
+                        return nil
+                    }
+                }
+                if let message = completedMessage {
+                    deliverOrBuffer(message)
                 }
             }
 
@@ -277,7 +313,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
                 loopBoundContext.value.close(promise: nil)
             }
 
-        case .pong, .continuation:
+        case .pong:
             break // Ignore
 
         default:
@@ -288,6 +324,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
     func channelInactive(context: ChannelHandlerContext) {
         wsConnectionLogger.debug("WebSocketFrameHandler.channelInactive: Channel inactive")
         let conn: WebSocketConnection? = state.withLock { s in
+            s.fragmentedMessage = nil
             if let connection = s.connection {
                 return connection
             } else {
@@ -301,6 +338,7 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         wsConnectionLogger.error("WebSocketFrameHandler.errorCaught: \(error)")
         let conn: WebSocketConnection? = state.withLock { s in
+            s.fragmentedMessage = nil
             if let connection = s.connection {
                 return connection
             } else {
@@ -310,6 +348,23 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
         }
         conn?.channelInactive()
         context.close(promise: nil)
+    }
+
+    private func deliverOrBuffer(_ message: ByteBuffer) {
+        let conn: WebSocketConnection? = state.withLock { s in
+            if let connection = s.connection {
+                return connection
+            } else {
+                s.bufferedData.append(message)
+                return nil
+            }
+        }
+        if let conn {
+            wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Forwarding \(message.readableBytes) bytes")
+            conn.dataReceived(message)
+        } else {
+            wsConnectionLogger.debug("WebSocketFrameHandler.channelRead: Buffering \(message.readableBytes) bytes")
+        }
     }
 }
 

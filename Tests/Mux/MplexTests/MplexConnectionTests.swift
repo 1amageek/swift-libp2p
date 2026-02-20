@@ -1,6 +1,7 @@
 /// MplexConnectionTests - Tests for MplexConnection
 import Foundation
 import NIOCore
+import Synchronization
 import Testing
 @testable import P2PCore
 @testable import P2PMux
@@ -518,6 +519,234 @@ struct MplexConnectionTests {
         #expect(hasCloseInitiator)
 
         try await connection.close()
+    }
+
+    // MARK: - Close While Active Streams Tests
+
+    @Test("Close while streams actively reading", .timeLimit(.minutes(1)))
+    func closeWhileStreamsActivelyReading() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream1 = try await connection.newStream()
+        let stream2 = try await connection.newStream()
+
+        // Start reads on both streams that will block waiting for data
+        let readTask1 = Task {
+            try await stream1.read()
+        }
+        let readTask2 = Task {
+            try await stream2.read()
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Close the connection while reads are pending
+        try await connection.close()
+
+        // Both reads should fail with an error
+        await #expect(throws: Error.self) {
+            _ = try await readTask1.value
+        }
+        await #expect(throws: Error.self) {
+            _ = try await readTask2.value
+        }
+    }
+
+    @Test("Close while inbound stream accepted", .timeLimit(.minutes(1)))
+    func closeWhileInboundStreamAccepted() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        // Accept an inbound stream first
+        let acceptTask = Task {
+            try await connection.acceptStream()
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Inject an inbound stream
+        injectFrame(mock, MplexFrame.newStream(id: 0))
+
+        let inboundStream = try await acceptTask.value
+        #expect(inboundStream.id == 0)
+
+        // Start reading on the accepted stream
+        let readTask = Task {
+            try await inboundStream.read()
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Close connection while inbound stream is active
+        try await connection.close()
+
+        // The read on the inbound stream should fail
+        await #expect(throws: Error.self) {
+            _ = try await readTask.value
+        }
+    }
+
+    @Test("Concurrent newStream from multiple tasks produces unique IDs", .timeLimit(.minutes(1)))
+    func concurrentNewStreamUniqueIDs() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let streamCount = 20
+        let ids = Mutex<Set<UInt64>>(Set())
+
+        // Launch many concurrent newStream calls
+        try await withThrowingTaskGroup(of: UInt64.self) { group in
+            for _ in 0..<streamCount {
+                group.addTask {
+                    let stream = try await connection.newStream()
+                    return stream.id
+                }
+            }
+            for try await id in group {
+                ids.withLock { $0.insert(id) }
+            }
+        }
+
+        // All IDs should be unique
+        let allIDs = ids.withLock { $0 }
+        #expect(allIDs.count == streamCount)
+
+        // IDs should be 0..<streamCount
+        for i in 0..<UInt64(streamCount) {
+            #expect(allIDs.contains(i))
+        }
+
+        try await connection.close()
+    }
+
+    @Test("inboundStreams terminates on close", .timeLimit(.minutes(1)))
+    func inboundStreamsTerminatesOnClose() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        // Start iterating inboundStreams
+        let receivedCount = Mutex<Int>(0)
+        let iterationComplete = Mutex<Bool>(false)
+
+        let iterTask = Task {
+            for await _ in connection.inboundStreams {
+                receivedCount.withLock { $0 += 1 }
+            }
+            iterationComplete.withLock { $0 = true }
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Inject one stream
+        injectFrame(mock, MplexFrame.newStream(id: 0))
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Close the connection
+        try await connection.close()
+
+        // Wait for iteration to complete
+        try await Task.sleep(for: .milliseconds(100))
+
+        let completed = iterationComplete.withLock { $0 }
+        #expect(completed)
+
+        iterTask.cancel()
+    }
+
+    @Test("Large frame near maxFrameSize boundary accepted", .timeLimit(.minutes(1)))
+    func largeFrameNearMaxFrameSize() async throws {
+        let maxFrame = 4096
+        let config = MplexConfiguration(maxFrameSize: maxFrame)
+        let (connection, mock) = createTestConnection(isInitiator: true, configuration: config)
+        connection.start()
+
+        let stream = try await connection.newStream()
+
+        // Inject a frame with data exactly at the maxFrameSize limit
+        let largeData = Data(repeating: 0xAB, count: maxFrame)
+        let messageFrame = MplexFrame.message(id: 0, isInitiator: false, data: largeData)
+        injectFrame(mock, messageFrame)
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        let data = try await stream.read()
+        #expect(data.readableBytes == maxFrame)
+
+        try await connection.close()
+    }
+
+    @Test("Stream created then immediately reset completes 0-data lifecycle", .timeLimit(.minutes(1)))
+    func streamCreatedThenImmediatelyReset() async throws {
+        let (connection, mock) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        let stream = try await connection.newStream()
+        #expect(stream.id == 0)
+
+        mock.clearOutbound()
+
+        // Immediately reset without sending any data
+        try await stream.reset()
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Should have sent a Reset frame
+        let outbound = mock.captureOutbound()
+        let hasReset = outbound.contains { data in
+            guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
+            return frame.flag == .resetInitiator && frame.streamID == 0
+        }
+        #expect(hasReset)
+
+        // Connection should still work for new streams
+        let stream2 = try await connection.newStream()
+        #expect(stream2.id == 1)
+
+        try await connection.close()
+    }
+
+    @Test("Rapid open/close cycles do not leak resources", .timeLimit(.minutes(1)))
+    func rapidOpenCloseCycles() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        // Rapidly open and close streams
+        for i in 0..<50 {
+            let stream = try await connection.newStream()
+            #expect(stream.id == UInt64(i))
+            try await stream.close()
+        }
+
+        // Connection should still be functional
+        let finalStream = try await connection.newStream()
+        #expect(finalStream.id == 50)
+
+        try await connection.close()
+    }
+
+    @Test("newStream after connection close throws", .timeLimit(.minutes(1)))
+    func newStreamAfterConnectionCloseThrows() async throws {
+        let (connection, _) = createTestConnection(isInitiator: true)
+        connection.start()
+
+        // Create one stream to ensure connection works
+        let stream = try await connection.newStream()
+        #expect(stream.id == 0)
+
+        // Close the connection
+        try await connection.close()
+
+        // Attempting to create new streams should throw
+        await #expect(throws: MplexError.self) {
+            _ = try await connection.newStream()
+        }
+
+        // Multiple attempts should all throw
+        await #expect(throws: MplexError.self) {
+            _ = try await connection.newStream()
+        }
     }
 }
 

@@ -48,10 +48,8 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
         self.udpTransport = NIOUDPTransport(configuration: config)
 
         // Create message stream
-        var continuation: AsyncStream<(SWIMMessage, MemberID)>.Continuation!
-        self.incomingMessages = AsyncStream { cont in
-            continuation = cont
-        }
+        let (stream, continuation) = AsyncStream<(SWIMMessage, MemberID)>.makeStream()
+        self.incomingMessages = stream
         self.messageContinuation = continuation
     }
 

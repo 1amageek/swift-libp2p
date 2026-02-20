@@ -34,14 +34,16 @@ public final class RustLibp2pHarness: Sendable {
 
     /// The Docker container ID
     private let containerId: String
+    private let leaseID: UUID
 
     /// Node information
     public let nodeInfo: NodeInfo
 
     // MARK: - Initialization
 
-    private init(containerId: String, nodeInfo: NodeInfo) {
+    private init(containerId: String, leaseID: UUID, nodeInfo: NodeInfo) {
         self.containerId = containerId
+        self.leaseID = leaseID
         self.nodeInfo = nodeInfo
     }
 
@@ -51,6 +53,15 @@ public final class RustLibp2pHarness: Sendable {
     /// - Parameter port: The UDP port to listen on (0 for random)
     /// - Returns: A harness managing the running node
     public static func start(port: UInt16 = 0) async throws -> RustLibp2pHarness {
+        let leaseID = await acquireInteropHarnessLease()
+        var shouldReleaseLease = true
+
+        defer {
+            if shouldReleaseLease {
+                Task { await releaseInteropHarnessLease(leaseID) }
+            }
+        }
+
         let hostPort = port == 0 ? UInt16.random(in: 10000...60000) : port
         let containerName = "rust-libp2p-test-\(hostPort)"
 
@@ -63,8 +74,7 @@ public final class RustLibp2pHarness: Sendable {
         checkProcess.standardOutput = checkPipe
         checkProcess.standardError = Pipe()
 
-        try checkProcess.run()
-        checkProcess.waitUntilExit()
+        try runProcessWithTimeout(checkProcess)
 
         let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
 
@@ -83,8 +93,7 @@ public final class RustLibp2pHarness: Sendable {
                 .deletingLastPathComponent()  // Harnesses/
                 .deletingLastPathComponent()  // Interop/
 
-            try buildProcess.run()
-            buildProcess.waitUntilExit()
+            try runProcessWithTimeout(buildProcess)
 
             guard buildProcess.terminationStatus == 0 else {
                 throw HarnessError.containerStartFailed("Docker build failed")
@@ -95,8 +104,11 @@ public final class RustLibp2pHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
-        try? rmProcess.run()
-        rmProcess.waitUntilExit()
+        do {
+            try runProcessWithTimeout(rmProcess)
+        } catch {
+            // Best effort cleanup only.
+        }
 
         // Start container
         let runProcess = Process()
@@ -111,8 +123,7 @@ public final class RustLibp2pHarness: Sendable {
             "rust-libp2p-test"
         ]
 
-        try runProcess.run()
-        runProcess.waitUntilExit()
+        try runProcessWithTimeout(runProcess)
 
         guard runProcess.terminationStatus == 0 else {
             throw HarnessError.containerStartFailed("Docker run failed")
@@ -122,7 +133,7 @@ public final class RustLibp2pHarness: Sendable {
         var attempts = 0
         var nodeInfo: NodeInfo?
 
-        while attempts < 30 {
+        while attempts < 120 {
             try await Task.sleep(for: .milliseconds(500))
 
             let logsProcess = Process()
@@ -133,8 +144,7 @@ public final class RustLibp2pHarness: Sendable {
             logsProcess.standardOutput = pipe
             logsProcess.standardError = pipe
 
-            try logsProcess.run()
-            logsProcess.waitUntilExit()
+            try runProcessWithTimeout(logsProcess)
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
@@ -160,10 +170,11 @@ public final class RustLibp2pHarness: Sendable {
         }
 
         guard let info = nodeInfo else {
-            throw HarnessError.parseError("Could not start rust-libp2p node after 30 attempts")
+            throw HarnessError.parseError("Could not start rust-libp2p node after 120 attempts")
         }
 
-        return RustLibp2pHarness(containerId: containerName, nodeInfo: info)
+        shouldReleaseLease = false
+        return RustLibp2pHarness(containerId: containerName, leaseID: leaseID, nodeInfo: info)
     }
 
     /// Stops and removes the container
@@ -171,13 +182,27 @@ public final class RustLibp2pHarness: Sendable {
         let stopProcess = Process()
         stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         stopProcess.arguments = ["docker", "stop", containerId]
-        try? stopProcess.run()
-        stopProcess.waitUntilExit()
+        do {
+            try runProcessWithTimeout(stopProcess)
+        } catch {
+            // Best effort cleanup only.
+        }
 
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerId]
-        try? rmProcess.run()
-        rmProcess.waitUntilExit()
+        do {
+            try runProcessWithTimeout(rmProcess)
+        } catch {
+            // Best effort cleanup only.
+        }
+        await releaseInteropHarnessLease(leaseID)
+    }
+
+    deinit {
+        let leaseID = self.leaseID
+        Task {
+            await releaseInteropHarnessLease(leaseID)
+        }
     }
 }

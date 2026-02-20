@@ -34,10 +34,10 @@ public final class TCPTransport: Transport, Sendable {
 
     deinit {
         if ownsGroup {
-            do {
-                try group.syncShutdownGracefully()
-            } catch {
-                tcpTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+            group.shutdownGracefully { error in
+                if let error {
+                    tcpTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+                }
             }
         }
     }
@@ -85,6 +85,55 @@ public final class TCPTransport: Transport, Sendable {
 
     public func canListen(_ address: Multiaddr) -> Bool {
         extractHostPort(from: address) != nil
+    }
+
+    // MARK: - Hole Punch API
+
+    /// Dials from a specific local port for TCP simultaneous open (hole punching).
+    ///
+    /// Sets `SO_REUSEADDR` and `SO_REUSEPORT` so the same local port can be
+    /// shared with an active listener. This enables NAT hole punching by
+    /// sending SYN packets from the listener's port to create a NAT mapping.
+    ///
+    /// - Parameters:
+    ///   - address: The remote address to connect to
+    ///   - localPort: The local port to bind (typically the listener's port)
+    /// - Returns: A raw connection from the specified local port
+    /// - Throws: `TransportError.unsupportedAddress` if the address is invalid
+    public func dialWithReusePort(
+        _ address: Multiaddr,
+        fromPort localPort: UInt16
+    ) async throws -> any RawConnection {
+        guard let (host, port) = extractHostPort(from: address) else {
+            throw TransportError.unsupportedAddress(address)
+        }
+
+        let reusePortOption = ChannelOptions.Types.SocketOption(
+            level: NIOBSDSocket.OptionLevel.socket,
+            name: NIOBSDSocket.Option(rawValue: SO_REUSEPORT)
+        )
+
+        let bootstrap = ClientBootstrap(group: group)
+            .channelOption(.socketOption(.so_reuseaddr), value: 1)
+            .channelOption(reusePortOption, value: 1)
+            .channelOption(.socketOption(.tcp_nodelay), value: 1)
+            .channelOption(.socketOption(.so_keepalive), value: 1)
+            .channelInitializer { channel in
+                channel.eventLoop.makeSucceededVoidFuture()
+            }
+            .bind(to: try SocketAddress(ipAddress: "0.0.0.0", port: Int(localPort)))
+
+        let channel = try await bootstrap
+            .connect(host: host, port: Int(port))
+            .get()
+
+        let localAddr = channel.localAddress?.toMultiaddr()
+
+        return try await TCPConnection.create(
+            channel: channel,
+            localAddress: localAddr,
+            remoteAddress: address
+        )
     }
 
     // MARK: - Private helpers

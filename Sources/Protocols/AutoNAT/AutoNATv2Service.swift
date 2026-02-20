@@ -366,13 +366,7 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
     ///
     /// - Returns: A random 64-bit nonce.
     func generateNonce() -> UInt64 {
-        var bytes = [UInt8](repeating: 0, count: 8)
-        for i in 0..<8 {
-            bytes[i] = UInt8.random(in: 0...255)
-        }
-        return bytes.withUnsafeBufferPointer { buffer in
-            buffer.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: 1) { $0.pointee }
-        }
+        UInt64.random(in: UInt64.min...UInt64.max)
     }
 
     /// Registers a pending check with the given nonce.

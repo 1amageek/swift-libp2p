@@ -317,11 +317,13 @@ struct MultistreamSelectTests {
         mockChannel.queueRead(MultistreamSelect.encode("/noise"))
 
         // Handle with empty supported list - ls will return just final newline
-        _ = try? await MultistreamSelect.handle(
-            supported: [],
-            read: { try await mockChannel.read() },
-            write: { try await mockChannel.write($0) }
-        )
+        do {
+            _ = try await MultistreamSelect.handle(
+                supported: [],
+                read: { try await mockChannel.read() },
+                write: { try await mockChannel.write($0) }
+            )
+        } catch { }
 
         let written = mockChannel.writtenData
         // At least multistream header and ls response

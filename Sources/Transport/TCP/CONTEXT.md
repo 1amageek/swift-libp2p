@@ -83,3 +83,23 @@ public final class TCPTransport: Transport, Sendable {
 | Pending connections leak | `TCPListener.swift` | ✅ Fixed | `close()` が pending 接続も順次 close してリークを防止 |
 | No local isClosed check in write | `TCPConnection.swift` | ✅ Fixed | `write()` 冒頭でローカル close 状態を検査し即時エラー化 |
 | Port 0 fallback | `TCPConnection.swift` | ✅ Fixed | `SocketAddress.toMultiaddr()` は port 欠落時に `nil` を返し、不正 `/tcp/0` 生成を回避 |
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16, Updated)
+
+- 総合評価: **A-** (85/100)
+- 対象ターゲット: `P2PTransportTCP`
+- 実装読解範囲: 3 Swift files / 790 LOC
+- テスト範囲: 37 cases (25既存 + 12追加: EmbeddedChannel 3件 + 統合テスト 9件)
+- 公開API: types 3 / funcs 8
+- 参照網羅率: type 1.0 / func 1.0
+- 未参照公開型: 0 件（TCPConnection, TCPListener, TCPReadHandler すべてテスト参照あり）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: バッファオーバーフロー、冪等close、ハンドラ単体テスト、FIFO順序等を網羅
+
+### 重点アクション
+- TransportError型の標準化（TCP固有エラーとTransportErrorの統一）
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

@@ -64,6 +64,13 @@
 - Interop testing with Go/Rust libp2p is a priority when touching wire protocols.
 - Naming: `@Suite("Feature Tests")` with descriptive `@Test("Behavior description")`.
 - Always set timeouts for test commands to prevent hanging (recommended: 30s).
+- Run static guard first: `scripts/check-sync-shutdown-in-deinit.sh Sources/Transport Tests/Interop/Harnesses`.
+- Use `scripts/swift-test-timeout.sh` for all local test runs to enforce timeout.
+- Recommended invocation: `SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang scripts/swift-test-timeout.sh 30 --disable-sandbox --filter <SuiteOrTestName>`.
+- For hang-prone suites, run guarded repeats:
+  `SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 -- --disable-sandbox --filter <SuiteOrTestName>`
+- `scripts/swift-test-hang-guard.sh` is intentionally serialized (single active run). Do not run multiple hang-guard jobs concurrently.
+- Hang-guard logs and diagnostics are stored under `.test-artifacts/hang-guard/<timestamp>/`.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects with a subsystem hint (e.g., `Transport: handle half-close`).

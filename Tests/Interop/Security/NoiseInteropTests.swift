@@ -20,7 +20,7 @@ import NIOCore
 @testable import P2PProtocols
 
 /// Interoperability tests for Noise security protocol
-@Suite("Noise Security Interop Tests")
+@Suite("Noise Security Interop Tests", .serialized)
 struct NoiseInteropTests {
 
     // MARK: - Handshake Tests
@@ -32,7 +32,7 @@ struct NoiseInteropTests {
             dockerfile: "Dockerfiles/Dockerfile.noise.go",
             imageName: "go-libp2p-noise-test"
         )
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[Noise] Testing handshake with: \(nodeInfo.peerID)")
@@ -76,7 +76,7 @@ struct NoiseInteropTests {
             dockerfile: "Dockerfiles/Dockerfile.noise.go",
             imageName: "go-libp2p-noise-test"
         )
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -121,7 +121,7 @@ struct NoiseInteropTests {
             dockerfile: "Dockerfiles/Dockerfile.noise.go",
             imageName: "go-libp2p-noise-test"
         )
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -197,7 +197,7 @@ struct NoiseInteropTests {
             dockerfile: "Dockerfiles/Dockerfile.noise.go",
             imageName: "go-libp2p-noise-test"
         )
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()

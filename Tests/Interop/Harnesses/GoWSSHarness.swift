@@ -17,17 +17,20 @@ public final class GoWSSHarness: Sendable {
 
     private let containerName: String
     private let port: UInt16
+    private let leaseID: UUID
     public let nodeInfo: NodeInfo
     public let serverCertificatePEM: String
 
     private init(
         containerName: String,
         port: UInt16,
+        leaseID: UUID,
         nodeInfo: NodeInfo,
         serverCertificatePEM: String
     ) {
         self.containerName = containerName
         self.port = port
+        self.leaseID = leaseID
         self.nodeInfo = nodeInfo
         self.serverCertificatePEM = serverCertificatePEM
     }
@@ -43,6 +46,15 @@ public final class GoWSSHarness: Sendable {
         dockerfile: String = "Dockerfiles/Dockerfile.wss.go",
         imageName: String = "go-libp2p-wss-test"
     ) async throws -> GoWSSHarness {
+        let leaseID = await acquireInteropHarnessLease()
+        var shouldReleaseLease = true
+
+        defer {
+            if shouldReleaseLease {
+                Task { await releaseInteropHarnessLease(leaseID) }
+            }
+        }
+
         let actualPort = port == 0 ? UInt16.random(in: 10000..<60000) : port
         let containerName = "\(imageName)-\(actualPort)"
 
@@ -55,8 +67,7 @@ public final class GoWSSHarness: Sendable {
         checkProcess.standardOutput = checkPipe
         checkProcess.standardError = Pipe()
 
-        try checkProcess.run()
-        checkProcess.waitUntilExit()
+        try runProcessWithTimeout(checkProcess)
 
         let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
 
@@ -75,8 +86,7 @@ public final class GoWSSHarness: Sendable {
                 .deletingLastPathComponent()  // Harnesses/
                 .deletingLastPathComponent()  // Interop/
 
-            try buildProcess.run()
-            buildProcess.waitUntilExit()
+            try runProcessWithTimeout(buildProcess)
 
             guard buildProcess.terminationStatus == 0 else {
                 throw WSSHarnessError.dockerBuildFailed
@@ -88,11 +98,10 @@ public final class GoWSSHarness: Sendable {
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
         do {
-            try rmProcess.run()
+            try runProcessWithTimeout(rmProcess)
         } catch {
             // Best effort cleanup only.
         }
-        rmProcess.waitUntilExit()
 
         // Start container (WSS uses tcp port mapping)
         let runProcess = Process()
@@ -107,8 +116,7 @@ public final class GoWSSHarness: Sendable {
             imageName
         ]
 
-        try runProcess.run()
-        runProcess.waitUntilExit()
+        try runProcessWithTimeout(runProcess)
 
         guard runProcess.terminationStatus == 0 else {
             throw WSSHarnessError.dockerRunFailed
@@ -118,7 +126,7 @@ public final class GoWSSHarness: Sendable {
         var attempts = 0
         var nodeInfo: NodeInfo?
 
-        while attempts < 30 {
+        while attempts < 120 {
             try await Task.sleep(for: .milliseconds(500))
 
             let logsProcess = Process()
@@ -129,8 +137,7 @@ public final class GoWSSHarness: Sendable {
             logsProcess.standardOutput = pipe
             logsProcess.standardError = pipe
 
-            try logsProcess.run()
-            logsProcess.waitUntilExit()
+            try runProcessWithTimeout(logsProcess)
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
@@ -169,11 +176,10 @@ public final class GoWSSHarness: Sendable {
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
             do {
-                try stopProcess.run()
+                try runProcessWithTimeout(stopProcess)
             } catch {
                 // Best effort cleanup only.
             }
-            stopProcess.waitUntilExit()
 
             throw WSSHarnessError.nodeNotReady
         }
@@ -186,17 +192,18 @@ public final class GoWSSHarness: Sendable {
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
             do {
-                try stopProcess.run()
+                try runProcessWithTimeout(stopProcess)
             } catch {
                 // Best effort cleanup only.
             }
-            stopProcess.waitUntilExit()
             throw WSSHarnessError.certificateReadFailed
         }
 
+        shouldReleaseLease = false
         return GoWSSHarness(
             containerName: containerName,
             port: actualPort,
+            leaseID: leaseID,
             nodeInfo: info,
             serverCertificatePEM: certificatePEM
         )
@@ -212,8 +219,7 @@ public final class GoWSSHarness: Sendable {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
-        try process.run()
-        process.waitUntilExit()
+        try runProcessWithTimeout(process)
 
         guard process.terminationStatus == 0 else {
             throw WSSHarnessError.certificateReadFailed
@@ -235,11 +241,21 @@ public final class GoWSSHarness: Sendable {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
 
-        try process.run()
-        process.waitUntilExit()
+        do {
+            try runProcessWithTimeout(process)
+        } catch {
+            await releaseInteropHarnessLease(leaseID)
+            throw error
+        }
+        await releaseInteropHarnessLease(leaseID)
     }
 
     deinit {
+        let leaseID = self.leaseID
+        Task {
+            await releaseInteropHarnessLease(leaseID)
+        }
+
         // Best effort cleanup
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -249,7 +265,6 @@ public final class GoWSSHarness: Sendable {
         } catch {
             // Best effort cleanup only.
         }
-        process.waitUntilExit()
     }
 }
 

@@ -49,7 +49,7 @@ final class TestEventCollector: Sendable {
             if current.count >= count {
                 return current
             }
-            try? await Task.sleep(for: .milliseconds(10))
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { }
         }
         return state.withLock { $0 }
     }
@@ -230,13 +230,13 @@ struct RelayServerEventTests {
         // Simulate target responding OK to Stop CONNECT, then close to end relay
         Task {
             // Read CONNECT message from target's side
-            _ = try? await targetToRelay.readLengthPrefixedMessage(maxSize: 4096)
+            do { _ = try await targetToRelay.readLengthPrefixedMessage(maxSize: 4096) } catch { }
             // Send OK response from target's side
             let okResponse = StopMessage.statusResponse(.ok)
-            try? await targetToRelay.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(okResponse)))
+            do { try await targetToRelay.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(okResponse))) } catch { }
             // Close the stream to allow relayData to terminate
-            try? await Task.sleep(for: .milliseconds(50))
-            try? await targetToRelay.close()
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { }
+            do { try await targetToRelay.close() } catch { }
         }
 
         // Send CONNECT request from source
@@ -269,7 +269,7 @@ struct RelayServerEventTests {
 
         // Wait briefly for handler to finish
         _ = await Task {
-            try? await Task.sleep(for: .milliseconds(100))
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { }
         }.value
 
         // Cleanup
@@ -550,11 +550,11 @@ struct RelayServerCircuitLimitTests {
         // Simulate target1 responding OK and keeping connection alive
         let target1ReadySignal = AsyncStream<Void>.makeStream()
         let target1Task = Task {
-            _ = try? await targetToRelay1.readLengthPrefixedMessage(maxSize: 4096)
-            try? await targetToRelay1.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(StopMessage.statusResponse(.ok))))
+            do { _ = try await targetToRelay1.readLengthPrefixedMessage(maxSize: 4096) } catch { }
+            do { try await targetToRelay1.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(StopMessage.statusResponse(.ok)))) } catch { }
             target1ReadySignal.continuation.yield()
             // Keep connection alive - wait for cancellation
-            try? await Task.sleep(for: .seconds(10))
+            do { try await Task.sleep(for: .seconds(10)) } catch { }
         }
 
         // First connect should succeed - run in background since it blocks during relay
@@ -592,8 +592,8 @@ struct RelayServerCircuitLimitTests {
         // Cleanup
         target1Task.cancel()
         handler1Task.cancel()
-        try? await connect1ClientStream.close()
-        try? await targetToRelay1.close()
+        do { try await connect1ClientStream.close() } catch { }
+        do { try await targetToRelay1.close() } catch { }
         server.shutdown()
     }
 
@@ -754,11 +754,13 @@ struct RelayServerErrorScenarioTests {
 
         // Simulate target rejecting the connection
         Task {
-            _ = try? await targetToRelay.readLengthPrefixedMessage(maxSize: 4096)
+            do { _ = try await targetToRelay.readLengthPrefixedMessage(maxSize: 4096) } catch { }
             // Send rejection response
-            try? await targetToRelay.writeLengthPrefixedMessage(
-                ByteBuffer(bytes: CircuitRelayProtobuf.encode(StopMessage.statusResponse(.connectionFailed)))
-            )
+            do {
+                try await targetToRelay.writeLengthPrefixedMessage(
+                    ByteBuffer(bytes: CircuitRelayProtobuf.encode(StopMessage.statusResponse(.connectionFailed)))
+                )
+            } catch { }
         }
 
         // Try to connect

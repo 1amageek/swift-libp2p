@@ -123,16 +123,15 @@ public final class PrometheusExporter: MetricsExporter, Sendable {
         state.withLock { s in
             let boundaries = s.registrations[metric]?.buckets
                 ?? PrometheusExporter.defaultBuckets
-            if s.histograms[key] == nil {
-                s.histograms[key] = HistogramData(boundaries: boundaries)
-            }
-            s.histograms[key]!.sum += value
-            s.histograms[key]!.count += 1
-            for boundary in s.histograms[key]!.boundaries {
+            var hist = s.histograms[key] ?? HistogramData(boundaries: boundaries)
+            hist.sum += value
+            hist.count += 1
+            for boundary in hist.boundaries {
                 if value <= boundary {
-                    s.histograms[key]!.bucketCounts[boundary, default: 0] += 1
+                    hist.bucketCounts[boundary, default: 0] += 1
                 }
             }
+            s.histograms[key] = hist
         }
     }
 
@@ -180,31 +179,28 @@ public final class PrometheusExporter: MetricsExporter, Sendable {
                 }
 
                 // Write counter values
-                let counterKeys = s.counters.keys
-                    .filter { $0.name == metricName }
-                    .sorted { Self.labelsString($0.labels) < Self.labelsString($1.labels) }
-                for key in counterKeys {
+                let counterEntries = s.counters
+                    .filter { $0.key.name == metricName }
+                    .sorted { Self.labelsString($0.key.labels) < Self.labelsString($1.key.labels) }
+                for (key, value) in counterEntries {
                     let labelsStr = Self.labelsString(key.labels)
-                    let value = s.counters[key]!
                     output += "\(metricName.name)\(labelsStr) \(Self.formatValue(value))\n"
                 }
 
                 // Write gauge values
-                let gaugeKeys = s.gauges.keys
-                    .filter { $0.name == metricName }
-                    .sorted { Self.labelsString($0.labels) < Self.labelsString($1.labels) }
-                for key in gaugeKeys {
+                let gaugeEntries = s.gauges
+                    .filter { $0.key.name == metricName }
+                    .sorted { Self.labelsString($0.key.labels) < Self.labelsString($1.key.labels) }
+                for (key, value) in gaugeEntries {
                     let labelsStr = Self.labelsString(key.labels)
-                    let value = s.gauges[key]!
                     output += "\(metricName.name)\(labelsStr) \(Self.formatValue(value))\n"
                 }
 
                 // Write histogram values
-                let histKeys = s.histograms.keys
-                    .filter { $0.name == metricName }
-                    .sorted { Self.labelsString($0.labels) < Self.labelsString($1.labels) }
-                for key in histKeys {
-                    let hist = s.histograms[key]!
+                let histEntries = s.histograms
+                    .filter { $0.key.name == metricName }
+                    .sorted { Self.labelsString($0.key.labels) < Self.labelsString($1.key.labels) }
+                for (key, hist) in histEntries {
                     let baseLabelPairs = Self.labelPairs(key.labels)
 
                     // Cumulative bucket lines

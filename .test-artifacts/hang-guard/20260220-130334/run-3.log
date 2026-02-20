@@ -1,0 +1,14 @@
+Test Suite 'Selected tests' started at 2026-02-20 13:03:50.005.
+Test Suite 'swift-libp2pPackageTests.xctest' started at 2026-02-20 13:03:50.006.
+Test Suite 'swift-libp2pPackageTests.xctest' passed at 2026-02-20 13:03:50.006.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-02-20 13:03:50.006.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1501
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "SWIMMembership Integration Tests" started.
+􀟈  Test "observations stream emits events" started.
+􁁛  Test "observations stream emits events" passed after 5.204 seconds.
+􁁛  Suite "SWIMMembership Integration Tests" passed after 5.204 seconds.
+􁁛  Test run with 1 test in 1 suite passed after 5.204 seconds.

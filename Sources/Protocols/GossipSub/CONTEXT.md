@@ -55,10 +55,14 @@ Sources/Protocols/GossipSub/
 ├── Heartbeat/
 │   └── HeartbeatManager.swift    # 定期メンテナンス処理
 │
-└── Wire/
-    ├── GossipSubRPC.swift        # RPC メッセージ型
-    ├── ControlMessage.swift      # 制御メッセージ (GRAFT/PRUNE/IHAVE/IWANT)
-    └── GossipSubProtobuf.swift   # Protobuf エンコード/デコード
+├── Wire/
+│   ├── GossipSubRPC.swift        # RPC メッセージ型
+│   ├── ControlMessage.swift      # 制御メッセージ (GRAFT/PRUNE/IHAVE/IWANT)
+│   └── GossipSubProtobuf.swift   # Protobuf エンコード/デコード
+│
+└── Tracing/
+    ├── GossipSubTracer.swift     # トレーシングプロトコル
+    └── JSONTracer.swift          # JSON出力トレーサー実装
 ```
 
 ---
@@ -80,6 +84,12 @@ Sources/Protocols/GossipSub/
 | `ControlMessage` | 制御メッセージ (GRAFT/PRUNE等) |
 | `GossipSubEvent` | イベント通知 |
 | `GossipSubError` | エラー型 |
+| `GossipSubTracer` | トレーシングプロトコル |
+| `RejectReason` | メッセージ拒否理由 |
+| `JSONTracer` | JSON出力トレーサー |
+| `JSONTracer.TraceEvent` | トレースイベント |
+| `ReceivedMessage` | 受信メタデータ付きメッセージ |
+| `RPCHandleResult` | RPC処理結果 |
 
 ---
 
@@ -305,6 +315,8 @@ for await event in gossipsub.events {
 3. **メッセージ伝播**: PublishしたメッセージがSubscriberに到達
 4. **ゴシップ**: IHAVE/IWANTでキャッシュからメッセージ取得
 
+現状: go-libp2p との単一ノード相互運用で control/publish の wire 往復を検証済み。rust 側は継続中。
+
 ### テストベクトル
 
 rust-libp2p の gossipsub テストを参照:
@@ -317,22 +329,25 @@ rust-libp2p の gossipsub テストを参照:
 
 ```
 Tests/Protocols/GossipSubTests/
-├── Core/
-│   ├── TopicTests.swift
-│   ├── MessageTests.swift
-│   └── MessageIDTests.swift
-├── Router/
-│   ├── GossipSubRouterTests.swift
-│   ├── MeshStateTests.swift
-│   └── MessageCacheTests.swift
-├── Scoring/
-│   └── PeerScorerTests.swift        # スコアリングテスト (34テスト: グローバル21 + Per-topic13)
-├── Wire/
-│   ├── GossipSubProtobufTests.swift
-│   └── ControlMessageTests.swift
-├── GossipSubServiceTests.swift
-└── GossipSubInteropTests.swift    # Go/Rust相互運用
+├── GossipSubRouterTests.swift        # ルーターテスト (46)
+├── PeerScorerTests.swift             # スコアリングテスト (34)
+├── TracingTests.swift                # トレーシングテスト (28)
+├── MeshStateTests.swift              # メッシュ状態テスト (23)
+├── MessageCacheTests.swift           # メッセージキャッシュテスト (14)
+├── MessageIDTests.swift              # メッセージIDテスト (13)
+├── MessageSigningTests.swift         # メッセージ署名テスト (13)
+├── GossipSubProtobufTests.swift      # Protobufテスト (12)
+├── ExplicitPeeringTests.swift        # 明示ピアリングテスト (12)
+├── FloodSubCompatibilityTests.swift  # FloodSub互換テスト (11)
+├── HeartbeatManagerTests.swift       # ハートビートテスト (10)
+├── ExtendedValidatorTests.swift      # 拡張バリデータテスト (6)
+└── OpportunisticGraftTests.swift     # Opportunistic Graftテスト (4)
+
+Tests/Interop/Protocols/
+└── GossipSubInteropTests.swift       # Go/Rust相互運用テスト (5)
 ```
+
+合計: 231テスト / 14ファイル / 2テストターゲット
 
 ---
 
@@ -384,15 +399,15 @@ Tests/Protocols/GossipSubTests/
   - IPコロケーション追跡（Sybil攻撃防御）
   - スコア減衰機能
   - グレイリストによるメッシュ除外
-- [ ] **GossipSubRouterテストの追加** - メッシュ管理ロジックの検証
-- [ ] **MessageCacheテストの追加** - IHAVE/IWANTキャッシュ動作検証
+- [x] **GossipSubRouterテストの追加** - 30テスト実装済み ✅
+- [x] **MessageCacheテストの追加** - 14テスト実装済み ✅
 
 ### 中優先度
 - [x] **IDONTWANT protobuf encode/decode** - ControlIDontWant のワイヤーフォーマット実装（v1.2 完全サポート）
 - [x] **Per-topic scoring** - トピックごとのスコアリングパラメータ（v1.1 仕様準拠）✅ 2026-01-30
-- [ ] **Peer Exchange検証** - PRUNEメッセージのピア情報交換テスト
-- [ ] **バックオフ期間の強制テスト** - PRUNE後の再GRAFT防止
-- [ ] **ハートビートタイミングテスト** - 1秒間隔の正確性検証
+- [x] **Peer Exchange検証** - PRUNEメッセージのピア情報交換テスト (4テスト追加) ✅
+- [x] **バックオフ期間の強制テスト** - PRUNE後の再GRAFT防止 (4テスト追加) ✅
+- [x] **ハートビートタイミングテスト** - HeartbeatManagerTests (10テスト: start/shutdown/heartbeatCount/maintainMesh/shiftCache/cleanupBackoffs/opportunisticGraft) ✅
 
 ### 低優先度
 - [ ] **FloodSub後方互換性テスト** - `/floodsub/1.0.0`との互換性
@@ -546,34 +561,23 @@ router.performScoringMaintenance()
 
 ## Known Issues (2026-01-26 レビュー)
 
-### LOW: IDONTWANT 辞書のサイズ上限なし
+### ~~LOW: IDONTWANT 辞書のサイズ上限なし~~ ✅ Fixed
 
-**場所**: `Router/PeerState.swift` - `dontWantMessages` 辞書
+**場所**: `Router/PeerState.swift:132-140`
 
-**問題**: ピアが大量の IDONTWANT メッセージを送信した場合、辞書が無制限に成長する可能性がある
-
-**対応**: `addDontWant()` に最大サイズチェックを追加
-
-```swift
-private let maxDontWantEntries = 10000
-
-func addDontWant(_ messageID: MessageID) {
-    guard dontWantMessages.count < maxDontWantEntries else { return }
-    dontWantMessages[messageID] = .now
-}
-```
+**対応済み**: `PeerState.maxDontWantEntries = 10_000` ガード実装済み。`addDontWant()` で上限チェックし、超過時は新規エントリを拒否。`clearExpiredDontWants()` でハートビートごとに期限切れエントリを削除。
 
 ### INFO: HeartbeatManager のライフサイクル文書化
 
 **場所**: `Heartbeat/HeartbeatManager.swift`
 
-**補足**: `stop()` が呼ばれずにインスタンスが解放された場合、Task は停止するが明示的な文書化がない
+**補足**: `shutdown()` が呼ばれずにインスタンスが解放された場合、Task は `[weak self]` 参照（行67）により停止するが明示的な文書化がない
 
 **対応**: deinit コメントまたは明示的なドキュメントを追加
 
 ### INFO: emit() の戻り値無視
 
-**場所**: `Router/GossipSubRouter.swift:896`
+**場所**: `Router/GossipSubRouter.swift:1112`
 
 ```swift
 _ = state.continuation?.yield(event)  // 戻り値を無視
@@ -583,8 +587,29 @@ _ = state.continuation?.yield(event)  // 戻り値を無視
 
 ### INFO: 双方向イベント発火
 
-**場所**: `Router/GossipSubRouter.swift:764, 770`
+**場所**: `Router/GossipSubRouter.swift:922, 928`
 
 **補足**: `peerJoinedMesh` と `grafted` が同じアクションで両方発火される。異なる監視目的のための設計決定
 
 **対応**: コメントで設計意図を明確化
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-20)
+
+- 総合評価: **A** (88/100)
+- 対象ターゲット: `P2PGossipSub`
+- 実装読解範囲: 20 Swift files / 6980 LOC
+- テスト範囲: 14 files / 231 cases / targets 2
+- 公開API: types 41 / funcs 87
+- 参照網羅率: type 0.66 / func 0.77
+- 未参照公開型: 12 件（`ConfigurationError`, `GossipSubEvent`, `PenaltyReason`, `SubscriptionOpt`, `GossipSubProtocolID`, `PeerDirection`, `MeshStats`, `HeartbeatStats`, `ReceivedMessage`, `RPCHandleResult`, `TopicHash`, `GossipSubRPC.Builder`）
+- 実装リスク指標: try?=0, forceUnwrap=5, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 強制アンラップ5箇所は全て `MeshState.swift` 内、nil チェック直後の Mutex.withLock スコープ内で論理的に安全。IDONTWANT サイズ制限は `maxDontWantEntries=10_000` で対応済み
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- `MeshState.swift` の強制アンラップ5箇所を `dictionary[key, default: TopicMesh()]` パターンに置換すると安全性が向上する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

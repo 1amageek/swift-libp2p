@@ -70,6 +70,9 @@ internal struct ManagedConnection: Sendable {
 
     /// Whether this connection is protected from trimming.
     var isProtected: Bool
+
+    /// Whether this is a limited (relay) connection.
+    var isLimited: Bool
 }
 
 /// Central manager for all connection state.
@@ -137,7 +140,8 @@ internal final class ConnectionPool: Sendable {
     func addConnecting(
         for peer: PeerID,
         address: Multiaddr,
-        direction: ConnectionDirection
+        direction: ConnectionDirection,
+        isLimited: Bool = false
     ) -> ConnectionID {
         let id = ConnectionID()
         let now = ContinuousClock.now
@@ -153,7 +157,8 @@ internal final class ConnectionPool: Sendable {
             lastActivity: now,
             connectedAt: nil,
             tags: [],
-            isProtected: false
+            isProtected: false,
+            isLimited: isLimited
         )
 
         state.withLock { state in
@@ -177,7 +182,8 @@ internal final class ConnectionPool: Sendable {
         _ connection: any MuxedConnection,
         for peer: PeerID,
         address: Multiaddr,
-        direction: ConnectionDirection
+        direction: ConnectionDirection,
+        isLimited: Bool = false
     ) -> ConnectionID {
         let id = ConnectionID()
         let now = ContinuousClock.now
@@ -193,7 +199,8 @@ internal final class ConnectionPool: Sendable {
             lastActivity: now,
             connectedAt: now,
             tags: [],
-            isProtected: false
+            isProtected: false,
+            isLimited: isLimited
         )
 
         state.withLock { state in
@@ -414,6 +421,23 @@ internal final class ConnectionPool: Sendable {
             state.connections.values.filter {
                 $0.direction == .outbound && $0.state.isConnected
             }.count
+        }
+    }
+
+    /// Checks if the connection to a peer is limited (relay).
+    ///
+    /// - Parameter peer: The peer to check
+    /// - Returns: true if the peer's active connection is limited
+    func isLimitedConnection(to peer: PeerID) -> Bool {
+        state.withLock { state in
+            guard let ids = state.peerConnections[peer] else { return false }
+            for id in ids {
+                if let managed = state.connections[id],
+                   managed.state.isConnected {
+                    return managed.isLimited
+                }
+            }
+            return false
         }
     }
 

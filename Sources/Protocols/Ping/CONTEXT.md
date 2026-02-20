@@ -134,21 +134,27 @@ class PingStreamReader {
 
 ```
 Tests/Protocols/PingTests/
-├── PingServiceTests.swift    # サービステスト
-└── PingInteropTests.swift    # Go/Rust相互運用
+└── PingServiceTests.swift    # サービステスト
+
+Tests/Interop/Protocols/
+└── PingInteropTests.swift    # Go/Rust相互運用（QUIC）
+
+Tests/Interop/Existing/
+├── GoLibp2pInteropTests.swift   # Pingケース含む
+└── RustInteropTests.swift       # Pingケース含む
 ```
 
 ### 実装状況
 | ファイル | ステータス | 説明 |
 |---------|----------|------|
 | PingServiceTests | ✅ 実装済み | 単一/複数Ping、統計テスト |
-| PingInteropTests | ⏳ 計画中 | Go/Rust相互運用（未実装）|
+| PingInteropTests | ✅ 実装済み | Go/Rust相互運用（32バイトエコー検証） |
 
 ## 品質向上TODO
 
 ### 高優先度
-- [ ] **PingServiceテストの追加** - 単一Ping、複数Ping、統計計算テスト
-- [ ] **Go/Rust相互運用テスト** - 実際のノードとの32バイトエコー検証
+- [x] **PingServiceテストの追加** - 単一Ping、複数Ping、統計計算テスト
+- [x] **Go/Rust相互運用テスト** - 実際のノードとの32バイトエコー検証
 
 ### 中優先度
 - [ ] **タイムアウト動作テスト** - 30秒デフォルトタイムアウトの検証
@@ -158,3 +164,23 @@ Tests/Protocols/PingTests/
 ### 低優先度
 - [ ] **Ping統計の永続化** - 履歴RTTの保存と傾向分析
 - [ ] **適応タイムアウト** - 過去のRTTに基づくタイムアウト調整
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (100/100)
+- 対象ターゲット: `P2PPing`
+- 実装読解範囲: 2 Swift files / 379 LOC
+- テスト範囲: 36 files / 297 cases / targets 3
+- 公開API: types 5 / funcs 4
+- 参照網羅率: type 1.0 / func 1.0
+- 未参照公開型: 0 件（例: `なし`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 現行のテスト網羅を維持し、機能追加時は同一粒度でテストを増やす。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

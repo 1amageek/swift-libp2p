@@ -161,3 +161,24 @@ TLS 1.3 ハンドシェイク・暗号化/復号は swift-tls が担当。libp2p
 
 ### 低優先度
 - [ ] **Noiseパターンの拡張** - IKパターンのサポート（0-RTT用）
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (99/100)
+- 対象ターゲット: `P2PCertificate`, `P2PPnet`, `P2PSecurity`, `P2PSecurityNoise`, `P2PSecurityPlaintext`, `P2PSecurityTLS`
+- 実装読解範囲: 20 Swift files / 3160 LOC
+- テスト範囲: 57 files / 567 cases / targets 10
+- 公開API: types 27 / funcs 11
+- 参照網羅率: type 0.85 / func 0.91
+- 未参照公開型: 4 件（例: `GeneratedCertificate`, `LibP2PCertificateError`, `PlaintextConnection`, `TLSSecuredConnection`）
+- 実装リスク指標: try?=0, forceUnwrap=1, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 強制アンラップを含む実装がある
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- 強制アンラップ箇所に前提条件テストを追加し、回帰時に即検出できるようにする。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

@@ -555,7 +555,7 @@ struct CompositeDiscoveryTests {
         }
 
         // Give time for the consumer to start
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
         await composite.shutdown()

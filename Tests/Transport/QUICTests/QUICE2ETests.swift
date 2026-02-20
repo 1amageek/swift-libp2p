@@ -12,6 +12,14 @@ import NIOCore
 @testable import P2PMux
 import QUIC
 
+private func optionalAsync<T>(_ operation: () async throws -> T) async -> T? {
+    do {
+        return try await operation()
+    } catch {
+        return nil
+    }
+}
+
 @Suite("QUIC E2E Tests")
 struct QUICE2ETests {
 
@@ -175,10 +183,12 @@ struct QUICE2ETests {
         #expect(Data(buffer: response) == Data("Hello QUIC - echoed".utf8))
 
         // Cleanup
-        let serverConnection = try? await serverTask.value
+        let serverConnection = await optionalAsync { try await serverTask.value } ?? nil
         try await clientStream.close()
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -228,9 +238,11 @@ struct QUICE2ETests {
         }
 
         // Cleanup
-        let serverConnection = try? await serverTask.value
+        let serverConnection = await optionalAsync { try await serverTask.value } ?? nil
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -336,7 +348,7 @@ struct QUICE2ETests {
         }
 
         // Wait for all streams
-        let serverConnection = try? await serverTask.value
+        let serverConnection = await optionalAsync { try await serverTask.value } ?? nil
         let messages = try await collectTask.value
 
         // Verify
@@ -344,7 +356,9 @@ struct QUICE2ETests {
 
         // Cleanup
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 

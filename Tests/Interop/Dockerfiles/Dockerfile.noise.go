@@ -57,7 +57,6 @@ func main() {
 		libp2p.NoTransports,
 		libp2p.Transport(tcp.NewTCPTransport),
 		// Noise only - no TLS
-		libp2p.NoSecurity,
 		libp2p.Security(noise.ID, noise.New),
 		// Yamux muxer
 		libp2p.Muxer("/yamux/1.0.0", yamux.DefaultTransport),

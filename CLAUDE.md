@@ -272,7 +272,43 @@ func doWork() {
 - CompositeDiscoveryに追加後は、サービスを直接使用しないこと
 - `shutdown()`は必ず呼び出すこと（内部サービスも停止される）
 
-### 4. エラーハンドリング
+### 4. パフォーマンス意図の尊重
+
+コードを修正する際、既存の最適化意図を破壊しないこと。
+
+#### 修正前に確認すべきこと
+
+- **コメントに最適化意図があるか**: "avoids heap allocation", "zero-copy", "stack-allocated", "hot path" 等
+- **Unsafe API を使っている理由**: `withUnsafeBytes`, `withUnsafeMutableBytes`, `baseAddress` 等は意図的なパフォーマンス選択
+- **メモリ配置の意図**: スタック上タプル構築、`copyMemory` 一括コピー、バッファ再利用等
+
+#### 安全性改善時のルール
+
+- **最適化構造を維持したまま安全にする**: `baseAddress!` → サブスクリプト `ptr[i]` に変更（構造は維持）
+- **ヒープアロケーションを導入しない**: `Data(repeating:count:)` でスタック構築を置き換えない
+- **一括操作をループに分解しない**（ただし8バイト以下の固定長コピーは許容）
+
+```swift
+// BAD: 最適化を破壊して Data に置き換え
+var data = Data(repeating: 0, count: 12)  // ← ヒープアロケーション
+for i in 0..<8 { data[4 + i] = ... }      // ← COWチェック毎回
+
+// GOOD: スタック構築を維持し、baseAddress! だけ安全にする
+var buf: (UInt8, ..., UInt8) = (0, ..., 0)  // ← スタック上
+withUnsafeMutableBytes(of: &buf) { ptr in
+    withUnsafeBytes(of: &le) { src in
+        for i in 0..<8 { ptr[4 + i] = src[i] }  // ← サブスクリプト（バウンドチェック付き）
+    }
+}
+```
+
+#### ホットパスの例
+
+- **Noise nonce 生成**: 暗号化パスごとに呼ばれる — スタック構築必須
+- **GossipSub メッセージ処理**: メッセージごとに呼ばれる — 不要なアロケーション禁止
+- **Kademlia ルーティング**: ルックアップごとに呼ばれる — O(n) を O(log n) にしない退行禁止
+
+### 5. エラーハンドリング
 
 ```swift
 // BAD: エラーを握りつぶす
@@ -281,10 +317,6 @@ let addr = try? channel.localAddress?.toMultiaddr()
 // GOOD: エラーを伝播
 let addr = try channel.localAddress?.toMultiaddr()
 ```
-
-### 5. Sendable
-
-`@unchecked Sendable` は使わない。`Mutex<T>` で解決する。
 
 ---
 

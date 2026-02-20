@@ -15,14 +15,16 @@ public final class GoProtocolHarness: Sendable {
 
     private let containerName: String
     private let port: UInt16
+    private let leaseID: UUID
     public let nodeInfo: NodeInfo
 
     /// Container stdin pipe for sending commands
     private let stdinPipe: Pipe?
 
-    private init(containerName: String, port: UInt16, nodeInfo: NodeInfo, stdinPipe: Pipe?) {
+    private init(containerName: String, port: UInt16, leaseID: UUID, nodeInfo: NodeInfo, stdinPipe: Pipe?) {
         self.containerName = containerName
         self.port = port
+        self.leaseID = leaseID
         self.nodeInfo = nodeInfo
         self.stdinPipe = stdinPipe
     }
@@ -86,6 +88,15 @@ public final class GoProtocolHarness: Sendable {
         protocol protocolType: ProtocolType,
         port: UInt16 = 0
     ) async throws -> GoProtocolHarness {
+        let leaseID = await acquireInteropHarnessLease()
+        var shouldReleaseLease = true
+
+        defer {
+            if shouldReleaseLease {
+                Task { await releaseInteropHarnessLease(leaseID) }
+            }
+        }
+
         let actualPort = port == 0 ? UInt16.random(in: 10000..<60000) : port
         let containerName = "\(protocolType.imageName)-\(actualPort)"
 
@@ -98,8 +109,7 @@ public final class GoProtocolHarness: Sendable {
         checkProcess.standardOutput = checkPipe
         checkProcess.standardError = Pipe()
 
-        try checkProcess.run()
-        checkProcess.waitUntilExit()
+        try runProcessWithTimeout(checkProcess)
 
         let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
 
@@ -117,8 +127,7 @@ public final class GoProtocolHarness: Sendable {
                 .deletingLastPathComponent()  // Harnesses/
                 .deletingLastPathComponent()  // Interop/
 
-            try buildProcess.run()
-            buildProcess.waitUntilExit()
+            try runProcessWithTimeout(buildProcess)
 
             guard buildProcess.terminationStatus == 0 else {
                 throw ProtocolHarnessError.dockerBuildFailed
@@ -129,8 +138,11 @@ public final class GoProtocolHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
-        try? rmProcess.run()
-        rmProcess.waitUntilExit()
+        do {
+            try runProcessWithTimeout(rmProcess)
+        } catch {
+            // Best effort cleanup only.
+        }
 
         // Build run arguments
         var runArgs = [
@@ -149,8 +161,7 @@ public final class GoProtocolHarness: Sendable {
         runProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         runProcess.arguments = runArgs
 
-        try runProcess.run()
-        runProcess.waitUntilExit()
+        try runProcessWithTimeout(runProcess)
 
         guard runProcess.terminationStatus == 0 else {
             throw ProtocolHarnessError.dockerRunFailed
@@ -160,7 +171,7 @@ public final class GoProtocolHarness: Sendable {
         var attempts = 0
         var nodeInfo: NodeInfo?
 
-        while attempts < 30 {
+        while attempts < 120 {
             try await Task.sleep(for: .milliseconds(500))
 
             let logsProcess = Process()
@@ -171,8 +182,7 @@ public final class GoProtocolHarness: Sendable {
             logsProcess.standardOutput = pipe
             logsProcess.standardError = pipe
 
-            try logsProcess.run()
-            logsProcess.waitUntilExit()
+            try runProcessWithTimeout(logsProcess)
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
@@ -201,15 +211,20 @@ public final class GoProtocolHarness: Sendable {
             let stopProcess = Process()
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
-            try? stopProcess.run()
-            stopProcess.waitUntilExit()
+            do {
+                try runProcessWithTimeout(stopProcess)
+            } catch {
+                // Best effort cleanup only.
+            }
 
             throw ProtocolHarnessError.nodeNotReady
         }
 
+        shouldReleaseLease = false
         return GoProtocolHarness(
             containerName: containerName,
             port: actualPort,
+            leaseID: leaseID,
             nodeInfo: info,
             stdinPipe: nil
         )
@@ -221,8 +236,7 @@ public final class GoProtocolHarness: Sendable {
         execProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         execProcess.arguments = ["docker", "exec", "-i", containerName, "sh", "-c", "echo '\(command)'"]
 
-        try execProcess.run()
-        execProcess.waitUntilExit()
+        try runProcessWithTimeout(execProcess)
     }
 
     /// Gets container logs
@@ -235,8 +249,7 @@ public final class GoProtocolHarness: Sendable {
         logsProcess.standardOutput = pipe
         logsProcess.standardError = pipe
 
-        try logsProcess.run()
-        logsProcess.waitUntilExit()
+        try runProcessWithTimeout(logsProcess)
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
@@ -248,16 +261,29 @@ public final class GoProtocolHarness: Sendable {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
 
-        try process.run()
-        process.waitUntilExit()
+        do {
+            try runProcessWithTimeout(process)
+        } catch {
+            await releaseInteropHarnessLease(leaseID)
+            throw error
+        }
+        await releaseInteropHarnessLease(leaseID)
     }
 
     deinit {
+        let leaseID = self.leaseID
+        Task {
+            await releaseInteropHarnessLease(leaseID)
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
-        try? process.run()
-        process.waitUntilExit()
+        do {
+            try process.run()
+        } catch {
+            // Best effort cleanup only.
+        }
     }
 }
 

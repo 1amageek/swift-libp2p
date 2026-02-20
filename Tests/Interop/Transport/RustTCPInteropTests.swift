@@ -21,7 +21,7 @@ import NIOCore
 @testable import P2PIdentify
 
 /// Interoperability tests for TCP transport with rust-libp2p
-@Suite("Rust TCP Transport Interop Tests")
+@Suite("Rust TCP Transport Interop Tests", .serialized)
 struct RustTCPInteropTests {
 
     // MARK: - Connection Tests
@@ -30,7 +30,7 @@ struct RustTCPInteropTests {
     func connectToRustViaTCP() async throws {
         // Start rust-libp2p TCP node
         let harness = try await RustTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[RustTCP] Node info: \(nodeInfo)")
@@ -79,7 +79,7 @@ struct RustTCPInteropTests {
     @Test("TCP connection with Yamux muxing (rust-libp2p)", .timeLimit(.minutes(3)))
     func tcpWithYamuxMuxing() async throws {
         let harness = try await RustTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -141,7 +141,7 @@ struct RustTCPInteropTests {
     @Test("Identify rust-libp2p node via TCP", .timeLimit(.minutes(3)))
     func identifyRustViaTCP() async throws {
         let harness = try await RustTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -227,7 +227,7 @@ struct RustTCPInteropTests {
     @Test("Ping rust-libp2p node via TCP", .timeLimit(.minutes(3)))
     func pingRustViaTCP() async throws {
         let harness = try await RustTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()

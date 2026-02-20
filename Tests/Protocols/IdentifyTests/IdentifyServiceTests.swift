@@ -264,7 +264,7 @@ struct IdentifyServiceTests {
         }
 
         // Give time for the consumer to start
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
         service.shutdown()
@@ -430,24 +430,33 @@ struct IdentifyServiceTests {
 
         service.startMaintenance()
 
-        // Collect events with timeout using Mutex for thread-safety
-        let receivedMaintenanceEvent = Mutex(false)
-        let collectTask = Task {
-            for await event in events {
-                if case .maintenanceCompleted(let count) = event {
-                    if count > 0 {
-                        receivedMaintenanceEvent.withLock { $0 = true }
-                        break
+        let receivedMaintenanceEvent = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await event in events {
+                    if case .maintenanceCompleted(let count) = event, count > 0 {
+                        return true
                     }
                 }
+                return false
             }
+
+            group.addTask {
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                } catch {
+                    return false
+                }
+                service.shutdown()
+                return false
+            }
+
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
         }
 
-        try await Task.sleep(for: .milliseconds(200))
         service.shutdown()
-        collectTask.cancel()
-
-        #expect(receivedMaintenanceEvent.withLock { $0 })
+        #expect(receivedMaintenanceEvent)
     }
 }
 

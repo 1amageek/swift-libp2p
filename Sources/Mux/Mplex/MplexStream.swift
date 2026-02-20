@@ -150,10 +150,21 @@ public final class MplexStream: MuxedStream, Sendable {
     }
 
     public func close() async throws {
-        // Close both directions
-        try await closeWrite()
+        // Close both directions.
+        // closeWrite may fail if the underlying connection is already closed
+        // (e.g., during connection shutdown). closeRead must always run to
+        // resume any pending read continuations and prevent hangs.
+        var writeError: Error?
+        do {
+            try await closeWrite()
+        } catch {
+            writeError = error
+        }
         try await closeRead()
         connection.removeStream(id: id, initiatedLocally: isInitiator)
+        if let writeError {
+            throw writeError
+        }
     }
 
     public func reset() async throws {

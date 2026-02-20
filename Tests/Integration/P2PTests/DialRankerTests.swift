@@ -70,4 +70,49 @@ struct DialRankerTests {
         #expect(groups.count == 1)
         #expect(groups[0].addresses.count == 2)
     }
+
+    @Test("relay addresses placed in last group")
+    func relayAddressesLast() throws {
+        let ranker = DefaultDialRanker(relayDelay: .milliseconds(500))
+        let addrs = [
+            try Multiaddr("/ip4/1.2.3.4/tcp/4001/p2p-circuit"),
+            try Multiaddr("/ip4/1.2.3.4/udp/4001/quic-v1"),
+            try Multiaddr("/ip4/1.2.3.4/tcp/4001"),
+        ]
+        let groups = ranker.rankAddresses(addrs)
+        // Relay should be last group
+        let lastGroup = groups.last!
+        #expect(lastGroup.addresses.count == 1)
+        let lastAddrStr = lastGroup.addresses[0].description
+        #expect(lastAddrStr.contains("p2p-circuit"))
+    }
+
+    @Test("relay group uses relay delay not group delay")
+    func relayGroupUsesRelayDelay() throws {
+        let ranker = DefaultDialRanker(
+            groupDelay: .milliseconds(250),
+            relayDelay: .milliseconds(500)
+        )
+        let addrs = [
+            try Multiaddr("/ip4/1.2.3.4/udp/4001/quic-v1"),
+            try Multiaddr("/ip4/1.2.3.4/tcp/4001/p2p-circuit"),
+        ]
+        let groups = ranker.rankAddresses(addrs)
+        let relayGroup = groups.last!
+        #expect(relayGroup.delay == .milliseconds(500))
+    }
+
+    @Test("only relay addresses still produce one group")
+    func onlyRelayAddresses() throws {
+        let ranker = DefaultDialRanker(relayDelay: .milliseconds(500))
+        let addrs = [
+            try Multiaddr("/ip4/1.2.3.4/tcp/4001/p2p-circuit"),
+            try Multiaddr("/ip4/5.6.7.8/tcp/4001/p2p-circuit"),
+        ]
+        let groups = ranker.rankAddresses(addrs)
+        #expect(groups.count == 1)
+        #expect(groups[0].addresses.count == 2)
+        // Even as first group, relay delay should be used
+        #expect(groups[0].delay == .zero) // First group always has zero delay
+    }
 }

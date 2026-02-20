@@ -13,8 +13,15 @@ public final class DefaultDialRanker: DialRanker, Sendable {
     /// Delay between each group.
     public let groupDelay: Duration
 
-    public init(groupDelay: Duration = .milliseconds(250)) {
+    /// Delay before starting relay addresses (after all direct groups).
+    public let relayDelay: Duration
+
+    public init(
+        groupDelay: Duration = .milliseconds(250),
+        relayDelay: Duration = .milliseconds(500)
+    ) {
         self.groupDelay = groupDelay
+        self.relayDelay = relayDelay
     }
 
     public func rankAddresses(_ addresses: [Multiaddr]) -> [DialGroup] {
@@ -23,8 +30,13 @@ public final class DefaultDialRanker: DialRanker, Sendable {
         var tcpIPv6: [Multiaddr] = []
         var tcpIPv4: [Multiaddr] = []
         var other: [Multiaddr] = []
+        var relay: [Multiaddr] = []
 
         for addr in addresses {
+            if isCircuitRelay(addr) {
+                relay.append(addr)
+                continue
+            }
             let isV6 = isIPv6(addr)
             if isQUIC(addr) {
                 if isV6 { quicIPv6.append(addr) }
@@ -54,6 +66,9 @@ public final class DefaultDialRanker: DialRanker, Sendable {
         if !other.isEmpty {
             groups.append(DialGroup(addresses: other, delay: groups.isEmpty ? .zero : groupDelay))
         }
+        if !relay.isEmpty {
+            groups.append(DialGroup(addresses: relay, delay: groups.isEmpty ? .zero : relayDelay))
+        }
 
         return groups
     }
@@ -75,5 +90,9 @@ public final class DefaultDialRanker: DialRanker, Sendable {
 
     private func isTCP(_ addr: Multiaddr) -> Bool {
         addr.protocols.contains { if case .tcp = $0 { return true }; return false }
+    }
+
+    private func isCircuitRelay(_ addr: Multiaddr) -> Bool {
+        addr.protocols.contains { if case .p2pCircuit = $0 { return true }; return false }
     }
 }

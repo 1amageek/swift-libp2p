@@ -47,3 +47,23 @@ WiFiBeaconAdapter (TransportAdapter 準拠)
 - `P2PDiscoveryBeacon`: `TransportAdapter` プロトコル、`RawDiscovery`、`OpaqueAddress`
 - `P2PCore`: `PeerID`、`Multiaddr`
 - `NIOUDPTransport`: UDP マルチキャスト送受信
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (92/100)
+- 対象ターゲット: `P2PDiscoveryWiFiBeacon`
+- 実装読解範囲: 4 Swift files / 484 LOC
+- テスト範囲: 3 files / 20 cases / targets 1
+- 公開API: types 3 / funcs 3
+- 参照網羅率: type 0.67 / func 1.0
+- 未参照公開型: 1 件（例: `WiFiBeaconError`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

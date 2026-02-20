@@ -145,7 +145,7 @@ struct HolePunchServiceEventTests {
         }
 
         // Give eventTask time to start listening
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         service.shutdown()
 
@@ -521,11 +521,11 @@ struct HolePunchServiceShutdownTests {
             await flag.set()
         }
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         service.shutdown()
 
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         let completed = await flag.get()
         #expect(completed)

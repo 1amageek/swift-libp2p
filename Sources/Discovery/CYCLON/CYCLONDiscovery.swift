@@ -17,7 +17,7 @@ public let cyclonProtocolID = "/cyclon/1.0.0"
 ///
 /// Conforms to `DiscoveryService` and uses the same actor + EventBroadcaster
 /// pattern as `SWIMMembership` and `MDNSDiscovery`.
-public actor CYCLONDiscovery: DiscoveryService {
+public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable, NodeDiscoveryStartableWithOpener {
 
     private let localPeerID: PeerID
     private let configuration: CYCLONConfiguration
@@ -53,7 +53,7 @@ public actor CYCLONDiscovery: DiscoveryService {
     /// Starts the CYCLON shuffle loop.
     ///
     /// - Parameter opener: Stream opener for communicating with peers
-    public func start(using opener: any StreamOpener) {
+    public func start(using opener: any StreamOpener) async {
         guard !isStarted else { return }
         self.streamOpener = opener
         self.isStarted = true

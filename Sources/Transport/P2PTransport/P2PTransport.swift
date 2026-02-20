@@ -44,7 +44,7 @@ public protocol Listener: Sendable {
 /// Errors that can occur during transport operations.
 public enum TransportError: Error, Sendable {
     case unsupportedAddress(Multiaddr)
-    case connectionFailed(underlying: Error)
+    case connectionFailed(underlying: any Error)
     case listenerClosed
     case timeout
     case unsupportedOperation(String)

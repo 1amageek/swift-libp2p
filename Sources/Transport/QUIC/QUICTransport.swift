@@ -277,6 +277,56 @@ public final class QUICTransport: SecuredTransport, Sendable {
         return listener
     }
 
+    // MARK: - Hole Punch API
+
+    /// Dials from a listener's socket for QUIC hole punching.
+    ///
+    /// Reuses the server endpoint's UDP socket to send QUIC Initial packets from
+    /// the same port, creating a NAT mapping for hole punching.
+    ///
+    /// - Parameters:
+    ///   - address: The remote address to connect to.
+    ///   - localKeyPair: The local key pair for identity.
+    ///   - listener: The secured listener whose endpoint to reuse.
+    /// - Returns: A secured, multiplexed connection.
+    public func dialFromListener(
+        _ address: Multiaddr,
+        localKeyPair: KeyPair,
+        listener: any SecuredListener
+    ) async throws -> any MuxedConnection {
+        guard let socketAddress = address.toQUICSocketAddress() else {
+            throw TransportError.unsupportedAddress(address)
+        }
+
+        guard let quicListener = listener as? QUICSecuredListener else {
+            throw QUICTransportError.invalidAddress(address)
+        }
+
+        let endpoint = quicListener.endpoint
+        let quicConnection = try await endpoint.dialFromListener(to: socketAddress)
+
+        let remotePeer = try extractPeerIDFromQUIC(quicConnection)
+
+        let localAddress: Multiaddr?
+        if let local = quicConnection.localAddress {
+            localAddress = local.toQUICMultiaddr()
+        } else {
+            localAddress = nil
+        }
+
+        let connection = QUICMuxedConnection(
+            quicConnection: quicConnection,
+            localPeer: localKeyPair.peerID,
+            remotePeer: remotePeer,
+            localAddress: localAddress,
+            remoteAddress: address
+        )
+
+        connection.startForwarding()
+
+        return connection
+    }
+
     // MARK: - Private Helpers
 
 }

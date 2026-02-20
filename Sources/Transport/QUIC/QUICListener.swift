@@ -86,7 +86,7 @@ public final class QUICListener: Listener, Sendable {
 /// ```
 public final class QUICSecuredListener: SecuredListener, Sendable {
 
-    private let endpoint: QUICEndpoint
+    let endpoint: QUICEndpoint
     private let _localAddress: Multiaddr
     private let localKeyPair: KeyPair
 

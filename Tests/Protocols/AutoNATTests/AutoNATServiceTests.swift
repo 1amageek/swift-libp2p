@@ -138,7 +138,7 @@ struct AutoNATServiceTests {
         }
 
         // Give eventTask time to start listening
-        try? await Task.sleep(for: .milliseconds(10))
+        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         // Shutdown should finish the stream
         service.shutdown()
@@ -168,7 +168,7 @@ struct AutoNATServiceTests {
         }
 
         // Give eventTask time to start listening
-        try? await Task.sleep(for: .milliseconds(10))
+        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         // Shutdown should unblock the consumer
         service.shutdown()

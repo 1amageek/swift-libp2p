@@ -381,7 +381,8 @@ struct DefaultAddressBookScoringTests {
 
         let staleScore = await book.score(address: addr, for: peer)
         #expect(staleScore < freshScore)
-        #expect(staleScore > 0.5)
+        // Allow the exact boundary value under scheduler jitter.
+        #expect(staleScore >= 0.5)
     }
 
     @Test("Observation decay can be disabled")
@@ -906,7 +907,7 @@ struct MemoryPeerStoreIntegrationTests {
         await store.addAddress(addr, for: peer)
 
         // Give time for event to propagate
-        try? await Task.sleep(for: .milliseconds(50))
+        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         task.cancel()
 

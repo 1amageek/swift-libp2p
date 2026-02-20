@@ -132,7 +132,7 @@ struct PeerStoreGCTests {
         await store.addAddresses([expiringAddr], for: peer, ttl: .milliseconds(1))
 
         // Wait for expiration
-        try? await Task.sleep(for: .milliseconds(10))
+        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         let addresses = await store.addresses(for: peer)
         #expect(addresses.count == 1)
@@ -155,7 +155,7 @@ struct PeerStoreGCTests {
         await store.addAddresses([addr2], for: peer, ttl: .milliseconds(1))
 
         // Wait for expiration
-        try? await Task.sleep(for: .milliseconds(10))
+        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         let removed = store.cleanup()
         #expect(removed == 1)
@@ -181,7 +181,7 @@ struct PeerStoreGCTests {
         await store.addAddresses([addr], for: peer, ttl: .milliseconds(1))
 
         // Wait for expiration
-        try? await Task.sleep(for: .milliseconds(10))
+        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         let removed = store.cleanup()
         #expect(removed == 1)

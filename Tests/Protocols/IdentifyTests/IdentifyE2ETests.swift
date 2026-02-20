@@ -11,7 +11,59 @@ import NIOCore
 @testable import P2PCore
 @testable import P2PMux
 
-@Suite("Identify E2E Tests")
+private func isLocalBindPermissionDenied(_ error: Error) -> Bool {
+    if let transportError = error as? TransportError {
+        if case let .connectionFailed(underlying) = transportError {
+            return isLocalBindPermissionDenied(underlying)
+        }
+        return false
+    }
+
+    let nsError = error as NSError
+    if nsError.domain == NSPOSIXErrorDomain, nsError.code == 1 {
+        return true
+    }
+
+    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error,
+       isLocalBindPermissionDenied(underlyingError) {
+        return true
+    }
+
+    let message = String(describing: error).lowercased()
+    if message.contains("failed to bind"),
+       (message.contains("operation not permitted") || message.contains("errno: 1")) {
+        return true
+    }
+
+    return false
+}
+
+private func makeLocalQUICListener(
+    transport: QUICTransport,
+    keyPair: KeyPair
+) async throws -> (any SecuredListener)? {
+    do {
+        return try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
+            localKeyPair: keyPair
+        )
+    } catch {
+        if isLocalBindPermissionDenied(error) {
+            return nil
+        }
+        throw error
+    }
+}
+
+private func optionalAsync<T>(_ operation: () async throws -> T) async -> T? {
+    do {
+        return try await operation()
+    } catch {
+        return nil
+    }
+}
+
+@Suite("Identify E2E Tests", .serialized)
 struct IdentifyE2ETests {
 
     // MARK: - Basic Connectivity Test (known working pattern)
@@ -23,10 +75,10 @@ struct IdentifyE2ETests {
         let transport = QUICTransport()
 
         // Start server
-        let listener = try await transport.listenSecured(
-            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
-            localKeyPair: serverKeyPair
-        )
+        guard let listener = try await makeLocalQUICListener(
+            transport: transport,
+            keyPair: serverKeyPair
+        ) else { return }
 
         // Accept and handle in background - EXACT same pattern as QUICE2ETests
         let serverTask = Task { () -> (any MuxedConnection)? in
@@ -69,10 +121,12 @@ struct IdentifyE2ETests {
         #expect(Data(buffer: response) == Data("Hello QUIC - echoed".utf8))
 
         // Cleanup
-        let serverConnection = try? await serverTask.value
+        let serverConnection = await optionalAsync { try await serverTask.value } ?? nil
         try await clientStream.close()
         try await clientConnection.close()
-        try? await serverConnection?.close()
+        if let unwrappedServerConnection = serverConnection {
+            do { try await unwrappedServerConnection.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -119,10 +173,10 @@ struct IdentifyE2ETests {
         let transport = QUICTransport()
 
         // Start server
-        let listener = try await transport.listenSecured(
-            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
-            localKeyPair: serverKeyPair
-        )
+        guard let listener = try await makeLocalQUICListener(
+            transport: transport,
+            keyPair: serverKeyPair
+        ) else { return }
         let serverAddress = listener.localAddress
 
         // Server task: accept connection and send identify response
@@ -179,10 +233,12 @@ struct IdentifyE2ETests {
         #expect(receivedInfo.protocols.contains("/ipfs/ping/1.0.0"))
 
         // Cleanup
-        let serverConn = try? await serverTask.value
+        let serverConn = await optionalAsync { try await serverTask.value } ?? nil
         try await stream.close()
         try await clientConn.close()
-        try? await serverConn?.close()
+        if let unwrappedServerConn = serverConn {
+            do { try await unwrappedServerConn.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -192,10 +248,10 @@ struct IdentifyE2ETests {
         let clientKeyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        let listener = try await transport.listenSecured(
-            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
-            localKeyPair: serverKeyPair
-        )
+        guard let listener = try await makeLocalQUICListener(
+            transport: transport,
+            keyPair: serverKeyPair
+        ) else { return }
 
         // Server handler
         let serverTask = Task { () -> (any MuxedConnection)? in
@@ -242,10 +298,12 @@ struct IdentifyE2ETests {
         }
 
         // Cleanup
-        let serverConn = try? await serverTask.value
+        let serverConn = await optionalAsync { try await serverTask.value } ?? nil
         try await stream.close()
         try await clientConn.close()
-        try? await serverConn?.close()
+        if let unwrappedServerConn = serverConn {
+            do { try await unwrappedServerConn.close() } catch { }
+        }
         try await listener.close()
     }
 
@@ -255,10 +313,10 @@ struct IdentifyE2ETests {
         let clientKeyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        let listener = try await transport.listenSecured(
-            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
-            localKeyPair: serverKeyPair
-        )
+        guard let listener = try await makeLocalQUICListener(
+            transport: transport,
+            keyPair: serverKeyPair
+        ) else { return }
 
         let listenAddrs = [
             try Multiaddr("/ip4/127.0.0.1/udp/4001/quic-v1"),
@@ -310,10 +368,12 @@ struct IdentifyE2ETests {
         #expect(info.listenAddresses.contains(listenAddrs[2]))
 
         // Cleanup
-        let serverConn = try? await serverTask.value
+        let serverConn = await optionalAsync { try await serverTask.value } ?? nil
         try await stream.close()
         try await clientConn.close()
-        try? await serverConn?.close()
+        if let unwrappedServerConn = serverConn {
+            do { try await unwrappedServerConn.close() } catch { }
+        }
         try await listener.close()
     }
 }

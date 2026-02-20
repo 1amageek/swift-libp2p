@@ -202,12 +202,14 @@ streams initiated by the remote peer.
 | Connection migration | ✅ | `QUICEndpoint.processIncomingPacket`でアドレス変更検出、`QUICMuxedConnection.remoteAddress`を動的プロパティ化 |
 | QUIC hole punching | ✅ | `QUICHolePunchCoordinator`でNAT traversalタイミング制御、アドレス検証、メトリクス追跡 |
 
-### Pending Features
+### Interop Status
 
-| Feature | Status |
-|---------|--------|
-| rust-libp2p interop testing | ⏳ |
-| go-libp2p interop testing | ⏳ |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| rust-libp2p interop baseline | ✅ | `Tests/Interop/Existing/RustInteropTests.swift` で connect/identify/ping 等を検証 |
+| go-libp2p interop baseline | ✅ | `Tests/Interop/Existing/GoLibp2pInteropTests.swift` で connect/identify/ping 等を検証 |
+| プロトコル別 interop スイート | ✅ | `Tests/Interop/Protocols/PingInteropTests.swift`, `IdentifyInteropTests.swift` |
+| 高負荷・障害注入 interop | ⏳ | パケットロス/再順序/長時間運用のマトリクスは継続 |
 
 ## Dependencies
 
@@ -245,3 +247,23 @@ P2PTransportQUIC
 - [RFC 9000: QUIC](https://www.rfc-editor.org/rfc/rfc9000.html)
 - [RFC 9001: Using TLS to Secure QUIC](https://www.rfc-editor.org/rfc/rfc9001.html)
 - [RFC 9002: Loss Detection and Congestion Control](https://www.rfc-editor.org/rfc/rfc9002.html)
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (92/100)
+- 対象ターゲット: `P2PTransportQUIC`
+- 実装読解範囲: 10 Swift files / 2133 LOC
+- テスト範囲: 37 files / 234 cases / targets 4
+- 公開API: types 15 / funcs 31
+- 参照網羅率: type 0.6 / func 0.68
+- 未参照公開型: 6 件（例: `CertificateMaterial`, `FailingTLSProvider`, `QUICListener`, `QUICMuxedStream`, `QUICSecuredListener`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

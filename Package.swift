@@ -612,6 +612,11 @@ let package = Package(
                 "P2PDiscovery",
                 "P2PProtocols",
                 "P2PPing",
+                "P2PIdentify",
+                "P2PAutoNAT",
+                "P2PCircuitRelay",
+                "P2PDCUtR",
+                "P2PNAT",
             ],
             path: "Sources/Integration/P2P",
             exclude: ["CONTEXT.md", "Connection/CONTEXT.md"]
@@ -624,6 +629,7 @@ let package = Package(
                 "P2PSecurityPlaintext",
                 "P2PMuxYamux",
                 "P2PPing",
+                "P2PIdentify",
             ],
             path: "Tests/Integration/P2PTests"
         ),

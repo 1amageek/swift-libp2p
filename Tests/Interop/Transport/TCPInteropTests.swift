@@ -21,7 +21,7 @@ import NIOCore
 @testable import P2PIdentify
 
 /// Interoperability tests for TCP transport with go-libp2p
-@Suite("TCP Transport Interop Tests")
+@Suite("TCP Transport Interop Tests", .serialized)
 struct TCPInteropTests {
 
     // MARK: - Connection Tests
@@ -30,7 +30,7 @@ struct TCPInteropTests {
     func connectToGoViaTCP() async throws {
         // Start go-libp2p TCP node
         let harness = try await GoTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         print("[TCP] Node info: \(nodeInfo)")
@@ -79,7 +79,7 @@ struct TCPInteropTests {
     @Test("TCP connection with Yamux muxing", .timeLimit(.minutes(2)))
     func tcpWithYamuxMuxing() async throws {
         let harness = try await GoTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -141,7 +141,7 @@ struct TCPInteropTests {
     @Test("Identify go-libp2p node via TCP", .timeLimit(.minutes(2)))
     func identifyGoViaTCP() async throws {
         let harness = try await GoTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -227,7 +227,7 @@ struct TCPInteropTests {
     @Test("Ping go-libp2p node via TCP", .timeLimit(.minutes(2)))
     func pingGoViaTCP() async throws {
         let harness = try await GoTCPHarness.start()
-        defer { Task { try? await harness.stop() } }
+        defer { Task { do { try await harness.stop() } catch { } } }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()

@@ -165,8 +165,8 @@ enum KademliaProtobuf {
         // Construct message based on type
         switch type {
         case .findNode:
-            if closerPeers.isEmpty && key != nil {
-                return .findNode(key: key!)
+            if closerPeers.isEmpty, let key {
+                return .findNode(key: key)
             }
             return .findNodeResponse(closerPeers: closerPeers)
 

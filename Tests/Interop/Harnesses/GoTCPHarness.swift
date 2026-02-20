@@ -4,6 +4,21 @@
 
 import Foundation
 
+private actor GoTCPHarnessImageBuildCache {
+    static let shared = GoTCPHarnessImageBuildCache()
+
+    private var rebuiltImages: Set<String> = []
+
+    /// Force one rebuild per image per test process to avoid stale local images.
+    func shouldRebuildImage(named imageName: String) -> Bool {
+        if rebuiltImages.contains(imageName) {
+            return false
+        }
+        rebuiltImages.insert(imageName)
+        return true
+    }
+}
+
 /// Harness for go-libp2p TCP + Noise node
 public final class GoTCPHarness: Sendable {
     public struct NodeInfo: Sendable {
@@ -16,12 +31,34 @@ public final class GoTCPHarness: Sendable {
 
     private let containerName: String
     private let port: UInt16
+    private let leaseID: UUID
     public let nodeInfo: NodeInfo
 
-    private init(containerName: String, port: UInt16, nodeInfo: NodeInfo) {
+    private init(containerName: String, port: UInt16, leaseID: UUID, nodeInfo: NodeInfo) {
         self.containerName = containerName
         self.port = port
+        self.leaseID = leaseID
         self.nodeInfo = nodeInfo
+    }
+
+    private static func runDockerCommand(
+        _ arguments: [String],
+        currentDirectory: URL? = nil
+    ) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["docker"] + arguments
+        process.currentDirectoryURL = currentDirectory
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        try runProcessWithTimeout(process)
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return (process.terminationStatus, output)
     }
 
     /// Starts a go-libp2p TCP + Noise test node in Docker
@@ -35,70 +72,64 @@ public final class GoTCPHarness: Sendable {
         dockerfile: String = "Dockerfiles/Dockerfile.tcp.go",
         imageName: String = "go-libp2p-tcp-test"
     ) async throws -> GoTCPHarness {
+        let leaseID = await acquireInteropHarnessLease()
+        var shouldReleaseLease = true
+
+        defer {
+            if shouldReleaseLease {
+                Task { await releaseInteropHarnessLease(leaseID) }
+            }
+        }
+
         let actualPort = port == 0 ? UInt16.random(in: 10000..<60000) : port
         let containerName = "\(imageName)-\(actualPort)"
 
+        let interopDirectoryURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Harnesses/
+            .deletingLastPathComponent()  // Interop/
+
         // Check if Docker image exists
-        let checkProcess = Process()
-        checkProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        checkProcess.arguments = ["docker", "images", "-q", imageName]
+        let imageCheck = try runDockerCommand(["images", "-q", imageName])
+        let imageExists = !imageCheck.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        let checkPipe = Pipe()
-        checkProcess.standardOutput = checkPipe
-        checkProcess.standardError = Pipe()
-
-        try checkProcess.run()
-        checkProcess.waitUntilExit()
-
-        let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
-
-        // Build Docker image only if it doesn't exist
-        if !imageExists {
-            let buildProcess = Process()
-            buildProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            buildProcess.arguments = [
-                "docker", "build",
+        // Build Docker image if missing, or once per process to avoid stale local images.
+        let shouldRebuildCachedImage = await GoTCPHarnessImageBuildCache.shared.shouldRebuildImage(named: imageName)
+        if !imageExists || shouldRebuildCachedImage {
+            let buildResult = try runDockerCommand(
+                [
+                    "build",
                 "-t", imageName,
                 "-f", dockerfile,
                 "."
-            ]
-            // Go up from Harnesses/ to Interop/
-            buildProcess.currentDirectoryURL = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()  // Harnesses/
-                .deletingLastPathComponent()  // Interop/
+                ],
+                currentDirectory: interopDirectoryURL
+            )
 
-            try buildProcess.run()
-            buildProcess.waitUntilExit()
-
-            guard buildProcess.terminationStatus == 0 else {
+            guard buildResult.status == 0 else {
+                print("[GoTCPHarness] docker build failed for \(imageName):\n\(buildResult.output)")
                 throw TCPHarnessError.dockerBuildFailed
             }
         }
 
         // Remove existing container if any
-        let rmProcess = Process()
-        rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        rmProcess.arguments = ["docker", "rm", "-f", containerName]
-        try? rmProcess.run()
-        rmProcess.waitUntilExit()
+        do {
+            _ = try runDockerCommand(["rm", "-f", containerName])
+        } catch {
+            // Best effort cleanup only.
+        }
 
         // Start container (TCP uses tcp port mapping)
-        let runProcess = Process()
-        runProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        runProcess.arguments = [
-            "docker", "run",
-            "--rm",
+        let runResult = try runDockerCommand([
+            "run",
             "-d",
             "--name", containerName,
             "-p", "\(actualPort):4001/tcp",
             "-e", "LISTEN_PORT=4001",
             imageName
-        ]
+        ])
 
-        try runProcess.run()
-        runProcess.waitUntilExit()
-
-        guard runProcess.terminationStatus == 0 else {
+        guard runResult.status == 0 else {
+            print("[GoTCPHarness] docker run failed for \(containerName):\n\(runResult.output)")
             throw TCPHarnessError.dockerRunFailed
         }
 
@@ -106,29 +137,40 @@ public final class GoTCPHarness: Sendable {
         var attempts = 0
         var nodeInfo: NodeInfo?
 
-        while attempts < 30 {
+        while attempts < 120 {
             try await Task.sleep(for: .milliseconds(500))
 
-            let logsProcess = Process()
-            logsProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            logsProcess.arguments = ["docker", "logs", containerName]
+            let inspectResult = try runDockerCommand([
+                "inspect",
+                "-f",
+                "{{.State.Running}} {{.State.ExitCode}}",
+                containerName,
+            ])
 
-            let pipe = Pipe()
-            logsProcess.standardOutput = pipe
-            logsProcess.standardError = pipe
+            guard inspectResult.status == 0 else {
+                throw TCPHarnessError.nodeExited(inspectResult.output.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
 
-            try logsProcess.run()
-            logsProcess.waitUntilExit()
+            let inspectOutput = inspectResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if inspectOutput.hasPrefix("false") {
+                let logsResult = try runDockerCommand(["logs", containerName])
+                let logs = logsResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = logs.isEmpty ? inspectOutput : logs
+                throw TCPHarnessError.nodeExited(message)
+            }
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
+            let logsResult = try runDockerCommand(["logs", containerName])
+            let output = logsResult.output
 
             // Look for "Listen: " line
             if let listenLine = output.components(separatedBy: "\n")
                 .first(where: { $0.contains("Listen: ") }) {
 
                 // Extract peer ID from the line
-                if let peerIdMatch = listenLine.range(of: "12D3KooW[a-zA-Z0-9]+", options: .regularExpression) {
+                if let peerIdMatch = listenLine.range(
+                    of: "(12D3KooW[a-zA-Z0-9]+|Qm[a-zA-Z0-9]+)",
+                    options: .regularExpression
+                ) {
                     let peerID = String(listenLine[peerIdMatch])
 
                     // Build TCP address with actual exposed port
@@ -150,36 +192,59 @@ public final class GoTCPHarness: Sendable {
         }
 
         guard let info = nodeInfo else {
+            let logsResult = try runDockerCommand(["logs", containerName])
+            let logs = logsResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !logs.isEmpty {
+                print("[GoTCPHarness] node not ready. Last logs from \(containerName):\n\(logs)")
+            }
+
             // Cleanup on failure
-            let stopProcess = Process()
-            stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            stopProcess.arguments = ["docker", "stop", containerName]
-            try? stopProcess.run()
-            stopProcess.waitUntilExit()
+            do {
+                _ = try runDockerCommand(["rm", "-f", containerName])
+            } catch {
+                // Best effort cleanup only.
+            }
 
             throw TCPHarnessError.nodeNotReady
         }
 
-        return GoTCPHarness(containerName: containerName, port: actualPort, nodeInfo: info)
+        shouldReleaseLease = false
+        return GoTCPHarness(containerName: containerName, port: actualPort, leaseID: leaseID, nodeInfo: info)
     }
 
     /// Stops the container
     public func stop() async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["docker", "stop", containerName]
+        do {
+            _ = try Self.runDockerCommand(["rm", "-f", containerName])
+        } catch {
+            await releaseInteropHarnessLease(leaseID)
+            throw error
+        }
+        await releaseInteropHarnessLease(leaseID)
+    }
 
-        try process.run()
-        process.waitUntilExit()
+    /// Reads current container logs for diagnostics.
+    public func logs() async -> String {
+        do {
+            let result = try Self.runDockerCommand(["logs", containerName])
+            return result.output
+        } catch {
+            return "Failed to read logs: \(error)"
+        }
     }
 
     deinit {
+        let leaseID = self.leaseID
+        Task {
+            await releaseInteropHarnessLease(leaseID)
+        }
+
         // Best effort cleanup
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["docker", "stop", containerName]
-        try? process.run()
-        process.waitUntilExit()
+        do {
+            _ = try Self.runDockerCommand(["rm", "-f", containerName])
+        } catch {
+            // Best effort cleanup only.
+        }
     }
 }
 
@@ -187,4 +252,5 @@ public enum TCPHarnessError: Error {
     case dockerBuildFailed
     case dockerRunFailed
     case nodeNotReady
+    case nodeExited(String)
 }

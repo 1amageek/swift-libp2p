@@ -89,3 +89,24 @@ Client/Server ALPN list (priority order):
 - `TLSUpgrader.secureWithEarlyMuxer()` — muxer プロトコル一覧を ALPN に含めてハンドシェイク
 - `TLSUpgrader.buildALPNProtocols()` — ALPN トークン一覧を構築
 - `TLSUpgrader.extractMuxerProtocol()` — negotiated ALPN から muxer を抽出
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (94/100)
+- 対象ターゲット: `P2PSecurityTLS`
+- 実装読解範囲: 5 Swift files / 644 LOC
+- テスト範囲: 2 files / 32 cases / targets 1
+- 公開API: types 8 / funcs 9
+- 参照網羅率: type 0.88 / func 0.44
+- 未参照公開型: 1 件（例: `TLSSecuredConnection`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 公開関数の直接参照テストが薄い
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- API名での直接参照だけでなく、振る舞い検証中心の統合テストを補強する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

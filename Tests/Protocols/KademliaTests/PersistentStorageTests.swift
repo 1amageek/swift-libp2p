@@ -195,7 +195,7 @@ struct FileRecordStorageTests {
 
     /// Removes the temporary directory.
     private func cleanupDir(_ dir: URL) {
-        try? FileManager.default.removeItem(at: dir)
+        do { try FileManager.default.removeItem(at: dir) } catch { }
     }
 
     @Test("File record put and get")
@@ -338,7 +338,7 @@ struct FileProviderStorageTests {
     }
 
     private func cleanupDir(_ dir: URL) {
-        try? FileManager.default.removeItem(at: dir)
+        do { try FileManager.default.removeItem(at: dir) } catch { }
     }
 
     @Test("File provider put and get")
@@ -438,7 +438,7 @@ struct RecordStoreCustomBackendTests {
     }
 
     private func cleanupDir(_ dir: URL) {
-        try? FileManager.default.removeItem(at: dir)
+        do { try FileManager.default.removeItem(at: dir) } catch { }
     }
 
     @Test("RecordStore using InMemory backend")

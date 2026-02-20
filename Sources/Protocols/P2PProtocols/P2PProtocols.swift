@@ -77,6 +77,48 @@ public protocol HandlerRegistry: Sendable {
     func handle(_ protocolID: String, handler: @escaping ProtocolHandler) async
 }
 
+/// Optional capability for discovery services that need to register protocol handlers on Node.
+public protocol NodeDiscoveryHandlerRegistrable: Sendable {
+    /// Registers discovery-specific protocol handlers.
+    func registerHandler(registry: any HandlerRegistry) async
+}
+
+/// Optional capability for discovery services that can be started directly by Node.
+public protocol NodeDiscoveryStartable: Sendable {
+    /// Starts internal background work required by discovery.
+    func start() async
+}
+
+/// Optional capability for discovery services that require a stream opener from Node.
+public protocol NodeDiscoveryStartableWithOpener: Sendable {
+    /// Starts discovery and stores the stream opener for outbound protocol streams.
+    func start(using opener: any StreamOpener) async
+}
+
+/// Optional capability for discovery services that maintain a per-peer protocol stream.
+public protocol NodeDiscoveryPeerStreamService: Sendable {
+    /// Protocol ID used when Node opens a peer stream for discovery integration.
+    var discoveryProtocolID: String { get }
+
+    /// Called when Node established a discovery protocol stream to a connected peer.
+    func handlePeerConnected(_ peerID: PeerID, stream: MuxedStream) async
+
+    /// Called when Node considers a peer disconnected from discovery.
+    func handlePeerDisconnected(_ peerID: PeerID) async
+}
+
+/// Protocol services that receive peer lifecycle notifications from Node.
+///
+/// Implement this protocol to be notified when peers connect or disconnect.
+/// Used by services like IdentifyService for auto-push functionality.
+public protocol NodeProtocolPeerObserver: Sendable {
+    /// Called when a new peer connection is established.
+    func peerConnected(_ peer: PeerID)
+
+    /// Called when a peer connection is closed.
+    func peerDisconnected(_ peer: PeerID)
+}
+
 /// Common protocol IDs used in libp2p.
 public enum LibP2PProtocol {
     /// Identify protocol for peer information exchange.

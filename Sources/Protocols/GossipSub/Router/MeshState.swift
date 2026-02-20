@@ -133,13 +133,11 @@ final class MeshState: Sendable {
     @discardableResult
     func addToMesh(_ peer: PeerID, for topic: Topic) -> Bool {
         state.withLock { state in
-            if state.meshes[topic] == nil {
-                state.meshes[topic] = TopicMesh()
-            }
-            let (inserted, _) = state.meshes[topic]!.meshPeers.insert(peer)
+            var mesh = state.meshes[topic] ?? TopicMesh()
+            let (inserted, _) = mesh.meshPeers.insert(peer)
             if inserted { state.allMeshPeersCache = nil }
-            // Remove from fanout if present
-            state.meshes[topic]!.fanoutPeers.remove(peer)
+            mesh.fanoutPeers.remove(peer)
+            state.meshes[topic] = mesh
             return inserted
         }
     }
@@ -193,12 +191,11 @@ final class MeshState: Sendable {
     /// Adds a peer to the fanout for a topic.
     func addToFanout(_ peer: PeerID, for topic: Topic) {
         state.withLock { state in
-            if state.meshes[topic] == nil {
-                state.meshes[topic] = TopicMesh()
-            }
+            var mesh = state.meshes[topic] ?? TopicMesh()
             // Don't add to fanout if already in mesh
-            guard !state.meshes[topic]!.meshPeers.contains(peer) else { return }
-            state.meshes[topic]!.fanoutPeers.insert(peer)
+            guard !mesh.meshPeers.contains(peer) else { return }
+            mesh.fanoutPeers.insert(peer)
+            state.meshes[topic] = mesh
         }
     }
 
@@ -217,10 +214,9 @@ final class MeshState: Sendable {
     /// Updates the last published time for a topic.
     func touchFanout(for topic: Topic) {
         state.withLock { state in
-            if state.meshes[topic] == nil {
-                state.meshes[topic] = TopicMesh()
-            }
-            state.meshes[topic]!.lastPublished = .now
+            var mesh = state.meshes[topic] ?? TopicMesh()
+            mesh.lastPublished = .now
+            state.meshes[topic] = mesh
         }
     }
 

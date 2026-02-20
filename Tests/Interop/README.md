@@ -27,11 +27,11 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 
 | 機能 | プロトコルID | go-libp2p | rust-libp2p |
 |------|-------------|-----------|-------------|
-| GossipSub | `/meshsub/1.1.0` | ⚠️ | - |
-| Kademlia DHT | `/ipfs/kad/1.0.0` | ⚠️ | - |
-| Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop` | ⚠️ | - |
+| GossipSub | `/meshsub/1.1.0` | ✅ | - |
+| Kademlia DHT | `/ipfs/kad/1.0.0` | ✅ | - |
+| Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop` | ✅ | - |
 
-⚠️ = 基本的なプロトコルネゴシエーション検証済み、完全な機能テストは進行中
+注: 上記の `✅` は **go-libp2p 単一ノード相互運用**（wire互換・基本往復）を示す。複数ノードトポロジ/大規模シナリオは継続対応。
 
 ## テスト実行
 
@@ -54,6 +54,12 @@ swift test --filter YamuxInteropTests
 ### Phase 2: Protocol Layer Tests
 
 ```bash
+# Ping
+swift test --filter PingInteropTests
+
+# Identify
+swift test --filter IdentifyInteropTests
+
 # GossipSub
 swift test --filter GossipSubInteropTests
 
@@ -122,6 +128,8 @@ Tests/Interop/
 │   └── YamuxInteropTests.swift
 │
 ├── Protocols/                   # Protocol Layer Tests
+│   ├── PingInteropTests.swift
+│   ├── IdentifyInteropTests.swift
 │   ├── GossipSubInteropTests.swift
 │   ├── KademliaInteropTests.swift
 │   └── CircuitRelayInteropTests.swift

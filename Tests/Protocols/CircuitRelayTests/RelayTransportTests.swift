@@ -367,7 +367,7 @@ struct RelayListenerUnitTests {
         #expect(listener.reservation.relay == relayKey.peerID)
 
         Task {
-            try? await listener.close()
+            do { try await listener.close() } catch { }
         }
     }
 }

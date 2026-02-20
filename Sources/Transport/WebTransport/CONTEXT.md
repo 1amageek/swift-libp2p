@@ -102,3 +102,24 @@ When HTTP/3 support is available in swift-quic:
 - [libp2p WebTransport](https://github.com/libp2p/specs/tree/master/webtransport)
 - [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://www.rfc-editor.org/rfc/rfc9220)
 - [draft-ietf-webtrans-http3: WebTransport over HTTP/3](https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/)
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (85/100)
+- 対象ターゲット: `P2PTransportWebTransport`
+- 実装読解範囲: 14 Swift files / 1810 LOC
+- テスト範囲: 1 files / 29 cases / targets 1
+- 公開API: types 17 / funcs 21
+- 参照網羅率: type 0.59 / func 0.67
+- 未参照公開型: 7 件（例: `DeterministicCertificate`, `WebTransportAddressComponents`, `WebTransportCertificateHash`, `WebTransportHost`, `WebTransportMuxedConnection`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 公開型の直接参照テストが薄い
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- API名での直接参照だけでなく、振る舞い検証中心の統合テストを補強する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

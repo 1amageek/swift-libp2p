@@ -187,12 +187,12 @@ public actor SWIMMembership: DiscoveryService {
             let interface = current.pointee
 
             // Only consider AF_INET (IPv4) for now
-            if interface.ifa_addr?.pointee.sa_family == UInt8(AF_INET) {
+            if let ifaAddr = interface.ifa_addr, ifaAddr.pointee.sa_family == UInt8(AF_INET) {
                 let name = String(cString: interface.ifa_name)
 
                 // Skip loopback
                 if name != "lo0" && name != "lo" {
-                    var addr = interface.ifa_addr!.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                    var addr = ifaAddr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
                     var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
                     inet_ntop(AF_INET, &addr.sin_addr, &buffer, socklen_t(INET_ADDRSTRLEN))
                     let addressString = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)

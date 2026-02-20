@@ -156,7 +156,9 @@ public final class YamuxStream: MuxedStream, Sendable {
             case .reserved(let chunkSize):
                 // Create Data slice only when sending
                 let readerOffset = data.readerIndex + offset
-                let chunk = data.getSlice(at: readerOffset, length: chunkSize)!
+                guard let chunk = data.getSlice(at: readerOffset, length: chunkSize) else {
+                    throw YamuxError.protocolError("Buffer slice failed at offset \(readerOffset), length \(chunkSize)")
+                }
                 offset += chunkSize
 
                 let frame = YamuxFrame.data(

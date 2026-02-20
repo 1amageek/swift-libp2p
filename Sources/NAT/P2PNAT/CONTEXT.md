@@ -97,3 +97,23 @@ Tests/NAT/P2PNATTests/
 - `shutdown()` はゲートウェイ上のマッピングを解放しない（リース期限で自然消滅）
 - ゲートウェイキャッシュに TTL がない（ネットワーク変更時はインスタンスを再作成）
 - `getDefaultGateway()` は macOS 専用（`/usr/sbin/netstat` に依存）
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (94/100)
+- 対象ターゲット: `P2PNAT`
+- 実装読解範囲: 14 Swift files / 1463 LOC
+- テスト範囲: 3 files / 64 cases / targets 1
+- 公開API: types 10 / funcs 7
+- 参照網羅率: type 1.0 / func 0.57
+- 未参照公開型: 0 件（例: `なし`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 公開関数の直接参照テストが薄い
+
+### 重点アクション
+- API名での直接参照だけでなく、振る舞い検証中心の統合テストを補強する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

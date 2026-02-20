@@ -693,7 +693,7 @@ struct DCUtRIntegrationTests {
             )
         }
 
-        try? await maliciousResponderTask.value
+        do { try await maliciousResponderTask.value } catch { }
 
         // Cleanup
         initiator.shutdown()
@@ -738,7 +738,7 @@ struct DCUtRIntegrationTests {
             )
         }
 
-        try? await maliciousResponderTask.value
+        do { try await maliciousResponderTask.value } catch { }
 
         // Cleanup
         initiator.shutdown()
@@ -824,7 +824,7 @@ struct DCUtRIntegrationTests {
             await handler(context)
         }
 
-        try? await malformedTask.value
+        do { try await malformedTask.value } catch { }
 
         // Cleanup
         responder.shutdown()

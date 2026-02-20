@@ -61,10 +61,10 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
 
     deinit {
         if ownsGroup {
-            do {
-                try group.syncShutdownGracefully()
-            } catch {
-                webrtcTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+            group.shutdownGracefully { error in
+                if let error {
+                    webrtcTransportLogger.error("EventLoopGroup shutdown failed: \(error)")
+                }
             }
         }
     }

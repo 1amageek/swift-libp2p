@@ -9,7 +9,10 @@ Discovery/
 ├── P2PDiscovery/     # Protocol定義のみ
 ├── SWIM/             # P2PDiscoverySWIM
 ├── MDNS/             # P2PDiscoveryMDNS
-└── CYCLON/           # P2PDiscoveryCYCLON（将来実装）
+├── CYCLON/           # P2PDiscoveryCYCLON
+├── Plumtree/         # P2PDiscoveryPlumtree
+├── Beacon/           # P2PDiscoveryBeacon
+└── WiFiBeacon/       # P2PDiscoveryWiFiBeacon
 ```
 
 ## 設計原則
@@ -22,9 +25,12 @@ Discovery/
 | ターゲット | 責務 | 依存関係 |
 |-----------|------|----------|
 | `P2PDiscovery` | DiscoveryServiceプロトコル定義 | P2PCore |
+| `P2PDiscoveryMDNS` | mDNSベースのローカル発見 | P2PDiscovery, mDNS |
 | `P2PDiscoverySWIM` | SWIMメンバーシップ実装 | P2PDiscovery |
 | `P2PDiscoveryCYCLON` | CYCLONピアサンプリング | P2PDiscovery |
-| `P2PDiscoveryPlumtree` | Plumtreeゴシップ | P2PDiscovery |
+| `P2PDiscoveryPlumtree` | Plumtreeアナウンス統合 | P2PDiscovery, P2PPlumtree |
+| `P2PDiscoveryBeacon` | BLE/Wi-Fi等の近接ビーコン統合 | P2PDiscovery |
+| `P2PDiscoveryWiFiBeacon` | Wi-Fi beaconアダプタ | P2PDiscoveryBeacon |
 
 ## 主要なプロトコル
 
@@ -82,8 +88,9 @@ transportPriorityWeight: 0.4    // トランスポート優先度 (TCP > QUIC > 
 connectionSuccessWeight: 0.4    // 接続成功履歴
 lastSeenWeight: 0.2             // 最後に見た時刻
 
-// 時間減衰: linear decay
-let decay = 1.0 - (elapsed / ttl)  // 注: 指数減衰ではない
+// 時間減衰: half-life decay (中立値0.5へ漸近)
+let decayFactor = pow(0.5, elapsed / halfLife)
+let decayed = 0.5 + ((score - 0.5) * decayFactor)
 ```
 
 #### SWIMスコアリング（ステータスベース）
@@ -131,8 +138,11 @@ base: 0.5                           // ベーススコア
 | PeerStore TTL-based GC | ✅ 実装済み | `expiresAt`フィールド、`cleanup()`、`startGC()`/`stopGC()` |
 | ProtoBook | ✅ 実装済み | Go互換API、`MemoryProtoBook`（`Mutex`ベース） |
 | KeyBook | ✅ 実装済み | PeerID検証付き、`MemoryKeyBook`（`Mutex`ベース） |
-| P2PDiscoveryCYCLON | ❌ 未実装 | ランダムピアサンプリング |
-| P2PDiscoveryPlumtree | ❌ 未実装 | ゴシップベースブロードキャスト |
+| P2PDiscoveryCYCLON | ✅ 実装済み | ランダムピアサンプリング、shuffle、観察イベント |
+| P2PDiscoveryPlumtree | ✅ 実装済み | Plumtreeトピック上の自己アナウンス配信と観察変換 |
+| Discovery Node capability連携 | ✅ 実装済み | `NodeDiscovery*` hook により register/start/peer stream lifecycle をNodeと統合 |
+| P2PDiscoveryBeacon | ✅ 実装済み | 近接観察集約、Bayesian presence、信頼度計算 |
+| P2PDiscoveryWiFiBeacon | ✅ 実装済み | Wi-Fi beacon受信をDiscovery観察へ変換 |
 
 ## 追加コンポーネント
 
@@ -148,7 +158,7 @@ public protocol AddressBook: Sendable {
 デフォルト実装: `DefaultAddressBook`
 - トランスポートタイプ優先度
 - 接続成功履歴
-- 時間ベース減衰（linear）
+- 時間ベース減衰（half-life）
 
 ### PeerStore（ピア情報ストレージ）
 ```swift
@@ -221,6 +231,11 @@ await composite.shutdown()  // 必須: 内部サービスも停止
 - `find()`はTaskGroupで並列実行（fail-fastではなく部分失敗許容）
 - 失敗サービスのサーキットブレーカーなし
 
+### PlumtreeDiscovery
+- Announcement payload は自己申告（署名なし）
+- `peerID` と gossip source の一致チェックのみ実施
+- `baseScore` は固定値（到達性実績に基づく動的重み付けなし）
+
 ## 相互運用性ノート
 
 - mDNS生成アドレスに未解決IPv6が含まれる場合あり
@@ -228,18 +243,15 @@ await composite.shutdown()  // 必須: 内部サービスも停止
 
 ## テスト実装状況
 
-| テスト | ステータス | テスト数 | 説明 |
-|-------|----------|---------|------|
-| DiscoveryTests | ✅ 完了 | 34 | Observation、ScoredCandidate、CompositeDiscovery |
-| SWIMBridgeTests | ✅ 完了 | 20 | 型変換、イベントマッピング |
-| PeerIDServiceCodecTests | ✅ 完了 | 44 | エンコード/デコード、スコアリング |
-| PeerStoreGCTests | ✅ 完了 | 12 | TTL、GC、期限切れフィルタリング |
-| ProtoBookTests | ✅ 完了 | 8 | set/add/remove/supports/peers |
-| KeyBookTests | ✅ 完了 | 8 | set/get/mismatch/extraction/remove |
-| SWIMMembershipIntegrationTests | ✅ 完了 | 13 | SWIM統合・ライフサイクル |
-| MDNSDiscoveryIntegrationTests | ✅ 完了 | 11 | mDNS統合・発見フロー |
-| AddressBookTests | ✅ 完了 | 73 | スコアリング・統合・CompositeDiscovery |
-**合計**: 220+ テスト実装済み
+| テストスイート | ステータス | テスト数 | 説明 |
+|--------------|-----------|---------|------|
+| `P2PDiscoveryTests` | ✅ 完了 | 279 | Discoveryコア, mDNS/SWIM統合, AddressBook, PeerStore, CompositeDiscovery |
+| `BeaconTests` | ✅ 完了 | 205 | 集約パイプライン, 信頼度計算, Presence推定, 永続化, イベント連携 |
+| `CYCLONTests` | ✅ 完了 | 27 | PartialView, shuffle, DiscoveryService統合 |
+| `PlumtreeDiscoveryTests` | ✅ 完了 | 6 | announce/find/subscribe/TTL/不正入力の検証 |
+| `WiFiBeaconTests` | ✅ 完了 | 20 | Wi-Fi beaconアダプタ, ペイロード互換性, フィルタリング |
+
+**合計**: 537テスト（2026-02-14 時点）
 
 ## 品質向上TODO
 
@@ -258,8 +270,8 @@ await composite.shutdown()  // 必須: 内部サービスも停止
 - [x] **CompositeDiscoveryの並列find()** - 並列実行 + 回帰テスト追加済み
 
 ### 低優先度
-- [ ] **CYCLON実装** - ランダムピアサンプリング
-- [ ] **Plumtree実装** - 効率的なブロードキャスト
+- [x] **CYCLON実装** - ランダムピアサンプリング（`P2PDiscoveryCYCLON` と `CYCLONTests`）
+- [x] **DiscoveryService向けPlumtree統合** - `P2PDiscoveryPlumtree` を追加し、announce/find/subscribe を実装
 - [ ] **サーキットブレーカー** - 失敗サービスの一時停止
 
 ## 並行処理とイベントパターン
@@ -271,6 +283,7 @@ await composite.shutdown()  // 必須: 内部サービスも停止
 | SWIMMembership | `actor` | 低頻度、ユーザー向けAPI |
 | MDNSDiscovery | `actor` | 低頻度、ユーザー向けAPI |
 | CYCLONDiscovery | `actor` | 低頻度、ユーザー向けAPI |
+| PlumtreeDiscovery | `actor` | 低頻度、ユーザー向けAPI |
 | CompositeDiscovery | `final class + Mutex` | イベント転送のみ、内部は軽量処理 |
 
 ### イベントパターン
@@ -424,3 +437,24 @@ PeerIDServiceCodecTests.swiftに追加した主なテスト:
 - **swift-libp2p**: PeerIDServiceCodec, DCUtRProtobuf, Multiaddr
 - **破壊的変更**: なし（既存APIはすべて維持）
 - **仕様準拠**: libp2p mDNS specificationに既定設定で準拠（legacy peer-name互換モードは任意）
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (91/100)
+- 対象ターゲット: `P2PDiscovery`, `P2PDiscoveryBeacon`, `P2PDiscoveryCYCLON`, `P2PDiscoveryMDNS`, `P2PDiscoveryPlumtree`, `P2PDiscoverySWIM`, `P2PDiscoveryWiFiBeacon`
+- 実装読解範囲: 68 Swift files / 8960 LOC
+- テスト範囲: 51 files / 537 cases / targets 5
+- 公開API: types 103 / funcs 101
+- 参照網羅率: type 0.8 / func 0.86
+- 未参照公開型: 21 件（例: `BootstrapConfiguration`, `BootstrapConnectionProvider`, `BootstrapError`, `BootstrapEvent`, `BootstrapResult`）
+- 実装リスク指標: try?=0, forceUnwrap=1, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 強制アンラップを含む実装がある
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+- 強制アンラップ箇所に前提条件テストを追加し、回帰時に即検出できるようにする。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

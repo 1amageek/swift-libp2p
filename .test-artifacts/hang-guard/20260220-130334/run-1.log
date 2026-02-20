@@ -1,0 +1,20 @@
+warning: 'swift-webrtc': Conflicting identity for swift-tls: dependency 'github.com/1amageek/swift-tls' and dependency '/users/1amageek/desktop/swift-tls' both point to the same package identity 'swift-tls'. The dependencies are introduced through the following chains: (A) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-webrtc->github.com/1amageek/swift-tls (B) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-tls. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+warning: 'swift-quic': Conflicting identity for swift-nio-udp: dependency 'github.com/1amageek/swift-nio-udp' and dependency '/users/1amageek/desktop/swift-nio-udp' both point to the same package identity 'swift-nio-udp'. The dependencies are introduced through the following chains: (A) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-quic->github.com/1amageek/swift-nio-udp (B) /users/1amageek/desktop/swift-libp2p->/users/1amageek/desktop/swift-nio-udp. If there are multiple chains that lead to the same dependency, only the first chain is shown here. To see all chains use debug output option. To resolve the conflict, coordinate with the maintainer of the package that introduces the conflicting dependency. This will be escalated to an error in future versions of SwiftPM.
+[0/1] Planning build
+Building for debugging...
+[0/4] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (2.53s)
+Test Suite 'Selected tests' started at 2026-02-20 13:03:37.131.
+Test Suite 'swift-libp2pPackageTests.xctest' started at 2026-02-20 13:03:37.132.
+Test Suite 'swift-libp2pPackageTests.xctest' passed at 2026-02-20 13:03:37.132.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-02-20 13:03:37.132.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+􀟈  Test run started.
+􀄵  Testing Library Version: 1501
+􀄵  Target Platform: arm64e-apple-macos14.0
+􀟈  Suite "SWIMMembership Integration Tests" started.
+􀟈  Test "observations stream emits events" started.
+􁁛  Test "observations stream emits events" passed after 5.008 seconds.
+􁁛  Suite "SWIMMembership Integration Tests" passed after 5.008 seconds.
+􁁛  Test run with 1 test in 1 suite passed after 5.008 seconds.

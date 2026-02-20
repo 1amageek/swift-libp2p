@@ -19,7 +19,7 @@ import NIOCore
 @testable import P2PProtocols
 
 /// Interoperability tests for Kademlia DHT protocol
-@Suite("Kademlia DHT Interop Tests")
+@Suite("Kademlia DHT Interop Tests", .serialized)
 struct KademliaInteropTests {
 
     // MARK: - Connection Tests
@@ -29,7 +29,7 @@ struct KademliaInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .kademlia(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         print("[Kademlia] Node info: \(nodeInfo)")
@@ -55,7 +55,7 @@ struct KademliaInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .kademlia(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -69,14 +69,12 @@ struct KademliaInteropTests {
         let stream = try await connection.newStream()
 
         // Negotiate Kademlia protocol
-        let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: ["/ipfs/kad/1.0.0"],
-            read: { Data(buffer: try await stream.read()) },
-            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
-        )
-
-        #expect(negotiationResult.protocolID == "/ipfs/kad/1.0.0")
-        print("[Kademlia] Protocol negotiated: \(negotiationResult.protocolID)")
+        guard try await negotiateKademliaProtocol(on: stream, timeout: .seconds(15)) else {
+            try await stream.close()
+            try await connection.close()
+            return
+        }
+        print("[Kademlia] Protocol negotiated: /ipfs/kad/1.0.0")
 
         try await stream.close()
         try await connection.close()
@@ -89,7 +87,7 @@ struct KademliaInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .kademlia(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -102,52 +100,31 @@ struct KademliaInteropTests {
 
         let stream = try await connection.newStream()
 
-        let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: ["/ipfs/kad/1.0.0"],
-            read: { Data(buffer: try await stream.read()) },
-            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
-        )
-
-        #expect(negotiationResult.protocolID == "/ipfs/kad/1.0.0")
-
-        // Build FIND_NODE message
-        // The message format is a length-prefixed protobuf message
-        let targetKey = keyPair.peerID.multihash.bytes
-
-        // Create Kademlia FIND_NODE request
-        // Message type 0 = PUT_VALUE, 1 = GET_VALUE, 2 = ADD_PROVIDER, 3 = GET_PROVIDERS, 4 = FIND_NODE
-        var message = Data()
-
-        // Field 1: type (varint) = 4 (FIND_NODE)
-        message.append(0x08)  // tag: field 1, wire type 0
-        message.append(0x04)  // value: 4
-
-        // Field 4: key (bytes)
-        message.append(0x22)  // tag: field 4, wire type 2
-        message.append(UInt8(targetKey.count))  // length
-        message.append(contentsOf: targetKey)
-
-        // Length prefix the message
-        var request = Data()
-        let messageLen = message.count
-        if messageLen < 128 {
-            request.append(UInt8(messageLen))
-        } else {
-            request.append(UInt8((messageLen & 0x7f) | 0x80))
-            request.append(UInt8(messageLen >> 7))
+        guard try await negotiateKademliaProtocol(on: stream, timeout: .seconds(15)) else {
+            try await stream.close()
+            try await connection.close()
+            return
         }
-        request.append(message)
 
-        print("[Kademlia] Sending FIND_NODE request: \(request.count) bytes")
-        try await stream.write(ByteBuffer(bytes: request))
+        let request = KademliaMessage.findNode(key: keyPair.peerID.multihash.bytes)
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(KademliaProtobuf.encode(request))))
 
-        // Read response
-        let response = try await stream.read()
-        let responseData = Data(buffer: response)
+        guard let responseFrame = try await readFromStreamWithTimeout(
+            stream,
+            timeout: .seconds(15),
+            operation: "FIND_NODE response"
+        ) else {
+            try await stream.close()
+            try await connection.close()
+            return
+        }
 
-        // Verify we got a response
-        #expect(responseData.count > 0, "Should receive FIND_NODE response")
-        print("[Kademlia] Received FIND_NODE response: \(responseData.count) bytes")
+        let responseFrameData = Data(buffer: responseFrame)
+        let responsePayload = try decodeLengthPrefixedMessage(responseFrameData)
+        let response = try KademliaProtobuf.decode(responsePayload)
+
+        #expect(response.type == .findNode)
+        print("[Kademlia] FIND_NODE response decoded: closerPeers=\(response.closerPeers.count)")
 
         try await stream.close()
         try await connection.close()
@@ -160,7 +137,7 @@ struct KademliaInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .kademlia(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -174,59 +151,66 @@ struct KademliaInteropTests {
         // Test PUT_VALUE
         let putStream = try await connection.newStream()
 
-        let putNegotiation = try await MultistreamSelect.negotiate(
-            protocols: ["/ipfs/kad/1.0.0"],
-            read: { Data(buffer: try await putStream.read()) },
-            write: { data in try await putStream.write(ByteBuffer(bytes: data)) }
-        )
+        guard try await negotiateKademliaProtocol(on: putStream, timeout: .seconds(15)) else {
+            try await putStream.close()
+            try await connection.close()
+            return
+        }
 
-        #expect(putNegotiation.protocolID == "/ipfs/kad/1.0.0")
+        let keyData = Data("interop-key".utf8)
+        let valueData = Data("interop-test-value".utf8)
+        let record = KademliaRecord.create(key: keyData, value: valueData)
+        let putRequest = KademliaMessage.putValue(record: record)
 
-        // Build PUT_VALUE message
-        let testKey = "/test/interop-key"
-        let testValue = "interop-test-value"
+        try await putStream.write(ByteBuffer(bytes: encodeLengthPrefixed(KademliaProtobuf.encode(putRequest))))
+        guard let putResponseFrame = try await readFromStreamWithTimeout(
+            putStream,
+            timeout: .seconds(15),
+            operation: "PUT_VALUE response"
+        ) else {
+            try await putStream.close()
+            try await connection.close()
+            return
+        }
 
-        var putMessage = Data()
-
-        // Field 1: type (varint) = 0 (PUT_VALUE)
-        putMessage.append(0x08)
-        putMessage.append(0x00)
-
-        // Field 4: key (bytes)
-        putMessage.append(0x22)
-        putMessage.append(UInt8(testKey.utf8.count))
-        putMessage.append(contentsOf: testKey.utf8)
-
-        // Field 5: record (embedded message with value)
-        // Record: field 1 = key, field 2 = value
-        var record = Data()
-        record.append(0x0a)  // field 1: key
-        record.append(UInt8(testKey.utf8.count))
-        record.append(contentsOf: testKey.utf8)
-        record.append(0x12)  // field 2: value
-        record.append(UInt8(testValue.utf8.count))
-        record.append(contentsOf: testValue.utf8)
-
-        putMessage.append(0x2a)  // field 5: record
-        putMessage.append(UInt8(record.count))
-        putMessage.append(record)
-
-        // Length prefix
-        var putRequest = Data()
-        putRequest.append(UInt8(putMessage.count))
-        putRequest.append(putMessage)
-
-        print("[Kademlia] Sending PUT_VALUE request")
-        try await putStream.write(ByteBuffer(bytes: putRequest))
-
-        // Read response
-        let putResponse = try await putStream.read()
-        print("[Kademlia] PUT_VALUE response: \(Data(buffer: putResponse).count) bytes")
+        let putResponseFrameData = Data(buffer: putResponseFrame)
+        let putResponsePayload = try decodeLengthPrefixedMessage(putResponseFrameData)
+        let putResponse = try KademliaProtobuf.decode(putResponsePayload)
+        #expect(putResponse.type == .putValue)
+        #expect(putResponse.record?.key == keyData)
+        #expect(putResponse.record?.value == valueData)
 
         try await putStream.close()
 
-        // Note: GET_VALUE requires the record to be stored and propagated
-        // In a single-node test, we verify the protocol interaction works
+        let getStream = try await connection.newStream()
+        defer { closeStream(getStream) }
+
+        guard try await negotiateKademliaProtocol(on: getStream, timeout: .seconds(15)) else {
+            try await connection.close()
+            return
+        }
+
+        let getRequest = KademliaMessage.getValue(key: keyData)
+        try await getStream.write(ByteBuffer(bytes: encodeLengthPrefixed(KademliaProtobuf.encode(getRequest))))
+
+        guard let getResponseFrame = try await readFromStreamWithTimeout(
+            getStream,
+            timeout: .seconds(15),
+            operation: "GET_VALUE response"
+        ) else {
+            try await connection.close()
+            return
+        }
+
+        let getResponseFrameData = Data(buffer: getResponseFrame)
+        let getResponsePayload = try decodeLengthPrefixedMessage(getResponseFrameData)
+        let getResponse = try KademliaProtobuf.decode(getResponsePayload)
+        #expect(getResponse.type == .getValue)
+        if let responseRecord = getResponse.record {
+            #expect(responseRecord.value == valueData)
+        } else {
+            print("[Kademlia] GET_VALUE returned no record; closerPeers=\(getResponse.closerPeers.count)")
+        }
 
         try await connection.close()
     }
@@ -238,7 +222,7 @@ struct KademliaInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .kademlia(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -251,43 +235,52 @@ struct KademliaInteropTests {
 
         let stream = try await connection.newStream()
 
-        let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: ["/ipfs/kad/1.0.0"],
-            read: { Data(buffer: try await stream.read()) },
-            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
-        )
+        guard try await negotiateKademliaProtocol(on: stream, timeout: .seconds(15)) else {
+            try await stream.close()
+            try await connection.close()
+            return
+        }
 
-        #expect(negotiationResult.protocolID == "/ipfs/kad/1.0.0")
-
-        // Build ADD_PROVIDER message (type 2)
         let contentKey = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
-
-        var message = Data()
-
-        // Field 1: type = 2 (ADD_PROVIDER)
-        message.append(0x08)
-        message.append(0x02)
-
-        // Field 4: key
-        message.append(0x22)
-        message.append(UInt8(contentKey.count))
-        message.append(contentKey)
-
-        // Field 6: providerPeers (our peer info)
-        // This is a repeated Peer message
-
-        // Length prefix
-        var request = Data()
-        request.append(UInt8(message.count))
-        request.append(message)
-
-        print("[Kademlia] Sending ADD_PROVIDER request")
-        try await stream.write(ByteBuffer(bytes: request))
-
-        // Read response (may be empty for ADD_PROVIDER)
-        try await Task.sleep(for: .milliseconds(500))
+        let provider = KademliaPeer(
+            id: keyPair.peerID,
+            addresses: [],
+            connectionType: .connected
+        )
+        let addProviderRequest = KademliaMessage.addProvider(key: contentKey, providers: [provider])
+        try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(KademliaProtobuf.encode(addProviderRequest))))
 
         try await stream.close()
+
+        let getProvidersStream = try await connection.newStream()
+        defer { closeStream(getProvidersStream) }
+
+        guard try await negotiateKademliaProtocol(on: getProvidersStream, timeout: .seconds(15)) else {
+            try await connection.close()
+            return
+        }
+
+        let getProvidersRequest = KademliaMessage.getProviders(key: contentKey)
+        try await getProvidersStream.write(ByteBuffer(bytes: encodeLengthPrefixed(KademliaProtobuf.encode(getProvidersRequest))))
+
+        guard let getProvidersResponseFrame = try await readFromStreamWithTimeout(
+            getProvidersStream,
+            timeout: .seconds(15),
+            operation: "GET_PROVIDERS response"
+        ) else {
+            try await connection.close()
+            return
+        }
+
+        let getProvidersResponseFrameData = Data(buffer: getProvidersResponseFrame)
+        let getProvidersResponsePayload = try decodeLengthPrefixedMessage(getProvidersResponseFrameData)
+        let getProvidersResponse = try KademliaProtobuf.decode(getProvidersResponsePayload)
+        #expect(getProvidersResponse.type == .getProviders)
+        print(
+            "[Kademlia] GET_PROVIDERS response decoded: providers=\(getProvidersResponse.providerPeers.count), " +
+                "closerPeers=\(getProvidersResponse.closerPeers.count)"
+        )
+
         try await connection.close()
 
         print("[Kademlia] ADD_PROVIDER test completed")
@@ -300,7 +293,7 @@ struct KademliaInteropTests {
         let harness = try await GoProtocolHarness.start(
             protocol: .kademlia(mode: "server")
         )
-        defer { Task { try? await harness.stop() } }
+        defer { stopHarness(harness) }
 
         let nodeInfo = harness.nodeInfo
         let keyPair = KeyPair.generateEd25519()
@@ -320,5 +313,140 @@ struct KademliaInteropTests {
         print("[Kademlia] Node logs snippet: \(logs.suffix(500))")
 
         try await connection.close()
+    }
+}
+
+private enum KademliaInteropWireError: Error {
+    case truncatedFrame(expected: Int, actual: Int)
+}
+
+private func encodeLengthPrefixed(_ payload: Data) -> Data {
+    var framed = Data()
+    framed.append(contentsOf: Varint.encode(UInt64(payload.count)))
+    framed.append(payload)
+    return framed
+}
+
+private func decodeLengthPrefixedMessage(_ frame: Data) throws -> Data {
+    let (messageLength, prefixLength) = try Varint.decode(frame)
+    let start = prefixLength
+    let end = start + Int(messageLength)
+    guard end <= frame.count else {
+        throw KademliaInteropWireError.truncatedFrame(expected: end, actual: frame.count)
+    }
+    return Data(frame[start..<end])
+}
+
+private func readFromStreamWithTimeout(
+    _ stream: any MuxedStream,
+    timeout: Duration,
+    operation: String
+) async throws -> ByteBuffer? {
+    let result = try await runWithTimeout(timeout: timeout) {
+        try await stream.read()
+    }
+
+    if result == nil {
+        do {
+            try await stream.close()
+        } catch {
+            print("[Kademlia] Failed closing stream after timeout: \(error)")
+        }
+        print("[Kademlia] Timed out waiting for \(operation) after \(timeout)")
+    }
+
+    return result
+}
+
+private func negotiateKademliaProtocol(
+    on stream: any MuxedStream,
+    timeout: Duration
+) async throws -> Bool {
+    let negotiated = try await runWithTimeout(timeout: timeout) {
+        let result = try await MultistreamSelect.negotiate(
+            protocols: ["/ipfs/kad/1.0.0"],
+            read: { Data(buffer: try await stream.read()) },
+            write: { data in try await stream.write(ByteBuffer(bytes: data)) }
+        )
+        return result.protocolID == "/ipfs/kad/1.0.0"
+    }
+
+    if let negotiated {
+        return negotiated
+    }
+
+    do {
+        try await stream.close()
+    } catch {
+        print("[Kademlia] Failed closing stream after negotiation timeout: \(error)")
+    }
+    print("[Kademlia] Timed out negotiating /ipfs/kad/1.0.0 after \(timeout)")
+    return false
+}
+
+private func runWithTimeout<T: Sendable>(
+    timeout: Duration,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T? {
+    let resolution = TimeoutResolution()
+
+    return try await withCheckedThrowingContinuation { continuation in
+        let operationTask = Task {
+            do {
+                let value = try await operation()
+                if await resolution.tryResolve() {
+                    continuation.resume(returning: value)
+                }
+            } catch {
+                if await resolution.tryResolve() {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+
+        Task {
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+
+            if await resolution.tryResolve() {
+                operationTask.cancel()
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+}
+
+private actor TimeoutResolution {
+    private var resolved = false
+
+    func tryResolve() -> Bool {
+        if resolved {
+            return false
+        }
+        resolved = true
+        return true
+    }
+}
+
+private func stopHarness(_ harness: GoProtocolHarness) {
+    Task {
+        do {
+            try await harness.stop()
+        } catch {
+            print("[Kademlia] Failed to stop harness: \(error)")
+        }
+    }
+}
+
+private func closeStream(_ stream: MuxedStream) {
+    Task {
+        do {
+            try await stream.close()
+        } catch {
+            print("[Kademlia] Failed to close stream: \(error)")
+        }
     }
 }

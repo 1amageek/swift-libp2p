@@ -263,6 +263,8 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
     ) throws -> QUIC.SocketAddress {
         do {
             return try WebTransportDialAddressResolver.resolve(components)
+        } catch let error as WebTransportError {
+            throw TransportError.connectionFailed(underlying: error)
         } catch {
             throw TransportError.connectionFailed(underlying: error)
         }

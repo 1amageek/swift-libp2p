@@ -133,7 +133,7 @@ Relayed addresses use the `p2p-circuit` protocol:
 
 1. **Unit tests**: Protobuf encoding/decoding
 2. **Integration tests**: Three-node setup (client, relay, peer) using MemoryTransport
-3. **Interop tests**: Connect to rust-libp2p relay
+3. **Interop tests**: go-libp2p relay との RESERVE/CONNECT/STATUS wire 互換検証（rust は継続中）
 
 ## テスト実装状況
 
@@ -148,10 +148,6 @@ Relayed addresses use the `p2p-circuit` protocol:
 
 ## 既知の制限事項
 
-### 予約管理
-- 予約の自動更新なし（手動で再予約が必要）
-- 予約失効時のイベント通知なし
-
 ### リレーサーバー
 - リレーサーバーのリソース制限は設定可能だが動的調整なし
 - 帯域制限は接続単位のみ（ピア単位の総帯域制限なし）
@@ -165,11 +161,11 @@ Relayed addresses use the `p2p-circuit` protocol:
 - [x] **RelayClientテストの追加** - 予約フロー、接続フローテスト ✅ 2026-01-23
 - [x] **RelayServerテストの追加** - 制限チェック、拒否ケーステスト ✅ 2026-01-23
 - [x] **Protobufエンコードテスト** - HopMessage/StopMessageラウンドトリップ ✅ 2026-01-23
-- [ ] **Go/Rust相互運用テスト** - 実際のリレーサーバーとの接続
+- [~] **Go/Rust相互運用テスト** - go-libp2p は基本往復（RESERVE/CONNECT）実装済み、rust-libp2p は継続中 ✅/⏳ (2026-02-14)
 
 ### 中優先度
-- [ ] **予約自動更新** - 有効期限前の自動再予約
-- [ ] **予約失効イベント** - 有効期限切れ時の通知
+- [x] **予約自動更新** - `autoRenewReservations=true`（デフォルト）、`scheduleRenewalOrExpiration()`/`renewReservation()` 実装済み ✅
+- [x] **予約失効イベント** - `reservationExpired`/`reservationRenewed`/`reservationRenewalFailed` イベント実装済み ✅
 - [ ] **StatusCode詳細処理** - 各エラーステータスの適切な処理
 
 ### 低優先度
@@ -197,3 +193,23 @@ Relayed addresses use the `p2p-circuit` protocol:
 | Issue | Location | Description |
 |-------|----------|-------------|
 | Data limits coarse-grained | `RelayServer.swift:452-503` | Limits enforced in 8KB batches; small limits can be overshot |
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (92/100)
+- 対象ターゲット: `P2PCircuitRelay`
+- 実装読解範囲: 13 Swift files / 3459 LOC
+- テスト範囲: 28 files / 173 cases / targets 2
+- 公開API: types 26 / funcs 22
+- 参照網羅率: type 0.77 / func 0.95
+- 未参照公開型: 6 件（例: `AutoRelayReachability`, `HopMessageType`, `HopStatus`, `PeerInfo`, `StopMessageType`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

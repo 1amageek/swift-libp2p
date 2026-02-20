@@ -243,3 +243,23 @@ P2PTransportWebRTC
 - [RFC 8832: WebRTC Data Channel Establishment Protocol](https://www.rfc-editor.org/rfc/rfc8832.html)
 - [RFC 6347: DTLS 1.2](https://www.rfc-editor.org/rfc/rfc6347.html)
 - [RFC 4960: SCTP](https://www.rfc-editor.org/rfc/rfc4960.html)
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (92/100)
+- 対象ターゲット: `P2PTransportWebRTC`
+- 実装読解範囲: 7 Swift files / 1229 LOC
+- テスト範囲: 4 files / 25 cases / targets 1
+- 公開API: types 6 / funcs 19
+- 参照網羅率: type 0.67 / func 0.79
+- 未参照公開型: 2 件（例: `WebRTCSecuredListener`, `WebRTCTransportError`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

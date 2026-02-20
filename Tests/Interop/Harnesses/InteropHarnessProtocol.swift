@@ -4,6 +4,54 @@
 /// Each harness manages a Docker container running a libp2p implementation.
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
+actor InteropHarnessLeaseManager {
+    static let shared = InteropHarnessLeaseManager(maxConcurrentHarnesses: 2)
+
+    private let maxConcurrentHarnesses: Int
+    private var activeLeases: Set<UUID> = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(maxConcurrentHarnesses: Int) {
+        self.maxConcurrentHarnesses = maxConcurrentHarnesses
+    }
+
+    func acquire() async -> UUID {
+        while activeLeases.count >= maxConcurrentHarnesses {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        let leaseID = UUID()
+        activeLeases.insert(leaseID)
+        return leaseID
+    }
+
+    func release(_ leaseID: UUID) {
+        guard activeLeases.remove(leaseID) != nil else {
+            return
+        }
+
+        if !waiters.isEmpty {
+            let waiter = waiters.removeFirst()
+            waiter.resume()
+        }
+    }
+}
+
+func acquireInteropHarnessLease() async -> UUID {
+    await InteropHarnessLeaseManager.shared.acquire()
+}
+
+func releaseInteropHarnessLease(_ leaseID: UUID) async {
+    await InteropHarnessLeaseManager.shared.release(leaseID)
+}
 
 /// Information about a running libp2p test node
 public struct InteropNodeInfo: Sendable {
@@ -139,4 +187,54 @@ public extension DockerImageConfig {
         imageName: "rust-libp2p-test",
         dockerfile: "Dockerfiles/Dockerfile.rust"
     )
+}
+
+enum InteropProcessError: Error, Sendable {
+    case timedOut(command: String, timeoutSeconds: TimeInterval)
+}
+
+private let interopProcessTimeoutSeconds: TimeInterval = 15
+private let interopProcessPollIntervalSeconds: TimeInterval = 0.05
+private let interopProcessTerminateGraceSeconds: TimeInterval = 1
+
+@discardableResult
+func runProcessWithTimeout(
+    _ process: Process,
+    timeoutSeconds: TimeInterval = interopProcessTimeoutSeconds
+) throws -> Int32 {
+    try process.run()
+    try waitForProcessExit(process, timeoutSeconds: timeoutSeconds)
+    return process.terminationStatus
+}
+
+func waitForProcessExit(
+    _ process: Process,
+    timeoutSeconds: TimeInterval = interopProcessTimeoutSeconds
+) throws {
+    let command = processCommandDescription(process)
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+    while process.isRunning {
+        if Date() >= deadline {
+            process.terminate()
+            let graceDeadline = Date().addingTimeInterval(interopProcessTerminateGraceSeconds)
+            while process.isRunning && Date() < graceDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+
+            if process.isRunning {
+                _ = kill(process.processIdentifier, SIGKILL)
+            }
+
+            throw InteropProcessError.timedOut(command: command, timeoutSeconds: timeoutSeconds)
+        }
+
+        Thread.sleep(forTimeInterval: interopProcessPollIntervalSeconds)
+    }
+}
+
+private func processCommandDescription(_ process: Process) -> String {
+    let executable = process.executableURL?.path ?? "<unknown>"
+    let arguments = process.arguments ?? []
+    return ([executable] + arguments).joined(separator: " ")
 }

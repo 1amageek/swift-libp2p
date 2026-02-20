@@ -724,7 +724,7 @@ struct TCPTransportTests {
         try await Task.sleep(for: .milliseconds(300))
 
         // The pending read should either succeed with data or fail
-        _ = try? await pendingRead.value
+        do { _ = try await pendingRead.value } catch { }
 
         // After overflow, a subsequent read MUST fail
         await #expect(throws: Error.self) {

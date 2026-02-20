@@ -757,6 +757,9 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
 
     /// Reads all data from a stream until EOF.
     ///
+    /// EOF is detected either by a zero-length read or by a stream-closed error
+    /// (e.g. `YamuxError.streamClosed`) after the remote closes the write side.
+    ///
     /// - Parameters:
     ///   - stream: The stream to read from
     ///   - maxSize: Maximum bytes to read (default 64KB)
@@ -766,7 +769,19 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         var buffer = Data()
 
         while true {
-            let chunk = try await stream.read()
+            let chunk: ByteBuffer
+            do {
+                chunk = try await stream.read()
+            } catch {
+                // Muxer implementations (Yamux, Mplex) signal EOF by throwing
+                // a stream-closed error when the remote has closed its write side
+                // and no buffered data remains. If we already have data, treat
+                // this as a normal EOF. Otherwise, propagate the error.
+                if !buffer.isEmpty {
+                    break
+                }
+                throw error
+            }
             if chunk.readableBytes == 0 {
                 break // EOF - normal termination
             }

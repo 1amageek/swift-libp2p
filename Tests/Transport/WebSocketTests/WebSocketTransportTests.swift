@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import NIOCore
+import NIOPosix
 import NIOEmbedded
 import NIOWebSocket
 import NIOSSL
@@ -8,7 +9,7 @@ import NIOSSL
 @testable import P2PTransport
 @testable import P2PTransportWebSocket
 
-@Suite("WebSocket Transport Tests")
+@Suite("WebSocket Transport Tests", .serialized)
 struct WebSocketTransportTests {
 
     // MARK: - Basic Connection Tests
@@ -669,10 +670,14 @@ struct WebSocketTransportTests {
 
         // Read outbound: should be a pong
         let pongFrame = try channel.readOutbound(as: WebSocketFrame.self)
-        #expect(pongFrame != nil)
-        #expect(pongFrame!.opcode == .pong)
-        #expect(pongFrame!.maskKey == nil) // server frames are NOT masked
-        var pongData = pongFrame!.data
+        guard let pongFrame else {
+            Issue.record("Expected pong frame")
+            try await channel.close()
+            return
+        }
+        #expect(pongFrame.opcode == .pong)
+        #expect(pongFrame.maskKey == nil) // server frames are NOT masked
+        var pongData = pongFrame.data
         #expect(pongData.readString(length: pongData.readableBytes) == "ping-payload")
 
         try await channel.close()
@@ -689,9 +694,13 @@ struct WebSocketTransportTests {
         try channel.writeInbound(pingFrame)
 
         let pongFrame = try channel.readOutbound(as: WebSocketFrame.self)
-        #expect(pongFrame != nil)
-        #expect(pongFrame!.opcode == .pong)
-        #expect(pongFrame!.maskKey != nil) // client frames MUST be masked (RFC 6455)
+        guard let pongFrame else {
+            Issue.record("Expected pong frame")
+            try await channel.close()
+            return
+        }
+        #expect(pongFrame.opcode == .pong)
+        #expect(pongFrame.maskKey != nil) // client frames MUST be masked (RFC 6455)
 
         try await channel.close()
     }
@@ -744,9 +753,13 @@ struct WebSocketTransportTests {
 
         // Read outbound frame
         let frame = try channel.readOutbound(as: WebSocketFrame.self)
-        #expect(frame != nil)
-        #expect(frame!.opcode == .binary)
-        #expect(frame!.maskKey != nil) // Client frames MUST be masked
+        guard let frame else {
+            Issue.record("Expected outbound frame")
+            try await channel.close()
+            return
+        }
+        #expect(frame.opcode == .binary)
+        #expect(frame.maskKey != nil) // Client frames MUST be masked
 
         try await channel.close()
     }
@@ -769,9 +782,39 @@ struct WebSocketTransportTests {
         try await connection.write(data)
 
         let frame = try channel.readOutbound(as: WebSocketFrame.self)
-        #expect(frame != nil)
-        #expect(frame!.opcode == .binary)
-        #expect(frame!.maskKey == nil) // Server frames MUST NOT be masked
+        guard let frame else {
+            Issue.record("Expected outbound frame")
+            try await channel.close()
+            return
+        }
+        #expect(frame.opcode == .binary)
+        #expect(frame.maskKey == nil) // Server frames MUST NOT be masked
+
+        try await channel.close()
+    }
+
+    @Test("Fragmented message is reassembled before delivery", .timeLimit(.minutes(1)))
+    func testFragmentedMessageReassembledBeforeDelivery() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try await channel.pipeline.addHandler(handler)
+
+        let connection = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 5557)
+        )
+        handler.setConnection(connection)
+
+        let first = WebSocketFrame(fin: false, opcode: .binary, data: ByteBuffer(string: "hello "))
+        let second = WebSocketFrame(fin: true, opcode: .continuation, data: ByteBuffer(string: "world"))
+
+        try channel.writeInbound(first)
+        try channel.writeInbound(second)
+
+        let received = try await connection.read()
+        #expect(String(buffer: received) == "hello world")
 
         try await channel.close()
     }
@@ -953,5 +996,120 @@ struct WebSocketTransportTests {
 
         try await serverConn.close()
         try await listener.close()
+    }
+
+    // MARK: - Accept After Close
+
+    @Test("Accept after close throws listenerClosed", .timeLimit(.minutes(1)))
+    func testAcceptAfterClose() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        // Close the listener first
+        try await listener.close()
+
+        // accept() should throw listenerClosed
+        do {
+            _ = try await listener.accept()
+            Issue.record("Expected listenerClosed error")
+        } catch let error as TransportError {
+            if case .listenerClosed = error {
+                // Expected
+            } else {
+                Issue.record("Expected listenerClosed, got \(error)")
+            }
+        }
+    }
+
+    // MARK: - Multiple Concurrent Accept Waiters Woken on Close
+
+    @Test("Multiple concurrent accept waiters all woken on close", .timeLimit(.minutes(1)))
+    func testMultipleConcurrentAcceptWaitersAllWokenOnClose() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        // Start 3 concurrent accept() calls
+        let accept1 = Task { try await listener.accept() }
+        let accept2 = Task { try await listener.accept() }
+        let accept3 = Task { try await listener.accept() }
+
+        // Give accept tasks time to register as waiters
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Close listener - all waiters should be woken
+        try await listener.close()
+
+        // All accept tasks should throw listenerClosed
+        await #expect(throws: TransportError.self) {
+            _ = try await accept1.value
+        }
+        await #expect(throws: TransportError.self) {
+            _ = try await accept2.value
+        }
+        await #expect(throws: TransportError.self) {
+            _ = try await accept3.value
+        }
+    }
+
+    // MARK: - Non-Upgrade (Plain HTTP) Request to WS Listener
+
+    @Test("Plain TCP connection to WS listener does not break accept loop", .timeLimit(.minutes(1)))
+    func testPlainTCPConnectionToWSListener() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+        let listenAddr = listener.localAddress
+
+        guard let port = listenAddr.tcpPort else {
+            Issue.record("Expected tcp port on listener address")
+            try await listener.close()
+            return
+        }
+
+        // Connect with raw TCP (no WebSocket upgrade) — triggers .notUpgraded path
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        do {
+            let rawChannel = try await ClientBootstrap(group: group)
+                .connect(host: "127.0.0.1", port: Int(port))
+                .get()
+
+            // Send a plain HTTP request (not a WebSocket upgrade)
+            let httpRequest = ByteBuffer(string: "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            try await rawChannel.writeAndFlush(httpRequest)
+            try await Task.sleep(for: .milliseconds(200))
+
+            // Server's notUpgradingCompletionHandler closes the child channel,
+            // which propagates TCP FIN to client — rawChannel may already be closed.
+            if rawChannel.isActive {
+                try await rawChannel.close()
+            }
+        } catch {
+            // Connection/write errors are acceptable — the server rejects non-upgrade requests
+        }
+        try await group.shutdownGracefully()
+
+        // Listener should still be functional after handling non-upgrade connection
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listenAddr)
+        let serverConn = try await acceptTask
+
+        let message = ByteBuffer(string: "after non-upgrade")
+        try await clientConn.write(message)
+        let received = try await serverConn.read()
+        #expect(String(buffer: received) == "after non-upgrade")
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    // MARK: - Listener Double Close
+
+    @Test("WS listener double close is idempotent", .timeLimit(.minutes(1)))
+    func testWSListenerDoubleClose() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        try await listener.close()
+        try await listener.close() // Must not throw
     }
 }

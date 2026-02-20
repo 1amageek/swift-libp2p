@@ -691,7 +691,7 @@ struct RelayListenerTests {
         // Send STOP CONNECT message to client's handler
         let incomingTask = Task {
             // Give listener time to start waiting
-            try? await Task.sleep(for: .milliseconds(50))
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
             // Simulate relay sending STOP CONNECT
             if let handler = clientRegistry.getHandler(for: CircuitRelayProtocol.stopProtocolID) {

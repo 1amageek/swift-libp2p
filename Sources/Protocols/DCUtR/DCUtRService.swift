@@ -69,6 +69,14 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     /// Service configuration.
     public let configuration: DCUtRConfiguration
 
+    /// Overridable dialer for responder-side hole punching.
+    /// Set via `setDialer()` after construction (e.g., when Node injects the transport dialer).
+    private let _dialerOverride: Mutex<(@Sendable (Multiaddr) async throws -> Void)?>
+
+    /// Overridable local address provider.
+    /// Set via `setLocalAddressProvider()` after construction (e.g., when NATManager wires listen addresses).
+    private let _localAddressProvider: Mutex<(@Sendable () -> [Multiaddr])?>
+
     /// Event state (dedicated).
     private let eventState: Mutex<EventState>
 
@@ -111,8 +119,32 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     /// - Parameter configuration: Service configuration.
     public init(configuration: DCUtRConfiguration = .init()) {
         self.configuration = configuration
+        self._dialerOverride = Mutex(nil)
+        self._localAddressProvider = Mutex(nil)
         self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState())
+    }
+
+    // MARK: - Post-Construction Configuration
+
+    /// Sets the dialer function for responder-side hole punching.
+    ///
+    /// This resolves the chicken-and-egg problem: DCUtRService is created before
+    /// the Node's transport layer is available, so the dialer is injected later.
+    ///
+    /// - Parameter dialer: Function that dials a given address directly.
+    public func setDialer(_ dialer: @escaping @Sendable (Multiaddr) async throws -> Void) {
+        _dialerOverride.withLock { $0 = dialer }
+    }
+
+    /// Sets the local address provider for address exchange during hole punching.
+    ///
+    /// Overrides `configuration.getLocalAddresses` with a provider that returns
+    /// current listen addresses from the Node.
+    ///
+    /// - Parameter provider: Function returning the node's current listen addresses.
+    public func setLocalAddressProvider(_ provider: @escaping @Sendable () -> [Multiaddr]) {
+        _localAddressProvider.withLock { $0 = provider }
     }
 
     // MARK: - Handler Registration
@@ -230,8 +262,8 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
         let stream = try await opener.newStream(to: peer, protocol: DCUtRProtocol.protocolID)
 
         do {
-            // Get our local addresses
-            let ourAddresses = configuration.getLocalAddresses()
+            // Get our local addresses (prefer override for live Node integration)
+            let ourAddresses = (_localAddressProvider.withLock { $0 } ?? configuration.getLocalAddresses)()
 
             // Measure RTT during CONNECT exchange
             let rttStart = ContinuousClock.now
@@ -310,8 +342,8 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
 
             let theirAddresses = filterDialableAddresses(connect.observedAddresses)
 
-            // Get our local addresses
-            let ourAddresses = configuration.getLocalAddresses()
+            // Get our local addresses (prefer override for live Node integration)
+            let ourAddresses = (_localAddressProvider.withLock { $0 } ?? configuration.getLocalAddresses)()
 
             // Send our CONNECT response
             let response = DCUtRMessage.connect(addresses: ourAddresses)
@@ -335,7 +367,8 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
 
             // Attempt to dial the initiator's addresses in parallel
             // This is the responder side of hole punching
-            if let dialer = configuration.dialer, !theirAddresses.isEmpty {
+            let effectiveDialer = _dialerOverride.withLock { $0 } ?? configuration.dialer
+            if let dialer = effectiveDialer, !theirAddresses.isEmpty {
                 if let successAddress = await dialParallel(addresses: theirAddresses, dialer: dialer) {
                     emit(.directConnectionEstablished(peer: peer, address: successAddress))
                     return

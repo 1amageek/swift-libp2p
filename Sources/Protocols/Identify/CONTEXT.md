@@ -171,8 +171,14 @@ public enum IdentifyEvent: Sendable {
 ```
 Tests/Protocols/IdentifyTests/
 ├── IdentifyProtobufTests.swift   # Encode/decode
-├── IdentifyServiceTests.swift    # サービステスト
-└── IdentifyInteropTests.swift    # Go/Rust相互運用
+└── IdentifyServiceTests.swift    # サービステスト
+
+Tests/Interop/Protocols/
+└── IdentifyInteropTests.swift    # Go/Rust相互運用（QUIC）
+
+Tests/Interop/Existing/
+├── GoLibp2pInteropTests.swift   # Identifyケース含む
+└── RustInteropTests.swift       # Identifyケース含む
 ```
 
 ### 実装状況
@@ -180,7 +186,7 @@ Tests/Protocols/IdentifyTests/
 |---------|----------|------|
 | IdentifyProtobufTests | ✅ 実装済み | エンコード/デコードテスト |
 | IdentifyServiceTests | ✅ 実装済み | 基本サービステスト |
-| IdentifyInteropTests | ⏳ 計画中 | Go/Rust相互運用（未実装）|
+| IdentifyInteropTests | ✅ 実装済み | Go/Rust相互運用（identify応答デコード） |
 
 ## 品質向上TODO
 
@@ -192,7 +198,7 @@ Tests/Protocols/IdentifyTests/
 
 ### 中優先度
 - [ ] **observedAddr検証** - 観察アドレスの妥当性チェック
-- [ ] **Identify Push自動送信** - アドレス変更時の自動プッシュ
+- [x] **Identify Push自動送信** - IdentifyService側実装済み + Node統合完了（NodeConfiguration.identifyService で自動登録・peer lifecycle通知） ✅
 
 ### 低優先度
 - [ ] **Delta更新対応** - 差分のみの情報交換（帯域節約）
@@ -204,3 +210,23 @@ Tests/Protocols/IdentifyTests/
 | Issue | Location | Status | Description |
 |-------|----------|--------|-------------|
 | ~~readAll silently truncates~~ | `IdentifyService.swift:384-398` | ✅ Fixed | Now throws `messageTooLarge` error when exceeding 64KB limit |
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (100/100)
+- 対象ターゲット: `P2PIdentify`
+- 実装読解範囲: 4 Swift files / 1117 LOC
+- テスト範囲: 25 files / 107 cases / targets 2
+- 公開API: types 5 / funcs 13
+- 参照網羅率: type 1.0 / func 0.69
+- 未参照公開型: 0 件（例: `なし`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 現行のテスト網羅を維持し、機能追加時は同一粒度でテストを増やす。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

@@ -121,15 +121,39 @@ print("Status: \(response.statusCode)")
 
 ```
 Tests/Protocols/HTTPTests/
-└── HTTPServiceTests.swift    # Unit tests
+└── HTTPServiceTests.swift    # Unit tests (59)
 ```
+
+**合計: 59テスト**（2026-02-14 時点）
 
 ### Test Coverage
 | Area | Status |
 |------|--------|
-| Protocol constants | Planned |
-| Message types | Planned |
-| Codec roundtrip | Planned |
-| Service lifecycle | Planned |
-| Route registration | Planned |
-| Error handling | Planned |
+| Protocol constants | ✅ |
+| Message types | ✅ |
+| Codec roundtrip | ✅ |
+| Service lifecycle | ✅ |
+| Route registration | ✅ |
+| Error handling | ✅ |
+| Header/body edge cases | ✅ |
+| Content-Length handling | ✅ |
+
+<!-- CONTEXT_EVAL_START -->
+## 実装評価 (2026-02-16)
+
+- 総合評価: **A** (100/100)
+- 対象ターゲット: `P2PHTTP`
+- 実装読解範囲: 5 Swift files / 897 LOC
+- テスト範囲: 1 files / 59 cases / targets 1
+- 公開API: types 9 / funcs 4
+- 参照網羅率: type 0.89 / func 0.75
+- 未参照公開型: 1 件（例: `Event`）
+- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
+- 評価所見: 重大な静的リスクは検出されず
+
+### 重点アクション
+- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
+
+※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
+
+<!-- CONTEXT_EVAL_END -->

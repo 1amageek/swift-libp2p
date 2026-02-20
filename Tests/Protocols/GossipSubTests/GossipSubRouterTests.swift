@@ -715,6 +715,538 @@ struct GossipSubRouterTests {
         #expect(router.meshState.allMeshPeers.isEmpty)
     }
 
+    // MARK: - Mesh Rebalancing Tests
+
+    @Test("maintainMesh GRAFTs when below D_low")
+    func maintainMeshGraftsWhenBelowDLow() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 6
+        config.meshDegreeLow = 4
+        config.meshDegreeHigh = 12
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // 2 peers in mesh (below D_low=4)
+        let meshPeer1 = makePeerID()
+        let meshPeer2 = makePeerID()
+        router.meshState.addToMesh(meshPeer1, for: topic)
+        router.meshState.addToMesh(meshPeer2, for: topic)
+
+        // Add candidates not in mesh
+        for _ in 0..<5 {
+            let peer = makePeerID()
+            router.peerState.addPeer(
+                PeerState(peerID: peer, version: .v11, direction: .inbound),
+                stream: GossipSubMockStream()
+            )
+            router.peerState.updatePeer(peer) { state in
+                state.subscriptions.insert(topic)
+            }
+        }
+
+        let actions = router.maintainMesh()
+
+        // Should produce GRAFT actions
+        let grafts = actions.filter { !$0.control.grafts.isEmpty }
+        #expect(!grafts.isEmpty)
+    }
+
+    @Test("maintainMesh grafts up to D peers")
+    func maintainMeshGraftsUpToD() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 4
+        config.meshDegreeLow = 2
+        config.meshDegreeHigh = 8
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // Start with 0 peers in mesh (below D_low=2)
+        // Add 10 candidates
+        for _ in 0..<10 {
+            let peer = makePeerID()
+            router.peerState.addPeer(
+                PeerState(peerID: peer, version: .v11, direction: .inbound),
+                stream: GossipSubMockStream()
+            )
+            router.peerState.updatePeer(peer) { state in
+                state.subscriptions.insert(topic)
+            }
+        }
+
+        _ = router.maintainMesh()
+
+        // Should graft up to D (4) peers
+        let meshCount = router.meshState.meshPeerCount(for: topic)
+        #expect(meshCount == config.meshDegree)
+    }
+
+    @Test("maintainMesh PRUNEs when above D_high")
+    func maintainMeshPrunesWhenAboveDHigh() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 4
+        config.meshDegreeLow = 2
+        config.meshDegreeHigh = 6
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // Add 8 peers in mesh (above D_high=6)
+        for _ in 0..<8 {
+            let peer = makePeerID()
+            router.peerState.addPeer(
+                PeerState(peerID: peer, version: .v11, direction: .inbound),
+                stream: GossipSubMockStream()
+            )
+            router.meshState.addToMesh(peer, for: topic)
+        }
+
+        let actions = router.maintainMesh()
+
+        // Should produce PRUNE actions
+        let prunes = actions.filter { !$0.control.prunes.isEmpty }
+        #expect(!prunes.isEmpty)
+    }
+
+    @Test("maintainMesh prunes down to D peers")
+    func maintainMeshPrunesDownToD() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 4
+        config.meshDegreeLow = 2
+        config.meshDegreeHigh = 6
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // Add 10 peers in mesh (above D_high=6)
+        for _ in 0..<10 {
+            let peer = makePeerID()
+            router.peerState.addPeer(
+                PeerState(peerID: peer, version: .v11, direction: .inbound),
+                stream: GossipSubMockStream()
+            )
+            router.meshState.addToMesh(peer, for: topic)
+        }
+
+        _ = router.maintainMesh()
+
+        // Should prune down to D (4) peers
+        let meshCount = router.meshState.meshPeerCount(for: topic)
+        #expect(meshCount == config.meshDegree)
+    }
+
+    @Test("maintainMesh noop when D_low <= count <= D_high")
+    func maintainMeshNoopWhenInRange() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 6
+        config.meshDegreeLow = 4
+        config.meshDegreeHigh = 12
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // Add 6 peers in mesh (between D_low=4 and D_high=12)
+        for _ in 0..<6 {
+            let peer = makePeerID()
+            router.meshState.addToMesh(peer, for: topic)
+        }
+
+        let actions = router.maintainMesh()
+
+        // No GRAFT or PRUNE actions needed
+        #expect(actions.isEmpty)
+    }
+
+    @Test("maintainMesh protects outbound peers from pruning")
+    func maintainMeshProtectsOutbound() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 3
+        config.meshDegreeLow = 2
+        config.meshDegreeHigh = 4
+        config.meshOutboundMin = 2
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // Add outbound peers (should be protected)
+        var outboundPeers: [PeerID] = []
+        for _ in 0..<2 {
+            let peer = makePeerID()
+            outboundPeers.append(peer)
+            router.peerState.addPeer(
+                PeerState(peerID: peer, version: .v11, direction: .outbound),
+                stream: GossipSubMockStream()
+            )
+            router.peerState.updatePeer(peer) { state in
+                state.subscriptions.insert(topic)
+            }
+            router.meshState.addToMesh(peer, for: topic)
+        }
+
+        // Add inbound peers to push above D_high
+        for _ in 0..<4 {
+            let peer = makePeerID()
+            router.peerState.addPeer(
+                PeerState(peerID: peer, version: .v11, direction: .inbound),
+                stream: GossipSubMockStream()
+            )
+            router.peerState.updatePeer(peer) { state in
+                state.subscriptions.insert(topic)
+            }
+            router.meshState.addToMesh(peer, for: topic)
+        }
+
+        let actions = router.maintainMesh()
+
+        // Outbound peers should still be in mesh after pruning
+        for peer in outboundPeers {
+            #expect(router.meshState.isInMesh(peer, for: topic))
+        }
+
+        // Some PRUNE actions should have occurred for inbound peers
+        let pruneActions = actions.filter { !$0.control.prunes.isEmpty }
+        #expect(!pruneActions.isEmpty)
+    }
+
+    @Test("maintainMesh skips backed-off peers for GRAFT")
+    func maintainMeshSkipsBackedOffPeersForGraft() throws {
+        var config = GossipSubConfiguration.testing
+        config.meshDegree = 4
+        config.meshDegreeLow = 2
+        config.meshDegreeHigh = 8
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("test-topic")
+
+        _ = try router.subscribe(to: topic)
+
+        // Add a candidate that is backed off -- should not be grafted
+        let backedOffPeer = makePeerID()
+        router.peerState.addPeer(
+            PeerState(peerID: backedOffPeer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+        router.peerState.updatePeer(backedOffPeer) { state in
+            state.subscriptions.insert(topic)
+            state.setBackoff(for: topic, duration: .seconds(60))
+        }
+
+        // Add a candidate that is NOT backed off -- should be grafted
+        let normalPeer = makePeerID()
+        router.peerState.addPeer(
+            PeerState(peerID: normalPeer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+        router.peerState.updatePeer(normalPeer) { state in
+            state.subscriptions.insert(topic)
+        }
+
+        _ = router.maintainMesh()
+
+        // Normal peer should be grafted, backed-off peer should not
+        #expect(router.meshState.isInMesh(normalPeer, for: topic))
+        #expect(!router.meshState.isInMesh(backedOffPeer, for: topic))
+    }
+
+    @Test("fanout maintenance removes expired entries")
+    func fanoutMaintenanceRemovesExpired() {
+        var config = GossipSubConfiguration.testing
+        config.fanoutTTL = .seconds(0)  // Expire immediately
+
+        let router = makeRouter(configuration: config)
+        let topic = Topic("fanout-topic")
+        let peer = makePeerID()
+
+        // Add fanout (not subscribed)
+        router.meshState.addToFanout(peer, for: topic)
+        router.meshState.touchFanout(for: topic)
+
+        #expect(!router.meshState.fanoutPeers(for: topic).isEmpty)
+
+        // Cleanup should remove expired fanout
+        router.cleanupFanout()
+
+        #expect(router.meshState.fanoutPeers(for: topic).isEmpty)
+    }
+
+    // MARK: - Backoff Enforcement Tests
+
+    @Test("GRAFT after backoff expires is accepted")
+    func graftAfterBackoffAccepted() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+
+        // Add peer with an expired backoff
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+        router.peerState.updatePeer(peer) { state in
+            // Set backoff to past (already expired)
+            state.backoffs[topic] = ContinuousClock.now - .seconds(1)
+        }
+
+        // Peer sends GRAFT after backoff expired
+        var graftRPC = GossipSubRPC()
+        graftRPC.control = ControlMessageBatch()
+        graftRPC.control?.grafts.append(ControlMessage.Graft(topic: topic))
+
+        let result = await router.handleRPC(graftRPC, from: peer)
+
+        // Should NOT respond with PRUNE (graft is accepted)
+        #expect(result.response?.control?.prunes.isEmpty ?? true)
+        // Peer should be in mesh
+        #expect(router.meshState.isInMesh(peer, for: topic))
+    }
+
+    @Test("backoff penalty for GRAFT violation")
+    func backoffPenaltyForViolation() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Set active backoff
+        router.peerState.updatePeer(peer) { state in
+            state.setBackoff(for: topic, duration: .seconds(60))
+        }
+
+        let scoreBefore = router.peerScorer.score(for: peer)
+
+        // GRAFT during backoff -> penalty
+        var graftRPC = GossipSubRPC()
+        graftRPC.control = ControlMessageBatch()
+        graftRPC.control?.grafts.append(ControlMessage.Graft(topic: topic))
+
+        _ = await router.handleRPC(graftRPC, from: peer)
+
+        let scoreAfter = router.peerScorer.score(for: peer)
+
+        // Score should be lower after penalty
+        #expect(scoreAfter < scoreBefore)
+    }
+
+    @Test("PRUNE sets local backoff")
+    func pruneSetsLocalBackoff() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+        router.meshState.addToMesh(peer, for: topic)
+
+        // Add peer to peer state so PRUNE can update backoff
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Receive PRUNE with backoff
+        var pruneRPC = GossipSubRPC()
+        pruneRPC.control = ControlMessageBatch()
+        pruneRPC.control?.prunes.append(ControlMessage.Prune(
+            topic: topic,
+            backoff: 60
+        ))
+
+        _ = await router.handleRPC(pruneRPC, from: peer)
+
+        // Peer should no longer be in mesh
+        #expect(!router.meshState.isInMesh(peer, for: topic))
+
+        // Peer should have backoff set
+        let peerState = router.peerState.getPeer(peer)
+        #expect(peerState?.isBackedOff(for: topic) == true)
+    }
+
+    @Test("cleanupBackoffs removes expired backoffs")
+    func cleanupBackoffsRemovesExpired() {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Set an already-expired backoff
+        router.peerState.updatePeer(peer) { state in
+            state.backoffs[topic] = ContinuousClock.now - .seconds(1)
+        }
+
+        // Verify backoff entry exists
+        let before = router.peerState.getPeer(peer)
+        #expect(before?.backoffs[topic] != nil)
+
+        // Cleanup
+        router.cleanupBackoffs()
+
+        // Expired backoff should be removed
+        let after = router.peerState.getPeer(peer)
+        #expect(after?.backoffs[topic] == nil)
+    }
+
+    // MARK: - Peer Exchange Tests
+
+    @Test("PRUNE includes peer exchange when peers provided")
+    func pruneIncludesPeerExchange() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+        router.meshState.addToMesh(peer, for: topic)
+
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Receive PRUNE with peer exchange
+        let suggestedPeer = makePeerID()
+        var pruneRPC = GossipSubRPC()
+        pruneRPC.control = ControlMessageBatch()
+        pruneRPC.control?.prunes.append(ControlMessage.Prune(
+            topic: topic,
+            peers: [ControlMessage.Prune.PeerInfo(peerID: suggestedPeer)],
+            backoff: 30
+        ))
+
+        let result = await router.handleRPC(pruneRPC, from: peer)
+
+        // Peer should be removed from mesh
+        #expect(!router.meshState.isInMesh(peer, for: topic))
+
+        // The result should not contain errors
+        // (peer exchange is handled internally by the router)
+        // Mainly verify the PRUNE with peers doesn't crash
+        _ = result  // Successfully processed
+    }
+
+    @Test("received PRUNE with peers stores peer info")
+    func receivedPruneWithPeersProcessed() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+        router.meshState.addToMesh(peer, for: topic)
+
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Receive PRUNE with multiple peers
+        let suggestedPeer1 = makePeerID()
+        let suggestedPeer2 = makePeerID()
+        var pruneRPC = GossipSubRPC()
+        pruneRPC.control = ControlMessageBatch()
+        pruneRPC.control?.prunes.append(ControlMessage.Prune(
+            topic: topic,
+            peers: [
+                ControlMessage.Prune.PeerInfo(peerID: suggestedPeer1),
+                ControlMessage.Prune.PeerInfo(peerID: suggestedPeer2),
+            ],
+            backoff: 60
+        ))
+
+        _ = await router.handleRPC(pruneRPC, from: peer)
+
+        // Peer should be removed from mesh
+        #expect(!router.meshState.isInMesh(peer, for: topic))
+
+        // Backoff should be set
+        let peerState = router.peerState.getPeer(peer)
+        #expect(peerState?.isBackedOff(for: topic) == true)
+    }
+
+    @Test("peer exchange respects PRUNE PeerInfo limit")
+    func peerExchangeRespectsLimit() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+        router.meshState.addToMesh(peer, for: topic)
+
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Receive PRUNE with many peers (test that processing handles large lists)
+        var peerInfos: [ControlMessage.Prune.PeerInfo] = []
+        for _ in 0..<50 {
+            peerInfos.append(ControlMessage.Prune.PeerInfo(peerID: makePeerID()))
+        }
+
+        var pruneRPC = GossipSubRPC()
+        pruneRPC.control = ControlMessageBatch()
+        pruneRPC.control?.prunes.append(ControlMessage.Prune(
+            topic: topic,
+            peers: peerInfos,
+            backoff: 60
+        ))
+
+        // Should process without crash or error
+        _ = await router.handleRPC(pruneRPC, from: peer)
+
+        // Peer should be removed from mesh
+        #expect(!router.meshState.isInMesh(peer, for: topic))
+    }
+
+    @Test("PRUNE without peer exchange still works")
+    func pruneWithoutPeerExchangeWorks() async throws {
+        let router = makeRouter()
+        let topic = Topic("test-topic")
+        let peer = makePeerID()
+
+        _ = try router.subscribe(to: topic)
+        router.meshState.addToMesh(peer, for: topic)
+
+        router.peerState.addPeer(
+            PeerState(peerID: peer, version: .v11, direction: .inbound),
+            stream: GossipSubMockStream()
+        )
+
+        // Receive PRUNE without peers (empty peer exchange)
+        var pruneRPC = GossipSubRPC()
+        pruneRPC.control = ControlMessageBatch()
+        pruneRPC.control?.prunes.append(ControlMessage.Prune(
+            topic: topic
+            // No peers, no backoff
+        ))
+
+        _ = await router.handleRPC(pruneRPC, from: peer)
+
+        // Peer should be removed from mesh
+        #expect(!router.meshState.isInMesh(peer, for: topic))
+    }
+
     // MARK: - Helpers
 
     private func makePeerID() -> PeerID {

@@ -12,11 +12,13 @@ public final class GoLibp2pHarness: Sendable {
 
     private let containerName: String
     private let port: UInt16
+    private let leaseID: UUID
     public let nodeInfo: NodeInfo
 
-    private init(containerName: String, port: UInt16, nodeInfo: NodeInfo) {
+    private init(containerName: String, port: UInt16, leaseID: UUID, nodeInfo: NodeInfo) {
         self.containerName = containerName
         self.port = port
+        self.leaseID = leaseID
         self.nodeInfo = nodeInfo
     }
 
@@ -24,6 +26,15 @@ public final class GoLibp2pHarness: Sendable {
     /// - Parameter port: Port to expose (0 for random)
     /// - Returns: A harness managing the container
     public static func start(port: UInt16 = 0) async throws -> GoLibp2pHarness {
+        let leaseID = await acquireInteropHarnessLease()
+        var shouldReleaseLease = true
+
+        defer {
+            if shouldReleaseLease {
+                Task { await releaseInteropHarnessLease(leaseID) }
+            }
+        }
+
         let actualPort = port == 0 ? UInt16.random(in: 10000..<60000) : port
         let containerName = "go-libp2p-test-\(actualPort)"
 
@@ -36,8 +47,7 @@ public final class GoLibp2pHarness: Sendable {
         checkProcess.standardOutput = checkPipe
         checkProcess.standardError = Pipe()
 
-        try checkProcess.run()
-        checkProcess.waitUntilExit()
+        try runProcessWithTimeout(checkProcess)
 
         let imageExists = checkPipe.fileHandleForReading.readDataToEndOfFile().count > 0
 
@@ -56,8 +66,7 @@ public final class GoLibp2pHarness: Sendable {
                 .deletingLastPathComponent()  // Harnesses/
                 .deletingLastPathComponent()  // Interop/
 
-            try buildProcess.run()
-            buildProcess.waitUntilExit()
+            try runProcessWithTimeout(buildProcess)
 
             guard buildProcess.terminationStatus == 0 else {
                 throw TestHarnessError.dockerBuildFailed
@@ -68,8 +77,11 @@ public final class GoLibp2pHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
-        try? rmProcess.run()
-        rmProcess.waitUntilExit()
+        do {
+            try runProcessWithTimeout(rmProcess)
+        } catch {
+            // Best effort cleanup only.
+        }
 
         // Start container
         let runProcess = Process()
@@ -84,8 +96,7 @@ public final class GoLibp2pHarness: Sendable {
             "go-libp2p-test"
         ]
 
-        try runProcess.run()
-        runProcess.waitUntilExit()
+        try runProcessWithTimeout(runProcess)
 
         guard runProcess.terminationStatus == 0 else {
             throw TestHarnessError.dockerRunFailed
@@ -95,7 +106,7 @@ public final class GoLibp2pHarness: Sendable {
         var attempts = 0
         var nodeInfo: NodeInfo?
 
-        while attempts < 30 {
+        while attempts < 120 {
             try await Task.sleep(for: .milliseconds(500))
 
             let logsProcess = Process()
@@ -105,8 +116,7 @@ public final class GoLibp2pHarness: Sendable {
             let pipe = Pipe()
             logsProcess.standardOutput = pipe
 
-            try logsProcess.run()
-            logsProcess.waitUntilExit()
+            try runProcessWithTimeout(logsProcess)
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
@@ -142,13 +152,17 @@ public final class GoLibp2pHarness: Sendable {
             let stopProcess = Process()
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
-            try? stopProcess.run()
-            stopProcess.waitUntilExit()
+            do {
+                try runProcessWithTimeout(stopProcess)
+            } catch {
+                // Best effort cleanup only.
+            }
 
             throw TestHarnessError.nodeNotReady
         }
 
-        return GoLibp2pHarness(containerName: containerName, port: actualPort, nodeInfo: info)
+        shouldReleaseLease = false
+        return GoLibp2pHarness(containerName: containerName, port: actualPort, leaseID: leaseID, nodeInfo: info)
     }
 
     /// Stops the container
@@ -157,17 +171,30 @@ public final class GoLibp2pHarness: Sendable {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
 
-        try process.run()
-        process.waitUntilExit()
+        do {
+            try runProcessWithTimeout(process)
+        } catch {
+            await releaseInteropHarnessLease(leaseID)
+            throw error
+        }
+        await releaseInteropHarnessLease(leaseID)
     }
 
     deinit {
+        let leaseID = self.leaseID
+        Task {
+            await releaseInteropHarnessLease(leaseID)
+        }
+
         // Best effort cleanup
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
-        try? process.run()
-        process.waitUntilExit()
+        do {
+            try process.run()
+        } catch {
+            // Best effort cleanup only.
+        }
     }
 }
 

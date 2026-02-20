@@ -6,6 +6,7 @@
 import Foundation
 import Synchronization
 import P2PCore
+import P2PMux
 
 // MARK: - Hole Punch Event
 
@@ -136,6 +137,15 @@ public struct HolePunchServiceConfiguration: Sendable {
     /// Preferred transport type for hole punching. `nil` means auto-detect.
     public var preferredTransport: HolePunchTransportType?
 
+    /// TCP hole punch dialer: (remoteAddress, localPort) -> RawConnection.
+    public var tcpPunchDialer: (@Sendable (Multiaddr, UInt16) async throws -> any RawConnection)?
+
+    /// QUIC hole punch dialer: (remoteAddress) -> MuxedConnection.
+    public var quicPunchDialer: (@Sendable (Multiaddr) async throws -> any MuxedConnection)?
+
+    /// Closure to get the local TCP listen port for simultaneous open.
+    public var localTCPPort: (@Sendable () -> UInt16)?
+
     /// Creates a new configuration with the specified parameters.
     ///
     /// - Parameters:
@@ -144,18 +154,27 @@ public struct HolePunchServiceConfiguration: Sendable {
     ///   - retryAttempts: Number of retry attempts per peer. Default: 3.
     ///   - retryDelay: Delay between retries. Default: 5 seconds.
     ///   - preferredTransport: Preferred transport type, or nil for auto-detect.
+    ///   - tcpPunchDialer: TCP hole punch dialer closure.
+    ///   - quicPunchDialer: QUIC hole punch dialer closure.
+    ///   - localTCPPort: Closure to get local TCP listen port.
     public init(
         timeout: Duration = .seconds(30),
         maxConcurrentPunches: Int = 3,
         retryAttempts: Int = 3,
         retryDelay: Duration = .seconds(5),
-        preferredTransport: HolePunchTransportType? = nil
+        preferredTransport: HolePunchTransportType? = nil,
+        tcpPunchDialer: (@Sendable (Multiaddr, UInt16) async throws -> any RawConnection)? = nil,
+        quicPunchDialer: (@Sendable (Multiaddr) async throws -> any MuxedConnection)? = nil,
+        localTCPPort: (@Sendable () -> UInt16)? = nil
     ) {
         self.timeout = timeout
         self.maxConcurrentPunches = maxConcurrentPunches
         self.retryAttempts = retryAttempts
         self.retryDelay = retryDelay
         self.preferredTransport = preferredTransport
+        self.tcpPunchDialer = tcpPunchDialer
+        self.quicPunchDialer = quicPunchDialer
+        self.localTCPPort = localTCPPort
     }
 }
 
@@ -436,13 +455,34 @@ public final class HolePunchService: EventEmitting, Sendable {
                     throw HolePunchServiceError.timeout
                 }
 
-                // Attempt task: try each address
-                group.addTask {
-                    for _ in addresses {
-                        // Each address attempt: in a real implementation, this would
-                        // perform TCP simultaneous open or QUIC hole punch via the
-                        // transport layer.
+                // Attempt task: try each address using injected dialers
+                group.addTask { [weak self] in
+                    guard let self else { throw HolePunchServiceError.allAttemptsFailed }
+                    for address in addresses {
                         try Task.checkCancellation()
+                        do {
+                            switch transport {
+                            case .tcp:
+                                guard let dialer = self.configuration.tcpPunchDialer,
+                                      let port = self.configuration.localTCPPort?() else {
+                                    continue
+                                }
+                                let conn = try await dialer(address, port)
+                                try await conn.close()
+                                return address
+                            case .quic:
+                                guard let dialer = self.configuration.quicPunchDialer else {
+                                    continue
+                                }
+                                let conn = try await dialer(address)
+                                try await conn.close()
+                                return address
+                            }
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            continue
+                        }
                     }
                     throw HolePunchServiceError.allAttemptsFailed
                 }
