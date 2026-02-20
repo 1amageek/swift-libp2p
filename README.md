@@ -526,13 +526,19 @@ Interoperability tests verify compatibility with go-libp2p and rust-libp2p using
 **Prerequisites**: Docker (OrbStack recommended)
 
 ```bash
-# Run go-libp2p interop tests
-swift test --filter "GoLibp2pInteropTests"
+# Static guard before interop tests
+scripts/check-sync-shutdown-in-deinit.sh Sources/Transport Tests/Interop/Harnesses
 
-# Run rust-libp2p interop tests
-swift test --filter "RustInteropTests"
+# Run a focused interop test with timeout (recommended)
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang \
+scripts/swift-test-timeout.sh 30 --disable-sandbox --filter "GoLibp2pInteropTests/identifyGo"
 
-# Run all interop tests
+# Run a suite with hang guard (recommended for hang-prone suites)
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang \
+scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 -- \
+--disable-sandbox --filter "RustInteropTests"
+
+# Run all interop tests (final verification only)
 swift test --filter "Interop"
 ```
 
@@ -548,7 +554,7 @@ swift test --filter "Interop"
 | Bidirectional Stream | ✅ | ✅ |
 | Raw Data Transfer | ✅ | ✅ |
 
-See [Tests/Interop/README.md](Tests/Interop/README.md) for details.
+Use the step-by-step procedure in [Tests/Interop/README.md](Tests/Interop/README.md) and run tests incrementally (single case -> suite -> broader scope).
 
 ## Dependencies
 

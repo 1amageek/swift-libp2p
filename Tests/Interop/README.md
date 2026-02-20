@@ -35,6 +35,35 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 
 ## テスト実行
 
+### 正しい実行手順（推奨）
+
+Interopテストは**無闇に全体実行せず**、必ず次の順序で実行してください。
+
+1. 変更箇所に対応するテストを絞り込む（仮説を立てて `--filter` を決める）
+2. 前処理チェックを実行する
+3. 単一テストケースをタイムアウト付きで実行する
+4. スイート全体をタイムアウト＋再実行ガード付きで実行する
+5. 必要な場合のみ上位スイート（Phase単位）へ広げる
+
+```bash
+# 1) 前処理（同期シャットダウン混入チェック）
+scripts/check-sync-shutdown-in-deinit.sh Sources/Transport Tests/Interop/Harnesses
+
+# 2) 単一ケース（30秒上限）
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang \
+scripts/swift-test-timeout.sh 30 --disable-sandbox --filter "RustInteropTests/identifyGo"
+
+# 3) スイート（初回ビルド120秒 + 以降30秒, 3回再実行）
+SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang \
+scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 -- \
+--disable-sandbox --filter "RustInteropTests"
+```
+
+重要:
+- `swift test --filter Interop` を常用しない（最後の確認用途のみ）
+- 複数の hang-guard 実行を並列に走らせない
+- タイムアウト/失敗時は `.test-artifacts/hang-guard/...` のログを根拠に原因を切り分ける
+
 ### Phase 1: Transport Layer Tests
 
 ```bash
