@@ -171,13 +171,13 @@ private actor MockNodeIntegratedDiscovery: DiscoveryService, NodeDiscoveryHandle
         []
     }
 
-    nonisolated var observations: AsyncStream<Observation> {
+    nonisolated var observations: AsyncStream<PeerObservation> {
         AsyncStream { continuation in
             continuation.finish()
         }
     }
 
-    nonisolated func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    nonisolated func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         _ = peer
         return AsyncStream { continuation in
             continuation.finish()

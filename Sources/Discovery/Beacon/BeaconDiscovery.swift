@@ -27,7 +27,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     private let ephIDGenerator: EphIDGenerator
 
     private let tesla: MicroTESLA
-    private let broadcaster: EventBroadcaster<Observation>
+    private let broadcaster: EventBroadcaster<PeerObservation>
     private let startTime: ContinuousClock.Instant
     private let state: Mutex<ServiceState>
 
@@ -60,7 +60,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
             rotationInterval: configuration.ephIDRotationInterval
         )
         self.tesla = MicroTESLA(seed: configuration.keyPair.privateKey.rawBytes)
-        self.broadcaster = EventBroadcaster<Observation>()
+        self.broadcaster = EventBroadcaster<PeerObservation>()
         self.startTime = ContinuousClock.now
         self.state = Mutex(ServiceState())
     }
@@ -135,11 +135,11 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     ///
     /// Returns a filtered stream that only emits observations where the subject
     /// matches the requested peer.
-    public func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let targetPeer = peer
         let observationStream = self.observations
 
-        let (stream, continuation) = AsyncStream<Observation>.makeStream()
+        let (stream, continuation) = AsyncStream<PeerObservation>.makeStream()
         let task = Task {
             for await observation in observationStream {
                 if observation.subject == targetPeer {
@@ -162,7 +162,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
 
     /// Returns an independent stream of all observations.
     /// Each call returns a new stream (multi-consumer safe via EventBroadcaster).
-    public var observations: AsyncStream<Observation> {
+    public var observations: AsyncStream<PeerObservation> {
         broadcaster.subscribe()
     }
 
@@ -277,7 +277,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
 
     // MARK: - Private
 
-    /// Forwards aggregation events to the broadcaster as P2PDiscovery.Observation values.
+    /// Forwards aggregation events to the broadcaster as P2PDiscovery.PeerObservation values.
     private func forwardAggregationEvents() async {
         let events = ingest.aggregationEvents
 
@@ -297,8 +297,8 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
         return UInt64(max(0, seconds))
     }
 
-    /// Converts an AggregationResult into a P2PDiscovery.Observation.
-    private func convertToObservation(_ result: AggregationResult) -> Observation? {
+    /// Converts an AggregationResult into a P2PDiscovery.PeerObservation.
+    private func convertToObservation(_ result: AggregationResult) -> PeerObservation? {
         let seq = state.withLock { s -> UInt64 in
             s.observationSeqNumber += 1
             return s.observationSeqNumber
@@ -307,7 +307,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
 
         switch result {
         case .newConfirmed(let record):
-            return Observation(
+            return PeerObservation(
                 subject: record.peerID,
                 observer: localPeerID,
                 kind: .announcement,
@@ -318,7 +318,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
 
         case .confirmedUpdated(let peerID, _):
             guard let record = configuration.store.get(peerID) else { return nil }
-            return Observation(
+            return PeerObservation(
                 subject: peerID,
                 observer: localPeerID,
                 kind: .reachable,
@@ -328,7 +328,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
             )
 
         case .promoted(_, let record):
-            return Observation(
+            return PeerObservation(
                 subject: record.peerID,
                 observer: localPeerID,
                 kind: .announcement,

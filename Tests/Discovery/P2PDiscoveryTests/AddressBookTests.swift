@@ -1143,7 +1143,7 @@ struct CompositeDiscoveryObservationTests {
         await composite.start()
 
         let observations = composite.observations
-        let received = Mutex<[Observation]>([])
+        let received = Mutex<[PeerObservation]>([])
 
         let consumeTask = Task {
             for await obs in observations {
@@ -1156,7 +1156,7 @@ struct CompositeDiscoveryObservationTests {
 
         let subject = makePeer()
         let observer = makePeer()
-        let obs = Observation(
+        let obs = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .reachable,
@@ -1186,7 +1186,7 @@ struct CompositeDiscoveryObservationTests {
         await composite.start()
 
         let observations = composite.observations
-        let received = Mutex<[Observation]>([])
+        let received = Mutex<[PeerObservation]>([])
 
         let consumeTask = Task {
             for await obs in observations {
@@ -1205,7 +1205,7 @@ struct CompositeDiscoveryObservationTests {
 
         // Emit two observations with same sequence number
         for _ in 0..<2 {
-            mock.emit(Observation(
+            mock.emit(PeerObservation(
                 subject: subject,
                 observer: observer,
                 kind: .announcement,
@@ -1239,7 +1239,7 @@ struct CompositeDiscoveryObservationTests {
         let observer = makePeer()
 
         let subscription = composite.subscribe(to: target)
-        let received = Mutex<[Observation]>([])
+        let received = Mutex<[PeerObservation]>([])
 
         let consumeTask = Task {
             for await obs in subscription {
@@ -1250,7 +1250,7 @@ struct CompositeDiscoveryObservationTests {
         try await Task.sleep(for: .milliseconds(50))
 
         // Emit observation for target
-        mock.emit(Observation(
+        mock.emit(PeerObservation(
             subject: target,
             observer: observer,
             kind: .reachable,
@@ -1260,7 +1260,7 @@ struct CompositeDiscoveryObservationTests {
         ))
 
         // Emit observation for other peer (should be filtered)
-        mock.emit(Observation(
+        mock.emit(PeerObservation(
             subject: other,
             observer: observer,
             kind: .reachable,
@@ -1289,11 +1289,11 @@ private final class FailingDiscoveryService: DiscoveryService, Sendable {
 
     private struct TestError: Error {}
 
-    private let eventStream: AsyncStream<Observation>
-    private let eventContinuation: AsyncStream<Observation>.Continuation
+    private let eventStream: AsyncStream<PeerObservation>
+    private let eventContinuation: AsyncStream<PeerObservation>.Continuation
 
     init() {
-        let (stream, continuation) = AsyncStream<Observation>.makeStream()
+        let (stream, continuation) = AsyncStream<PeerObservation>.makeStream()
         self.eventStream = stream
         self.eventContinuation = continuation
     }
@@ -1306,13 +1306,13 @@ private final class FailingDiscoveryService: DiscoveryService, Sendable {
         throw TestError()
     }
 
-    func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         AsyncStream { $0.finish() }
     }
 
     func knownPeers() async -> [PeerID] { [] }
 
-    var observations: AsyncStream<Observation> {
+    var observations: AsyncStream<PeerObservation> {
         eventStream
     }
 

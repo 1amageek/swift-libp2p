@@ -3,9 +3,6 @@
 /// Run with: swift run PingPongDemo [server|client]
 import Foundation
 import P2P
-import P2PTransportTCP
-import P2PSecurityPlaintext
-import P2PMuxYamux
 
 @main
 struct PingPongDemo {

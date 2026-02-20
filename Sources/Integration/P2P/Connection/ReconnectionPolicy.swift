@@ -131,6 +131,10 @@ public struct ReconnectionPolicy: Sendable {
         case .connectionLimitExceeded:
             // Limit-based disconnects shouldn't reconnect
             return false
+        case .error(code: .protocolError, _):
+            // Protocol negotiation failed (e.g., security mismatch) -
+            // the remote peer won't suddenly support a different protocol
+            return false
         default:
             return true
         }

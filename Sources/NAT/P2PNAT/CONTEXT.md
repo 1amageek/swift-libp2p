@@ -92,11 +92,21 @@ Tests/NAT/P2PNATTests/
 
 **合計: 41テスト** (2026-02-06時点。ネットワークI/O不要のユニットテストに限定)
 
+## クロスプラットフォーム対応
+
+| 機能 | Apple (macOS/iOS) | Linux |
+|------|-------------------|-------|
+| ゲートウェイ検出 | `NWPath.gateways` (Network framework) | `/proc/net/route` |
+| ローカル IP | `getifaddrs()` + `sa_len` | `getifaddrs()` + `MemoryLayout` |
+| UDP ソケット | POSIX (Darwin) | POSIX (Glibc) |
+
+- iOS では NAT-PMP/PCP が利用不可（ゲートウェイ IP 取得の公開 API なし）。UPnP（SSDP マルチキャスト）にフォールバック
+- UDPSocket は POSIX を全プラットフォームで使用。Darwin/Glibc の型差異（`SOCK_DGRAM`, `timeval.tv_usec`, `fd_set` フィールド名）を `#if` で吸収
+
 ## Known Issues
 
 - `shutdown()` はゲートウェイ上のマッピングを解放しない（リース期限で自然消滅）
 - ゲートウェイキャッシュに TTL がない（ネットワーク変更時はインスタンスを再作成）
-- `getDefaultGateway()` は macOS 専用（`/usr/sbin/netstat` に依存）
 
 <!-- CONTEXT_EVAL_START -->
 ## 実装評価 (2026-02-16)

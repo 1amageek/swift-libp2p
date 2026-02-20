@@ -456,6 +456,24 @@ internal final class ConnectionPool: Sendable {
         }
     }
 
+    /// Returns all connected ManagedConnection entries for a peer.
+    ///
+    /// Used by simultaneous connect resolution to determine which
+    /// connection to keep when duplicates exist.
+    ///
+    /// - Parameter peer: The peer to look up
+    /// - Returns: All managed connections in `.connected` state
+    func connectedManagedConnections(for peer: PeerID) -> [ManagedConnection] {
+        state.withLock { state in
+            guard let ids = state.peerConnections[peer] else { return [] }
+            return ids.compactMap { id in
+                guard let managed = state.connections[id],
+                      managed.state.isConnected else { return nil }
+                return managed
+            }
+        }
+    }
+
     // MARK: - Tagging & Protection
 
     /// Adds a tag to a peer's connections.

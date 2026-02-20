@@ -4,6 +4,7 @@
 
 import Foundation
 import Synchronization
+// Protocol abstractions
 @_exported import P2PCore
 @_exported import P2PTransport
 @_exported import P2PSecurity
@@ -11,7 +12,15 @@ import Synchronization
 @_exported import P2PNegotiation
 @_exported import P2PDiscovery
 @_exported import P2PProtocols
-import P2PPing
+// Default implementations (batteries-included)
+@_exported import P2PTransportTCP
+@_exported import P2PSecurityNoise
+@_exported import P2PSecurityPlaintext
+@_exported import P2PMuxYamux
+@_exported import P2PPing
+@_exported import P2PGossipSub
+@_exported import NIOCore
+// Internal
 import P2PIdentify
 
 /// Logger for P2P operations.
@@ -271,10 +280,12 @@ public actor Node: StreamOpener, HandlerRegistry {
     private var idleCheckTask: Task<Void, Never>?
     private var trimTask: Task<Void, Never>?
     private var discoveryTask: Task<Void, Never>?
+    private var acceptTasks: [Task<Void, Never>] = []
 
     // Auto-connect tracking
     private var autoConnectCooldowns: [PeerID: ContinuousClock.Instant] = [:]
     private var discoveryAttachedPeers: Set<PeerID> = []
+    private var peerConnectedEmitted: Set<PeerID> = []
 
     // Traversal orchestration
     private var traversalCoordinator: TraversalCoordinator?
@@ -356,6 +367,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         guard !isRunning else { return }
         isRunning = true
 
+        print("[Node.start] [A] health monitor...")
         // Initialize health monitor if configured
         if let healthConfig = configuration.healthCheck {
             let monitor = HealthMonitor(
@@ -367,58 +379,76 @@ public actor Node: StreamOpener, HandlerRegistry {
             }
             self.healthMonitor = monitor
         }
+        print("[Node.start] [A] done")
 
-        // Start idle check task
+        print("[Node.start] [B] idle check task...")
         startIdleCheckTask()
+        print("[Node.start] [B] done")
 
+        print("[Node.start] [C] discovery integration...")
         if let discovery = configuration.discovery {
             await setupDiscoveryIntegration(discovery)
+            print("[Node.start] [C] setupDiscoveryIntegration done")
 
             // Start discovery auto-connect task (reactive via observations stream)
             if configuration.discoveryConfig.autoConnect {
                 startDiscoveryTask(discovery: discovery)
+                print("[Node.start] [C] startDiscoveryTask done")
             }
         }
+        print("[Node.start] [C] done")
 
         // Start listeners
+        print("[Node.start] [D] starting listeners...")
         for address in configuration.listenAddresses {
             for transport in configuration.transports {
                 if transport.canListen(address) {
                     do {
                         // SecuredTransport (e.g., QUIC) uses a different listener type
                         if let securedTransport = transport as? SecuredTransport {
+                            print("[Node.start] [D] securedTransport.listenSecured(\(address))...")
                             let listener = try await securedTransport.listenSecured(
                                 address,
                                 localKeyPair: configuration.keyPair
                             )
                             securedListeners.append(listener)
+                            print("[Node.start] [D] securedTransport.listenSecured done")
 
                             // Start secured accept loop
-                            Task { [weak self] in
-                                await self?.securedAcceptLoop(listener: listener, address: listener.localAddress)
+                            let acceptTask = Task { [weak self] in
+                                guard let self else { return }
+                                await self.securedAcceptLoop(listener: listener, address: listener.localAddress)
                             }
+                            acceptTasks.append(acceptTask)
                         } else {
                             // Standard transport
+                            print("[Node.start] [D] transport.listen(\(address))...")
                             let listener = try await transport.listen(address)
+                            print("[Node.start] [D] transport.listen done: \(listener.localAddress)")
                             listeners.append(listener)
 
                             // Start accept loop
-                            Task { [weak self] in
-                                await self?.acceptLoop(listener: listener, address: address)
+                            let acceptTask = Task { [weak self] in
+                                guard let self else { return }
+                                await self.acceptLoop(listener: listener, address: address)
                             }
+                            acceptTasks.append(acceptTask)
                         }
                     } catch {
+                        print("[Node.start] [D] listen error: \(error)")
                         emit(.listenError(address, error))
                     }
                 }
             }
         }
+        print("[Node.start] [D] done")
 
         // Update current listen addresses for synchronous access
         _currentListenAddresses.update(
             listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
         )
 
+        print("[Node.start] [E] traversal...")
         // Initialize traversal orchestration if configured
         if let traversalConfig = configuration.traversal {
             let coordinator = TraversalCoordinator(
@@ -446,7 +476,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
             self.traversalCoordinator = coordinator
         }
+        print("[Node.start] [E] done")
 
+        print("[Node.start] [F] identify...")
         // Register IdentifyService handlers if configured
         if let identify = configuration.identifyService {
             await identify.registerHandlers(
@@ -464,12 +496,16 @@ public actor Node: StreamOpener, HandlerRegistry {
             )
             identify.startMaintenance()
         }
+        print("[Node.start] [F] done")
 
+        print("[Node.start] [G] peerStore GC...")
         // Start PeerStore GC if using MemoryPeerStore
         if let memoryStore = _peerStore as? MemoryPeerStore {
             memoryStore.startGC()
         }
+        print("[Node.start] [G] done")
 
+        print("[Node.start] [H] bootstrap...")
         // Initialize and start bootstrap if configured
         if let bootstrapConfig = configuration.bootstrap, !bootstrapConfig.seeds.isEmpty {
             let connectionProvider = NodeConnectionProvider(node: self)
@@ -488,6 +524,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                 await bootstrap.startAutoBootstrap()
             }
         }
+        print("[Node.start] [H] done — Node.start() complete")
     }
 
     /// Shuts down the node.
@@ -503,6 +540,10 @@ public actor Node: StreamOpener, HandlerRegistry {
         if let memoryStore = _peerStore as? MemoryPeerStore {
             memoryStore.shutdown()
         }
+
+        // Cancel accept loops first so listeners can close cleanly
+        for task in acceptTasks { task.cancel() }
+        acceptTasks.removeAll()
 
         // Cancel background tasks
         idleCheckTask?.cancel()
@@ -562,9 +603,10 @@ public actor Node: StreamOpener, HandlerRegistry {
             await onPeerDisconnected(peer)
         }
 
-        // Clear auto-connect cooldowns
+        // Clear tracking state
         autoConnectCooldowns.removeAll()
         discoveryAttachedPeers.removeAll()
+        peerConnectedEmitted.removeAll()
 
         if let discovery = configuration.discovery {
             await discovery.shutdown()
@@ -739,6 +781,10 @@ public actor Node: StreamOpener, HandlerRegistry {
             pool.enableAutoReconnect(for: remotePeer, address: address)
         }
 
+        // Resolve simultaneous connect before emitting events.
+        // This may close the duplicate connection if both peers dialed each other.
+        await resolveSimultaneousConnect(for: remotePeer)
+
         // Start handling inbound streams BEFORE onPeerConnected.
         // onPeerConnected may open new streams (e.g., discovery), which require
         // the remote side's inbound handler to be running for protocol negotiation.
@@ -747,7 +793,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             await self?.handleConnectionClosed(id: connID, peer: remotePeer)
         }
 
-        // Emit events
+        // Emit events (guarded: only fires for first connection to this peer)
         await onPeerConnected(remotePeer, address: address, isLimited: isRelay)
         emitConnectionEvent(.connected(peer: remotePeer, address: address, direction: .outbound))
 
@@ -845,13 +891,16 @@ public actor Node: StreamOpener, HandlerRegistry {
             pool.enableAutoReconnect(for: remotePeer, address: address)
         }
 
+        // Resolve simultaneous connect before emitting events.
+        await resolveSimultaneousConnect(for: remotePeer)
+
         // Start handling inbound streams BEFORE onPeerConnected.
         Task { [weak self] in
             await self?.handleInboundStreams(connection: muxedConnection)
             await self?.handleConnectionClosed(id: connID, peer: remotePeer)
         }
 
-        // Emit events
+        // Emit events (guarded: only fires for first connection to this peer)
         await onPeerConnected(remotePeer, address: address, isLimited: isLimited)
         emitConnectionEvent(.connected(peer: remotePeer, address: address, direction: .outbound))
 
@@ -1100,17 +1149,29 @@ public actor Node: StreamOpener, HandlerRegistry {
     }
 
     private func setupDiscoveryIntegration(_ discovery: any DiscoveryService) async {
+        print("[Node.start] [C1] registerHandler...")
         if let registrable = discovery as? any NodeDiscoveryHandlerRegistrable {
             await registrable.registerHandler(registry: self)
+            print("[Node.start] [C1] registerHandler done")
         }
+        print("[Node.start] [C2] discovery start...")
         if let startableWithOpener = discovery as? any NodeDiscoveryStartableWithOpener {
             await startableWithOpener.start(using: self)
+            print("[Node.start] [C2] startableWithOpener.start done")
         } else if let startable = discovery as? any NodeDiscoveryStartable {
             await startable.start()
+            print("[Node.start] [C2] startable.start done")
         }
+        print("[Node.start] [C2] discovery start done")
     }
 
     private func onPeerConnected(_ peer: PeerID, address: Multiaddr? = nil, isLimited: Bool = false) async {
+        // Only emit peerConnected once per unique peer.
+        // Subsequent connections to the same peer (e.g., simultaneous connect)
+        // are resolved by resolveSimultaneousConnect without re-emitting.
+        guard !peerConnectedEmitted.contains(peer) else { return }
+        peerConnectedEmitted.insert(peer)
+
         emit(.peerConnected(peer))
         configuration.identifyService?.peerConnected(peer)
         await attachDiscoveryStreamIfNeeded(for: peer)
@@ -1119,9 +1180,58 @@ public actor Node: StreamOpener, HandlerRegistry {
     }
 
     private func onPeerDisconnected(_ peer: PeerID) async {
+        // Only emit peerDisconnected when no connections remain for this peer.
+        // If another connection is still active (e.g., after closing a duplicate),
+        // the peer is still connected and we should not emit.
+        guard !pool.isConnected(to: peer) else { return }
+        peerConnectedEmitted.remove(peer)
+
         emit(.peerDisconnected(peer))
         configuration.identifyService?.peerDisconnected(peer)
         await detachDiscoveryStreamIfNeeded(for: peer)
+    }
+
+    /// Resolves simultaneous connect by closing the duplicate connection.
+    ///
+    /// When two peers dial each other at the same time, both connections succeed
+    /// and the pool ends up with two entries. This method deterministically
+    /// closes one based on PeerID comparison (go-libp2p compatible):
+    /// the peer with the smaller PeerID keeps its outbound (initiator) connection.
+    private func resolveSimultaneousConnect(for peer: PeerID) async {
+        let connections = pool.connectedManagedConnections(for: peer)
+        guard connections.count >= 2 else { return }
+
+        let localPeerID = configuration.keyPair.peerID
+        // Peer with smaller ID should be the initiator (outbound).
+        let winningDirection: ConnectionDirection = localPeerID < peer ? .outbound : .inbound
+
+        // Separate winners and losers
+        var winner: ManagedConnection?
+        var losers: [ManagedConnection] = []
+
+        for conn in connections {
+            if conn.direction == winningDirection && winner == nil {
+                winner = conn
+            } else {
+                losers.append(conn)
+            }
+        }
+
+        // If no clear winner (all same direction), keep the oldest
+        if winner == nil, !losers.isEmpty {
+            losers.sort { ($0.connectedAt ?? .now) < ($1.connectedAt ?? .now) }
+            _ = losers.removeFirst() // oldest becomes de facto winner
+        }
+
+        // Close and remove losers
+        for loser in losers {
+            _ = pool.remove(loser.id)
+            if let conn = loser.connection {
+                await runBestEffort("close duplicate connection in simultaneous connect resolution") {
+                    try await conn.close()
+                }
+            }
+        }
     }
 
     private func attachDiscoveryStreamIfNeeded(for peer: PeerID) async {
@@ -1158,26 +1268,26 @@ public actor Node: StreamOpener, HandlerRegistry {
     }
 
     private func handleConnectionClosed(id: ConnectionID, peer: PeerID) async {
-        let managed = pool.managedConnection(id)
-        let wasConnected = managed?.state.isConnected ?? false
+        // If the entry was already removed (e.g., by resolveSimultaneousConnect),
+        // there is nothing to do.
+        guard let managed = pool.managedConnection(id) else { return }
+        let wasConnected = managed.state.isConnected
 
         // Don't overwrite reconnecting state - let the reconnection logic handle it
-        if case .reconnecting = managed?.state {
+        if case .reconnecting = managed.state {
             return
         }
 
         // Release connection resource
-        if let direction = managed?.direction {
-            configuration.resourceManager?.releaseConnection(peer: peer, direction: direction)
-        }
+        configuration.resourceManager?.releaseConnection(peer: peer, direction: managed.direction)
 
         // Update state
         pool.updateState(id, to: .disconnected(reason: .remoteClose))
 
-        // Stop health monitoring
-        await healthMonitor?.stopMonitoring(peer: peer)
-
-        if wasConnected {
+        // Only emit disconnect, stop health monitoring, and trigger reconnection
+        // when this is the last connection to the peer.
+        if wasConnected && !pool.isConnected(to: peer) {
+            await healthMonitor?.stopMonitoring(peer: peer)
             await onPeerDisconnected(peer)
             emitConnectionEvent(.disconnected(peer: peer, reason: .remoteClose))
 
@@ -1271,6 +1381,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                 pool.updateConnection(id, connection: muxedConnection)
                 pool.resetRetryCount(id)
 
+                // Resolve simultaneous connect before emitting events.
+                await resolveSimultaneousConnect(for: remotePeer)
+
                 // Start handling inbound streams BEFORE onPeerConnected.
                 Task { [weak self] in
                     await self?.handleInboundStreams(connection: muxedConnection)
@@ -1343,6 +1456,9 @@ public actor Node: StreamOpener, HandlerRegistry {
             pool.updateConnection(id, connection: result.connection)
             pool.resetRetryCount(id)
 
+            // Resolve simultaneous connect before emitting events.
+            await resolveSimultaneousConnect(for: remotePeer)
+
             // Start handling inbound streams BEFORE onPeerConnected.
             Task { [weak self] in
                 await self?.handleInboundStreams(connection: result.connection)
@@ -1358,14 +1474,22 @@ public actor Node: StreamOpener, HandlerRegistry {
             await healthMonitor?.startMonitoring(peer: remotePeer)
 
         } catch {
+            // Classify the error for reconnection decisions
+            let errorCode: DisconnectErrorCode = if error is NegotiationError {
+                .protocolError
+            } else {
+                .transportError
+            }
+            let reason: DisconnectReason = .error(code: errorCode, message: error.localizedDescription)
+
             // Check if we should retry again
             let retryCount = pool.managedConnection(id)?.retryCount ?? attempt
             let policy = configuration.pool.reconnectionPolicy
 
-            if policy.shouldReconnect(attempt: retryCount, reason: .error(code: .transportError, message: error.localizedDescription)) {
+            if policy.shouldReconnect(attempt: retryCount, reason: reason) {
                 await scheduleReconnect(id: id, peer: peer, address: address, attempt: retryCount + 1)
             } else {
-                pool.updateState(id, to: .failed(reason: .error(code: .transportError, message: error.localizedDescription)))
+                pool.updateState(id, to: .failed(reason: reason))
                 emitConnectionEvent(.reconnectionFailed(peer: peer, attempts: retryCount))
             }
         }
@@ -1493,8 +1617,11 @@ public actor Node: StreamOpener, HandlerRegistry {
                 }
             }
             _ = pool.remove(managed.id)
-            await onPeerDisconnected(managed.peer)
-            emitConnectionEvent(.disconnected(peer: managed.peer, reason: .idleTimeout))
+            // Only emit disconnect when this was the last connection to the peer
+            if !pool.isConnected(to: managed.peer) {
+                await onPeerDisconnected(managed.peer)
+                emitConnectionEvent(.disconnected(peer: managed.peer, reason: .idleTimeout))
+            }
         }
 
         // 2. Trim if over limits
@@ -1531,11 +1658,14 @@ public actor Node: StreamOpener, HandlerRegistry {
                     try await connection.close()
                 }
             }
-            await onPeerDisconnected(managed.peer)
-            if let context = trimContextsByID[managed.id] {
-                emitConnectionEvent(.trimmedWithContext(peer: managed.peer, context: context))
-            } else {
-                emitConnectionEvent(.trimmed(peer: managed.peer, reason: "Connection limit exceeded"))
+            // Only emit disconnect when this was the last connection to the peer
+            if !pool.isConnected(to: managed.peer) {
+                await onPeerDisconnected(managed.peer)
+                if let context = trimContextsByID[managed.id] {
+                    emitConnectionEvent(.trimmedWithContext(peer: managed.peer, context: context))
+                } else {
+                    emitConnectionEvent(.trimmed(peer: managed.peer, reason: "Connection limit exceeded"))
+                }
             }
         }
 
@@ -1553,7 +1683,7 @@ public actor Node: StreamOpener, HandlerRegistry {
     }
 
     private func acceptLoop(listener: any Listener, address: Multiaddr) async {
-        while isRunning {
+        while isRunning && !Task.isCancelled {
             do {
                 let rawConnection = try await listener.accept()
 
@@ -1561,7 +1691,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                     await self?.handleInboundConnection(rawConnection)
                 }
             } catch {
-                if isRunning {
+                if isRunning && !Task.isCancelled {
                     emit(.listenError(address, error))
                     continue
                 }
@@ -1652,6 +1782,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                 isLimited: isRelay
             )
 
+            // Resolve simultaneous connect before emitting events.
+            await resolveSimultaneousConnect(for: remotePeer)
+
             // Start handling inbound streams BEFORE onPeerConnected.
             // onPeerConnected may open new streams (e.g., discovery), which require
             // the inbound handler to be running for protocol negotiation.
@@ -1660,7 +1793,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                 await self?.handleConnectionClosed(id: connID, peer: remotePeer)
             }
 
-            // Emit events
+            // Emit events (guarded: only fires for first connection to this peer)
             await onPeerConnected(remotePeer, address: remoteAddress, isLimited: isRelay)
             emitConnectionEvent(.connected(peer: remotePeer, address: remoteAddress, direction: .inbound))
 
@@ -1676,7 +1809,7 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// SecuredListener yields pre-secured, pre-multiplexed connections.
     private func securedAcceptLoop(listener: any SecuredListener, address: Multiaddr) async {
         for await muxedConnection in listener.connections {
-            guard isRunning else { break }
+            guard isRunning && !Task.isCancelled else { break }
             Task { [weak self] in
                 await self?.handleSecuredInboundConnection(muxedConnection, from: address)
             }
@@ -1753,13 +1886,16 @@ public actor Node: StreamOpener, HandlerRegistry {
             isLimited: isRelay
         )
 
+        // Resolve simultaneous connect before emitting events.
+        await resolveSimultaneousConnect(for: remotePeer)
+
         // Start handling inbound streams BEFORE onPeerConnected.
         Task { [weak self] in
             await self?.handleInboundStreams(connection: muxedConnection)
             await self?.handleConnectionClosed(id: connID, peer: remotePeer)
         }
 
-        // Emit events
+        // Emit events (guarded: only fires for first connection to this peer)
         await onPeerConnected(remotePeer, address: remoteAddress, isLimited: isRelay)
         emitConnectionEvent(.connected(peer: remotePeer, address: remoteAddress, direction: .inbound))
 

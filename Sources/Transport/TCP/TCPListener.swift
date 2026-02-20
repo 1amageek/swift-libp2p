@@ -45,6 +45,7 @@ public final class TCPListener: Listener, Sendable {
         port: UInt16,
         group: EventLoopGroup
     ) async throws -> TCPListener {
+        print("[TCPListener.bind] [D1] creating ServerBootstrap for \(host):\(port)...")
         tcpListenerLogger.debug("bind(): Binding to \(host):\(port)")
 
         // Collect handlers for late binding
@@ -62,14 +63,17 @@ public final class TCPListener: Listener, Sendable {
             .childChannelOption(.socketOption(.tcp_nodelay), value: 1)
             .childChannelOption(.socketOption(.so_keepalive), value: 1)
             .childChannelOption(.autoRead, value: true)
+        print("[TCPListener.bind] [D2] ServerBootstrap configured, calling bootstrap.bind...")
 
         let serverChannel = try await bootstrap.bind(host: host, port: Int(port)).get()
+        print("[TCPListener.bind] [D3] bootstrap.bind completed, channel=\(serverChannel)")
 
         guard let socketAddress = serverChannel.localAddress,
               let localAddr = socketAddress.toMultiaddr() else {
             throw TransportError.unsupportedAddress(Multiaddr.tcp(host: host, port: port))
         }
 
+        print("[TCPListener.bind] [D4] bound to \(localAddr)")
         tcpListenerLogger.debug("bind(): Bound successfully to \(localAddr)")
 
         let listener = TCPListener(serverChannel: serverChannel, localAddress: localAddr)
@@ -80,6 +84,7 @@ public final class TCPListener: Listener, Sendable {
             listener.connectionAccepted(connection)
         }
 
+        print("[TCPListener.bind] [D5] handlers bound, listener ready")
         tcpListenerLogger.debug("bind(): Listener ready (handlers bound)")
 
         return listener

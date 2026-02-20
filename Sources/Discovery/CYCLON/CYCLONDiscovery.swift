@@ -30,7 +30,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
     private var isStarted: Bool = false
     private var sequenceNumber: UInt64 = 0
 
-    private nonisolated let broadcaster = EventBroadcaster<Observation>()
+    private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
 
     // MARK: - Initialization
 
@@ -108,7 +108,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
         return [ScoredCandidate(peerID: entry.peerID, addresses: entry.addresses, score: score)]
     }
 
-    public nonisolated func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    public nonisolated func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let stream = broadcaster.subscribe()
         return AsyncStream { continuation in
             let task = Task {
@@ -129,7 +129,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
         partialView.allPeerIDs()
     }
 
-    public nonisolated var observations: AsyncStream<Observation> {
+    public nonisolated var observations: AsyncStream<PeerObservation> {
         broadcaster.subscribe()
     }
 
@@ -269,7 +269,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
         for entry in entries {
             guard entry.peerID != localPeerID else { continue }
             sequenceNumber += 1
-            let observation = Observation(
+            let observation = PeerObservation(
                 subject: entry.peerID,
                 observer: localPeerID,
                 kind: .reachable,
@@ -283,7 +283,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
 
     private func emitUnreachable(_ entry: CYCLONEntry) {
         sequenceNumber += 1
-        let observation = Observation(
+        let observation = PeerObservation(
             subject: entry.peerID,
             observer: localPeerID,
             kind: .unreachable,

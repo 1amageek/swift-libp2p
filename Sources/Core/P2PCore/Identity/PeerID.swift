@@ -146,6 +146,14 @@ extension PeerID: Codable {
     }
 }
 
+// MARK: - Comparable
+
+extension PeerID: Comparable {
+    public static func < (lhs: PeerID, rhs: PeerID) -> Bool {
+        lhs.bytes.lexicographicallyPrecedes(rhs.bytes)
+    }
+}
+
 // MARK: - ExpressibleByStringLiteral
 
 extension PeerID: ExpressibleByStringLiteral {

@@ -600,10 +600,11 @@ let package = Package(
             path: "Tests/Transport/WebTransportTests"
         ),
 
-        // MARK: - Integration (depends only on protocols, not implementations)
+        // MARK: - Integration
         .target(
             name: "P2P",
             dependencies: [
+                // Protocol abstractions (@_exported)
                 "P2PCore",
                 "P2PTransport",
                 "P2PSecurity",
@@ -611,7 +612,14 @@ let package = Package(
                 "P2PNegotiation",
                 "P2PDiscovery",
                 "P2PProtocols",
+                // Default implementations (@_exported — batteries-included)
+                "P2PTransportTCP",
+                "P2PSecurityNoise",
+                "P2PSecurityPlaintext",
+                "P2PMuxYamux",
                 "P2PPing",
+                "P2PGossipSub",
+                // Internal (non-exported)
                 "P2PIdentify",
                 "P2PAutoNAT",
                 "P2PCircuitRelay",
@@ -684,9 +692,6 @@ let package = Package(
             name: "PingPongDemo",
             dependencies: [
                 "P2P",
-                "P2PTransportTCP",
-                "P2PSecurityPlaintext",
-                "P2PMuxYamux",
             ],
             path: "Examples/PingPongDemo"
         ),

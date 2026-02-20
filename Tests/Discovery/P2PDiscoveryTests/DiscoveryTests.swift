@@ -12,8 +12,8 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
     private let _knownPeers: [PeerID]
     private let _candidates: [PeerID: [ScoredCandidate]]
     private let findDelay: Duration?
-    private let eventContinuation: AsyncStream<Observation>.Continuation
-    private let eventStream: AsyncStream<Observation>
+    private let eventContinuation: AsyncStream<PeerObservation>.Continuation
+    private let eventStream: AsyncStream<PeerObservation>
 
     private let state: Mutex<MockState>
 
@@ -45,7 +45,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
         self.findDelay = findDelay
         self.state = Mutex(MockState())
 
-        let (stream, continuation) = AsyncStream<Observation>.makeStream()
+        let (stream, continuation) = AsyncStream<PeerObservation>.makeStream()
         self.eventStream = stream
         self.eventContinuation = continuation
     }
@@ -66,7 +66,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
         return _candidates[peer] ?? []
     }
 
-    func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         AsyncStream { continuation in
             Task { [weak self] in
                 guard let self = self else {
@@ -87,7 +87,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
         _knownPeers
     }
 
-    var observations: AsyncStream<Observation> {
+    var observations: AsyncStream<PeerObservation> {
         eventStream
     }
 
@@ -97,7 +97,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
     }
 
     /// Emit an observation for testing.
-    func emit(_ observation: Observation) {
+    func emit(_ observation: PeerObservation) {
         eventContinuation.yield(observation)
     }
 
@@ -133,7 +133,7 @@ struct ObservationTests {
         let observer = PeerID.test(2)
         let hints = [try testMultiaddr(4001)]
 
-        let observation = Observation(
+        let observation = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .announcement,
@@ -152,9 +152,9 @@ struct ObservationTests {
 
     @Test("Observation kinds are distinct")
     func observationKinds() {
-        #expect(Observation.Kind.announcement != Observation.Kind.reachable)
-        #expect(Observation.Kind.reachable != Observation.Kind.unreachable)
-        #expect(Observation.Kind.announcement != Observation.Kind.unreachable)
+        #expect(PeerObservation.Kind.announcement != PeerObservation.Kind.reachable)
+        #expect(PeerObservation.Kind.reachable != PeerObservation.Kind.unreachable)
+        #expect(PeerObservation.Kind.announcement != PeerObservation.Kind.unreachable)
     }
 
     @Test("Observation is Hashable")
@@ -163,7 +163,7 @@ struct ObservationTests {
         let observer = PeerID.test(2)
         let hints = [try testMultiaddr(4001)]
 
-        let observation1 = Observation(
+        let observation1 = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .announcement,
@@ -172,7 +172,7 @@ struct ObservationTests {
             sequenceNumber: 1
         )
 
-        let observation2 = Observation(
+        let observation2 = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .announcement,
@@ -185,7 +185,7 @@ struct ObservationTests {
         #expect(observation1.hashValue == observation2.hashValue)
 
         // Different sequence number should produce different hash
-        let observation3 = Observation(
+        let observation3 = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .announcement,
@@ -202,7 +202,7 @@ struct ObservationTests {
         let subject = PeerID.test(1)
         let observer = PeerID.test(2)
 
-        let observation = Observation(
+        let observation = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .unreachable,
@@ -225,7 +225,7 @@ struct ObservationTests {
             try testMultiaddr(4003)
         ]
 
-        let observation = Observation(
+        let observation = PeerObservation(
             subject: subject,
             observer: observer,
             kind: .reachable,

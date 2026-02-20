@@ -42,7 +42,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
         var isShutdown: Bool = false
     }
 
-    private let broadcaster = EventBroadcaster<Observation>()
+    private let broadcaster = EventBroadcaster<PeerObservation>()
 
     // MARK: - Initialization
 
@@ -210,7 +210,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     }
 
     /// Subscribes to observations from all services.
-    public func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         AsyncStream { continuation in
             Task { [weak self] in
                 guard let self = self else {
@@ -242,7 +242,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
 
     /// Returns all observations as a stream.
     /// Each call returns an independent stream (multi-consumer safe).
-    public var observations: AsyncStream<Observation> {
+    public var observations: AsyncStream<PeerObservation> {
         broadcaster.subscribe()
     }
 
@@ -262,7 +262,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
                 return state.sequenceNumber
             }
             // Re-emit with updated sequence number
-            let forwarded = Observation(
+            let forwarded = PeerObservation(
                 subject: observation.subject,
                 observer: observation.observer,
                 kind: observation.kind,

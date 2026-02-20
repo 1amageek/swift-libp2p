@@ -529,4 +529,38 @@ struct ConnectionPoolTests {
         #expect(trimmed.count == 1)
         #expect(trimmed.first?.peer == oldPeer)
     }
+
+    // MARK: - connectedManagedConnections
+
+    @Test("connectedManagedConnections returns only connected entries")
+    func connectedManagedConnectionsFiltering() {
+        let pool = makePool(maxPerPeer: 3)
+        let (remotePeer, addr, conn1) = makeMockConnection()
+
+        // Add two connections: one connected, one connecting
+        pool.add(conn1, for: remotePeer, address: addr, direction: .inbound)
+        let connectingID = pool.addConnecting(for: remotePeer, address: addr, direction: .outbound)
+
+        let connected = pool.connectedManagedConnections(for: remotePeer)
+        #expect(connected.count == 1)
+        #expect(connected.first?.direction == .inbound)
+
+        // Transition connecting to connected
+        let conn2 = MockMuxedConnection(
+            localPeer: randomPeerID(),
+            remotePeer: remotePeer,
+            address: addr
+        )
+        pool.updateConnection(connectingID, connection: conn2)
+
+        let connectedAfter = pool.connectedManagedConnections(for: remotePeer)
+        #expect(connectedAfter.count == 2)
+    }
+
+    @Test("connectedManagedConnections returns empty for unknown peer")
+    func connectedManagedConnectionsUnknownPeer() {
+        let pool = makePool()
+        let unknown = randomPeerID()
+        #expect(pool.connectedManagedConnections(for: unknown).isEmpty)
+    }
 }

@@ -9,7 +9,7 @@
 import P2PCore
 
 /// An observation about a peer's reachability.
-public struct Observation: Sendable, Hashable {
+public struct PeerObservation: Sendable, Hashable {
 
     /// The type of observation.
     public enum Kind: Sendable, Hashable {
@@ -85,13 +85,13 @@ public protocol DiscoveryService: Sendable {
     func find(peer: PeerID) async throws -> [ScoredCandidate]
 
     /// Subscribes to observations about a peer.
-    func subscribe(to peer: PeerID) -> AsyncStream<Observation>
+    func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation>
 
     /// Returns known peers.
     func knownPeers() async -> [PeerID]
 
     /// Stream of all observations.
-    var observations: AsyncStream<Observation> { get }
+    var observations: AsyncStream<PeerObservation> { get }
 
     /// Shuts down the discovery service and releases operational resources.
     ///

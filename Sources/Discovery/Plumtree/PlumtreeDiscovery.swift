@@ -8,7 +8,7 @@ import P2PProtocols
 /// Discovery service backed by Plumtree gossip.
 ///
 /// Peers periodically broadcast self-announcements on a configured Plumtree topic.
-/// Received announcements are converted into `Observation` values and cached as
+/// Received announcements are converted into `PeerObservation` values and cached as
 /// `ScoredCandidate`s for `find(peer:)`.
 public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable, NodeDiscoveryStartable, NodeDiscoveryPeerStreamService {
     private struct PeerState: Sendable {
@@ -30,7 +30,7 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
     private var forwardTask: Task<Void, Never>?
     private var isStarted: Bool = false
 
-    private nonisolated let broadcaster = EventBroadcaster<Observation>()
+    private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
 
     public nonisolated var discoveryProtocolID: String {
         plumtreeProtocolID
@@ -149,11 +149,11 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
         return Array(knownPeersByID.keys)
     }
 
-    public nonisolated var observations: AsyncStream<Observation> {
+    public nonisolated var observations: AsyncStream<PeerObservation> {
         broadcaster.subscribe()
     }
 
-    public nonisolated func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    public nonisolated func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let stream = broadcaster.subscribe()
         return AsyncStream { continuation in
             let task = Task {
@@ -239,9 +239,9 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
         }
     }
 
-    private func emitObservation(subject: PeerID, kind: Observation.Kind, hints: [Multiaddr]) {
+    private func emitObservation(subject: PeerID, kind: PeerObservation.Kind, hints: [Multiaddr]) {
         observationSequence += 1
-        let observation = Observation(
+        let observation = PeerObservation(
             subject: subject,
             observer: localPeerID,
             kind: kind,

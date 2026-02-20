@@ -198,4 +198,44 @@ struct KeyPairTests {
         let isValid = try original.verify(signature: signature, for: message)
         #expect(isValid)
     }
+
+    // MARK: - Comparable Tests
+
+    @Test("PeerID Comparable is deterministic")
+    func peerIDComparable() {
+        let a = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let b = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        // Exactly one of <, ==, > must hold
+        let lt = a < b
+        let gt = b < a
+        let eq = a == b
+        #expect((lt && !gt && !eq) || (!lt && gt && !eq) || (!lt && !gt && eq))
+
+        // Consistent with itself
+        #expect(!(a < a))
+        #expect(a == a)
+    }
+
+    @Test("PeerID Comparable is consistent with bytes")
+    func peerIDComparableConsistentWithBytes() {
+        let a = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let b = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        let bytesLt = a.bytes.lexicographicallyPrecedes(b.bytes)
+        #expect((a < b) == bytesLt)
+    }
+
+    @Test("PeerID Comparable is transitive")
+    func peerIDComparableTransitive() {
+        var peers = (0..<5).map { _ in
+            PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        }
+        peers.sort()
+
+        // Sorted order should be consistent
+        for i in 0..<peers.count - 1 {
+            #expect(peers[i] <= peers[i + 1])
+        }
+    }
 }

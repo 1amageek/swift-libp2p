@@ -92,6 +92,20 @@ struct ReconnectionPolicyTests {
         #expect(policy.shouldReconnect(attempt: 0, reason: .connectionLimitExceeded) == false)
     }
 
+    @Test("Protocol error: don't reconnect")
+    func shouldNotReconnectProtocolError() {
+        let policy = ReconnectionPolicy.default
+
+        #expect(policy.shouldReconnect(attempt: 0, reason: .error(code: .protocolError, message: "no agreement")) == false)
+    }
+
+    @Test("Transport error: do reconnect")
+    func shouldReconnectTransportError() {
+        let policy = ReconnectionPolicy.default
+
+        #expect(policy.shouldReconnect(attempt: 0, reason: .error(code: .transportError, message: "connection refused")) == true)
+    }
+
     @Test("Remote close: do reconnect")
     func shouldReconnectRemoteClose() {
         let policy = ReconnectionPolicy.default

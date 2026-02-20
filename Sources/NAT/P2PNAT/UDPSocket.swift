@@ -1,6 +1,12 @@
 /// UDPSocket - RAII UDP socket helper for NAT protocol operations
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 /// UDP socket with automatic cleanup via `~Copyable`.
 ///
 /// Encapsulates the common pattern of creating a UDP socket,
@@ -8,25 +14,33 @@ import Foundation
 struct UDPSocket: ~Copyable {
     private let fd: Int32
 
+    private static var datagramType: Int32 {
+        #if canImport(Glibc)
+        Int32(SOCK_DGRAM.rawValue)
+        #else
+        SOCK_DGRAM
+        #endif
+    }
+
     /// Creates a new non-blocking UDP socket.
     init() throws {
-        let socket = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        if socket < 0 {
+        let sock = socket(AF_INET, UDPSocket.datagramType, IPPROTO_UDP)
+        if sock < 0 {
             throw NATPortMapperError.networkError("Failed to create UDP socket")
         }
 
         // Set non-blocking
-        let flags = fcntl(socket, F_GETFL, 0)
+        let flags = fcntl(sock, F_GETFL, 0)
         guard flags >= 0 else {
-            close(socket)
+            close(sock)
             throw NATPortMapperError.networkError("Failed to get socket flags")
         }
-        guard fcntl(socket, F_SETFL, flags | O_NONBLOCK) >= 0 else {
-            close(socket)
+        guard fcntl(sock, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            close(sock)
             throw NATPortMapperError.networkError("Failed to set non-blocking mode")
         }
 
-        self.fd = socket
+        self.fd = sock
     }
 
     deinit {
@@ -76,7 +90,11 @@ struct UDPSocket: ~Copyable {
 
         let seconds = timeout.components.seconds
         let microseconds = timeout.components.attoseconds / 1_000_000_000_000
+        #if canImport(Darwin)
         var tv = timeval(tv_sec: Int(seconds), tv_usec: Int32(microseconds))
+        #else
+        var tv = timeval(tv_sec: Int(seconds), tv_usec: Int(microseconds))
+        #endif
         let selectResult = select(fd + 1, &readfds, nil, nil, &tv)
 
         if selectResult <= 0 {
@@ -105,7 +123,13 @@ func natFdSet(_ fd: Int32, _ fdset: UnsafeMutablePointer<fd_set>) {
     // reinterpreting tuples as contiguous arrays.
     let byteOffset = Int(fd) / 8
     let bitOffset = Int(fd) % 8
+    #if canImport(Darwin)
     withUnsafeMutableBytes(of: &fdset.pointee.fds_bits) { rawBuffer in
         rawBuffer[byteOffset] |= UInt8(1 << bitOffset)
     }
+    #else
+    withUnsafeMutableBytes(of: &fdset.pointee.__fds_bits) { rawBuffer in
+        rawBuffer[byteOffset] |= UInt8(1 << bitOffset)
+    }
+    #endif
 }

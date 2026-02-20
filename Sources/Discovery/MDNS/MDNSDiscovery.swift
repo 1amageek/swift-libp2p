@@ -27,7 +27,7 @@ public actor MDNSDiscovery: DiscoveryService {
     private var isStarted = false
     private var forwardTask: Task<Void, Never>?
 
-    private nonisolated let broadcaster = EventBroadcaster<Observation>()
+    private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
 
     // MARK: - Initialization
 
@@ -158,7 +158,7 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Subscribes to observations about a specific peer.
     /// Pass a peer ID to filter, or use `.any` pattern by subscribing to all.
-    nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let targetID = peer.description
 
         return AsyncStream { continuation in
@@ -185,7 +185,7 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Returns all observations as a stream (for general subscription).
     /// Each call returns an independent stream (multi-consumer safe).
-    nonisolated public var observations: AsyncStream<Observation> {
+    nonisolated public var observations: AsyncStream<PeerObservation> {
         broadcaster.subscribe()
     }
 
@@ -295,7 +295,7 @@ public actor MDNSDiscovery: DiscoveryService {
             }
         }
 
-        let observation = Observation(
+        let observation = PeerObservation(
             subject: peerID,
             observer: localPeerID,
             kind: .unreachable,

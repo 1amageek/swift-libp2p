@@ -1,7 +1,7 @@
 # P2P Integration Layer
 
 ## 概要
-swift-libp2pの統合エントリーポイント。Protocol依存のみ、実装依存なし。
+swift-libp2pの統合エントリーポイント。`import P2P` だけで基本的なP2Pアプリが構築可能（batteries-included）。
 
 ## 責務
 - Nodeのライフサイクル管理
@@ -11,15 +11,17 @@ swift-libp2pの統合エントリーポイント。Protocol依存のみ、実装
 - イベント通知
 
 ## 依存関係
-- `P2PCore`
-- `P2PTransport` (Protocol)
-- `P2PSecurity` (Protocol)
-- `P2PMux` (Protocol)
-- `P2PNegotiation`
-- `P2PDiscovery` (Protocol)
 
-**含まないもの:**
-- 具体的な実装（TCP, Noise, Yamux等）への依存
+**`@_exported`（`import P2P` で利用可能）:**
+- Protocol抽象: `P2PCore`, `P2PTransport`, `P2PSecurity`, `P2PMux`, `P2PNegotiation`, `P2PDiscovery`, `P2PProtocols`
+- デフォルト実装: `P2PTransportTCP`, `P2PSecurityNoise`, `P2PSecurityPlaintext`, `P2PMuxYamux`, `P2PPing`
+- 基盤: `NIOCore`（ByteBuffer等）
+
+**内部利用（non-exported）:**
+- `P2PIdentify`, `P2PAutoNAT`, `P2PCircuitRelay`, `P2PDCUtR`, `P2PNAT`
+
+**別途importが必要なアプリケーションプロトコル:**
+- `P2PGossipSub`, `P2PKademlia`, `P2PPlumtree`, `P2PRendezvous` 等
 
 ---
 
@@ -212,10 +214,7 @@ public enum UpgradeError: Error, Sendable {
 ## ユーザー使用例
 
 ```swift
-import P2P
-import P2PTransportTCP
-import P2PSecurityNoise
-import P2PMuxYamux
+import P2P  // TCP, Noise, Plaintext, Yamux, Ping, NIOCore 込み
 
 // 設定は初期化時に完結
 let node = Node(configuration: NodeConfiguration(

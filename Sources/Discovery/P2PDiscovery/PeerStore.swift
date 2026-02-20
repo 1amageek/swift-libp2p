@@ -578,7 +578,7 @@ extension PeerStore {
     }
 
     /// Convenience method to add addresses from observations.
-    public func addObservation(_ observation: Observation) async {
+    public func addObservation(_ observation: PeerObservation) async {
         await addAddresses(observation.hints, for: observation.subject)
     }
 }

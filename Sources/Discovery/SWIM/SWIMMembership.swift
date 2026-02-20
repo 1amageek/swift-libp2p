@@ -71,7 +71,7 @@ public actor SWIMMembership: DiscoveryService {
     private var localAddress: Multiaddr?
     private var forwardTask: Task<Void, Never>?
 
-    private nonisolated let broadcaster = EventBroadcaster<Observation>()
+    private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
 
     // MARK: - Initialization
 
@@ -299,7 +299,7 @@ public actor SWIMMembership: DiscoveryService {
     }
 
     /// Subscribes to observations about a specific peer.
-    nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<Observation> {
+    nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let targetID = peer.description
         // Capture nonisolated property before Task to avoid actor hop
         let observationStream = self.observations
@@ -328,7 +328,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Returns all observations as a stream.
     /// Each call returns an independent stream (multi-consumer safe).
-    public nonisolated var observations: AsyncStream<Observation> {
+    public nonisolated var observations: AsyncStream<PeerObservation> {
         broadcaster.subscribe()
     }
 

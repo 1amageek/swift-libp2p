@@ -159,10 +159,10 @@ public enum PeerIDServiceCodec {
     /// - Throws: `MDNSDiscoveryError.invalidPeerID` if the service name is not a valid peer ID.
     public static func toObservation(
         service: Service,
-        kind: Observation.Kind,
+        kind: PeerObservation.Kind,
         observer: PeerID,
         sequenceNumber: UInt64
-    ) throws -> Observation {
+    ) throws -> PeerObservation {
         let peerID = try inferPeerID(from: service)
 
         var hints: [Multiaddr] = []
@@ -208,7 +208,7 @@ public enum PeerIDServiceCodec {
             }
         }
 
-        return Observation(
+        return PeerObservation(
             subject: peerID,
             observer: observer,
             kind: kind,

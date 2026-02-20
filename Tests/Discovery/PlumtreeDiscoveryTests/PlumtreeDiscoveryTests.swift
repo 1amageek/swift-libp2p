@@ -111,7 +111,7 @@ struct PlumtreeDiscoveryTests {
         )
 
         let stream = discovery.subscribe(to: remotePeer)
-        let observationTask = Task { () -> Observation? in
+        let observationTask = Task { () -> PeerObservation? in
             for await observation in stream {
                 return observation
             }
@@ -159,7 +159,7 @@ struct PlumtreeDiscoveryTests {
 
         let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4998")
         let stream = discovery.subscribe(to: localPeer)
-        let observationTask = Task { () -> Observation? in
+        let observationTask = Task { () -> PeerObservation? in
             for await observation in stream {
                 return observation
             }

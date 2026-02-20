@@ -923,4 +923,123 @@ struct NodeE2ETests {
         await server.shutdown()
         hub.reset()
     }
+
+    // MARK: - Simultaneous Connect Resolution
+
+    @Test("Simultaneous connect resolves to single connection", .timeLimit(.minutes(1)))
+    func testSimultaneousConnectResolution() async throws {
+        let hub = MemoryHub()
+        let serverAddr = Multiaddr.memory(id: "simul-server")
+        let clientAddr = Multiaddr.memory(id: "simul-client")
+
+        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr)
+        let client = makeNode(name: "client", hub: hub, listenAddress: clientAddr)
+
+        try await server.start()
+        try await client.start()
+
+        // Both dial each other simultaneously
+        async let serverDial: PeerID = server.connect(to: clientAddr)
+        async let clientDial: PeerID = client.connect(to: serverAddr)
+
+        let serverResult = try await serverDial
+        let clientResult = try await clientDial
+        let serverPeerID = await server.peerID
+        let clientPeerID = await client.peerID
+
+        #expect(serverResult == clientPeerID)
+        #expect(clientResult == serverPeerID)
+
+        // Wait for resolution
+        try await Task.sleep(for: .milliseconds(100))
+
+        // After resolution, each node should have exactly 1 connection to the other
+        let serverConnCount = await server.connectionCount
+        let clientConnCount = await client.connectionCount
+        #expect(serverConnCount == 1)
+        #expect(clientConnCount == 1)
+
+        await client.shutdown()
+        await server.shutdown()
+        hub.reset()
+    }
+
+    @Test("peerConnected emits only once for simultaneous connect", .timeLimit(.minutes(1)))
+    func testPeerConnectedEmitsOnce() async throws {
+        let hub = MemoryHub()
+        let serverAddr = Multiaddr.memory(id: "event-server")
+        let clientAddr = Multiaddr.memory(id: "event-client")
+
+        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr)
+        let client = makeNode(name: "client", hub: hub, listenAddress: clientAddr)
+
+        try await server.start()
+        try await client.start()
+
+        // Collect events from client
+        let peerConnectedCount = Mutex(0)
+        let eventTask = Task {
+            for await event in await client.events {
+                if case .peerConnected = event {
+                    peerConnectedCount.withLock { $0 += 1 }
+                }
+            }
+        }
+
+        // Both dial each other simultaneously
+        async let serverDial: PeerID = server.connect(to: clientAddr)
+        async let clientDial: PeerID = client.connect(to: serverAddr)
+        _ = try await (serverDial, clientDial)
+
+        // Wait for events to propagate
+        try await Task.sleep(for: .milliseconds(200))
+
+        // Should have received exactly 1 peerConnected event (not 2)
+        let count = peerConnectedCount.withLock { $0 }
+        #expect(count == 1)
+
+        eventTask.cancel()
+        await client.shutdown()
+        await server.shutdown()
+        hub.reset()
+    }
+
+    @Test("peerDisconnected emits only after last connection closes", .timeLimit(.minutes(1)))
+    func testPeerDisconnectedEmitsOnLastClose() async throws {
+        let hub = MemoryHub()
+        let serverAddr = Multiaddr.memory(id: "disc-server")
+
+        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr)
+        let client = makeNode(name: "client", hub: hub)
+
+        try await server.start()
+        try await client.start()
+
+        // Collect disconnect events
+        let disconnectedCount = Mutex(0)
+        let eventTask = Task {
+            for await event in await client.events {
+                if case .peerDisconnected = event {
+                    disconnectedCount.withLock { $0 += 1 }
+                }
+            }
+        }
+
+        // Connect
+        let serverPeerID = try await client.connect(to: serverAddr)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Disconnect
+        await client.disconnect(from: serverPeerID)
+        try await Task.sleep(for: .milliseconds(100))
+
+        // Should have exactly 1 disconnect event
+        let count = disconnectedCount.withLock { $0 }
+        #expect(count == 1)
+
+        eventTask.cancel()
+        await client.shutdown()
+        await server.shutdown()
+        hub.reset()
+    }
 }

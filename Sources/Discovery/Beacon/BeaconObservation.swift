@@ -4,7 +4,7 @@ import Foundation
 /// Used by the aggregation layer for Bayesian presence estimation.
 ///
 /// Renamed from `Observation` (in swift-p2p-discovery) to avoid collision
-/// with `P2PDiscovery.Observation`.
+/// with `P2PDiscovery.PeerObservation`.
 public struct BeaconObservation: Sendable {
     /// When the observation occurred.
     public let timestamp: ContinuousClock.Instant

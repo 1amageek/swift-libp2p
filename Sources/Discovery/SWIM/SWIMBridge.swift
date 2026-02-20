@@ -141,7 +141,7 @@ public enum SWIMBridge {
         event: SWIMEvent,
         observer: PeerID,
         sequenceNumber: UInt64
-    ) -> Observation? {
+    ) -> PeerObservation? {
         switch event {
         case .memberJoined(let member):
             return memberToObservation(
@@ -186,7 +186,7 @@ public enum SWIMBridge {
                 hints.append(addr)
             }
 
-            return Observation(
+            return PeerObservation(
                 subject: peerID,
                 observer: observer,
                 kind: .unreachable,
@@ -205,7 +205,7 @@ public enum SWIMBridge {
                 hints.append(addr)
             }
 
-            return Observation(
+            return PeerObservation(
                 subject: peerID,
                 observer: observer,
                 kind: .unreachable,
@@ -228,10 +228,10 @@ public enum SWIMBridge {
 
     private static func memberToObservation(
         member: Member,
-        kind: Observation.Kind,
+        kind: PeerObservation.Kind,
         observer: PeerID,
         sequenceNumber: UInt64
-    ) -> Observation? {
+    ) -> PeerObservation? {
         guard let peerID = toPeerID(memberID: member.id) else {
             return nil
         }
@@ -241,7 +241,7 @@ public enum SWIMBridge {
             hints.append(addr)
         }
 
-        return Observation(
+        return PeerObservation(
             subject: peerID,
             observer: observer,
             kind: kind,
