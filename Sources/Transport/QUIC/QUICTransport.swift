@@ -54,6 +54,8 @@ public final class QUICTransport: SecuredTransport, Sendable {
         [["ip4", "udp", "quic-v1"], ["ip6", "udp", "quic-v1"]]
     }
 
+    public var pathKind: TransportPathKind { .ip }
+
     /// Creates a new QUIC transport.
     ///
     /// - Parameter configuration: QUIC configuration (defaults to libp2p preset)

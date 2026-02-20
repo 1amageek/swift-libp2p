@@ -11,7 +11,7 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 - **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
 - **Addressing**: Full Multiaddr support
 - **Discovery**: SWIM membership, mDNS local discovery, CYCLON random peer sampling
-- **NAT Traversal**: Circuit Relay v2, AutoNAT, DCUtR hole punching
+- **Traversal Orchestration**: Strategy-based coordinator (local direct, direct IP, hole punch, relay fallback)
 - **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT (S/Kademlia, latency tracking), Plumtree
 
 ## Implementation Status
@@ -107,6 +107,14 @@ A modern Swift implementation of the [libp2p](https://libp2p.io/) networking sta
 | Circuit Relay v2 (client + server) | ✅ Implemented | |
 | AutoNAT | ✅ Implemented | |
 | DCUtR | ✅ Implemented | |
+
+### Traversal
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| TraversalCoordinator | ✅ Implemented | Mechanism orchestration with policy ordering |
+| TraversalMechanism | ✅ Implemented | `local`, `ip`, `holePunch`, `relay` path categories |
+| TraversalHintProvider | ✅ Implemented | External candidate injection (e.g. mesh layer) |
 
 ### Integration
 

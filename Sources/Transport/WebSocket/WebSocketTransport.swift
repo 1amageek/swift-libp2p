@@ -93,6 +93,8 @@ public final class WebSocketTransport: Transport, Sendable {
         ]
     }
 
+    public var pathKind: TransportPathKind { .ip }
+
     /// Creates a WebSocketTransport with a new EventLoopGroup.
     public init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)

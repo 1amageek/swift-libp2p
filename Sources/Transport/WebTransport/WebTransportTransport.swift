@@ -22,6 +22,8 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
         ]
     }
 
+    public var pathKind: TransportPathKind { .ip }
+
     public init(
         configuration: WebTransportConfiguration = .init(),
         quicConfiguration: QUICConfiguration = .libp2p()

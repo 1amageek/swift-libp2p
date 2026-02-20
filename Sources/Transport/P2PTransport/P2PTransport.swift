@@ -5,6 +5,18 @@
 
 import P2PCore
 
+/// Transport path classification used by traversal strategy selection.
+public enum TransportPathKind: Sendable {
+    /// Local-only transport paths (non-IP).
+    case local
+
+    /// Internet protocol transport paths (TCP/UDP/QUIC/WebSocket/WebRTC).
+    case ip
+
+    /// Relayed transport paths.
+    case relay
+}
+
 /// A transport that can establish connections.
 public protocol Transport: Sendable {
     /// The protocols this transport supports (e.g., ["tcp", "ip4"], ["tcp", "ip6"]).
@@ -27,6 +39,13 @@ public protocol Transport: Sendable {
 
     /// Checks if this transport can listen on the given address.
     func canListen(_ address: Multiaddr) -> Bool
+
+    /// Path classification for traversal strategy selection.
+    var pathKind: TransportPathKind { get }
+}
+
+public extension Transport {
+    var pathKind: TransportPathKind { .ip }
 }
 
 /// A listener for incoming connections.

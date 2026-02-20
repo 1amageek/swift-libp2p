@@ -638,6 +638,7 @@ let package = Package(
         .testTarget(
             name: "GoInteropTests",
             dependencies: [
+                "P2P",
                 "P2PIdentify",
                 "P2PPing",
                 "P2PCore",

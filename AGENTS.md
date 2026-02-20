@@ -10,7 +10,7 @@
 - `Sources/Discovery/` — Discovery protocol definitions and implementations (SWIM, mDNS, CYCLON).
 - `Sources/NAT/` — NAT traversal (P2PNAT, UPnP, NATPMP).
 - `Sources/Protocols/` — Application protocol definitions and implementations (Ping, Identify, GossipSub, Kademlia, CircuitRelay, DCUtR, AutoNAT, Plumtree).
-- `Sources/Integration/P2P/` is the integration layer (Node, ConnectionUpgrader, ResourceManager).
+- `Sources/Integration/P2P/` is the integration layer (Node, ConnectionUpgrader, ResourceManager, Traversal).
 - `Tests/` mirrors module layout for unit/integration tests.
 - `Benchmarks/P2PBenchmarks/` contains performance benchmarks.
 - `Examples/PingPongDemo/` contains the runnable demo app.
@@ -49,6 +49,7 @@
 - `swift test --filter DCUtRTests` — DCUtR tests.
 - `swift test --filter AutoNATTests` — AutoNAT tests.
 - `swift test --filter P2PTests` — Integration/Node E2E tests.
+- `swift test --filter Traversal` — Traversal orchestration tests.
 - `swift test --filter GoInteropTests` — Go interop tests.
 
 ## Coding Style & Naming Conventions

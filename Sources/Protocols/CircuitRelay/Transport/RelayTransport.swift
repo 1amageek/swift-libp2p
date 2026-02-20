@@ -34,6 +34,8 @@ public final class RelayTransport: Transport, Sendable {
         [["p2p-circuit"]]
     }
 
+    public var pathKind: TransportPathKind { .relay }
+
     // MARK: - Properties
 
     /// The relay client for making reservations and connections.

@@ -32,6 +32,7 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 | Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop` | ✅ | - |
 
 注: 上記の `✅` は **go-libp2p 単一ノード相互運用**（wire互換・基本往復）を示す。複数ノードトポロジ/大規模シナリオは継続対応。
+注: Circuit Relay は traversal の選択肢の1つとして扱う（常時必須経路ではない）。
 
 ## テスト実行
 

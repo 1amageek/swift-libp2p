@@ -41,9 +41,10 @@ Sources/Integration/P2P/
 ├── Dial/                     # ダイヤル戦略
 │   ├── DefaultDialRanker.swift       # アドレスランキング（リレーグループ対応）
 │   └── SmartDialer.swift             # ランク付き並行ダイヤル
-├── NAT/                      # NAT Traversal
-│   ├── NATTraversalConfiguration.swift  # NAT 設定
-│   └── NATManager.swift                 # NAT 調整 (EventEmitting)
+├── Traversal/                # 接続経路オーケストレーション
+│   ├── TraversalCoordinator.swift       # Mechanism 実行調停
+│   ├── TraversalMechanism.swift         # 経路メカニズム抽象
+│   └── Policies/DefaultTraversalPolicy.swift  # デフォルト優先順位ポリシー
 └── Resource/                 # リソース管理 (GAP-9)
     ├── ResourceManager.swift             # ResourceManager プロトコル
     ├── DefaultResourceManager.swift      # デフォルト実装 (system/peer/protocol 3スコープ)
@@ -261,21 +262,19 @@ try await stream.write(Data("Hello".utf8))
 
 ---
 
-## NAT Traversal アーキテクチャ
+## Traversal アーキテクチャ
 
 ### コンポーネント構成
 
 ```
 Node (actor)
- ├── NATManager (Class+Mutex, EventEmitting)
- │    ├── AutoNATService     — NAT 検出（定期プローブ）
- │    ├── NATPortMapper      — UPnP/NAT-PMP ポートマッピング（オプション）
- │    ├── AutoRelay          — リレー予約管理
- │    ├── DCUtRService       — ホールパンチ調整
- │    └── HolePunchService   — 実際の TCP/QUIC ホールパンチ
- ├── SmartDialer (Class+Mutex)
- │    ├── DefaultDialRanker  — アドレスランキング（リレー遅延対応）
- │    └── BlackHoleDetector  — 到達不能パス除外
+ ├── TraversalCoordinator (Class+Mutex, EventEmitting)
+ │    ├── LocalDirectMechanism  — ローカル経路優先
+ │    ├── DirectMechanism       — 直接IP経路
+ │    ├── HolePunchMechanism    — AutoNAT + DCUtR
+ │    ├── RelayMechanism        — Relay フォールバック
+ │    ├── TraversalHintProvider — 外部ヒント注入（mesh等）
+ │    └── TraversalPolicy       — 候補順序/フォールバック制御
  └── ConnectionPool
       └── isLimited flag     — リレー接続の識別
 ```
@@ -283,24 +282,25 @@ Node (actor)
 ### イベントフロー
 
 ```
-AutoNAT → reachabilityChanged → NATManager → AutoRelay.updateReachability()
-                                           → NATPortMapper (オプション)
-                                           → relayAddressesUpdated → Identify Push
-
-Inbound relay connection (isLimited=true)
-  + Identify completed → NATManager → DCUtR.upgradeToDirectConnection()
+AddressBook + HintProviders
+  → TraversalCoordinator.collectCandidates()
+  → TraversalPolicy.order()
+  → stage-by-stage attempts (local/ip/holePunch/relay)
+  → first success wins (other in-flight attempts are cancelled)
 ```
 
 ### ファイル構成
 
 ```
 Sources/Integration/P2P/
-├── NAT/
-│   ├── NATTraversalConfiguration.swift  # NAT 設定 (全サービスインスタンス + パラメータ)
-│   └── NATManager.swift                 # NAT 調整 (EventEmitting, Class+Mutex)
-└── Dial/
-    ├── DefaultDialRanker.swift          # アドレスランキング (リレーグループ対応)
-    └── SmartDialer.swift                # ランク付き並行ダイヤル (Happy Eyeballs)
+└── Traversal/
+    ├── TraversalConfiguration.swift      # Orchestration 設定
+    ├── TraversalCoordinator.swift        # メカニズム調停
+    ├── TraversalMechanism.swift          # メカニズム抽象
+    ├── TraversalHintProvider.swift       # 外部候補ヒント
+    ├── TraversalPolicy.swift             # 優先順位・フォールバック
+    ├── Mechanisms/*.swift                # Direct/Local/HolePunch/Relay 実装
+    └── Policies/DefaultTraversalPolicy.swift
 ```
 
 ### NodeConfiguration 拡張
@@ -308,16 +308,16 @@ Sources/Integration/P2P/
 ```swift
 public struct NodeConfiguration: Sendable {
     // ... 既存フィールド ...
-    public let natTraversal: NATTraversalConfiguration?  // NAT traversal 設定
+    public let traversal: TraversalConfiguration?  // traversal 設定
 }
 ```
 
-### 依存モジュール (NAT 関連)
+### 依存モジュール (Traversal 関連)
 
 - `P2PAutoNAT` — AutoNAT v2 プローブ
 - `P2PCircuitRelay` — Circuit Relay v2 クライアント/サーバー
 - `P2PDCUtR` — Direct Connection Upgrade through Relay
-- `P2PNAT` — NAT デバイス検出、ポートマッピング、AutoRelay
+- `P2PNAT` — NAT デバイス検出、ポートマッピング
 
 ---
 

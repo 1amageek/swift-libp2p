@@ -149,8 +149,8 @@ public struct NodeConfiguration: Sendable {
     /// Identify service for peer information exchange and auto-push (nil to disable).
     public let identifyService: IdentifyService?
 
-    /// NAT traversal configuration (nil to disable NAT traversal).
-    public let natTraversal: NATTraversalConfiguration?
+    /// Traversal configuration (nil to disable traversal orchestration).
+    public let traversal: TraversalConfiguration?
 
     public init(
         keyPair: KeyPair = .generateEd25519(),
@@ -169,7 +169,7 @@ public struct NodeConfiguration: Sendable {
         keyBook: (any KeyBook)? = nil,
         resourceManager: (any ResourceManager)? = nil,
         identifyService: IdentifyService? = nil,
-        natTraversal: NATTraversalConfiguration? = nil
+        traversal: TraversalConfiguration? = nil
     ) {
         self.keyPair = keyPair
         self.listenAddresses = listenAddresses
@@ -187,7 +187,7 @@ public struct NodeConfiguration: Sendable {
         self.keyBook = keyBook
         self.resourceManager = resourceManager
         self.identifyService = identifyService
-        self.natTraversal = natTraversal
+        self.traversal = traversal
     }
 }
 
@@ -271,15 +271,13 @@ public actor Node: StreamOpener, HandlerRegistry {
     private var idleCheckTask: Task<Void, Never>?
     private var trimTask: Task<Void, Never>?
     private var discoveryTask: Task<Void, Never>?
-    private var identifyEventsTask: Task<Void, Never>?
 
     // Auto-connect tracking
     private var autoConnectCooldowns: [PeerID: ContinuousClock.Instant] = [:]
     private var discoveryAttachedPeers: Set<PeerID> = []
 
-    // NAT traversal
-    private var natManager: NATManager?
-    private var smartDialer: SmartDialer?
+    // Traversal orchestration
+    private var traversalCoordinator: TraversalCoordinator?
     /// Current listen addresses, accessible synchronously from @Sendable closures.
     private nonisolated let _currentListenAddresses = ListenAddressStore()
 
@@ -421,31 +419,32 @@ public actor Node: StreamOpener, HandlerRegistry {
             listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
         )
 
-        // Initialize NAT traversal if configured
-        if let natConfig = configuration.natTraversal {
-            let manager = NATManager(config: natConfig, localPeer: peerID)
+        // Initialize traversal orchestration if configured
+        if let traversalConfig = configuration.traversal {
+            let coordinator = TraversalCoordinator(
+                configuration: traversalConfig,
+                localPeer: peerID,
+                transports: configuration.transports
+            )
             let addressStore = _currentListenAddresses
-            await manager.start(
+            await coordinator.start(
                 opener: self,
                 registry: self,
-                localPeer: peerID,
                 getLocalAddresses: {
                     addressStore.current
                 },
                 getPeers: { [pool] in
                     pool.connectedPeers
                 },
-                dialFn: { [weak self] (addr: Multiaddr) in
+                isLimitedConnection: { [pool] peer in
+                    pool.isLimitedConnection(to: peer)
+                },
+                dialAddress: { [weak self] (addr: Multiaddr) in
                     guard let self else { throw NodeError.nodeNotRunning }
-                    _ = try await self.connect(to: addr)
+                    return try await self.connect(to: addr)
                 }
             )
-            self.natManager = manager
-
-            self.smartDialer = SmartDialer(
-                dialRanker: DefaultDialRanker(relayDelay: .milliseconds(500)),
-                blackHoleDetector: nil
-            )
+            self.traversalCoordinator = coordinator
         }
 
         // Register IdentifyService handlers if configured
@@ -464,19 +463,6 @@ public actor Node: StreamOpener, HandlerRegistry {
                 opener: self
             )
             identify.startMaintenance()
-
-            // Monitor Identify events for NATManager DCUtR triggering
-            if let natManager {
-                identifyEventsTask = Task { [weak self, natManager] in
-                    for await event in identify.events {
-                        guard !Task.isCancelled else { break }
-                        guard let self else { break }
-                        if case .received(let peer, _) = event {
-                            natManager.handleIdentifyCompleted(peer, opener: self)
-                        }
-                    }
-                }
-            }
         }
 
         // Start PeerStore GC if using MemoryPeerStore
@@ -508,6 +494,11 @@ public actor Node: StreamOpener, HandlerRegistry {
     public func shutdown() async {
         isRunning = false
 
+        // Shutdown traversal coordinator first so event stream is finished promptly.
+        traversalCoordinator?.shutdown()
+        traversalCoordinator = nil
+        _currentListenAddresses.clear()
+
         // Shutdown PeerStore if using MemoryPeerStore (stops GC + releases events)
         if let memoryStore = _peerStore as? MemoryPeerStore {
             memoryStore.shutdown()
@@ -520,8 +511,6 @@ public actor Node: StreamOpener, HandlerRegistry {
         trimTask = nil
         discoveryTask?.cancel()
         discoveryTask = nil
-        identifyEventsTask?.cancel()
-        identifyEventsTask = nil
 
         // Stop bootstrap
         if let bootstrap = _bootstrap {
@@ -583,12 +572,6 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Shutdown IdentifyService
         configuration.identifyService?.shutdown()
-
-        // Shutdown NATManager
-        natManager?.shutdown()
-        natManager = nil
-        smartDialer = nil
-        _currentListenAddresses.clear()
 
         // Finish event stream
         eventContinuation?.finish()
@@ -657,7 +640,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             throw NodeError.noSuitableTransport
         }
 
-        let isRelay = Self.isCircuitRelayAddress(address)
+        let isRelay = transport.pathKind == .relay
 
         // SecuredTransport (e.g., QUIC) bypasses the upgrade pipeline
         if let securedTransport = transport as? SecuredTransport {
@@ -878,10 +861,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         return remotePeer
     }
 
-    /// Connects to a peer using all known addresses with ranked dialing.
-    ///
-    /// Direct addresses are tried first, relay addresses are tried after a delay.
-    /// Uses SmartDialer if NAT traversal is configured, otherwise tries sequentially.
+    /// Connects to a peer using known addresses and traversal orchestration.
     ///
     /// - Parameter peer: The peer to connect to.
     /// - Returns: The connected peer ID.
@@ -895,20 +875,17 @@ public actor Node: StreamOpener, HandlerRegistry {
         // learned via Identify (stored in the address book with /p2p-circuit).
         let addresses = await _addressBook.sortedAddresses(for: peer)
 
-        guard !addresses.isEmpty else {
-            throw NodeError.noAddressesKnown(peer)
+        // Use traversal coordinator if configured
+        if let traversalCoordinator {
+            let result = try await traversalCoordinator.connect(
+                to: peer,
+                knownAddresses: addresses
+            )
+            return result.connectedPeer
         }
 
-        // Use SmartDialer for ranked dialing
-        if let smartDialer {
-            let (peerID, _) = try await smartDialer.dialRanked(
-                addresses: addresses,
-                dialFn: { [weak self] addr in
-                    guard let self else { throw NodeError.nodeNotRunning }
-                    return try await self.connect(to: addr)
-                }
-            )
-            return peerID
+        guard !addresses.isEmpty else {
+            throw NodeError.noAddressesKnown(peer)
         }
 
         // Fallback: sequential dial
@@ -1137,16 +1114,14 @@ public actor Node: StreamOpener, HandlerRegistry {
         emit(.peerConnected(peer))
         configuration.identifyService?.peerConnected(peer)
         await attachDiscoveryStreamIfNeeded(for: peer)
-        if let address {
-            natManager?.handlePeerConnected(peer, address: address, isLimited: isLimited)
-        }
+        _ = address
+        _ = isLimited
     }
 
     private func onPeerDisconnected(_ peer: PeerID) async {
         emit(.peerDisconnected(peer))
         configuration.identifyService?.peerDisconnected(peer)
         await detachDiscoveryStreamIfNeeded(for: peer)
-        natManager?.handlePeerDisconnected(peer)
     }
 
     private func attachDiscoveryStreamIfNeeded(for peer: PeerID) async {
@@ -1302,7 +1277,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                     await self?.handleConnectionClosed(id: id, peer: remotePeer)
                 }
 
-                let isRelay = Self.isCircuitRelayAddress(address)
+                let isRelay = transport.pathKind == .relay
                 await onPeerConnected(remotePeer, address: address, isLimited: isRelay)
                 emitConnectionEvent(.reconnected(peer: peer, attempt: attempt))
 
@@ -1375,7 +1350,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             }
 
             // Emit events
-            let isRelay = Self.isCircuitRelayAddress(address)
+            let isRelay = transport.pathKind == .relay
             await onPeerConnected(remotePeer, address: address, isLimited: isRelay)
             emitConnectionEvent(.reconnected(peer: peer, attempt: attempt))
 

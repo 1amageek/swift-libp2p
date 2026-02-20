@@ -47,6 +47,8 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
         [["ip4", "udp", "webrtc-direct"], ["ip6", "udp", "webrtc-direct"]]
     }
 
+    public var pathKind: TransportPathKind { .ip }
+
     /// Creates a WebRTCTransport with a new EventLoopGroup.
     public init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)

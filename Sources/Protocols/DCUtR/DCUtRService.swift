@@ -74,7 +74,7 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     private let _dialerOverride: Mutex<(@Sendable (Multiaddr) async throws -> Void)?>
 
     /// Overridable local address provider.
-    /// Set via `setLocalAddressProvider()` after construction (e.g., when NATManager wires listen addresses).
+    /// Set via `setLocalAddressProvider()` after construction (e.g., when traversal wires listen addresses).
     private let _localAddressProvider: Mutex<(@Sendable () -> [Multiaddr])?>
 
     /// Event state (dedicated).

@@ -57,6 +57,8 @@ public final class MemoryTransport: Transport, Sendable {
         [["memory"]]
     }
 
+    public var pathKind: TransportPathKind { .local }
+
     /// Creates a memory transport using the shared hub.
     public init() {
         self.hub = .shared

@@ -20,6 +20,8 @@ public final class TCPTransport: Transport, Sendable {
         [["ip4", "tcp"], ["ip6", "tcp"]]
     }
 
+    public var pathKind: TransportPathKind { .ip }
+
     /// Creates a TCPTransport with a new EventLoopGroup.
     public init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
