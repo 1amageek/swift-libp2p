@@ -1,595 +1,381 @@
 # swift-libp2p
 
-A modern Swift implementation of the [libp2p](https://libp2p.io/) networking stack, designed for wire-protocol compatibility with Go and Rust implementations.
+A modern Swift implementation of the [libp2p](https://libp2p.io/) networking stack with wire-protocol compatibility with Go and Rust implementations. Built on Swift Concurrency (async/await, actors) for safe, high-performance peer-to-peer networking.
 
 ## Features
 
-- **Transport Layer**: TCP (SwiftNIO), QUIC (RFC 9000/9001), WebRTC Direct (DTLS 1.2 + SCTP), WebSocket, Memory for testing
-- **Security Layer**: TLS 1.3 (libp2p spec, via swift-tls), Noise Protocol (XX pattern), QUIC TLS 1.3, DTLS 1.2 (WebRTC), Plaintext for testing
-- **Multiplexing**: Yamux stream multiplexer, Mplex, QUIC native multiplexing, SCTP data channels (WebRTC)
-- **Protocol Negotiation**: multistream-select 1.0, V1 Lazy (0-RTT)
-- **Identity**: Ed25519/ECDSA P-256 keys, PeerID derivation
-- **Addressing**: Full Multiaddr support
-- **Discovery**: SWIM membership, mDNS local discovery, CYCLON random peer sampling
-- **Traversal Orchestration**: Strategy-based coordinator (local direct, direct IP, hole punch, relay fallback)
-- **Standard Protocols**: Identify (+ Push), Ping, GossipSub, Kademlia DHT (S/Kademlia, latency tracking), Plumtree
-
-## Implementation Status
-
-### Core Stack
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| PeerID / KeyPair (Ed25519, ECDSA P-256) | ✅ Implemented | |
-| Multiaddr | ✅ Implemented | |
-| Varint / Multihash | ✅ Implemented | |
-| Signed Envelope / Peer Records | ✅ Implemented | |
-| EventEmitting pattern | ✅ Implemented | |
-| ProtobufLite (shared wire type 2 utility) | ✅ Implemented | |
-
 ### Transport
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| TCP (SwiftNIO) | ✅ Implemented | |
-| QUIC (swift-quic) | ✅ Implemented | 0-RTT resumption, connection migration |
-| Memory (testing) | ✅ Implemented | |
-| Circuit Relay v2 Transport | ✅ Implemented | |
-| WebRTC Direct (swift-webrtc) | ✅ Implemented | DTLS 1.2 + SCTP, 25 tests |
-| WebSocket (NIOWebSocket) | ✅ Implemented | HTTP/1.1 upgrade, TLS support, 15 tests |
+TCP (SwiftNIO), QUIC (RFC 9000), WebSocket, WebRTC Direct (DTLS + SCTP), WebTransport, Memory (testing)
 
 ### Security
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Noise XX (X25519 + ChaChaPoly + SHA256) | ✅ Implemented | Small-order key validation included |
-| TLS 1.3 (swift-tls, libp2p spec) | ✅ Implemented | Go/Rust compatible |
-| QUIC TLS 1.3 (libp2p certificate) | ✅ Implemented | |
-| Plaintext (testing) | ✅ Implemented | |
-| Early Muxer Negotiation (TLS ALPN) | ✅ Implemented | `EarlyMuxerNegotiating` protocol, ALPN muxer hints |
+Noise XX (X25519 + ChaChaPoly + SHA256), TLS 1.3, Private Network (PSK + XSalsa20), Plaintext (testing)
 
 ### Multiplexing
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Yamux | ✅ Implemented | Flow control, keep-alive, 42+ tests |
-| Mplex | ✅ Implemented | Frame-level tests; connection/stream tests limited |
-| QUIC native multiplexing | ✅ Implemented | |
-
-### Protocol Negotiation
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| multistream-select v1 | ✅ Implemented | 20 tests |
-| multistream-select v1 Lazy (0-RTT) | ✅ Implemented | ConnectionUpgrader initiator side |
+Yamux (flow control, keep-alive), Mplex, QUIC/SCTP native multiplexing
 
 ### Discovery
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| SWIM membership | ✅ Implemented | |
-| mDNS local discovery | ✅ Implemented | |
-| PeerStore (basic, in-memory, LRU) | ✅ Implemented | |
-| AddressBook (scoring, priority) | ✅ Implemented | |
-| Bootstrap (seed peers) | ✅ Implemented | |
-| PeerStore TTL-based garbage collection | ✅ Implemented | LRU + TTL-based GC |
-| ProtoBook (per-peer protocol tracking) | ✅ Implemented | |
-| KeyBook (per-peer public key storage) | ✅ Implemented | |
-| CYCLON random peer sampling | ✅ Implemented | 27 tests |
+SWIM membership, mDNS, CYCLON random sampling, Plumtree gossip, Beacon (BLE/WiFi/LoRa proximity)
 
 ### Protocols
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Identify (+ Push) | ✅ Implemented | SignedPeerRecord verification included |
-| Ping | ✅ Implemented | Single/multiple ping + statistics |
-| Circuit Relay v2 | ✅ Implemented | Client + Server, 72 tests |
-| DCUtR (hole punching) | ✅ Implemented | 50 tests |
-| AutoNAT v1 | ✅ Implemented | Rate limiting, 74 tests |
-| GossipSub v1.1 | ✅ Implemented | Peer scoring, signature verification |
-| GossipSub IDONTWANT (v1.2 wire format) | ✅ Implemented | Full encode/decode + send/receive |
-| GossipSub per-topic scoring | ✅ Implemented | TopicScoreParams (P1-P4), PeerScorer integration |
-| Kademlia DHT | ✅ Implemented | 153 tests, record validation, S/Kademlia, latency tracking |
-| Kademlia client/server mode restriction | ✅ Implemented | Inbound query rejection in client mode (Go-compatible) |
-| Kademlia RecordValidator.Select | ✅ Implemented | Best record selection via `select(key:records:)` |
-| Kademlia persistent storage | ✅ Implemented | FileRecordStorage + FileProviderStorage |
-| Kademlia peer latency tracking | ✅ Implemented | PeerLatencyTracker, dynamic timeout, success rate |
-| Kademlia record republish | ✅ Implemented | Background republish for records and providers |
-| Kademlia provider caching | ✅ Implemented | Local cache for network-fetched providers |
-| Kademlia dynamic alpha | ✅ Implemented | Network-adaptive query parallelism |
-| Plumtree (Epidemic Broadcast Trees) | ✅ Implemented | 50 tests |
+Identify, Ping, GossipSub v1.1/v1.2, Kademlia DHT (S/Kademlia), Plumtree, Circuit Relay v2, AutoNAT, DCUtR, Rendezvous, HTTP
 
 ### NAT Traversal
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| NAT port mapping (UPnP + NAT-PMP) | ✅ Implemented | macOS-only gateway detection |
-| Circuit Relay v2 (client + server) | ✅ Implemented | |
-| AutoNAT | ✅ Implemented | |
-| DCUtR | ✅ Implemented | |
-
-### Traversal
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| TraversalCoordinator | ✅ Implemented | Mechanism orchestration with policy ordering |
-| TraversalMechanism | ✅ Implemented | `local`, `ip`, `holePunch`, `relay` path categories |
-| TraversalHintProvider | ✅ Implemented | External candidate injection (e.g. mesh layer) |
-
-### Integration
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| Node (actor) | ✅ Implemented | |
-| ConnectionPool (limits, trimming) | ✅ Implemented | |
-| ConnectionUpgrader | ✅ Implemented | Sequential 2-phase multistream-select |
-| ConnectionGater | ✅ Implemented | |
-| HealthMonitor | ✅ Implemented | |
-| ReconnectionPolicy | ✅ Implemented | |
-| Resource Manager (multi-scope) | ✅ Implemented | System-wide and per-peer resource accounting |
+Traversal Coordinator (local direct -> direct IP -> hole punch -> relay fallback), UPnP + NAT-PMP
 
 ## Requirements
 
 - Swift 6.2+
-- macOS 15+ / iOS 18+ / tvOS 18+ / watchOS 11+ / visionOS 2+
+- macOS 26+ / iOS 26+ / tvOS 26+ / watchOS 26+ / visionOS 26+
 
 ## Installation
 
-Add swift-libp2p to your `Package.swift`:
-
 ```swift
 dependencies: [
-    .package(url: "https://github.com/example/swift-libp2p.git", from: "0.1.0")
+    .package(url: "https://github.com/1amageek/swift-libp2p.git", from: "0.1.0")
 ]
 ```
 
-Then add the necessary targets:
+`P2P` module re-exports common dependencies (batteries-included):
 
 ```swift
-.target(
-    name: "YourApp",
-    dependencies: [
-        "P2P",
-        "P2PTransportTCP",
-        "P2PSecurityNoise",
-        "P2PMuxYamux"
-    ]
-)
+.target(name: "YourApp", dependencies: ["P2P"])
+```
+
+Or pick individual modules:
+
+```swift
+.target(name: "YourApp", dependencies: [
+    "P2PCore",
+    "P2PTransportTCP",
+    "P2PSecurityNoise",
+    "P2PMuxYamux",
+    "P2PProtocols"
+])
 ```
 
 ## Quick Start
 
 ```swift
 import P2P
-import P2PTransportTCP
-import P2PSecurityNoise
-import P2PMuxYamux
 
-// Create a node
-let keyPair = KeyPair.generateEd25519()
-let config = NodeConfiguration(
-    keyPair: keyPair,
+let node = Node(configuration: NodeConfiguration(
+    keyPair: .generateEd25519(),
     listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
     transports: [TCPTransport()],
     security: [NoiseUpgrader()],
-    muxers: [YamuxMuxer()],
-    limits: ConnectionLimits(maxConnections: 100)
-)
+    muxers: [YamuxMuxer()]
+))
 
-let node = Node(configuration: config)
-
-// Register protocol handler
-await node.handle("/chat/1.0.0") { stream in
-    // Handle incoming chat messages
-    let data = try await stream.read()
-    print("Received: \(String(data: data, encoding: .utf8)!)")
-}
-
-// Start the node
 try await node.start()
-print("Node started with PeerID: \(await node.peerID)")
+print("Listening as \(node.peerID)")
 
-// Connect to a peer
-let remotePeer = try await node.connect(
+// Connect to a remote peer
+let peer = try await node.connect(
     to: Multiaddr("/ip4/192.168.1.100/tcp/4001/p2p/12D3KooW...")!
 )
 
 // Open a stream
-let stream = try await node.newStream(to: remotePeer, protocol: "/chat/1.0.0")
+let stream = try await node.newStream(to: peer, protocol: "/chat/1.0.0")
 try await stream.write(Data("Hello!".utf8))
 ```
 
 ## Architecture
 
+### Layer Stack
+
 ```
-+----------------------------------------------------------------------+
-|  Application Layer                                                    |
-|  (Your protocols, GossipSub, Plumtree, Kademlia DHT, SWIM, CYCLON)  |
-+----------------------------------------------------------------------+
-|  Protocol Negotiation (multistream-select)                            |
-+----------------------------------------------------------------------+
-|  Stream Multiplexing (Yamux, Mplex)                                   |
-+----------------------------------------------------------------------+
-|  Security Layer (TLS 1.3, Noise XX)                                   |
-+----------------------------------------------------------------------+
-|  Transport Layer (TCP, QUIC, WebRTC, Memory, Circuit Relay)           |
-+----------------------------------------------------------------------+
-|  NAT Traversal (Circuit Relay v2, AutoNAT, DCUtR)                     |
-+----------------------------------------------------------------------+
-|  Core Types (PeerID, Multiaddr, KeyPair)                              |
-+----------------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────┐
+│  Application                                                │
+│  (GossipSub, Kademlia, your protocols)                      │
+├─────────────────────────────────────────────────────────────┤
+│  Node (actor) ── public API, service lifecycle, discovery   │
+│    └─ Swarm (actor) ── connection lifecycle                 │
+│         └─ ConnectionPool (class+Mutex) ── state queries    │
+├─────────────────────────────────────────────────────────────┤
+│  Protocol Negotiation (multistream-select)                  │
+├─────────────────────────────────────────────────────────────┤
+│  Stream Multiplexing          Yamux, Mplex                  │
+├─────────────────────────────────────────────────────────────┤
+│  Security                     Noise, TLS 1.3, Pnet          │
+├─────────────────────────────────────────────────────────────┤
+│  Transport      TCP, QUIC, WebSocket, WebRTC, WebTransport  │
+├─────────────────────────────────────────────────────────────┤
+│  NAT Traversal  Circuit Relay v2, AutoNAT, DCUtR            │
+├─────────────────────────────────────────────────────────────┤
+│  Core           PeerID, Multiaddr, KeyPair, Events          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Node / Swarm Separation
+
+Following go-libp2p's Host/Swarm pattern:
+
+- **Node** (public actor): API surface, service lifecycle (attach/shutdown), PeerObserver dispatch, discovery integration, traversal coordination
+- **Swarm** (internal actor): dial, accept, upgrade, reconnect, idle cleanup. Emits events via `EventBroadcaster` without awaiting Node (deadlock-free)
+- **ConnectionPool** (class + Mutex): sync state queries (`connectedPeers`, `isConnected`) without actor hop
+
+### Service Protocol Hierarchy
+
+```
+NodeService              ── attach(to:), shutdown()
+  ├─ StreamService       ── protocolIDs, handleInboundStream(_:)
+  └─ DiscoveryBehaviour  ── NodeService + DiscoveryService
+
+PeerObserver             ── peerConnected(_:), peerDisconnected(_:)
+```
+
+Services declare capabilities via protocol conformance. Node detects conformance at startup:
+
+- `StreamService` -> handler registration
+- `PeerObserver` -> peer lifecycle dispatch
+- `DiscoveryBehaviour` -> auto-connect integration
+
+### Connection Flow
+
+```
+connect(to: Multiaddr)
+  │
+  ├─ Traversal Coordinator (stage-by-stage)
+  │    ├─ 1. Local Direct (same LAN)
+  │    ├─ 2. Direct IP
+  │    ├─ 3. Hole Punch (AutoNAT + DCUtR)
+  │    └─ 4. Relay (Circuit Relay v2)
+  │
+  ├─ Transport.dial() -> RawConnection
+  ├─ multistream-select -> SecurityUpgrader.secure()
+  ├─ multistream-select -> Muxer.multiplex()
+  │
+  ├─ ConnectionPool.add()
+  ├─ Swarm emits .peerConnected (fire-and-forget)
+  ├─ Node event loop -> PeerObserver dispatch
+  └─ Node emits NodeEvent.peerConnected
 ```
 
 ## Module Structure
 
+### Core
+
 | Module | Description |
 |--------|-------------|
-| `P2PCore` | Core types: PeerID, Multiaddr, KeyPair, EventEmitting |
-| `P2PTransport` | Transport protocol definition |
-| `P2PTransportTCP` | TCP transport implementation (SwiftNIO) |
-| `P2PTransportQUIC` | QUIC transport implementation (RFC 9000) |
-| `P2PTransportWebRTC` | WebRTC Direct transport (DTLS 1.2 + SCTP) |
+| `P2PCore` | PeerID, Multiaddr, KeyPair, EventBroadcaster, Varint, Multihash |
+| `P2PNegotiation` | multistream-select v1 (+ 0-RTT lazy) |
+| `P2PNAT` | NAT device detection, UPnP + NAT-PMP port mapping |
+
+### Transport
+
+| Module | Description |
+|--------|-------------|
+| `P2PTransport` | Transport / Listener / RawConnection protocols |
+| `P2PTransportTCP` | SwiftNIO-based TCP |
+| `P2PTransportQUIC` | QUIC (0-RTT, connection migration) |
+| `P2PTransportWebSocket` | WebSocket (HTTP/1.1 upgrade) |
+| `P2PTransportWebRTC` | WebRTC Direct (DTLS 1.2 + SCTP) |
+| `P2PTransportWebTransport` | WebTransport over QUIC |
 | `P2PTransportMemory` | In-memory transport for testing |
-| `P2PSecurity` | Security protocol definition |
-| `P2PSecurityTLS` | TLS 1.3 implementation (swift-tls) |
-| `P2PSecurityNoise` | Noise Protocol implementation |
-| `P2PSecurityPlaintext` | Plaintext security for testing |
-| `P2PMux` | Muxer protocol definition |
-| `P2PMuxYamux` | Yamux multiplexer implementation |
-| `P2PMuxMplex` | Mplex multiplexer implementation |
-| `P2PNegotiation` | multistream-select protocol |
-| `P2PDiscovery` | Discovery protocol definition |
-| `P2PDiscoverySWIM` | SWIM membership protocol |
+
+### Security
+
+| Module | Description |
+|--------|-------------|
+| `P2PSecurity` | SecurityUpgrader protocol |
+| `P2PSecurityNoise` | Noise XX (X25519 + ChaChaPoly + SHA256) |
+| `P2PSecurityTLS` | TLS 1.3 with libp2p certificate extension |
+| `P2PPnet` | Private Network (PSK + XSalsa20, go-libp2p compatible) |
+| `P2PSecurityPlaintext` | Plaintext (testing only) |
+| `P2PCertificate` | X.509 certificate generation/verification |
+
+### Multiplexing
+
+| Module | Description |
+|--------|-------------|
+| `P2PMux` | Muxer / MuxedConnection / MuxedStream protocols |
+| `P2PMuxYamux` | Yamux (256KB window, flow control, keep-alive) |
+| `P2PMuxMplex` | Mplex |
+
+### Discovery
+
+| Module | Description |
+|--------|-------------|
+| `P2PDiscovery` | DiscoveryService / AddressBook / PeerStore protocols |
+| `P2PDiscoverySWIM` | SWIM membership (swift-SWIM integration) |
 | `P2PDiscoveryMDNS` | mDNS local network discovery |
 | `P2PDiscoveryCYCLON` | CYCLON random peer sampling |
-| `P2P` | Integration layer (Node, ConnectionPool) |
-| `P2PProtocols` | Protocol service definitions |
-| `P2PIdentify` | Identify protocol |
-| `P2PPing` | Ping protocol |
-| `P2PCircuitRelay` | Circuit Relay v2 for NAT traversal |
-| `P2PGossipSub` | GossipSub pubsub protocol |
-| `P2PKademlia` | Kademlia DHT implementation |
-| `P2PAutoNAT` | AutoNAT protocol for NAT detection |
+| `P2PDiscoveryPlumtree` | Plumtree gossip-based discovery |
+| `P2PDiscoveryBeacon` | BLE / WiFi / LoRa proximity discovery |
+| `P2PDiscoveryWiFiBeacon` | WiFi beacon adapter (UDP multicast) |
+
+### Protocols
+
+| Module | Description |
+|--------|-------------|
+| `P2PProtocols` | NodeService / StreamService / PeerObserver / NodeContext |
+| `P2PIdentify` | Peer information exchange (+ Push) |
+| `P2PPing` | Connection liveness check |
+| `P2PGossipSub` | Pub/Sub messaging (v1.1 scoring + v1.2 IDONTWANT) |
+| `P2PKademlia` | DHT (S/Kademlia, latency tracking, persistent storage) |
+| `P2PPlumtree` | Epidemic Broadcast Trees |
+| `P2PCircuitRelay` | Relay v2 (client + server) |
+| `P2PAutoNAT` | NAT reachability detection |
 | `P2PDCUtR` | Direct Connection Upgrade through Relay |
-| `P2PPlumtree` | Plumtree epidemic broadcast trees |
+| `P2PRendezvous` | Namespace-based peer discovery |
+| `P2PHTTP` | HTTP semantics over libp2p |
 
-## Wire Protocol Compatibility
+### Integration
 
-This implementation follows the official libp2p specifications for wire-protocol compatibility:
-
-| Protocol | Protocol ID | Specification |
-|----------|-------------|---------------|
-| multistream-select | `/multistream/1.0.0` | [spec](https://github.com/multiformats/multistream-select) |
-| TLS | `/tls/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/tls/tls.md) |
-| Noise | `/noise` | [spec](https://github.com/libp2p/specs/blob/master/noise/README.md) |
-| Yamux | `/yamux/1.0.0` | [spec](https://github.com/hashicorp/yamux/blob/master/spec.md) |
-| Mplex | `/mplex/6.7.0` | [spec](https://github.com/libp2p/specs/blob/master/mplex/README.md) |
-| Identify | `/ipfs/id/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/identify/README.md) |
-| Ping | `/ipfs/ping/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/ping/README.md) |
-| Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop`, `/libp2p/circuit/relay/0.2.0/stop` | [spec](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md) |
-| GossipSub | `/meshsub/1.1.0` | [spec](https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md) |
-| Kademlia DHT | `/ipfs/kad/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/kad-dht/README.md) |
-| AutoNAT | `/libp2p/autonat/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/autonat/README.md) |
-| DCUtR | `/libp2p/dcutr` | [spec](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) |
-| WebRTC Direct | `/udp/<port>/webrtc-direct` | [spec](https://github.com/libp2p/specs/blob/master/webrtc/webrtc-direct.md) |
-| Plumtree | `/plumtree/1.0.0` | [paper](https://asc.di.fct.unl.pt/~jleitao/pdf/srds07-leitao.pdf) |
-| CYCLON | `/cyclon/1.0.0` | [paper](https://link.springer.com/article/10.1007/s10922-005-4441-x) |
-
-## Design Principles
-
-### Modern Swift Idioms
-
-- **async/await everywhere**: No EventLoopFuture, pure Swift concurrency
-- **Value types first**: struct over class where appropriate
-- **Sendable compliance**: Thread-safe by design using `Mutex<T>`
-- **Protocol-oriented**: All major components defined as protocols
-
-### Concurrency Model
-
-| Use Case | Pattern |
-|----------|---------|
-| User-facing APIs | `actor` |
-| High-frequency internal state | `class + Mutex<T>` |
-| Data containers | `struct` |
-
-### EventEmitting Pattern
-
-All services that expose `AsyncStream<Event>` conform to the `EventEmitting` protocol:
-
-```swift
-// Services implement EventEmitting protocol
-public final class MyService: EventEmitting, Sendable {
-    public var events: AsyncStream<MyEvent> { ... }
-    public func shutdown() { ... }  // Required: terminates event stream
-}
-
-// Safe usage with automatic cleanup
-try await withEventEmitter(myService) { service in
-    for await event in service.events {
-        // Handle events
-    }
-}
-// shutdown() called automatically
-```
-
-**Important**: Always call `shutdown()` when done with a service to prevent `for await` from hanging.
-
-### Dependency Injection
-
-All components are injected via protocols:
-
-```swift
-let node = Node(configuration: NodeConfiguration(
-    keyPair: myKeyPair,
-    transports: [TCPTransport()],      // Injectable
-    security: [NoiseUpgrader()],       // Injectable
-    muxers: [YamuxMuxer()]             // Injectable
-))
-```
+| Module | Description |
+|--------|-------------|
+| `P2P` | Node, Swarm, ConnectionPool, Traversal, Resource Manager |
 
 ## Configuration
 
-### Connection Limits
+### Node Configuration
 
 ```swift
-let limits = ConnectionLimits(
-    maxConnections: 100,
-    maxConnectionsPerPeer: 2,
-    idleTimeout: .seconds(60)
-)
+let node = Node(configuration: NodeConfiguration(
+    keyPair: .generateEd25519(),
+    listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
+    transports: [TCPTransport()],
+    security: [NoiseUpgrader()],
+    muxers: [YamuxMuxer()],
+    pool: PoolConfiguration(
+        limits: .init(maxConnections: 100, maxConnectionsPerPeer: 2),
+        reconnectionPolicy: .default,
+        idleTimeout: .seconds(300)
+    ),
+    services: [myGossipSub, myKademlia]
+))
 ```
 
-### Reconnection Policy
+### Services
+
+Services are registered via the `services` array and managed by Node:
 
 ```swift
-let policy = ReconnectionPolicy(
-    enabled: true,
-    maxAttempts: 5,
-    backoff: .exponential(base: .seconds(1), factor: 2.0, maxDelay: .seconds(60))
-)
+let gossipsub = GossipSubService(configuration: .init())
+let kademlia = KademliaService(configuration: .init())
+
+let node = Node(configuration: NodeConfiguration(
+    // ...
+    services: [gossipsub, kademlia]
+))
+
+try await node.start()
+// Node calls attach(to:) on each service
+// StreamService handlers are auto-registered
+// PeerObserver services receive peerConnected/peerDisconnected
 ```
 
-### Connection Gating
+### Discovery with Auto-Connect
 
 ```swift
-let gater = ConnectionGater(
-    allowlist: [trustedPeerID],
-    denylist: [blockedPeerID],
-    customFilter: { peer, direction in
-        // Custom filtering logic
-        return true
-    }
-)
+let swim = SWIMMembership(configuration: .init())
+let mdns = MDNSDiscovery(configuration: .init())
+
+let node = Node(configuration: NodeConfiguration(
+    // ...
+    discoveryConfig: .autoConnectEnabled,
+    services: [swim, mdns]  // DiscoveryBehaviour detected automatically
+))
 ```
 
 ## Events
 
-All event-emitting services follow the `EventEmitting` protocol pattern:
-
 ```swift
 // Node events
-for await event in await node.events {
-    switch event {
-    case .peerConnected(let peer):
-        print("Connected to \(peer)")
-    case .peerDisconnected(let peer):
-        print("Disconnected from \(peer)")
-    case .listenError(let addr, let error):
-        print("Listen error on \(addr): \(error)")
-    case .connectionError(let peer, let error):
-        print("Connection error: \(error)")
-    }
-}
-
-// Service events (e.g., GossipSub)
-let gossipsub = GossipSubService(...)
 Task {
-    for await event in gossipsub.events {
+    for await event in node.events {
         switch event {
-        case .messageReceived(let topic, let message):
-            print("Received on \(topic): \(message)")
-        case .peerJoined(let topic, let peer):
-            print("\(peer) joined \(topic)")
+        case .peerConnected(let peer):
+            print("Connected: \(peer)")
+        case .peerDisconnected(let peer):
+            print("Disconnected: \(peer)")
+        case .newListenAddr(let addr):
+            print("Listening on: \(addr)")
         default: break
         }
     }
 }
 
-// Don't forget to shutdown when done!
-gossipsub.shutdown()
+// Service events (e.g., GossipSub — EventBroadcaster, multi-consumer)
+Task {
+    for await event in gossipsub.events {
+        switch event {
+        case .messageReceived(let msg):
+            print("Message on \(msg.topic): \(msg.data)")
+        default: break
+        }
+    }
+}
 ```
 
-## QUIC Transport
+## Concurrency Model
 
-QUIC provides built-in encryption (TLS 1.3) and native stream multiplexing:
+| Pattern | When | Examples |
+|---------|------|---------|
+| `actor` | I/O heavy, user-facing API | Node, Swarm, HealthMonitor |
+| `class + Mutex<T>` | High-frequency, sync access | ConnectionPool, PeerStore |
+| `struct` | Data containers | NodeConfiguration, SwarmEvent |
 
-```swift
-import P2PTransportQUIC
+### Event Patterns
 
-// QUIC transport with libp2p certificate
-let quicTransport = QUICTransport(configuration: .init(
-    certificateProvider: .libp2p(keyPair: keyPair)
-))
+| Pattern | Consumers | Examples |
+|---------|-----------|---------|
+| `EventEmitting` (single) | One `for await` loop | Ping, Identify, AutoNAT, Kademlia |
+| `EventBroadcaster` (multi) | Multiple independent loops | GossipSub, SWIM, mDNS, Node |
 
-// Listen on QUIC
-let listener = try await quicTransport.listen(
-    Multiaddr("/ip4/0.0.0.0/udp/4001/quic-v1")!
-)
+## Wire Protocol Compatibility
 
-// Dial with QUIC
-let connection = try await quicTransport.dial(
-    Multiaddr("/ip4/192.168.1.100/udp/4001/quic-v1/p2p/12D3KooW...")!
-)
-```
-
-**Benefits of QUIC**:
-- 0-RTT connection establishment
-- Native stream multiplexing (no Yamux needed)
-- Built-in TLS 1.3 security
-- Connection migration support
-
-## WebRTC Direct Transport
-
-WebRTC Direct provides UDP-based encrypted transport with native multiplexing via SCTP data channels:
-
-```swift
-import P2PTransportWebRTC
-
-let webrtcTransport = WebRTCTransport()
-
-// Listen on WebRTC Direct
-let listener = try await webrtcTransport.listenSecured(
-    Multiaddr("/ip4/0.0.0.0/udp/4001/webrtc-direct")!,
-    localKeyPair: keyPair
-)
-
-// Dial with WebRTC Direct (certhash from listener's address)
-let connection = try await webrtcTransport.dialSecured(
-    Multiaddr("/ip4/127.0.0.1/udp/4001/webrtc-direct/certhash/<hash>")!,
-    localKeyPair: keyPair
-)
-```
-
-**Benefits of WebRTC Direct**:
-- UDP-based (NAT traversal friendly)
-- Built-in DTLS 1.2 security
-- SCTP data channel multiplexing (no Yamux needed)
-- Browser-compatible transport path
-
-## NAT Traversal with Circuit Relay
-
-Circuit Relay v2 enables peers behind NATs to communicate through public relay nodes.
-
-### Making a Reservation
-
-A peer behind NAT makes a reservation on a public relay to receive incoming connections:
-
-```swift
-import P2PCircuitRelay
-
-let client = RelayClient()
-await client.registerHandler(registry: node)
-
-// Reserve a slot on the relay
-let reservation = try await client.reserve(on: relayPeerID, using: node)
-print("Reserved until: \(reservation.expiration)")
-print("Relay addresses: \(reservation.addresses)")
-```
-
-### Connecting Through a Relay
-
-Another peer can connect to the NAT'd peer through the relay:
-
-```swift
-// Connect to target through relay
-let connection = try await client.connectThrough(
-    relay: relayPeerID,
-    to: targetPeerID,
-    using: node
-)
-
-// Use the relayed connection
-try await connection.write(Data("Hello through relay!".utf8))
-```
-
-### Running a Relay Server
-
-To run a public relay node:
-
-```swift
-let server = RelayServer(configuration: .init(
-    maxReservations: 128,
-    maxCircuitsPerPeer: 16,
-    reservationDuration: .seconds(3600)
-))
-
-await server.registerHandler(
-    registry: node,
-    opener: node,
-    localPeer: node.peerID,
-    getLocalAddresses: { node.listenAddresses }
-)
-```
-
-### Relayed Addresses
-
-Relayed addresses use the `p2p-circuit` protocol:
-
-```
-/ip4/1.2.3.4/tcp/4001/p2p/{relay-peer-id}/p2p-circuit/p2p/{target-peer-id}
-```
+| Protocol | Protocol ID | Specification |
+|----------|-------------|---------------|
+| multistream-select | `/multistream/1.0.0` | [spec](https://github.com/multiformats/multistream-select) |
+| TLS 1.3 | `/tls/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/tls/tls.md) |
+| Noise | `/noise` | [spec](https://github.com/libp2p/specs/blob/master/noise/README.md) |
+| Yamux | `/yamux/1.0.0` | [spec](https://github.com/hashicorp/yamux/blob/master/spec.md) |
+| Mplex | `/mplex/6.7.0` | [spec](https://github.com/libp2p/specs/blob/master/mplex/README.md) |
+| Identify | `/ipfs/id/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/identify/README.md) |
+| Ping | `/ipfs/ping/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/ping/README.md) |
+| Circuit Relay v2 | `/libp2p/circuit/relay/0.2.0/hop` | [spec](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md) |
+| GossipSub | `/meshsub/1.1.0` | [spec](https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md) |
+| Kademlia | `/ipfs/kad/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/kad-dht/README.md) |
+| AutoNAT | `/libp2p/autonat/1.0.0` | [spec](https://github.com/libp2p/specs/blob/master/autonat/README.md) |
+| DCUtR | `/libp2p/dcutr` | [spec](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md) |
+| Plumtree | `/plumtree/1.0.0` | [paper](https://asc.di.fct.unl.pt/~jleitao/pdf/srds07-leitao.pdf) |
+| CYCLON | `/cyclon/1.0.0` | [paper](https://link.springer.com/article/10.1007/s10922-005-4441-x) |
+| WebRTC Direct | `/webrtc-direct` | [spec](https://github.com/libp2p/specs/blob/master/webrtc/webrtc-direct.md) |
 
 ## Testing
 
-### Unit Tests
-
 ```bash
-swift test
+# Build
+swift build
+
+# Run specific test suite (always use timeout)
+swift test --filter P2PTests 2>&1 &
+PID=$!; sleep 120; kill $PID 2>/dev/null; wait $PID 2>/dev/null
+
+# Interoperability tests (requires Docker)
+swift test --filter Interop
 ```
-
-### Interoperability Tests
-
-Interoperability tests verify compatibility with go-libp2p and rust-libp2p using Docker containers.
-
-**Prerequisites**: Docker (OrbStack recommended)
-
-```bash
-# Static guard before interop tests
-scripts/check-sync-shutdown-in-deinit.sh Sources/Transport Tests/Interop/Harnesses
-
-# Run a focused interop test with timeout (recommended)
-SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang \
-scripts/swift-test-timeout.sh 30 --disable-sandbox --filter "GoLibp2pInteropTests/identifyGo"
-
-# Run a suite with hang guard (recommended for hang-prone suites)
-SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang \
-scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 -- \
---disable-sandbox --filter "RustInteropTests"
-
-# Run all interop tests (final verification only)
-swift test --filter "Interop"
-```
-
-**Test Coverage**:
-
-| Test | go-libp2p | rust-libp2p |
-|------|-----------|-------------|
-| QUIC Connection | ✅ | ✅ |
-| Identify Protocol | ✅ | ✅ |
-| PeerID Verification | ✅ | ✅ |
-| Ping Protocol | ✅ | ✅ |
-| Multiple Pings | ✅ | ✅ |
-| Bidirectional Stream | ✅ | ✅ |
-| Raw Data Transfer | ✅ | ✅ |
-
-Use the step-by-step procedure in [Tests/Interop/README.md](Tests/Interop/README.md) and run tests incrementally (single case -> suite -> broader scope).
 
 ## Dependencies
 
-- [swift-nio](https://github.com/apple/swift-nio) - Network I/O
-- [swift-crypto](https://github.com/apple/swift-crypto) - Cryptographic primitives
-- [swift-log](https://github.com/apple/swift-log) - Logging
-- [swift-protobuf](https://github.com/apple/swift-protobuf) - Protocol Buffers
-- [swift-tls](https://github.com/1amageek/swift-tls) - TLS 1.3 (pure Swift)
-- [swift-certificates](https://github.com/apple/swift-certificates) - X.509 certificate handling
-- [swift-asn1](https://github.com/apple/swift-asn1) - ASN.1 DER encoding/decoding
-- [swift-quic](https://github.com/example/swift-quic) - QUIC protocol (RFC 9000)
-- [swift-webrtc](https://github.com/1amageek/swift-webrtc) - WebRTC Direct (DTLS 1.2 + SCTP)
-- [swift-SWIM](https://github.com/example/swift-SWIM) - SWIM membership protocol
-- [swift-mDNS](https://github.com/example/swift-mDNS) - mDNS/DNS-SD discovery
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+| Package | Purpose |
+|---------|---------|
+| [swift-nio](https://github.com/apple/swift-nio) | Network I/O |
+| [swift-crypto](https://github.com/apple/swift-crypto) | Cryptographic primitives |
+| [swift-certificates](https://github.com/apple/swift-certificates) | X.509 handling |
+| [swift-asn1](https://github.com/apple/swift-asn1) | ASN.1 encoding |
+| [swift-log](https://github.com/apple/swift-log) | Logging |
+| [swift-atomics](https://github.com/apple/swift-atomics) | Lock-free primitives |
+| [swift-tls](https://github.com/1amageek/swift-tls) | TLS 1.3 (pure Swift) |
+| [swift-quic](https://github.com/1amageek/swift-quic) | QUIC (RFC 9000) |
+| [swift-webrtc](https://github.com/1amageek/swift-webrtc) | WebRTC Direct |
 
 ## References
 
 - [libp2p Specifications](https://github.com/libp2p/specs)
-- [rust-libp2p](https://github.com/libp2p/rust-libp2p) - Reference implementation
 - [go-libp2p](https://github.com/libp2p/go-libp2p)
-- [SWIM Paper](https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf)
-- [Plumtree Paper](https://asc.di.fct.unl.pt/~jleitao/pdf/srds07-leitao.pdf) - Epidemic Broadcast Trees
-- [CYCLON Paper](https://link.springer.com/article/10.1007/s10922-005-4441-x) - Inexpensive Membership Management
+- [rust-libp2p](https://github.com/libp2p/rust-libp2p)
 
 ## License
 
