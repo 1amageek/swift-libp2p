@@ -56,11 +56,10 @@ public struct RelayServerConfiguration: Sendable {
 ///     maxReservations: 128,
 ///     maxCircuitsPerPeer: 16
 /// ))
-/// await server.registerHandler(registry: node, opener: node)
 /// ```
-public final class RelayServer: ProtocolService, EventEmitting, Sendable {
+public final class RelayServer: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         [CircuitRelayProtocol.hopProtocolID]
@@ -107,14 +106,9 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         var bytesTransferred: UInt64
     }
 
-    /// Stream opener for connecting to destination peers.
-    private let openerRef: Mutex<(any StreamOpener)?> = Mutex(nil)
-
-    /// Local addresses for building relay addresses.
-    private let localAddressesRef: Mutex<@Sendable () -> [Multiaddr]> = Mutex({ [] })
-
-    /// Local peer ID for building relay addresses.
-    private let localPeerRef: Mutex<PeerID?> = Mutex(nil)
+    /// Node context for stream opening and address resolution.
+    /// Stored as a single reference (replaces separate opener/localPeer/localAddresses refs).
+    private let nodeContextRef: Mutex<(any NodeContext)?> = Mutex(nil)
 
     // MARK: - Events
 
@@ -138,30 +132,6 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         self.configuration = configuration
         self.eventState = Mutex(EventState())
         self.serverState = Mutex(ServerState())
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the hop protocol handler.
-    ///
-    /// - Parameters:
-    ///   - registry: The handler registry to register with.
-    ///   - opener: The stream opener for connecting to destination peers.
-    ///   - localPeer: The local peer ID.
-    ///   - getLocalAddresses: Function to get local addresses.
-    public func registerHandler(
-        registry: any HandlerRegistry,
-        opener: any StreamOpener,
-        localPeer: PeerID,
-        getLocalAddresses: @escaping @Sendable () -> [Multiaddr]
-    ) async {
-        openerRef.withLock { $0 = opener }
-        localPeerRef.withLock { $0 = localPeer }
-        localAddressesRef.withLock { $0 = getLocalAddresses }
-
-        await registry.handle(CircuitRelayProtocol.hopProtocolID) { [weak self] context in
-            await self?.handleHop(context: context)
-        }
     }
 
     // MARK: - Statistics
@@ -251,7 +221,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
 
         // Create reservation
         let expiration = ContinuousClock.now + configuration.reservationDuration
-        let addresses = buildRelayAddresses(for: requester, context: context)
+        let addresses = await buildRelayAddresses(for: requester, context: context)
         let reservation = ServerReservation(
             peer: requester,
             expiration: expiration,
@@ -342,7 +312,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         }
 
         // Get opener
-        guard let opener = openerRef.withLock({ $0 }) else {
+        guard let opener = nodeContextRef.withLock({ $0 }) else {
             do {
                 try await sendHopStatus(stream: stream, status: .connectionFailed)
             } catch let error {
@@ -517,12 +487,10 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         try await stream.close()
     }
 
-    private func buildRelayAddresses(for peer: PeerID, context: StreamContext) -> [Multiaddr] {
-        let localPeer = localPeerRef.withLock { $0 }
-        let getAddresses = localAddressesRef.withLock { $0 }
-        let localAddresses = getAddresses()
-
-        guard let myPeerID = localPeer else { return [] }
+    private func buildRelayAddresses(for peer: PeerID, context: StreamContext) async -> [Multiaddr] {
+        guard let ctx = nodeContextRef.withLock({ $0 }) else { return [] }
+        let myPeerID = ctx.localPeer
+        let localAddresses = await ctx.listenAddresses()
 
         // Build addresses: /ip4/.../tcp/.../p2p/{relay}/p2p-circuit/p2p/{peer}
         return localAddresses.compactMap { addr -> Multiaddr? in
@@ -584,6 +552,7 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
         for task in tasks {
             task.cancel()
         }
+        nodeContextRef.withLock { $0 = nil }
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil
@@ -621,4 +590,17 @@ public final class RelayServer: ProtocolService, EventEmitting, Sendable {
             }
         }
     }
+}
+
+// MARK: - StreamService
+
+extension RelayServer: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleHop(context: context)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        nodeContextRef.withLock { $0 = context }
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }

@@ -84,7 +84,7 @@ struct DCUtRServiceTests {
         do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         // Shutdown should finish the stream
-        service.shutdown()
+        await service.shutdown()
 
         // eventTask should complete (not hang)
         let result = await eventTask.value
@@ -114,7 +114,7 @@ struct DCUtRServiceTests {
         do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         // Shutdown should unblock the consumer
-        service.shutdown()
+        await service.shutdown()
 
         // Wait a bit for the task to complete
         do { try await Task.sleep(for: .milliseconds(10)) } catch { }
@@ -127,13 +127,13 @@ struct DCUtRServiceTests {
     }
 
     @Test("Multiple shutdowns are safe")
-    func multipleShutdownsSafe() {
+    func multipleShutdownsSafe() async {
         let service = DCUtRService()
 
         // Should not crash when called multiple times
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
     }
 
     // MARK: - Upgrade Error Handling Tests

@@ -80,6 +80,9 @@ public protocol MuxedConnection: Sendable {
     /// Returns an async stream of incoming streams.
     var inboundStreams: AsyncStream<MuxedStream> { get }
 
+    /// Whether this connection has any open streams.
+    var hasActiveStreams: Bool { get }
+
     /// Closes all streams and the connection.
     func close() async throws
 }

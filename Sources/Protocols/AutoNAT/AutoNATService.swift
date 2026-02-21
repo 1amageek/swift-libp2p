@@ -148,14 +148,13 @@ enum RateLimitResult {
 ///     getLocalAddresses: { node.listenAddresses },
 ///     dialer: { addr in try await node.connect(to: addr) }
 /// ))
-/// await autonat.registerHandler(registry: node)
 ///
 /// // Probe to determine NAT status
 /// let status = try await autonat.probe(using: node, servers: [peer1, peer2, peer3])
 /// ```
-public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
+public final class AutoNATService: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         [AutoNATProtocol.protocolID]
@@ -221,17 +220,6 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
             statusTracker: NATStatusTracker(minProbes: configuration.minProbes)
         ))
         self.rateLimitState = Mutex(RateLimitState())
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the AutoNAT protocol handler.
-    ///
-    /// - Parameter registry: The handler registry to register with.
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(AutoNATProtocol.protocolID) { [weak self] context in
-            await self?.handleAutoNAT(context: context)
-        }
     }
 
     // MARK: - Client API
@@ -774,6 +762,15 @@ public final class AutoNATService: ProtocolService, EventEmitting, Sendable {
             return range.contains(port)
         }
     }
+}
+
+// MARK: - StreamService
+
+extension AutoNATService: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleAutoNAT(context: context)
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }
 
 // MARK: - Timeout Helper

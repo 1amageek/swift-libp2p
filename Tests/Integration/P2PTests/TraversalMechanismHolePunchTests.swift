@@ -1,7 +1,14 @@
 import Testing
 import P2PCore
 import P2PDCUtR
+import P2PProtocols
 @testable import P2P
+
+private struct StubOpener: StreamOpener {
+    func newStream(to _: PeerID, protocol _: String) async throws -> MuxedStream {
+        throw NodeError.nodeNotRunning
+    }
+}
 
 @Suite("TraversalMechanism HolePunch")
 struct TraversalMechanismHolePunchTests {
@@ -16,8 +23,7 @@ struct TraversalMechanismHolePunchTests {
             knownAddresses: [],
             transports: [],
             connectedPeers: [],
-            opener: nil,
-            registry: nil,
+            opener: StubOpener(),
             getLocalAddresses: { [] },
             isLimitedConnection: { _ in false },
             dialAddress: { _ in peer }
@@ -39,7 +45,6 @@ struct TraversalMechanismHolePunchTests {
             transports: [],
             connectedPeers: [],
             opener: nil,
-            registry: nil,
             getLocalAddresses: { [] },
             isLimitedConnection: { _ in true },
             dialAddress: { _ in peer }
@@ -61,5 +66,26 @@ struct TraversalMechanismHolePunchTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    @Test("collectCandidates returns empty without opener", .timeLimit(.minutes(1)))
+    func collectCandidatesWithoutOpener() async {
+        let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let mechanism = HolePunchMechanism(dcutr: DCUtRService(), requireLimitedConnection: false)
+
+        let context = TraversalContext(
+            localPeer: peer,
+            targetPeer: peer,
+            knownAddresses: [],
+            transports: [],
+            connectedPeers: [],
+            opener: nil,
+            getLocalAddresses: { [] },
+            isLimitedConnection: { _ in true },
+            dialAddress: { _ in peer }
+        )
+
+        let candidates = await mechanism.collectCandidates(context: context)
+        #expect(candidates.isEmpty)
     }
 }

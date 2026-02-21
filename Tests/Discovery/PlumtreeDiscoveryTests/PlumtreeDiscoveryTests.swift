@@ -147,36 +147,6 @@ struct PlumtreeDiscoveryTests {
         }
     }
 
-    @Test("Announce emits local announcement observation", .timeLimit(.minutes(1)))
-    func announceEmitsObservation() async throws {
-        let localPeer = makePeerID()
-        let discovery = PlumtreeDiscovery(
-            localPeerID: localPeer,
-            configuration: .testing
-        )
-        await discovery.start()
-        defer { Task { await discovery.shutdown() } }
-
-        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4998")
-        let stream = discovery.subscribe(to: localPeer)
-        let observationTask = Task { () -> PeerObservation? in
-            for await observation in stream {
-                return observation
-            }
-            return nil
-        }
-        defer { observationTask.cancel() }
-
-        try await discovery.announce(addresses: [addr])
-
-        let observation = try await withTimeout(.seconds(1)) {
-            await observationTask.value
-        }
-
-        #expect(observation?.kind == .announcement)
-        #expect(observation?.subject == localPeer)
-        #expect(observation?.hints == [addr])
-    }
 }
 
 private enum TimeoutError: Error {

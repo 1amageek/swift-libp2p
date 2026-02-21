@@ -2,6 +2,7 @@
 import Foundation
 import P2PCore
 import P2PDiscovery
+import P2PProtocols
 import SWIM
 import NIOUDPTransport
 import Synchronization
@@ -61,7 +62,7 @@ public actor SWIMMembership: DiscoveryService {
 
     // MARK: - Properties
 
-    private let localPeerID: PeerID
+    public let localPeerID: PeerID
     private let configuration: SWIMMembershipConfiguration
     private var transport: SWIMTransportAdapter?
     private var swim: SWIMInstance?
@@ -301,29 +302,28 @@ public actor SWIMMembership: DiscoveryService {
     /// Subscribes to observations about a specific peer.
     nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let targetID = peer.description
-        // Capture nonisolated property before Task to avoid actor hop
         let observationStream = self.observations
-
         return AsyncStream { continuation in
-            Task {
-                for await observation in observationStream {
-                    if observation.subject.description == targetID {
-                        continuation.yield(observation)
-                    }
+            let task = Task {
+                for await observation in observationStream where observation.subject.description == targetID {
+                    continuation.yield(observation)
                 }
                 continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
 
     /// Returns all known peer IDs.
-    public func knownPeers() async -> [PeerID] {
+    public func collectKnownPeers() async -> [PeerID] {
         guard let swim = swim else { return [] }
 
         let members = await swim.members
         return members.compactMap { member in
             SWIMBridge.toPeerID(memberID: member.id)
-        }.filter { $0 != localPeerID }
+        }
     }
 
     /// Returns all observations as a stream.
@@ -350,6 +350,20 @@ public actor SWIMMembership: DiscoveryService {
             }
         }
     }
+}
+
+// MARK: - DiscoveryBehaviour
+
+extension SWIMMembership: DiscoveryBehaviour {
+    public func attach(to context: any NodeContext) async {
+        do {
+            try await start()
+        } catch {
+            // SWIM start failure is non-fatal — service simply won't detect membership
+        }
+    }
+
+    // shutdown(): already defined as async method
 }
 
 // MARK: - Errors

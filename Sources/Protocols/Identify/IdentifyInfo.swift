@@ -53,4 +53,23 @@ public struct IdentifyInfo: Sendable, Equatable {
     public var peerID: PeerID? {
         publicKey.map { PeerID(publicKey: $0) }
     }
+
+    /// Merges a push update into this info, returning a new instance.
+    ///
+    /// Only non-nil/non-empty fields from the push overwrite existing values.
+    /// This allows differential application of Identify Push updates.
+    ///
+    /// - Parameter push: The push update info
+    /// - Returns: A new IdentifyInfo with merged values
+    public func merging(from push: IdentifyInfo) -> IdentifyInfo {
+        IdentifyInfo(
+            publicKey: push.publicKey ?? self.publicKey,
+            listenAddresses: push.listenAddresses.isEmpty ? self.listenAddresses : push.listenAddresses,
+            protocols: push.protocols.isEmpty ? self.protocols : push.protocols,
+            observedAddress: push.observedAddress ?? self.observedAddress,
+            protocolVersion: push.protocolVersion ?? self.protocolVersion,
+            agentVersion: push.agentVersion ?? self.agentVersion,
+            signedPeerRecord: push.signedPeerRecord ?? self.signedPeerRecord
+        )
+    }
 }

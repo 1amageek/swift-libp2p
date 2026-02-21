@@ -10,11 +10,11 @@ import Synchronization
 ///
 /// Uses Multicast DNS (RFC 6762) and DNS-SD (RFC 6763) to discover
 /// and advertise libp2p peers on the local network.
-public actor MDNSDiscovery: DiscoveryService, NodeDiscoveryStartable {
+public actor MDNSDiscovery: DiscoveryService {
 
     // MARK: - Properties
 
-    private let localPeerID: PeerID
+    public let localPeerID: PeerID
     private let configuration: MDNSConfiguration
     private let advertisedServiceName: String
     private var browser: ServiceBrowser?
@@ -118,7 +118,7 @@ public actor MDNSDiscovery: DiscoveryService, NodeDiscoveryStartable {
         serviceNameByPeerID.removeAll()
         lastBrowserError = nil
         sequenceNumber = 0
-        // Note: Don't shutdown broadcaster here - it can be reused
+        broadcaster.shutdown()
     }
 
     // MARK: - DiscoveryService Protocol
@@ -161,27 +161,23 @@ public actor MDNSDiscovery: DiscoveryService, NodeDiscoveryStartable {
     /// Pass a peer ID to filter, or use `.any` pattern by subscribing to all.
     nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
         let targetID = peer.description
-
+        let stream = broadcaster.subscribe()
         return AsyncStream { continuation in
-            Task { [weak self] in
-                guard let self = self else {
-                    continuation.finish()
-                    return
-                }
-
-                for await observation in self.observations {
-                    if observation.subject.description == targetID {
-                        continuation.yield(observation)
-                    }
+            let task = Task {
+                for await observation in stream where observation.subject.description == targetID {
+                    continuation.yield(observation)
                 }
                 continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
 
     /// Returns all known peer IDs.
-    public func knownPeers() async -> [PeerID] {
-        Array(knownServicesByPeerID.keys).filter { $0 != localPeerID }
+    public func collectKnownPeers() async -> [PeerID] {
+        Array(knownServicesByPeerID.keys)
     }
 
     /// Returns all observations as a stream (for general subscription).
@@ -320,6 +316,20 @@ public actor MDNSDiscovery: DiscoveryService, NodeDiscoveryStartable {
         }
         return nil
     }
+}
+
+// MARK: - DiscoveryBehaviour
+
+extension MDNSDiscovery: DiscoveryBehaviour {
+    public func attach(to context: any NodeContext) async {
+        do {
+            try await start()
+        } catch {
+            // mDNS start failure is non-fatal — service simply won't discover peers
+        }
+    }
+
+    // shutdown(): already defined as async method
 }
 
 // MARK: - Errors

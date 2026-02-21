@@ -543,7 +543,7 @@ struct HTTPServiceTests {
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
-        service.shutdown()
+        await service.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value

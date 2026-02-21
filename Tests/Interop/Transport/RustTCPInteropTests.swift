@@ -188,12 +188,12 @@ struct RustTCPInteropTests {
         let stream = try await muxedConnection.newStream()
 
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.identify],
+            protocols: [ProtocolID.identify],
             read: { Data(buffer: try await stream.read()) },
             write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
+        #expect(negotiationResult.protocolID == ProtocolID.identify)
 
         // Use remainder from negotiation if available
         let bytes: Data
@@ -274,12 +274,12 @@ struct RustTCPInteropTests {
         let stream = try await muxedConnection.newStream()
 
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await stream.read()) },
             write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+        #expect(negotiationResult.protocolID == ProtocolID.ping)
 
         // Generate 32-byte random payload
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })

@@ -11,13 +11,13 @@ struct PlumtreeServiceTests {
         KeyPair.generateEd25519().peerID
     }
 
-    @Test("Service conforms to ProtocolService")
-    func conformsToProtocolService() {
+    @Test("Service conforms to NodeService")
+    func conformsToNodeService() {
         let service = PlumtreeService(
             localPeerID: makePeerID(),
             configuration: .testing
         )
-        let _: any ProtocolService = service
+        let _: any NodeService = service
         #expect(service.protocolIDs == [plumtreeProtocolID])
     }
 

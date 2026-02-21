@@ -163,7 +163,6 @@ public struct KademliaConfiguration: Sendable {
 ///     localPeerID: myPeerID,
 ///     configuration: .default
 /// )
-/// await kad.registerHandler(registry: node)
 ///
 /// // Add bootstrap peers
 /// kad.addPeer(bootstrapPeer, addresses: [bootstrapAddr])
@@ -177,9 +176,9 @@ public struct KademliaConfiguration: Sendable {
 /// // Get a value
 /// let value = try await kad.getValue(key: myKey, using: node)
 /// ```
-public final class KademliaService: ProtocolService, EventEmitting, Sendable {
+public final class KademliaService: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         [KademliaProtocol.protocolID]
@@ -282,6 +281,7 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
         stopMaintenance()
         stopRefresh()
         stopRepublish()
+        serviceState.withLock { $0.opener = nil }
         eventState.withLock { state in
             state.continuation?.yield(.stopped)
             state.continuation?.finish()
@@ -585,18 +585,6 @@ public final class KademliaService: ProtocolService, EventEmitting, Sendable {
             return true
         }
         return false
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the Kademlia protocol handler.
-    ///
-    /// - Parameter registry: The handler registry.
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(KademliaProtocol.protocolID) { [weak self] context in
-            await self?.handleStream(context)
-        }
-        emit(.started)
     }
 
     // MARK: - Stream Handling
@@ -1313,4 +1301,20 @@ private final class QueryDelegateImpl: KademliaQueryDelegate, Sendable {
             service.peerLatencyTracker.recordFailure(peer: peer)
         }
     }
+}
+
+// MARK: - StreamService
+
+extension KademliaService: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleStream(context)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        serviceState.withLock { $0.opener = context }
+        startMaintenance()
+        startRefresh(using: context)
+        startRepublish(using: context)
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }

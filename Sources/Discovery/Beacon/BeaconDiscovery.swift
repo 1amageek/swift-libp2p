@@ -17,7 +17,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     // MARK: - Properties
 
     private let configuration: BeaconDiscoveryConfiguration
-    private let localPeerID: PeerID
+    public let localPeerID: PeerID
     private let addressCodec: BeaconAddressCodec
 
     private let encoder: BeaconEncoderService
@@ -155,9 +155,8 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     }
 
     /// Returns all known confirmed peers.
-    public func knownPeers() async -> [PeerID] {
+    public func collectKnownPeers() async -> [PeerID] {
         configuration.store.allConfirmed().map(\.peerID)
-            .filter { $0 != localPeerID }
     }
 
     /// Returns an independent stream of all observations.

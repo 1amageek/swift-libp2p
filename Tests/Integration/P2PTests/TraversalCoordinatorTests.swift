@@ -30,10 +30,6 @@ private struct StubOpener: StreamOpener {
     }
 }
 
-private struct StubRegistry: HandlerRegistry {
-    func handle(_: String, handler _: @escaping ProtocolHandler) async {}
-}
-
 private struct StaticHintProvider: TraversalHintProvider {
     let hintsToReturn: [TraversalCandidate]
 
@@ -121,6 +117,24 @@ private struct RacingMechanism: TraversalMechanism {
     }
 }
 
+private struct MissingContextMechanism: TraversalMechanism {
+    let id: String
+    let pathKind: TraversalPathKind
+    let attemptLog: AttemptLog
+
+    func collectCandidates(context: TraversalContext) async -> [TraversalCandidate] {
+        [TraversalCandidate(mechanismID: id, peer: context.targetPeer, address: nil, pathKind: pathKind, score: 1)]
+    }
+
+    func attempt(
+        candidate _: TraversalCandidate,
+        context _: TraversalContext
+    ) async throws -> TraversalAttemptResult {
+        await attemptLog.append(id)
+        throw TraversalError.missingContext("StreamOpener required for \(id)")
+    }
+}
+
 @Suite("TraversalCoordinator")
 struct TraversalCoordinatorTests {
     @Test("local success stops fallback", .timeLimit(.minutes(1)))
@@ -152,7 +166,6 @@ struct TraversalCoordinatorTests {
 
         await coordinator.start(
             opener: StubOpener(),
-            registry: StubRegistry(),
             getLocalAddresses: { [] },
             getPeers: { [] },
             isLimitedConnection: { _ in false },
@@ -199,7 +212,6 @@ struct TraversalCoordinatorTests {
 
         await coordinator.start(
             opener: StubOpener(),
-            registry: StubRegistry(),
             getLocalAddresses: { [] },
             getPeers: { [] },
             isLimitedConnection: { _ in false },
@@ -242,7 +254,6 @@ struct TraversalCoordinatorTests {
 
         await coordinator.start(
             opener: StubOpener(),
-            registry: StubRegistry(),
             getLocalAddresses: { [] },
             getPeers: { [] },
             isLimitedConnection: { _ in false },
@@ -282,7 +293,6 @@ struct TraversalCoordinatorTests {
 
         await coordinator.start(
             opener: StubOpener(),
-            registry: StubRegistry(),
             getLocalAddresses: { [] },
             getPeers: { [] },
             isLimitedConnection: { _ in false },
@@ -302,5 +312,45 @@ struct TraversalCoordinatorTests {
 
         let cancelled = await state.cancelled
         #expect(cancelled.contains("slow"))
+    }
+
+    @Test("falls back to relay after missingContext error", .timeLimit(.minutes(1)))
+    func fallbackAfterMissingContext() async throws {
+        let localPeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let remotePeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let attemptLog = AttemptLog()
+
+        let holePunch = MissingContextMechanism(
+            id: "hole-punch",
+            pathKind: .holePunch,
+            attemptLog: attemptLog
+        )
+        let relay = StaticMechanism(
+            id: "relay",
+            pathKind: .relay,
+            candidates: [TraversalCandidate(mechanismID: "relay", peer: remotePeer, address: nil, pathKind: .relay, score: 1)],
+            attemptLog: attemptLog,
+            shouldSucceed: true
+        )
+
+        let coordinator = TraversalCoordinator(
+            configuration: TraversalConfiguration(mechanisms: [holePunch, relay]),
+            localPeer: localPeer,
+            transports: []
+        )
+
+        await coordinator.start(
+            opener: StubOpener(),
+            getLocalAddresses: { [] },
+            getPeers: { [] },
+            isLimitedConnection: { _ in false },
+            dialAddress: { _ in remotePeer }
+        )
+
+        let result = try await coordinator.connect(to: remotePeer, knownAddresses: [])
+        #expect(result.mechanismID == "relay")
+
+        let attempts = await attemptLog.attempts
+        #expect(attempts == ["hole-punch", "relay"])
     }
 }

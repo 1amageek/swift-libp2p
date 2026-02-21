@@ -170,7 +170,10 @@ public final class HeartbeatManager: Sendable {
         // 8. Cleanup expired IDONTWANT entries (v1.2)
         router.cleanupIDontWants()
 
-        // 9. Decay peer scores
+        // 9. Check broken IWANT promises (A5)
+        _ = router.checkBrokenPromises()
+
+        // 10. Decay peer scores
         router.decayPeerScores()
     }
 }

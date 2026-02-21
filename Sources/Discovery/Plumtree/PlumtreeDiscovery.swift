@@ -10,7 +10,7 @@ import P2PProtocols
 /// Peers periodically broadcast self-announcements on a configured Plumtree topic.
 /// Received announcements are converted into `PeerObservation` values and cached as
 /// `ScoredCandidate`s for `find(peer:)`.
-public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable, NodeDiscoveryStartable, NodeDiscoveryPeerStreamService {
+public actor PlumtreeDiscovery: DiscoveryService {
     private struct PeerState: Sendable {
         var addresses: [Multiaddr]
         var score: Double
@@ -18,7 +18,7 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
         var lastAnnouncementSequence: UInt64
     }
 
-    private let localPeerID: PeerID
+    public let localPeerID: PeerID
     private let configuration: PlumtreeDiscoveryConfiguration
     private let plumtreeService: PlumtreeService
     private let ownsPlumtreeService: Bool
@@ -29,6 +29,7 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
     private var observationSequence: UInt64 = 0
     private var forwardTask: Task<Void, Never>?
     private var isStarted: Bool = false
+    private var opener: (any StreamOpener)?
 
     private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
 
@@ -61,8 +62,9 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
 
     // MARK: - Lifecycle
 
-    /// Starts announcement forwarding from the configured Plumtree topic.
-    public func start() async {
+    /// Starts the internal forwarding loop.
+    /// Prefer `attach(to:)` which also sets the opener for peer stream management.
+    private func startForwarding() {
         guard !isStarted else { return }
 
         if ownsPlumtreeService {
@@ -81,6 +83,7 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
     public func shutdown() async {
         forwardTask?.cancel()
         forwardTask = nil
+        opener = nil
         isStarted = false
         knownPeersByID.removeAll()
         localAnnouncementSequence = 0
@@ -88,16 +91,12 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
         localAddresses.removeAll()
 
         if ownsPlumtreeService {
-            plumtreeService.shutdown()
+            await plumtreeService.shutdown()
         }
         broadcaster.shutdown()
     }
 
     // MARK: - Plumbing for node integration
-
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await plumtreeService.registerHandler(registry: registry)
-    }
 
     public func handlePeerConnected(_ peerID: PeerID, stream: MuxedStream) async {
         plumtreeService.handlePeerConnected(peerID, stream: stream)
@@ -132,8 +131,6 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
         } catch {
             throw PlumtreeDiscoveryError.publishFailed
         }
-
-        emitObservation(subject: localPeerID, kind: .announcement, hints: addresses)
     }
 
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
@@ -144,7 +141,7 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
         return [ScoredCandidate(peerID: peer, addresses: known.addresses, score: known.score)]
     }
 
-    public func knownPeers() async -> [PeerID] {
+    public func collectKnownPeers() async -> [PeerID] {
         evictExpiredPeers()
         return Array(knownPeersByID.keys)
     }
@@ -298,6 +295,39 @@ public actor PlumtreeDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrabl
     }
 
     private func unixNow() -> UInt64 {
-        UInt64(max(0, Int64(Date().timeIntervalSince1970)))
+        UInt64(max(0, Date().timeIntervalSince1970 * 1000))
     }
+}
+
+// MARK: - DiscoveryBehaviour
+
+extension PlumtreeDiscovery: DiscoveryBehaviour, StreamService, PeerObserver {
+    public nonisolated var protocolIDs: [String] {
+        [plumtreeProtocolID]
+    }
+
+    public func handleInboundStream(_ context: StreamContext) async {
+        plumtreeService.handlePeerConnected(context.remotePeer, stream: context.stream)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        self.opener = context
+        startForwarding()
+    }
+
+    public func peerConnected(_ peer: PeerID) async {
+        guard let opener else { return }
+        do {
+            let stream = try await opener.newStream(to: peer, protocol: plumtreeProtocolID)
+            plumtreeService.handlePeerConnected(peer, stream: stream)
+        } catch {
+            // Failed to open stream — peer may not support Plumtree
+        }
+    }
+
+    public func peerDisconnected(_ peer: PeerID) async {
+        await handlePeerDisconnected(peer)
+    }
+
+    // shutdown(): already defined as async method
 }

@@ -237,6 +237,19 @@ public struct YamuxConfiguration: Sendable {
     /// Default: 60 seconds
     public var keepAliveTimeout: Duration
 
+    /// Enable automatic window size tuning based on RTT (B1).
+    ///
+    /// When enabled, receive windows grow automatically if the sender
+    /// is being constrained by the window size.
+    /// Default: true
+    public var enableWindowAutoTuning: Bool
+
+    /// Maximum receive window per stream when auto-tuning is enabled (B1).
+    ///
+    /// Limits how large the auto-tuned window can grow.
+    /// Default: 16MB (same as yamuxMaxWindowSize)
+    public var maxAutoTuneWindow: UInt32
+
     /// Creates a Yamux configuration.
     ///
     /// - Parameters:
@@ -246,13 +259,17 @@ public struct YamuxConfiguration: Sendable {
     ///   - enableKeepAlive: Whether to enable keep-alive pings (default: true)
     ///   - keepAliveInterval: Interval between pings (default: 30 seconds)
     ///   - keepAliveTimeout: Timeout for ping responses (default: 60 seconds)
+    ///   - enableWindowAutoTuning: Enable auto window tuning (default: true)
+    ///   - maxAutoTuneWindow: Max window when auto-tuning (default: 16MB)
     public init(
         maxConcurrentStreams: Int = 1000,
         maxPendingInboundStreams: Int = 100,
         initialWindowSize: UInt32 = 256 * 1024,
         enableKeepAlive: Bool = true,
         keepAliveInterval: Duration = .seconds(30),
-        keepAliveTimeout: Duration = .seconds(60)
+        keepAliveTimeout: Duration = .seconds(60),
+        enableWindowAutoTuning: Bool = true,
+        maxAutoTuneWindow: UInt32 = 16 * 1024 * 1024
     ) {
         precondition(keepAliveTimeout >= keepAliveInterval,
             "keepAliveTimeout must be >= keepAliveInterval")
@@ -262,6 +279,8 @@ public struct YamuxConfiguration: Sendable {
         self.enableKeepAlive = enableKeepAlive
         self.keepAliveInterval = keepAliveInterval
         self.keepAliveTimeout = keepAliveTimeout
+        self.enableWindowAutoTuning = enableWindowAutoTuning
+        self.maxAutoTuneWindow = maxAutoTuneWindow
     }
 
     /// Default configuration.

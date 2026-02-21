@@ -14,12 +14,19 @@ public struct SmartDialerConfiguration: Sendable {
     /// Maximum number of concurrent dial attempts across all groups.
     public var maxConcurrentDials: Int
 
+    /// Maximum number of addresses to dial concurrently per connection attempt (C1).
+    /// This limits how many addresses from a ranked group are tried simultaneously.
+    /// Default: 8 (rust-libp2p default).
+    public var dialConcurrencyFactor: Int
+
     public init(
         dialTimeout: Duration = .seconds(30),
-        maxConcurrentDials: Int = 16
+        maxConcurrentDials: Int = 16,
+        dialConcurrencyFactor: Int = 8
     ) {
         self.dialTimeout = dialTimeout
         self.maxConcurrentDials = maxConcurrentDials
+        self.dialConcurrencyFactor = dialConcurrencyFactor
     }
 }
 
@@ -106,11 +113,13 @@ public final class SmartDialer: Sendable {
                         try await Task.sleep(for: dialGroup.delay)
                     }
 
-                    // Launch all addresses in this group concurrently
+                    // Launch addresses in this group concurrently,
+                    // limited by dialConcurrencyFactor (C1)
+                    let concurrencyLimit = configuration.dialConcurrencyFactor
                     let result: (PeerID, Multiaddr)? = try await withThrowingTaskGroup(
                         of: (PeerID, Multiaddr)?.self
                     ) { innerGroup in
-                        for addr in dialGroup.addresses {
+                        for addr in dialGroup.addresses.prefix(concurrencyLimit) {
                             guard dialCount < configuration.maxConcurrentDials else { break }
                             dialCount += 1
 

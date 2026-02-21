@@ -69,6 +69,9 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// Direct (explicit) peer state (v1.1).
     private let directPeerState: Mutex<[Topic: Set<PeerID>]>
 
+    /// IWANT promise tracking (A5).
+    let gossipPromises: GossipPromises
+
     /// Event state.
     private let eventState: Mutex<EventState>
 
@@ -113,6 +116,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         )
         self.validators = Mutex([:])
         self.directPeerState = Mutex(configuration.directPeers)
+        self.gossipPromises = GossipPromises()
         self.eventState = Mutex(EventState())
 
         // Sync protected peers from initial direct peer configuration
@@ -223,6 +227,13 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// - Parameter topic: The topic to subscribe to
     /// - Returns: A subscription for receiving messages
     public func subscribe(to topic: Topic) throws -> Subscription {
+        // Check subscription filter (A2)
+        if let filter = configuration.subscriptionFilter {
+            guard filter.canSubscribe(to: topic) else {
+                throw GossipSubError.subscriptionNotAllowed(topic)
+            }
+        }
+
         // Try to subscribe atomically with limit checking
         switch meshState.trySubscribe(to: topic, maxSubscriptions: configuration.maxSubscriptions) {
         case .success:
@@ -341,8 +352,23 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         var response = GossipSubRPC()
         var forwardMessages: [(peer: PeerID, rpc: GossipSubRPC)] = []
 
+        // Filter incoming subscriptions (A2)
+        var filteredSubs = rpc.subscriptions
+        if let filter = configuration.subscriptionFilter {
+            let currentSubs = peerState.getPeer(peerID)?.subscriptions ?? []
+            do {
+                filteredSubs = try filter.filterIncomingSubscriptions(
+                    rpc.subscriptions,
+                    currentlySubscribed: currentSubs
+                )
+            } catch {
+                // Filter rejected entire RPC batch — discard
+                return RPCHandleResult()
+            }
+        }
+
         // Handle subscriptions
-        for sub in rpc.subscriptions {
+        for sub in filteredSubs {
             handleSubscription(sub, from: peerID)
         }
 
@@ -417,64 +443,121 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             return []
         }
 
+        // Recompute message ID if custom function is set (A1)
+        let effectiveMessage: GossipSubMessage
+        if let idFn = configuration.messageIDFunction {
+            let newID = idFn(message)
+            if newID != message.id {
+                effectiveMessage = GossipSubMessage(
+                    id: newID,
+                    source: message.source,
+                    data: message.data,
+                    sequenceNumber: message.sequenceNumber,
+                    topic: message.topic,
+                    signature: message.signature,
+                    key: message.key
+                )
+            } else {
+                effectiveMessage = message
+            }
+        } else {
+            effectiveMessage = message
+        }
+
         // === Dedup Phase ===
         // Check if already seen (before validation to avoid redundant work)
-        let isFirstDelivery = seenCache.add(message.id)
+        let isFirstDelivery = seenCache.add(effectiveMessage.id)
         if !isFirstDelivery {
             // Duplicate - record penalty and don't forward
             peerScorer.recordDuplicateMessage(from: peerID)
             return []
         }
 
+        // Resolve IWANT promises (A5)
+        gossipPromises.messageDelivered(effectiveMessage.id)
+
         // === Validation Phase ===
         // Validate message structure
-        guard message.validateStructure() else {
+        guard effectiveMessage.validateStructure() else {
             // Invalid message structure - record penalty
             peerScorer.recordInvalidMessage(from: peerID)
-            peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
-            emit(.messageValidated(messageID: message.id, result: .reject))
+            peerScorer.recordInvalidMessageDelivery(from: peerID, topic: effectiveMessage.topic)
+            emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
             return []
         }
 
-        // Validate message signature if enabled
-        if configuration.validateSignatures {
-            // Check if message has required signing fields
-            if configuration.strictSignatureVerification {
-                // Strict mode: require signature
-                guard message.signature != nil, message.source != nil else {
+        // Determine effective validation mode (A6)
+        let effectiveValidationMode: GossipSubConfiguration.ValidationMode
+        if let mode = configuration.validationMode {
+            effectiveValidationMode = mode
+        } else if configuration.validateSignatures {
+            effectiveValidationMode = configuration.strictSignatureVerification ? .strict : .permissive
+        } else {
+            effectiveValidationMode = .none
+        }
+
+        // Validate based on mode (A6)
+        switch effectiveValidationMode {
+        case .strict:
+            guard effectiveMessage.signature != nil, effectiveMessage.source != nil, !effectiveMessage.sequenceNumber.isEmpty else {
+                peerScorer.recordInvalidMessage(from: peerID)
+                peerScorer.recordInvalidMessageDelivery(from: peerID, topic: effectiveMessage.topic)
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
+                return []
+            }
+            guard effectiveMessage.verifySignature() else {
+                peerScorer.recordInvalidMessage(from: peerID)
+                peerScorer.recordInvalidMessageDelivery(from: peerID, topic: effectiveMessage.topic)
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
+                return []
+            }
+
+        case .permissive:
+            if effectiveMessage.signature != nil {
+                guard effectiveMessage.verifySignature() else {
                     peerScorer.recordInvalidMessage(from: peerID)
-                    peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
-                    emit(.messageValidated(messageID: message.id, result: .reject))
+                    peerScorer.recordInvalidMessageDelivery(from: peerID, topic: effectiveMessage.topic)
+                    emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
                     return []
                 }
             }
 
-            // Verify signature if present
-            if message.signature != nil {
-                guard message.verifySignature() else {
-                    // Invalid signature - record penalty
-                    peerScorer.recordInvalidMessage(from: peerID)
-                    peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
-                    emit(.messageValidated(messageID: message.id, result: .reject))
-                    return []
-                }
+        case .anonymous:
+            // Reject messages that have source, seqno, or signature
+            guard effectiveMessage.source == nil else {
+                peerScorer.recordInvalidMessage(from: peerID)
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
+                return []
             }
+            guard effectiveMessage.sequenceNumber.isEmpty else {
+                peerScorer.recordInvalidMessage(from: peerID)
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
+                return []
+            }
+            guard effectiveMessage.signature == nil else {
+                peerScorer.recordInvalidMessage(from: peerID)
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
+                return []
+            }
+
+        case .none:
+            break
         }
 
         // === Application Validation Phase (v1.1 Extended Validators) ===
-        let validator = validators.withLock { $0[message.topic] }
+        let validator = validators.withLock { $0[effectiveMessage.topic] }
         if let validator = validator {
-            let result = await validator.validate(message: message, from: peerID)
+            let result = await validator.validate(message: effectiveMessage, from: peerID)
             switch result {
             case .accept:
                 break  // Continue to delivery
             case .reject:
                 peerScorer.recordInvalidMessage(from: peerID)
-                peerScorer.recordInvalidMessageDelivery(from: peerID, topic: message.topic)
-                emit(.messageValidated(messageID: message.id, result: .reject))
+                peerScorer.recordInvalidMessageDelivery(from: peerID, topic: effectiveMessage.topic)
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .reject))
                 return []
             case .ignore:
-                emit(.messageValidated(messageID: message.id, result: .ignore))
+                emit(.messageValidated(messageID: effectiveMessage.id, result: .ignore))
                 return []  // No penalty, no forward
             }
         }
@@ -485,31 +568,31 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         peerScorer.recordMessageDelivery(from: peerID, isFirst: true)
 
         // Per-topic scoring: record first message delivery
-        peerScorer.recordFirstMessageDelivery(from: peerID, topic: message.topic)
+        peerScorer.recordFirstMessageDelivery(from: peerID, topic: effectiveMessage.topic)
 
         // Per-topic scoring: record mesh message delivery if peer is in the mesh
-        if meshState.meshPeers(for: message.topic).contains(peerID) {
-            peerScorer.recordMeshMessageDelivery(from: peerID, topic: message.topic)
+        if meshState.meshPeers(for: effectiveMessage.topic).contains(peerID) {
+            peerScorer.recordMeshMessageDelivery(from: peerID, topic: effectiveMessage.topic)
         }
 
         // === Delivery Phase ===
         // Cache the message
-        messageCache.put(message)
+        messageCache.put(effectiveMessage)
 
         // Deliver to local subscribers
-        subscriptions.deliver(message)
+        subscriptions.deliver(effectiveMessage)
 
         // Emit event
-        emit(.messageReceived(topic: message.topic, message: message))
+        emit(.messageReceived(topic: effectiveMessage.topic, message: effectiveMessage))
 
         // Forward to mesh peers (except sender)
-        var forwards = forwardMessage(message, excluding: peerID)
+        var forwards = forwardMessage(effectiveMessage, excluding: peerID)
 
         // === IDONTWANT Phase (v1.2) ===
         // Send IDONTWANT to mesh peers for large messages
         let threshold = configuration.idontwantThreshold
-        if threshold > 0 && message.data.count >= threshold {
-            let idontwantForwards = sendIDontWant(for: message, excluding: peerID)
+        if threshold > 0 && effectiveMessage.data.count >= threshold {
+            let idontwantForwards = sendIDontWant(for: effectiveMessage, excluding: peerID)
             forwards.append(contentsOf: idontwantForwards)
         }
 
@@ -640,6 +723,14 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
         guard !wantedIDs.isEmpty else { return [] }
 
+        // Record IWANT promises (A5)
+        let expiry = ContinuousClock.now + configuration.iwantFollowupTime
+        gossipPromises.addPromise(
+            peer: peerID,
+            messageIDs: Array(wantedIDs),
+            expires: expiry
+        )
+
         emit(.iwantSent(peer: peerID, messageCount: wantedIDs.count))
 
         return [ControlMessage.IWant(messageIDs: Array(wantedIDs))]
@@ -753,6 +844,8 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         _ prunes: [ControlMessage.Prune],
         from peerID: PeerID
     ) {
+        var pxPeersToConnect: [PeerID] = []
+
         for prune in prunes {
             let topic = prune.topic
 
@@ -769,10 +862,39 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 }
             }
 
-            // Handle peer exchange (v1.1+)
-            // prune.peers could be used to discover new peers
+            // Handle peer exchange (A3, v1.1+)
+            if !prune.peers.isEmpty {
+                let senderScore = peerScorer.score(for: peerID)
+                if senderScore >= configuration.acceptPXThreshold {
+                    let pxCandidates = prune.peers
+                        .map(\.peerID)
+                        .filter { $0 != localPeerID }
+                        .prefix(max(configuration.prunePeers, prune.peers.count))
+
+                    pxPeersToConnect.append(contentsOf: pxCandidates)
+                    emit(.peerExchangeReceived(
+                        peer: peerID,
+                        topic: topic,
+                        pxPeerCount: pxCandidates.count
+                    ))
+                } else {
+                    emit(.peerExchangeRejected(
+                        peer: peerID,
+                        topic: topic,
+                        reason: .scoreBelowThreshold(
+                            score: senderScore,
+                            threshold: configuration.acceptPXThreshold
+                        )
+                    ))
+                }
+            }
 
             emit(.pruned(peer: peerID, topic: topic, backoff: prune.backoff.map { .seconds(Int64($0)) }))
+        }
+
+        // Emit PX connect requests for Node integration
+        if !pxPeersToConnect.isEmpty {
+            emit(.peerExchangeConnect(peers: pxPeersToConnect))
         }
     }
 
@@ -826,21 +948,35 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             )
         }
 
-        // Build message
-        var builder = GossipSubMessage.Builder(data: data, topic: topic)
-            .source(localPeerID)
+        // Determine effective authenticity mode (A6)
+        let authenticity = configuration.messageAuthenticity ?? (configuration.signMessages ? .signed : .author)
 
-        // Sign the message if signing is enabled
-        if configuration.signMessages {
+        // Build message based on authenticity mode
+        let message: GossipSubMessage
+        switch authenticity {
+        case .signed:
             guard let key = signingKey else {
                 throw GossipSubError.signingKeyRequired
             }
+            var builder = GossipSubMessage.Builder(data: data, topic: topic)
+                .source(localPeerID)
             builder = try builder.sign(with: key)
-        } else {
-            builder = builder.autoSequenceNumber()
-        }
+            message = try builder.build(messageIDFunction: configuration.messageIDFunction)
 
-        let message = try builder.build()
+        case .author:
+            let builder = GossipSubMessage.Builder(data: data, topic: topic)
+                .source(localPeerID)
+                .autoSequenceNumber()
+            message = try builder.build(messageIDFunction: configuration.messageIDFunction)
+
+        case .anonymous:
+            guard configuration.messageIDFunction != nil else {
+                throw GossipSubError.anonymousModeRequiresCustomMessageID
+            }
+            // No source, no seqno, no signature
+            let builder = GossipSubMessage.Builder(data: data, topic: topic)
+            message = try builder.build(messageIDFunction: configuration.messageIDFunction)
+        }
 
         // Mark as seen
         seenCache.add(message.id)
@@ -901,8 +1037,9 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             let D = configuration.meshDegree
             let D_low = configuration.meshDegreeLow
             let D_high = configuration.meshDegreeHigh
+            let D_out = configuration.meshOutboundMin
 
-            // Need more peers?
+            // Step 1: Need more peers?
             if meshCount < D_low {
                 let needed = D - meshCount
                 let rawCandidates = peerState.peersNotBackedOff(for: topic)
@@ -929,14 +1066,14 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 }
             }
 
-            // Too many peers?
+            // Step 2: Too many peers?
             if meshCount > D_high {
                 let directPeersForTopic = directPeers(for: topic)
                 let outboundPeers = Set(peerState.outboundPeersSubscribedTo(topic))
                 let toPrune = meshState.selectPeersForPrune(
                     topic: topic,
                     count: D,
-                    protectOutbound: configuration.meshOutboundMin,
+                    protectOutbound: D_out,
                     outboundPeers: outboundPeers
                 ).filter { !directPeersForTopic.contains($0) }  // Protect direct peers
 
@@ -950,12 +1087,61 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                         state.setBackoff(for: topic, duration: configuration.pruneBackoff)
                     }
 
+                    // Include PX peers in PRUNE (A3)
+                    // rust-libp2p: candidates are all connected peers subscribed to the topic
+                    // with score >= 0, not just mesh peers
+                    var pxPeers: [ControlMessage.Prune.PeerInfo] = []
+                    if configuration.enablePeerExchange && configuration.prunePeers > 0 {
+                        let allSubscribed = peerState.peersSubscribedTo(topic)
+                        let candidates = allSubscribed
+                            .filter { $0 != peer && $0 != localPeerID && peerScorer.score(for: $0) >= 0 }
+                            .shuffled()
+                            .prefix(configuration.prunePeers)
+                        pxPeers = candidates.map { candidate in
+                            ControlMessage.Prune.PeerInfo(peerID: candidate, signedPeerRecord: nil)
+                        }
+                    }
+
                     var batch = ControlMessageBatch()
                     batch.prunes.append(ControlMessage.Prune(
                         topic: topic,
+                        peers: pxPeers,
                         backoff: UInt64(configuration.pruneBackoff.components.seconds)
                     ))
                     toSend.append((peer, batch))
+                }
+            }
+
+            // Step 3: Outbound quota enforcement (A4)
+            // Even if mesh >= D_low, ensure D_out outbound peers are present
+            let currentMeshPeers = meshState.meshPeers(for: topic)
+            let currentOutbound = currentMeshPeers.filter { peer in
+                peerState.getPeer(peer)?.direction == .outbound
+            }.count
+
+            if currentOutbound < D_out {
+                let needed = D_out - currentOutbound
+                let outboundCandidates = peerState.peersNotBackedOff(for: topic)
+                    .filter { peer in
+                        guard let state = peerState.getPeer(peer) else { return false }
+                        return state.direction == .outbound
+                            && !currentMeshPeers.contains(peer)
+                            && !isDirectPeer(peer)
+                            && peerScorer.score(for: peer) >= 0
+                    }
+                    .shuffled()
+                    .prefix(needed)
+
+                for peer in outboundCandidates {
+                    meshState.addToMesh(peer, for: topic)
+                    peerScorer.peerJoinedMesh(peer, topic: topic)
+                    emit(.peerJoinedMesh(peer: peer, topic: topic))
+
+                    var batch = ControlMessageBatch()
+                    batch.grafts.append(ControlMessage.Graft(topic: topic))
+                    toSend.append((peer, batch))
+
+                    emit(.outboundQuotaGraft(peer: peer, topic: topic, outboundCount: currentOutbound))
                 }
             }
         }
@@ -1083,6 +1269,18 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         peerScorer.applyDecayToAll()
     }
 
+    /// Checks for broken IWANT promises and applies penalties (A5).
+    ///
+    /// - Returns: Dictionary of peers with broken promise counts
+    public func checkBrokenPromises() -> [PeerID: Int] {
+        let broken = gossipPromises.getBrokenPromises()
+        for (peer, count) in broken {
+            peerScorer.applyBehaviourPenalty(to: peer, count: count)
+            emit(.brokenPromisesDetected(peer: peer, count: count))
+        }
+        return broken
+    }
+
     /// Performs full scoring maintenance including:
     /// - Score decay
     /// - IWANT tracking cleanup
@@ -1140,6 +1338,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         messageCache.clear()
         seenCache.clear()
         peerScorer.clear()
+        gossipPromises.clear()
         validators.withLock { $0.removeAll() }
         directPeerState.withLock { $0.removeAll() }
 

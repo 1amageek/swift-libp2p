@@ -9,10 +9,6 @@ private struct TimeoutOpener: StreamOpener {
     }
 }
 
-private struct TimeoutRegistry: HandlerRegistry {
-    func handle(_: String, handler _: @escaping ProtocolHandler) async {}
-}
-
 private struct SlowMechanism: TraversalMechanism {
     let id: String = "slow"
     let pathKind: TraversalPathKind = .ip
@@ -48,7 +44,6 @@ struct TraversalTimeoutTests {
 
         await coordinator.start(
             opener: TimeoutOpener(),
-            registry: TimeoutRegistry(),
             getLocalAddresses: { [] },
             getPeers: { [] },
             isLimitedConnection: { _ in false },

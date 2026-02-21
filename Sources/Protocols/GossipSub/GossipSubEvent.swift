@@ -60,6 +60,27 @@ public enum GossipSubEvent: Sendable {
     /// Skipped forwarding message due to IDONTWANT (v1.2).
     case messageSkippedByIdontWant(peer: PeerID, messageID: MessageID)
 
+    // MARK: - Peer Exchange Events (v1.1)
+
+    /// Received peer exchange info from a PRUNE message.
+    case peerExchangeReceived(peer: PeerID, topic: Topic, pxPeerCount: Int)
+
+    /// Rejected peer exchange info due to low sender score.
+    case peerExchangeRejected(peer: PeerID, topic: Topic, reason: PXRejectReason)
+
+    /// Peers from peer exchange that should be connected to.
+    case peerExchangeConnect(peers: [PeerID])
+
+    // MARK: - Outbound Quota Events
+
+    /// Outbound quota GRAFT to maintain D_out minimum.
+    case outboundQuotaGraft(peer: PeerID, topic: Topic, outboundCount: Int)
+
+    // MARK: - IWANT Promise Events
+
+    /// Broken IWANT promises detected during heartbeat.
+    case brokenPromisesDetected(peer: PeerID, count: Int)
+
     // MARK: - Opportunistic Grafting Events (v1.1)
 
     /// Opportunistic graft performed.
@@ -139,5 +160,11 @@ extension GossipSubEvent {
         case ipColocation(ip: String, peerCount: Int)
         /// Generic protocol violation.
         case protocolViolation(String)
+    }
+
+    /// Reasons for rejecting peer exchange info.
+    public enum PXRejectReason: Sendable {
+        /// Sender's score is below the accept threshold.
+        case scoreBelowThreshold(score: Double, threshold: Double)
     }
 }

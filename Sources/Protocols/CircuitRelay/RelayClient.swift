@@ -48,7 +48,6 @@ public struct RelayClientConfiguration: Sendable {
 ///
 /// ```swift
 /// let client = RelayClient()
-/// await client.registerHandler(registry: node)
 ///
 /// // Make a reservation on a relay
 /// let reservation = try await client.reserve(on: relayPeer, using: node)
@@ -60,9 +59,9 @@ public struct RelayClientConfiguration: Sendable {
 ///     using: node
 /// )
 /// ```
-public final class RelayClient: ProtocolService, EventEmitting, Sendable {
+public final class RelayClient: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         [CircuitRelayProtocol.stopProtocolID]
@@ -191,17 +190,6 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
     /// - Parameter relay: The relay peer ID.
     func unregisterListener(for relay: PeerID) {
         _ = listeners.withLock { $0.removeValue(forKey: relay) }
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the stop protocol handler for incoming relayed connections.
-    ///
-    /// - Parameter registry: The handler registry to register with.
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(CircuitRelayProtocol.stopProtocolID) { [weak self] context in
-            await self?.handleStop(context: context)
-        }
     }
 
     // MARK: - Public API
@@ -799,4 +787,13 @@ public final class RelayClient: ProtocolService, EventEmitting, Sendable {
             s.renewalTasks.removeValue(forKey: relay)
         }
     }
+}
+
+// MARK: - StreamService
+
+extension RelayClient: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleStop(context: context)
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }

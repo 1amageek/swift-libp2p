@@ -10,7 +10,6 @@ public struct TraversalContext: Sendable {
     public let transports: [any Transport]
     public let connectedPeers: [PeerID]
     public let opener: (any StreamOpener)?
-    public let registry: (any HandlerRegistry)?
     public let getLocalAddresses: @Sendable () -> [Multiaddr]
     public let isLimitedConnection: @Sendable (PeerID) -> Bool
     public let dialAddress: @Sendable (Multiaddr) async throws -> PeerID
@@ -22,7 +21,6 @@ public struct TraversalContext: Sendable {
         transports: [any Transport],
         connectedPeers: [PeerID],
         opener: (any StreamOpener)?,
-        registry: (any HandlerRegistry)?,
         getLocalAddresses: @escaping @Sendable () -> [Multiaddr],
         isLimitedConnection: @escaping @Sendable (PeerID) -> Bool,
         dialAddress: @escaping @Sendable (Multiaddr) async throws -> PeerID
@@ -33,7 +31,6 @@ public struct TraversalContext: Sendable {
         self.transports = transports
         self.connectedPeers = connectedPeers
         self.opener = opener
-        self.registry = registry
         self.getLocalAddresses = getLocalAddresses
         self.isLimitedConnection = isLimitedConnection
         self.dialAddress = dialAddress

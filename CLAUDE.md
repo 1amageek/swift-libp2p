@@ -318,6 +318,49 @@ let addr = try? channel.localAddress?.toMultiaddr()
 let addr = try channel.localAddress?.toMultiaddr()
 ```
 
+### 6. 横断的関心事のプロトコル強制
+
+複数の conformer が同じ横断的処理（フィルタリング、バリデーション、変換等）を実装する場合、各実装に委ねず**プロトコル拡張で一元管理**する。
+
+#### 問題: 暗黙的な契約
+
+```swift
+// BAD: 各 conformer がフィルタリングを独立に実装 → 漏れが発生する
+protocol Service: Sendable {
+    func items() async -> [Item]  // 「自己を除外すること」は暗黙の契約
+}
+```
+
+#### 解決: 能力の宣言 + 振る舞いの合成
+
+```swift
+// GOOD: プロトコルが能力を宣言し、拡張が振る舞いを保証する
+protocol Service: Sendable {
+    var localID: ID { get }                    // 能力の宣言
+    func collectItems() async -> [Item]        // 生データの提供（実装者の責務）
+}
+
+extension Service {
+    // プロトコル要件ではない → conformer が override 不可能
+    func items() async -> [Item] {
+        await collectItems().filter { $0.id != localID }  // 横断的処理（プロトコルの責務）
+    }
+}
+```
+
+#### 設計原則
+
+- **生データの提供**は実装者の責務（`collect~`, `raw~` 等のメソッド名）
+- **横断的処理**はプロトコル拡張の責務（公開APIとして提供）
+- 公開APIをプロトコル要件から**外す**ことで、conformer による override を構造的に防ぐ
+- プロトコルに必要な情報（`localID` 等）を要件として宣言し、拡張がそれを利用する
+
+#### 適用基準
+
+- 3つ以上の conformer が同じ処理を独立に実装している
+- その処理を忘れると不整合やバグが発生する
+- 処理に必要な情報をプロトコル要件として表現できる
+
 ---
 
 ## テスト実行

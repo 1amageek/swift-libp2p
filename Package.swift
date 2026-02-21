@@ -371,6 +371,7 @@ let package = Package(
             dependencies: [
                 "P2PDiscovery",
                 "P2PCore",
+                "P2PProtocols",
                 .product(name: "SWIM", package: "swift-SWIM"),
                 .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
                 .product(name: "Logging", package: "swift-log"),
@@ -451,7 +452,7 @@ let package = Package(
         // MARK: - Protocols
         .target(
             name: "P2PProtocols",
-            dependencies: ["P2PCore", "P2PMux"],
+            dependencies: ["P2PCore", "P2PMux", "P2PDiscovery"],
             path: "Sources/Protocols/P2PProtocols"
         ),
         .target(

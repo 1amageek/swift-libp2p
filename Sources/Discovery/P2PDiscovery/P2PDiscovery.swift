@@ -33,7 +33,7 @@ public struct PeerObservation: Sendable, Hashable {
     /// Hints for reaching the subject.
     public let hints: [Multiaddr]
 
-    /// When this observation was created.
+    /// When this observation was created (milliseconds since Unix epoch).
     public let timestamp: UInt64
 
     /// Sequence number for ordering.
@@ -78,6 +78,9 @@ public struct ScoredCandidate: Sendable {
 /// Discovery service protocol.
 public protocol DiscoveryService: Sendable {
 
+    /// The local peer's ID. Used by the protocol extension to filter self from results.
+    var localPeerID: PeerID { get }
+
     /// Announces our own reachability.
     func announce(addresses: [Multiaddr]) async throws
 
@@ -87,8 +90,9 @@ public protocol DiscoveryService: Sendable {
     /// Subscribes to observations about a peer.
     func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation>
 
-    /// Returns known peers.
-    func knownPeers() async -> [PeerID]
+    /// Returns raw known peers (may include self).
+    /// Use `knownPeers()` for the filtered public API.
+    func collectKnownPeers() async -> [PeerID]
 
     /// Stream of all observations.
     var observations: AsyncStream<PeerObservation> { get }
@@ -99,4 +103,11 @@ public protocol DiscoveryService: Sendable {
     /// This method is idempotent and safe to call multiple times.
     /// Restart after `shutdown()` is not currently supported.
     func shutdown() async
+}
+
+extension DiscoveryService {
+    /// Returns known peers, excluding self.
+    public func knownPeers() async -> [PeerID] {
+        await collectKnownPeers().filter { $0 != localPeerID }
+    }
 }

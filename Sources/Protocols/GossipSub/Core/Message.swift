@@ -204,15 +204,43 @@ extension GossipSubMessage {
 
         /// Builds the message.
         ///
+        /// - Parameters:
+        ///   - messageIDFunction: Optional custom function for computing the message ID.
         /// - Returns: The constructed message
         /// - Throws: If required fields are missing
-        public func build() throws -> GossipSubMessage {
-            let seqno = sequenceNumber ?? Self.generateSequenceNumber()
+        public func build(
+            messageIDFunction: (@Sendable (GossipSubMessage) -> MessageID)? = nil
+        ) throws -> GossipSubMessage {
+            let seqno = sequenceNumber ?? Data()
 
+            if let idFn = messageIDFunction {
+                // Build temporary message with default ID, then recompute
+                let tempMsg = GossipSubMessage(
+                    source: source,
+                    data: data,
+                    sequenceNumber: seqno,
+                    topic: topic,
+                    signature: signature,
+                    key: key
+                )
+                let computedID = idFn(tempMsg)
+                return GossipSubMessage(
+                    id: computedID,
+                    source: source,
+                    data: data,
+                    sequenceNumber: seqno,
+                    topic: topic,
+                    signature: signature,
+                    key: key
+                )
+            }
+
+            // Default: auto-generate seqno if needed for default ID
+            let effectiveSeqno = seqno.isEmpty ? Self.generateSequenceNumber() : seqno
             return GossipSubMessage(
                 source: source,
                 data: data,
-                sequenceNumber: seqno,
+                sequenceNumber: effectiveSeqno,
                 topic: topic,
                 signature: signature,
                 key: key

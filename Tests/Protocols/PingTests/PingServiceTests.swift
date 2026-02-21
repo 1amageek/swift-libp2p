@@ -113,7 +113,7 @@ struct PingServiceTests {
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
-        service.shutdown()
+        await service.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value
@@ -215,11 +215,11 @@ struct PingEventTests {
     }
 }
 
-@Suite("LibP2PProtocol Ping Constants Tests")
-struct LibP2PProtocolPingConstantsTests {
+@Suite("ProtocolID Ping Constants Tests")
+struct ProtocolIDPingConstantsTests {
 
     @Test("Ping protocol ID is correct")
     func testPingProtocolID() {
-        #expect(LibP2PProtocol.ping == "/ipfs/ping/1.0.0")
+        #expect(ProtocolID.ping == "/ipfs/ping/1.0.0")
     }
 }

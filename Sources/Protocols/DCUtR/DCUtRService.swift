@@ -47,7 +47,6 @@ public struct DCUtRConfiguration: Sendable {
 /// let dcutr = DCUtRService(configuration: .init(
 ///     getLocalAddresses: { node.listenAddresses }
 /// ))
-/// await dcutr.registerHandler(registry: node)
 ///
 /// // Attempt to upgrade a relayed connection
 /// try await dcutr.upgradeToDirectConnection(
@@ -56,9 +55,9 @@ public struct DCUtRConfiguration: Sendable {
 ///     dialer: { addr in try await node.connect(to: addr) }
 /// )
 /// ```
-public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
+public final class DCUtRService: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         [DCUtRProtocol.protocolID]
@@ -145,17 +144,6 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     /// - Parameter provider: Function returning the node's current listen addresses.
     public func setLocalAddressProvider(_ provider: @escaping @Sendable () -> [Multiaddr]) {
         _localAddressProvider.withLock { $0 = provider }
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the DCUtR protocol handler.
-    ///
-    /// - Parameter registry: The handler registry to register with.
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(DCUtRProtocol.protocolID) { [weak self] context in
-            await self?.handleDCUtR(context: context)
-        }
     }
 
     // MARK: - Public API
@@ -506,6 +494,8 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() {
+        _dialerOverride.withLock { $0 = nil }
+        _localAddressProvider.withLock { $0 = nil }
         eventState.withLock { state in
             state.continuation?.finish()
             state.continuation = nil
@@ -523,4 +513,20 @@ public final class DCUtRService: ProtocolService, EventEmitting, Sendable {
             state.continuation?.yield(event)
         }
     }
+}
+
+// MARK: - StreamService
+
+extension DCUtRService: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleDCUtR(context: context)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        // Resolve listen addresses once (attach is called after listeners start,
+        // so addresses are valid). The sync closure captures the snapshot.
+        let addresses = await context.listenAddresses()
+        setLocalAddressProvider { addresses }
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }

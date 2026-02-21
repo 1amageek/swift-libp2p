@@ -50,7 +50,7 @@ struct IdentifyInteropTests {
                 do {
                     let pushStream = try await connection.acceptStream()
                     let _ = try await MultistreamSelect.handle(
-                        supported: [LibP2PProtocol.identifyPush, LibP2PProtocol.identify],
+                        supported: [ProtocolID.identifyPush, ProtocolID.identify],
                         read: { Data(buffer: try await pushStream.read()) },
                         write: { data in
                             try await pushStream.write(ByteBuffer(bytes: data))
@@ -70,13 +70,13 @@ struct IdentifyInteropTests {
         defer { closeStream(stream) }
 
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.identify],
+            protocols: [ProtocolID.identify],
             read: { Data(buffer: try await stream.read()) },
             write: { data in
                 try await stream.write(ByteBuffer(bytes: data))
             }
         )
-        #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
+        #expect(negotiationResult.protocolID == ProtocolID.identify)
 
         let bytes: Data
         if negotiationResult.remainder.isEmpty {

@@ -8,7 +8,7 @@ import Logging
 
 private let logger = Logger(label: "p2p.plumtree")
 
-/// The main Plumtree service implementing the ProtocolService interface.
+/// The main Plumtree service implementing the StreamService interface.
 ///
 /// Provides epidemic broadcast tree messaging with eager and lazy push
 /// strategies for efficient message dissemination.
@@ -21,8 +21,7 @@ private let logger = Logger(label: "p2p.plumtree")
 ///     configuration: .default
 /// )
 ///
-/// // Register handler and start
-/// await plumtree.registerHandler(registry: node)
+/// // Start the service
 /// plumtree.start()
 ///
 /// // Subscribe and receive messages
@@ -34,9 +33,9 @@ private let logger = Logger(label: "p2p.plumtree")
 /// // Publish
 /// try plumtree.publish(data: myData, to: "my-topic")
 /// ```
-public final class PlumtreeService: ProtocolService, Sendable {
+public final class PlumtreeService: Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] { [plumtreeProtocolID] }
 
@@ -69,6 +68,7 @@ public final class PlumtreeService: ProtocolService, Sendable {
         var sequenceNumber: UInt64 = 0
         var flushTask: Task<Void, Never>?
         var cleanupTask: Task<Void, Never>?
+        var opener: (any StreamOpener)?
     }
 
     // MARK: - Initialization
@@ -116,6 +116,7 @@ public final class PlumtreeService: ProtocolService, Sendable {
     public func shutdown() {
         let (flushTask, cleanupTask) = serviceState.withLock { s -> (Task<Void, Never>?, Task<Void, Never>?) in
             s.isStarted = false
+            s.opener = nil
             let ft = s.flushTask
             let ct = s.cleanupTask
             s.flushTask = nil
@@ -135,17 +136,6 @@ public final class PlumtreeService: ProtocolService, Sendable {
     /// Whether the service is started.
     public var isStarted: Bool {
         serviceState.withLock { $0.isStarted }
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the Plumtree protocol handler.
-    ///
-    /// - Parameter registry: The handler registry to register with
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(plumtreeProtocolID) { [weak self] context in
-            await self?.handleIncomingStream(context: context)
-        }
     }
 
     // MARK: - Event Stream
@@ -493,9 +483,40 @@ public final class PlumtreeService: ProtocolService, Sendable {
     }
 }
 
-// MARK: - LibP2PProtocol Extension
+// MARK: - StreamService
 
-extension LibP2PProtocol {
+extension PlumtreeService: StreamService, PeerObserver {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleIncomingStream(context: context)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        serviceState.withLock { $0.opener = context }
+        if !serviceState.withLock({ $0.isStarted }) {
+            start()
+        }
+    }
+
+    public func peerConnected(_ peer: PeerID) async {
+        guard let opener = serviceState.withLock({ $0.opener }) else { return }
+        do {
+            let stream = try await opener.newStream(to: peer, protocol: plumtreeProtocolID)
+            handlePeerConnected(peer, stream: stream)
+        } catch {
+            logger.debug("Plumtree failed to open stream to \(peer): \(error)")
+        }
+    }
+
+    public func peerDisconnected(_ peer: PeerID) async {
+        handlePeerDisconnected(peer)
+    }
+
+    // shutdown(): already defined as sync method — satisfies async requirement (SE-0296)
+}
+
+// MARK: - ProtocolID Extension
+
+extension ProtocolID {
     /// Plumtree protocol ID.
     public static let plumtree = plumtreeProtocolID
 }

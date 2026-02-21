@@ -133,26 +133,6 @@ enum AutoNATTestError: Error {
     case dialFailed
 }
 
-/// A mock HandlerRegistry for AutoNAT tests.
-final class AutoNATMockRegistry: HandlerRegistry, Sendable {
-    private let state: Mutex<RegistryState>
-
-    private struct RegistryState: Sendable {
-        var handlers: [String: ProtocolHandler] = [:]
-    }
-
-    init() {
-        self.state = Mutex(RegistryState())
-    }
-
-    func handle(_ protocolID: String, handler: @escaping ProtocolHandler) async {
-        state.withLock { $0.handlers[protocolID] = handler }
-    }
-
-    func getHandler(for protocolID: String) -> ProtocolHandler? {
-        state.withLock { $0.handlers[protocolID] }
-    }
-}
 
 /// A mock StreamOpener for AutoNAT tests.
 final class AutoNATMockOpener: StreamOpener, Sendable {
@@ -231,7 +211,8 @@ func createAutoNATContext(
         remotePeer: remotePeer,
         remoteAddress: remoteAddress,
         localPeer: localPeer,
-        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002)
+        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002),
+        protocolID: AutoNATProtocol.protocolID
     )
 }
 
@@ -267,10 +248,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        // Register server handler
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Create client
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
@@ -289,15 +266,13 @@ struct AutoNATIntegrationTests {
 
         // Run server handler
         let serverTask = Task {
-            if let handler = registry.getHandler(for: AutoNATProtocol.protocolID) {
-                let context = createAutoNATContext(
-                    stream: serverStream,
-                    remotePeer: clientKey.peerID,
-                    localPeer: serverKey.peerID,
-                    remoteAddress: clientAddresses[0]  // Match client IP
-                )
-                await handler(context)
-            }
+            let context = createAutoNATContext(
+                stream: serverStream,
+                remotePeer: clientKey.peerID,
+                localPeer: serverKey.peerID,
+                remoteAddress: clientAddresses[0]  // Match client IP
+            )
+            await server.handleInboundStream(context)
         }
 
         // Client probes server
@@ -324,10 +299,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        // Register server handler
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Create client
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
@@ -346,15 +317,13 @@ struct AutoNATIntegrationTests {
 
         // Run server handler
         let serverTask = Task {
-            if let handler = registry.getHandler(for: AutoNATProtocol.protocolID) {
-                let context = createAutoNATContext(
-                    stream: serverStream,
-                    remotePeer: clientKey.peerID,
-                    localPeer: serverKey.peerID,
-                    remoteAddress: clientAddresses[0]
-                )
-                await handler(context)
-            }
+            let context = createAutoNATContext(
+                stream: serverStream,
+                remotePeer: clientKey.peerID,
+                localPeer: serverKey.peerID,
+                remoteAddress: clientAddresses[0]
+            )
+            await server.handleInboundStream(context)
         }
 
         // Client probes server
@@ -382,10 +351,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        // Register handler
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Create streams
         let (clientStream, serverStream) = AutoNATMockStream.createPair(
             protocolID: AutoNATProtocol.protocolID
@@ -409,15 +374,13 @@ struct AutoNATIntegrationTests {
         }
 
         // Run server handler
-        if let handler = registry.getHandler(for: AutoNATProtocol.protocolID) {
-            let context = createAutoNATContext(
-                stream: serverStream,
-                remotePeer: clientKey.peerID,
-                localPeer: serverKey.peerID,
-                remoteAddress: clientAddress  // Same IP as client
-            )
-            await handler(context)
-        }
+        let context = createAutoNATContext(
+            stream: serverStream,
+            remotePeer: clientKey.peerID,
+            localPeer: serverKey.peerID,
+            remoteAddress: clientAddress  // Same IP as client
+        )
+        await server.handleInboundStream(context)
 
         let response = try await clientTask.value
 
@@ -443,10 +406,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        // Register handler
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Create streams
         let (clientStream, serverStream) = AutoNATMockStream.createPair(
             protocolID: AutoNATProtocol.protocolID
@@ -464,15 +423,13 @@ struct AutoNATIntegrationTests {
         }
 
         // Run server - observed address matches validAddress IP
-        if let handler = registry.getHandler(for: AutoNATProtocol.protocolID) {
-            let context = createAutoNATContext(
-                stream: serverStream,
-                remotePeer: clientKey.peerID,
-                localPeer: serverKey.peerID,
-                remoteAddress: try Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Same IP as validAddress
-            )
-            await handler(context)
-        }
+        let context = createAutoNATContext(
+            stream: serverStream,
+            remotePeer: clientKey.peerID,
+            localPeer: serverKey.peerID,
+            remoteAddress: try Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Same IP as validAddress
+        )
+        await server.handleInboundStream(context)
 
         let response = try await clientTask.value
 
@@ -499,10 +456,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        // Register handler
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Create streams
         let (clientStream, serverStream) = AutoNATMockStream.createPair(
             protocolID: AutoNATProtocol.protocolID
@@ -520,15 +473,13 @@ struct AutoNATIntegrationTests {
         }
 
         // Run server with different observed IP
-        if let handler = registry.getHandler(for: AutoNATProtocol.protocolID) {
-            let context = createAutoNATContext(
-                stream: serverStream,
-                remotePeer: clientKey.peerID,
-                localPeer: serverKey.peerID,
-                remoteAddress: try Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Different IP
-            )
-            await handler(context)
-        }
+        let context = createAutoNATContext(
+            stream: serverStream,
+            remotePeer: clientKey.peerID,
+            localPeer: serverKey.peerID,
+            remoteAddress: try Multiaddr("/ip4/192.168.1.100/tcp/5000")  // Different IP
+        )
+        await server.handleInboundStream(context)
 
         let response = try await clientTask.value
 
@@ -562,13 +513,6 @@ struct AutoNATIntegrationTests {
         )
         let server2 = AutoNATService(configuration: server2Config)
 
-        // Register handlers
-        let registry1 = AutoNATMockRegistry()
-        await server1.registerHandler(registry: registry1)
-
-        let registry2 = AutoNATMockRegistry()
-        await server2.registerHandler(registry: registry2)
-
         // Create client
         let clientConfig = AutoNATConfiguration(
             minProbes: 2,
@@ -591,27 +535,23 @@ struct AutoNATIntegrationTests {
 
         // Run server handlers
         let serverTask1 = Task {
-            if let handler = registry1.getHandler(for: AutoNATProtocol.protocolID) {
-                let context = createAutoNATContext(
-                    stream: serverStream1,
-                    remotePeer: clientKey.peerID,
-                    localPeer: server1Key.peerID,
-                    remoteAddress: clientAddresses[0]
-                )
-                await handler(context)
-            }
+            let context = createAutoNATContext(
+                stream: serverStream1,
+                remotePeer: clientKey.peerID,
+                localPeer: server1Key.peerID,
+                remoteAddress: clientAddresses[0]
+            )
+            await server1.handleInboundStream(context)
         }
 
         let serverTask2 = Task {
-            if let handler = registry2.getHandler(for: AutoNATProtocol.protocolID) {
-                let context = createAutoNATContext(
-                    stream: serverStream2,
-                    remotePeer: clientKey.peerID,
-                    localPeer: server2Key.peerID,
-                    remoteAddress: clientAddresses[0]
-                )
-                await handler(context)
-            }
+            let context = createAutoNATContext(
+                stream: serverStream2,
+                remotePeer: clientKey.peerID,
+                localPeer: server2Key.peerID,
+                remoteAddress: clientAddresses[0]
+            )
+            await server2.handleInboundStream(context)
         }
 
         // Client probes both servers
@@ -723,9 +663,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Client with maxAddresses = 5 (smaller for easier testing)
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
@@ -789,9 +726,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         // Client with maxAddresses = 8 (exact match)
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
@@ -851,9 +785,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
             getLocalAddresses: { addresses }
@@ -909,9 +840,6 @@ struct AutoNATIntegrationTests {
         )
         let server = AutoNATService(configuration: serverConfig)
 
-        let registry = AutoNATMockRegistry()
-        await server.registerHandler(registry: registry)
-
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
             getLocalAddresses: { clientAddresses }
@@ -942,15 +870,13 @@ struct AutoNATIntegrationTests {
         opener.setStream(clientStream, for: serverKey.peerID)
 
         let serverTask = Task {
-            if let handler = registry.getHandler(for: AutoNATProtocol.protocolID) {
-                let context = createAutoNATContext(
-                    stream: serverStream,
-                    remotePeer: clientKey.peerID,
-                    localPeer: serverKey.peerID,
-                    remoteAddress: clientAddresses[0]
-                )
-                await handler(context)
-            }
+            let context = createAutoNATContext(
+                stream: serverStream,
+                remotePeer: clientKey.peerID,
+                localPeer: serverKey.peerID,
+                remoteAddress: clientAddresses[0]
+            )
+            await server.handleInboundStream(context)
         }
 
         _ = try await client.probe(using: opener, servers: [serverKey.peerID])
@@ -961,7 +887,7 @@ struct AutoNATIntegrationTests {
         try await Task.sleep(for: .milliseconds(10))
 
         // Properly shutdown and await event task
-        client.shutdown()
+        await client.shutdown()
         await eventTask.value
 
         let receivedEvents = await collector.getEvents()

@@ -176,7 +176,7 @@ struct PingEdgeCaseTests {
         let service = PingService()
         let events = service.events
 
-        service.shutdown()
+        await service.shutdown()
 
         // After shutdown, iterating events should complete immediately
         var count = 0

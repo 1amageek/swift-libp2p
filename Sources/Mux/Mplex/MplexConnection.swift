@@ -71,6 +71,10 @@ public final class MplexConnection: MuxedConnection, Sendable {
         underlying.remoteAddress
     }
 
+    public var hasActiveStreams: Bool {
+        state.withLock { !$0.streams.isEmpty }
+    }
+
     private let underlying: any SecuredConnection
     private let isInitiator: Bool
     private let configuration: MplexConfiguration

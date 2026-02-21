@@ -267,7 +267,7 @@ struct IdentifyServiceTests {
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
-        service.shutdown()
+        await service.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value
@@ -308,7 +308,7 @@ struct IdentifyServiceTests {
         // Entry should be cleaned up
         #expect(service.cachedInfo(for: peer) == nil)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("startMaintenance is idempotent")
@@ -355,7 +355,7 @@ struct IdentifyServiceTests {
         // Note: It's expired but not cleaned up until accessed
         #expect(service.allCachedInfo.isEmpty)  // allCachedInfo filters expired
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     // MARK: - IdentifyEvent Tests
@@ -446,7 +446,7 @@ struct IdentifyServiceTests {
                 } catch {
                     return false
                 }
-                service.shutdown()
+                await service.shutdown()
                 return false
             }
 
@@ -455,7 +455,7 @@ struct IdentifyServiceTests {
             return result
         }
 
-        service.shutdown()
+        await service.shutdown()
         #expect(receivedMaintenanceEvent)
     }
 }
@@ -551,16 +551,16 @@ struct IdentifyErrorTests {
     }
 }
 
-@Suite("LibP2PProtocol Constants Tests")
-struct LibP2PProtocolConstantsTests {
+@Suite("ProtocolID Constants Tests")
+struct ProtocolIDConstantsTests {
 
     @Test("Identify protocol ID is correct")
     func identifyProtocolID() {
-        #expect(LibP2PProtocol.identify == "/ipfs/id/1.0.0")
+        #expect(ProtocolID.identify == "/ipfs/id/1.0.0")
     }
 
     @Test("Identify push protocol ID is correct")
     func identifyPushProtocolID() {
-        #expect(LibP2PProtocol.identifyPush == "/ipfs/id/push/1.0.0")
+        #expect(ProtocolID.identifyPush == "/ipfs/id/push/1.0.0")
     }
 }

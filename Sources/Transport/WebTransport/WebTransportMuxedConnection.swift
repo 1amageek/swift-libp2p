@@ -85,6 +85,7 @@ public final class WebTransportMuxedConnection: MuxedConnection, Sendable {
 
     private struct State: Sendable {
         var isClosed = false
+        var openStreamCount: Int = 0
         var forwardingTask: Task<Void, Never>?
         var inboundStream: AsyncStream<MuxedStream>?
     }
@@ -103,6 +104,10 @@ public final class WebTransportMuxedConnection: MuxedConnection, Sendable {
             certificateHashes: remoteCertificateHashes,
             peerID: _remotePeer
         ).toMultiaddr()
+    }
+
+    public var hasActiveStreams: Bool {
+        state.withLock { $0.openStreamCount > 0 }
     }
 
     public var inboundStreams: AsyncStream<MuxedStream> {
@@ -150,6 +155,7 @@ public final class WebTransportMuxedConnection: MuxedConnection, Sendable {
                 if isClosed { break }
 
                 let base = QUICMuxedStream(stream: quicStream, protocolID: WebTransportProtocol.protocolID)
+                self.state.withLock { $0.openStreamCount += 1 }
                 self.streamChannel.send(WebTransportMuxedStream(base: base))
             }
 
@@ -161,6 +167,7 @@ public final class WebTransportMuxedConnection: MuxedConnection, Sendable {
 
     public func newStream() async throws -> MuxedStream {
         let quicStream = try await quicConnection.openStream()
+        state.withLock { $0.openStreamCount += 1 }
         let base = QUICMuxedStream(stream: quicStream, protocolID: WebTransportProtocol.protocolID)
         return WebTransportMuxedStream(base: base)
     }

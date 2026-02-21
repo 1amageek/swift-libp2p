@@ -96,24 +96,16 @@ public enum IdentifyEvent: Sendable {
 ///     agentVersion: "my-app/1.0.0"
 /// ))
 ///
-/// // Register handlers with node
-/// await identifyService.registerHandlers(
-///     registry: node,
-///     localKeyPair: keyPair,
-///     getListenAddresses: { addresses },
-///     getSupportedProtocols: { protocols }
-/// )
-///
 /// // Identify a connected peer
 /// let info = try await identifyService.identify(peer, using: node)
 /// print("Peer agent: \(info.agentVersion)")
 /// ```
-public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
+public final class IdentifyService: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
-        [LibP2PProtocol.identify, LibP2PProtocol.identifyPush]
+        [ProtocolID.identify, ProtocolID.identifyPush]
     }
 
     // MARK: - Properties
@@ -208,102 +200,6 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         self.cleanupTask = Mutex(nil)
     }
 
-    // MARK: - Handler Registration
-
-    /// Registers identify protocol handlers.
-    ///
-    /// - Parameters:
-    ///   - registry: The handler registry to register with
-    ///   - localKeyPair: The local key pair
-    ///   - getListenAddresses: Closure to get current listen addresses
-    ///   - getSupportedProtocols: Closure to get current supported protocols
-    ///   - opener: Optional stream opener for auto-push (required if autoPush is enabled)
-    public func registerHandlers(
-        registry: any HandlerRegistry,
-        localKeyPair: KeyPair,
-        getListenAddresses: @escaping @Sendable () async -> [Multiaddr],
-        getSupportedProtocols: @escaping @Sendable () async -> [String],
-        opener: (any StreamOpener)? = nil
-    ) async {
-        let config = self.configuration
-
-        // Store references for auto-push
-        if config.autoPush, let opener = opener {
-            autoPushState.withLock { state in
-                state.openerRef = OpenerRef(opener)
-                state.localKeyPair = localKeyPair
-                state.getListenAddresses = getListenAddresses
-                state.getSupportedProtocols = getSupportedProtocols
-            }
-        }
-
-        // Handler for identify requests
-        await registry.handle(LibP2PProtocol.identify) { [weak self] context in
-            guard let self = self else { return }
-
-            do {
-                // Build our info with the observed address
-                let listenAddrs = await getListenAddresses()
-                let protocols = await getSupportedProtocols()
-
-                let info = IdentifyInfo(
-                    publicKey: localKeyPair.publicKey,
-                    listenAddresses: listenAddrs,
-                    protocols: protocols,
-                    observedAddress: context.remoteAddress,
-                    protocolVersion: config.protocolVersion,
-                    agentVersion: config.agentVersion,
-                    signedPeerRecord: nil
-                )
-
-                // Encode and send
-                let data = try IdentifyProtobuf.encode(info)
-                try await context.stream.write(ByteBuffer(bytes: data))
-                try await context.stream.close()
-
-                self.emit(.sent(peer: context.remotePeer))
-            } catch let sendError {
-                self.emit(.error(peer: context.remotePeer, .streamError(sendError.localizedDescription)))
-                do {
-                    try await context.stream.close()
-                } catch {
-                    logger.debug("Failed to close identify stream: \(error)")
-                }
-            }
-        }
-
-        // Handler for identify push
-        await registry.handle(LibP2PProtocol.identifyPush) { [weak self] context in
-            guard let self = self else { return }
-
-            do {
-                // Read the push data
-                let data = try await self.readAll(from: context.stream)
-                let info = try IdentifyProtobuf.decode(data)
-
-                // Verify signed peer record if present
-                if let envelope = info.signedPeerRecord {
-                    try self.verifySignedPeerRecord(envelope, expectedPeer: context.remotePeer)
-                }
-
-                // Update cache
-                self.cacheInfo(info, for: context.remotePeer)
-
-                self.emit(.pushReceived(peer: context.remotePeer, info: info))
-            } catch let identifyError as IdentifyError {
-                self.emit(.error(peer: context.remotePeer, identifyError))
-            } catch {
-                self.emit(.error(peer: context.remotePeer, .streamError(error.localizedDescription)))
-            }
-
-            do {
-                try await context.stream.close()
-            } catch {
-                logger.debug("Failed to close identify push stream: \(error)")
-            }
-        }
-    }
-
     // MARK: - Public API
 
     /// Identifies a connected peer.
@@ -316,7 +212,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
     /// - Returns: The peer's identification info
     public func identify(_ peer: PeerID, using opener: any StreamOpener) async throws -> IdentifyInfo {
         // Open identify stream
-        let stream = try await opener.newStream(to: peer, protocol: LibP2PProtocol.identify)
+        let stream = try await opener.newStream(to: peer, protocol: ProtocolID.identify)
 
         defer {
             Task {
@@ -384,7 +280,7 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         supportedProtocols: [String]
     ) async throws {
         // Open push stream
-        let stream = try await opener.newStream(to: peer, protocol: LibP2PProtocol.identifyPush)
+        let stream = try await opener.newStream(to: peer, protocol: ProtocolID.identifyPush)
 
         defer {
             Task {
@@ -612,6 +508,47 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         }
     }
 
+    /// Merges a push update with existing cached info (C5).
+    ///
+    /// If cached info exists for the peer, only non-empty fields from the push
+    /// overwrite existing values (differential application). If no cached info
+    /// exists, the push info is cached as-is.
+    ///
+    /// - Parameters:
+    ///   - pushInfo: The push update info
+    ///   - peer: The peer ID to update
+    internal func mergePushInfo(_ pushInfo: IdentifyInfo, for peer: PeerID) {
+        let now = ContinuousClock.now
+        let expiresAt = now.advanced(by: configuration.cacheTTL)
+
+        cacheState.withLock { state in
+            let mergedInfo: IdentifyInfo
+            if let existing = state.entries[peer], existing.expiresAt > now {
+                // Merge: only non-empty fields overwrite
+                mergedInfo = existing.info.merging(from: pushInfo)
+            } else {
+                mergedInfo = pushInfo
+            }
+
+            // Update LRU order
+            if let index = state.accessOrder.firstIndex(of: peer) {
+                state.accessOrder.remove(at: index)
+            }
+            state.accessOrder.append(peer)
+
+            // Check capacity for new entry
+            if state.entries[peer] == nil && state.entries.count >= configuration.maxCacheSize {
+                evictEntries(from: &state, count: 1)
+            }
+
+            state.entries[peer] = CachedPeerInfo(
+                info: mergedInfo,
+                cachedAt: now,
+                expiresAt: expiresAt
+            )
+        }
+    }
+
     /// Evicts entries using strategy: expired first, then LRU.
     ///
     /// - Parameters:
@@ -802,6 +739,86 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
         }
     }
 
+    // MARK: - Inbound Stream Handlers
+
+    /// Handles an inbound identify request by building local info and writing it to the stream.
+    ///
+    /// Reads `localKeyPair`, `getListenAddresses`, and `getSupportedProtocols` from `autoPushState`.
+    /// These are populated by `attach(to:)` (NodeService path).
+    private func handleIdentifyRequest(context: StreamContext) async {
+        let (keyPair, getAddrs, getProtos) = autoPushState.withLock { state in
+            (state.localKeyPair, state.getListenAddresses, state.getSupportedProtocols)
+        }
+
+        guard let keyPair = keyPair,
+              let getAddrs = getAddrs,
+              let getProtos = getProtos else {
+            logger.debug("handleIdentifyRequest: missing keyPair or address/protocol closures")
+            do {
+                try await context.stream.close()
+            } catch {
+                logger.debug("Failed to close identify stream: \(error)")
+            }
+            return
+        }
+
+        let config = self.configuration
+
+        do {
+            let listenAddrs = await getAddrs()
+            let protocols = await getProtos()
+
+            let info = IdentifyInfo(
+                publicKey: keyPair.publicKey,
+                listenAddresses: listenAddrs,
+                protocols: protocols,
+                observedAddress: context.remoteAddress,
+                protocolVersion: config.protocolVersion,
+                agentVersion: config.agentVersion,
+                signedPeerRecord: nil
+            )
+
+            let data = try IdentifyProtobuf.encode(info)
+            try await context.stream.write(ByteBuffer(bytes: data))
+            try await context.stream.close()
+
+            self.emit(.sent(peer: context.remotePeer))
+        } catch {
+            self.emit(.error(peer: context.remotePeer, .streamError(error.localizedDescription)))
+            do {
+                try await context.stream.close()
+            } catch {
+                logger.debug("Failed to close identify stream: \(error)")
+            }
+        }
+    }
+
+    /// Handles an inbound identify push by reading data, verifying, and merging with cache.
+    private func handleIdentifyPushRequest(context: StreamContext) async {
+        do {
+            let data = try await self.readAll(from: context.stream)
+            let info = try IdentifyProtobuf.decode(data)
+
+            if let envelope = info.signedPeerRecord {
+                try self.verifySignedPeerRecord(envelope, expectedPeer: context.remotePeer)
+            }
+
+            self.mergePushInfo(info, for: context.remotePeer)
+
+            self.emit(.pushReceived(peer: context.remotePeer, info: info))
+        } catch let identifyError as IdentifyError {
+            self.emit(.error(peer: context.remotePeer, identifyError))
+        } catch {
+            self.emit(.error(peer: context.remotePeer, .streamError(error.localizedDescription)))
+        }
+
+        do {
+            try await context.stream.close()
+        } catch {
+            logger.debug("Failed to close identify push stream: \(error)")
+        }
+    }
+
     // MARK: - Shutdown
 
     /// Shuts down the service and finishes the event stream.
@@ -827,4 +844,40 @@ public final class IdentifyService: ProtocolService, EventEmitting, Sendable {
             state.stream = nil
         }
     }
+}
+
+// MARK: - StreamService
+
+extension IdentifyService: StreamService, PeerObserver {
+    public func handleInboundStream(_ context: StreamContext) async {
+        switch context.protocolID {
+        case ProtocolID.identify:
+            await handleIdentifyRequest(context: context)
+        case ProtocolID.identifyPush:
+            await handleIdentifyPushRequest(context: context)
+        default:
+            break
+        }
+    }
+
+    public func attach(to context: any NodeContext) async {
+        // Always populate keyPair/addresses/protocols so handleIdentifyRequest works.
+        // openerRef is only needed for auto-push.
+        autoPushState.withLock { state in
+            state.localKeyPair = context.localKeyPair
+            state.getListenAddresses = { await context.listenAddresses() }
+            state.getSupportedProtocols = { await context.supportedProtocols() }
+            if configuration.autoPush {
+                state.openerRef = OpenerRef(context)
+            }
+        }
+        startMaintenance()
+    }
+
+    // peerConnected(_:) and peerDisconnected(_:) are defined as sync methods
+    // on IdentifyService. A sync method satisfies an async protocol requirement
+    // via SE-0296, so no wrapper methods are needed.
+
+    // shutdown() is defined as a sync method on IdentifyService.
+    // It satisfies the async requirement via SE-0296.
 }

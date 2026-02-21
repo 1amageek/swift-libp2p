@@ -8,27 +8,31 @@ import Synchronization
 @testable import P2PCore
 @testable import P2PMux
 @testable import P2PProtocols
+@testable import P2PDiscovery
 
 // MARK: - Test Helpers
 
-/// A mock HandlerRegistry that captures registered handlers.
-final class MockHandlerRegistry: HandlerRegistry, Sendable {
-    private let state: Mutex<RegistryState>
+/// A mock NodeContext for testing via attach(to:).
+private final class MockIntegrationNodeContext: NodeContext, @unchecked Sendable {
+    let localPeer: PeerID
+    let localKeyPair: KeyPair
+    private let _peerStore: any PeerStore
+    private let _listenAddresses: [Multiaddr]
+    private let _opener: any StreamOpener
 
-    private struct RegistryState {
-        var handlers: [String: ProtocolHandler] = [:]
+    init(localPeer: PeerID, opener: any StreamOpener, listenAddresses: [Multiaddr] = []) {
+        self.localPeer = localPeer
+        self.localKeyPair = KeyPair.generateEd25519()
+        self._peerStore = MemoryPeerStore()
+        self._listenAddresses = listenAddresses
+        self._opener = opener
     }
 
-    init() {
-        self.state = Mutex(RegistryState())
-    }
-
-    func handle(_ protocolID: String, handler: @escaping ProtocolHandler) async {
-        state.withLock { $0.handlers[protocolID] = handler }
-    }
-
-    func getHandler(for protocolID: String) -> ProtocolHandler? {
-        state.withLock { $0.handlers[protocolID] }
+    var peerStore: any PeerStore { _peerStore }
+    func listenAddresses() async -> [Multiaddr] { _listenAddresses }
+    func supportedProtocols() async -> [String] { [] }
+    func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
+        try await _opener.newStream(to: peer, protocol: protocolID)
     }
 }
 
@@ -210,14 +214,16 @@ enum MockOpenerError: Error {
 func createMockContext(
     stream: MuxedStream,
     remotePeer: PeerID,
-    localPeer: PeerID
+    localPeer: PeerID,
+    protocolID: String = CircuitRelayProtocol.hopProtocolID
 ) -> StreamContext {
     StreamContext(
         stream: stream,
         remotePeer: remotePeer,
         remoteAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4001),
         localPeer: localPeer,
-        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002)
+        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002),
+        protocolID: protocolID
     )
 }
 
@@ -241,15 +247,9 @@ struct CircuitRelayIntegrationTests {
             protocolID: CircuitRelayProtocol.hopProtocolID
         )
 
-        // Register server handler
-        let registry = MockHandlerRegistry()
+        // Attach server to mock context
         let serverOpener = MockStreamOpener()
-        await server.registerHandler(
-            registry: registry,
-            opener: serverOpener,
-            localPeer: relayKey.peerID,
-            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
-        )
+        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
 
         // Setup mock opener for client
         let clientOpener = MockStreamOpener()
@@ -257,14 +257,12 @@ struct CircuitRelayIntegrationTests {
 
         // Run server handler in background
         let serverTask = Task {
-            if let handler = registry.getHandler(for: CircuitRelayProtocol.hopProtocolID) {
-                let context = createMockContext(
-                    stream: serverStream,
-                    remotePeer: clientKey.peerID,
-                    localPeer: relayKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createMockContext(
+                stream: serverStream,
+                remotePeer: clientKey.peerID,
+                localPeer: relayKey.peerID
+            )
+            await server.handleInboundStream(context)
         }
 
         // Client makes reservation
@@ -291,29 +289,21 @@ struct CircuitRelayIntegrationTests {
             protocolID: CircuitRelayProtocol.hopProtocolID
         )
 
-        // Register server handler
-        let registry = MockHandlerRegistry()
+        // Attach server to mock context
         let serverOpener = MockStreamOpener()
-        await server.registerHandler(
-            registry: registry,
-            opener: serverOpener,
-            localPeer: relayKey.peerID,
-            getLocalAddresses: { [] }
-        )
+        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener))
 
         let clientOpener = MockStreamOpener()
         clientOpener.setStream(clientStream, for: CircuitRelayProtocol.hopProtocolID)
 
         // Run server handler
         let serverTask = Task {
-            if let handler = registry.getHandler(for: CircuitRelayProtocol.hopProtocolID) {
-                let context = createMockContext(
-                    stream: serverStream,
-                    remotePeer: clientKey.peerID,
-                    localPeer: relayKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createMockContext(
+                stream: serverStream,
+                remotePeer: clientKey.peerID,
+                localPeer: relayKey.peerID
+            )
+            await server.handleInboundStream(context)
         }
 
         // Client should fail reservation
@@ -344,15 +334,9 @@ struct CircuitRelayIntegrationTests {
         let targetClient = RelayClient()
         let server = RelayServer()
 
-        // Register server handler
-        let registry = MockHandlerRegistry()
+        // Attach server to mock context
         let serverOpener = MockStreamOpener()
-        await server.registerHandler(
-            registry: registry,
-            opener: serverOpener,
-            localPeer: relayKey.peerID,
-            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
-        )
+        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
 
         // First, target makes a reservation
         let (resClientStream, resServerStream) = MockMuxedStream.createPair(
@@ -363,14 +347,12 @@ struct CircuitRelayIntegrationTests {
         resOpener.setStream(resClientStream, for: CircuitRelayProtocol.hopProtocolID)
 
         let resServerTask = Task {
-            if let handler = registry.getHandler(for: CircuitRelayProtocol.hopProtocolID) {
-                let context = createMockContext(
-                    stream: resServerStream,
-                    remotePeer: targetKey.peerID,
-                    localPeer: relayKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createMockContext(
+                stream: resServerStream,
+                remotePeer: targetKey.peerID,
+                localPeer: relayKey.peerID
+            )
+            await server.handleInboundStream(context)
         }
 
         _ = try await targetClient.reserve(on: relayKey.peerID, using: resOpener)
@@ -503,15 +485,9 @@ struct CircuitRelayIntegrationTests {
         let server = RelayServer()
         let client = RelayClient()
 
-        // Register server handler
-        let registry = MockHandlerRegistry()
+        // Attach server to mock context
         let serverOpener = MockStreamOpener()
-        await server.registerHandler(
-            registry: registry,
-            opener: serverOpener,
-            localPeer: relayKey.peerID,
-            getLocalAddresses: { [] }
-        )
+        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener))
 
         let (clientStream, serverStream) = MockMuxedStream.createPair(
             protocolID: CircuitRelayProtocol.hopProtocolID
@@ -522,14 +498,12 @@ struct CircuitRelayIntegrationTests {
 
         // Server handles connection attempt
         let serverTask = Task {
-            if let handler = registry.getHandler(for: CircuitRelayProtocol.hopProtocolID) {
-                let context = createMockContext(
-                    stream: serverStream,
-                    remotePeer: sourceKey.peerID,
-                    localPeer: relayKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createMockContext(
+                stream: serverStream,
+                remotePeer: sourceKey.peerID,
+                localPeer: relayKey.peerID
+            )
+            await server.handleInboundStream(context)
         }
 
         // Client should fail
@@ -565,15 +539,9 @@ struct CircuitRelayIntegrationTests {
         )
         let server = RelayServer(configuration: serverConfig)
 
-        // Register server handler
-        let registry = MockHandlerRegistry()
+        // Attach server to mock context
         let serverOpener = MockStreamOpener()
-        await server.registerHandler(
-            registry: registry,
-            opener: serverOpener,
-            localPeer: relayKey.peerID,
-            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
-        )
+        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
 
         // Verify configuration is set
         #expect(serverConfig.maxCircuitsPerPeer == 1)
@@ -638,19 +606,9 @@ struct RelayListenerTests {
         let client = RelayClient()
         let server = RelayServer()
 
-        // Register client's Stop handler (critical for receiving connections)
-        let clientRegistry = MockHandlerRegistry()
-        await client.registerHandler(registry: clientRegistry)
-
-        // Register server's Hop handler
-        let serverRegistry = MockHandlerRegistry()
+        // Attach server to mock context
         let serverOpener = MockStreamOpener()
-        await server.registerHandler(
-            registry: serverRegistry,
-            opener: serverOpener,
-            localPeer: relayKey.peerID,
-            getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
-        )
+        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
 
         // Step 1: Target makes reservation on relay
         let (resClientStream, resServerStream) = MockMuxedStream.createPair(
@@ -661,14 +619,12 @@ struct RelayListenerTests {
         resOpener.setStream(resClientStream, for: CircuitRelayProtocol.hopProtocolID)
 
         let resServerTask = Task {
-            if let handler = serverRegistry.getHandler(for: CircuitRelayProtocol.hopProtocolID) {
-                let context = createMockContext(
-                    stream: resServerStream,
-                    remotePeer: targetKey.peerID,
-                    localPeer: relayKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createMockContext(
+                stream: resServerStream,
+                remotePeer: targetKey.peerID,
+                localPeer: relayKey.peerID
+            )
+            await server.handleInboundStream(context)
         }
 
         let reservation = try await client.reserve(on: relayKey.peerID, using: resOpener)
@@ -694,20 +650,18 @@ struct RelayListenerTests {
             do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
             // Simulate relay sending STOP CONNECT
-            if let handler = clientRegistry.getHandler(for: CircuitRelayProtocol.stopProtocolID) {
-                let context = createMockContext(
-                    stream: stopServerStream,
-                    remotePeer: relayKey.peerID,  // STOP comes from relay
-                    localPeer: targetKey.peerID
-                )
+            let context = createMockContext(
+                stream: stopServerStream,
+                remotePeer: relayKey.peerID,  // STOP comes from relay
+                localPeer: targetKey.peerID
+            )
 
-                // Write CONNECT message to the stream (simulating relay's message)
-                let connectMsg = StopMessage.connect(from: sourceKey.peerID, limit: .default)
-                let connectData = CircuitRelayProtobuf.encode(connectMsg)
-                try await stopClientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: connectData))
+            // Write CONNECT message to the stream (simulating relay's message)
+            let connectMsg = StopMessage.connect(from: sourceKey.peerID, limit: .default)
+            let connectData = CircuitRelayProtobuf.encode(connectMsg)
+            try await stopClientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: connectData))
 
-                await handler(context)
-            }
+            await client.handleInboundStream(context)
         }
 
         // Step 4: Accept connection on listener
@@ -1115,7 +1069,7 @@ struct RelayClientCancellationTests {
                 "Expected cancellation or quick failure, got: \(result)")
         #expect(elapsed < .seconds(5), "Should complete quickly, took: \(elapsed)")
 
-        client.shutdown()
+        await client.shutdown()
     }
 
     @Test("RelayClient.acceptConnection() cancellation after delay", .timeLimit(.minutes(1)))
@@ -1149,6 +1103,6 @@ struct RelayClientCancellationTests {
         #expect(result == "cancelled", "Expected CancellationError, got: \(result)")
         #expect(elapsed < .seconds(1), "Cancellation should be immediate, took: \(elapsed)")
 
-        client.shutdown()
+        await client.shutdown()
     }
 }

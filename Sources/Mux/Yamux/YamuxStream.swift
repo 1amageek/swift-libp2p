@@ -29,7 +29,6 @@ private struct YamuxStreamState: Sendable {
     /// Queue of writers waiting for window space (supports concurrent writes)
     var windowWaitContinuations: [CheckedContinuation<Void, Error>] = []
     var sendWindow: UInt32
-    var recvWindow: UInt32
 
     // Write direction state
     /// Local has closed write side (sent FIN)
@@ -48,7 +47,6 @@ private struct YamuxStreamState: Sendable {
     init(initialWindowSize: UInt32) {
         self.initialWindowSize = initialWindowSize
         self.sendWindow = initialWindowSize
-        self.recvWindow = initialWindowSize
     }
 }
 
@@ -67,6 +65,8 @@ public final class YamuxStream: MuxedStream, Sendable {
 
     private let state: Mutex<YamuxStreamState>
     private let connection: YamuxConnection
+    /// Per-stream flow controller for OnRead window updates and auto-tuning (B1/B2).
+    private let flowController: FlowController
 
     init(id: UInt64, connection: YamuxConnection, initialWindowSize: UInt32 = yamuxDefaultWindowSize) {
         precondition(id <= UInt32.max, "Yamux stream IDs must fit in UInt32")
@@ -74,10 +74,16 @@ public final class YamuxStream: MuxedStream, Sendable {
         self.yamuxStreamID = UInt32(id)
         self.connection = connection
         self.state = Mutex(YamuxStreamState(initialWindowSize: initialWindowSize))
+        self.flowController = FlowController(
+            initialWindowSize: initialWindowSize,
+            rtt: connection.rttEstimator,
+            connectionWindowLimit: connection.configuration.maxAutoTuneWindow,
+            autoTuneEnabled: connection.configuration.enableWindowAutoTuning
+        )
     }
 
     public func read() async throws -> ByteBuffer {
-        try await withCheckedThrowingContinuation { continuation in
+        let data: ByteBuffer = try await withCheckedThrowingContinuation { continuation in
             state.withLock { state in
                 // Reset state - immediate failure
                 if state.isReset {
@@ -93,9 +99,9 @@ public final class YamuxStream: MuxedStream, Sendable {
 
                 // Return buffered data if available
                 if state.readBuffer.readableBytes > 0 {
-                    let data = state.readBuffer
+                    let buffered = state.readBuffer
                     state.readBuffer = ByteBuffer()
-                    continuation.resume(returning: data)
+                    continuation.resume(returning: buffered)
                 } else if state.remoteWriteClosed {
                     // Remote closed write side and buffer is empty - no more data coming
                     continuation.resume(throwing: YamuxError.streamClosed)
@@ -105,6 +111,21 @@ public final class YamuxStream: MuxedStream, Sendable {
                 }
             }
         }
+
+        // OnRead mode (B2): send window update when data is consumed by the application
+        let consumed = UInt32(data.readableBytes)
+        if consumed > 0, let delta = flowController.dataConsumed(count: consumed) {
+            Task { [connection, yamuxStreamID] in
+                let frame = YamuxFrame.windowUpdate(streamID: yamuxStreamID, delta: delta)
+                do {
+                    try await connection.sendFrame(frame)
+                } catch {
+                    // Window update failed - connection likely closing
+                }
+            }
+        }
+
+        return data
     }
 
     /// Result of attempting to reserve send window space.
@@ -307,6 +328,10 @@ public final class YamuxStream: MuxedStream, Sendable {
 
     /// Called when data is received for this stream.
     ///
+    /// Uses FlowController for window management (B1/B2).
+    /// In OnRead mode, window updates are NOT sent here — they are sent
+    /// when the application calls read() and consumes the data.
+    ///
     /// - Returns: `true` if the data was accepted, `false` if it exceeded
     ///   the receive window (protocol violation).
     func dataReceived(_ data: ByteBuffer) -> Bool {
@@ -316,35 +341,43 @@ public final class YamuxStream: MuxedStream, Sendable {
             case windowViolation(errorConts: [CheckedContinuation<ByteBuffer, Error>])
         }
 
+        // Guard against data exceeding UInt32 range (Yamux uses 32-bit lengths)
+        guard data.readableBytes <= UInt32.max else {
+            let errorConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
+                state.isReset = true
+                state.localWriteClosed = true
+                state.localReadClosed = true
+                state.remoteWriteClosed = true
+                let conts = state.readContinuations
+                state.readContinuations = []
+                return conts
+            }
+            for cont in errorConts {
+                cont.resume(throwing: YamuxError.windowExceeded)
+            }
+            return false
+        }
+        let dataSize = UInt32(data.readableBytes)
+
+        // Check receive window via FlowController (B1/B2)
+        guard flowController.dataReceived(count: dataSize) else {
+            let errorConts = state.withLock { state -> [CheckedContinuation<ByteBuffer, Error>] in
+                state.isReset = true
+                state.localWriteClosed = true
+                state.localReadClosed = true
+                state.remoteWriteClosed = true
+                let conts = state.readContinuations
+                state.readContinuations = []
+                return conts
+            }
+            for cont in errorConts {
+                cont.resume(throwing: YamuxError.windowExceeded)
+            }
+            return false
+        }
+
         let result: DataReceivedResult = state.withLock { state in
-            // Guard against data exceeding UInt32 range (Yamux uses 32-bit lengths)
-            guard data.readableBytes <= UInt32.max else {
-                state.isReset = true
-                state.localWriteClosed = true
-                state.localReadClosed = true
-                state.remoteWriteClosed = true
-                let conts = state.readContinuations
-                state.readContinuations = []
-                return .windowViolation(errorConts: conts)
-            }
-            let dataSize = UInt32(data.readableBytes)
-
-            // Check for receive window violation (protocol error)
-            if dataSize > state.recvWindow {
-                state.isReset = true
-                state.localWriteClosed = true
-                state.localReadClosed = true
-                state.remoteWriteClosed = true
-                let conts = state.readContinuations
-                state.readContinuations = []
-                return .windowViolation(errorConts: conts)
-            }
-
-            // Update receive window (always, even if discarding)
-            state.recvWindow -= dataSize
-
             // If local read is closed, discard the data
-            // Yamux has no STOP_SENDING, so peer keeps sending until window exhausted
             if state.localReadClosed {
                 return .discarded
             }
@@ -362,46 +395,16 @@ public final class YamuxStream: MuxedStream, Sendable {
 
         // Process result outside of lock
         switch result {
-        case .windowViolation(let errorConts):
-            for cont in errorConts {
-                cont.resume(throwing: YamuxError.windowExceeded)
-            }
+        case .windowViolation:
+            // Already handled above, should not reach here
             return false
 
         case .discarded:
-            // Data discarded, but not a protocol error
-            // Don't send window update - let window drain to signal backpressure
             return true
 
         case .accepted(let continuation):
             continuation?.resume(returning: data)
-
-            // Send window update if needed (only if not read-closed)
-            // Update recvWindow BEFORE sending to prevent duplicate updates from concurrent calls
-            let (needsUpdate, delta) = state.withLock { state -> (Bool, UInt32) in
-                // Don't send window updates if read is closed
-                if state.localReadClosed {
-                    return (false, 0)
-                }
-                if state.recvWindow < state.initialWindowSize / 2 {
-                    let d = state.initialWindowSize - state.recvWindow
-                    state.recvWindow += d
-                    return (true, d)
-                }
-                return (false, 0)
-            }
-
-            if needsUpdate {
-                Task { [connection, yamuxStreamID] in
-                    let frame = YamuxFrame.windowUpdate(streamID: yamuxStreamID, delta: delta)
-                    do {
-                        try await connection.sendFrame(frame)
-                    } catch {
-                        // Window update failed - connection likely closing
-                    }
-                }
-            }
-
+            // No window update here — OnRead mode sends updates in read()
             return true
         }
     }

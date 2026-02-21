@@ -129,6 +129,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
 
     private struct ConnectionState: Sendable {
         var isClosed: Bool = false
+        var openStreamCount: Int = 0
         var forwardingTask: Task<Void, Never>?
         var inboundStream: AsyncStream<MuxedStream>?
     }
@@ -169,6 +170,10 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         quicConnection.currentRemoteAddress.toQUICMultiaddr()
     }
 
+    public var hasActiveStreams: Bool {
+        state.withLock { $0.openStreamCount > 0 }
+    }
+
     /// Creates a new QUICMuxedConnection.
     ///
     /// - Parameters:
@@ -207,6 +212,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
                 if isClosed { break }
 
                 let muxedStream = QUICMuxedStream(stream: quicStream)
+                self.state.withLock { $0.openStreamCount += 1 }
                 self.streamChannel.send(muxedStream)
             }
 
@@ -224,6 +230,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     /// - Throws: Error if stream creation fails.
     public func newStream() async throws -> MuxedStream {
         let quicStream = try await quicConnection.openStream()
+        state.withLock { $0.openStreamCount += 1 }
         return QUICMuxedStream(stream: quicStream)
     }
 

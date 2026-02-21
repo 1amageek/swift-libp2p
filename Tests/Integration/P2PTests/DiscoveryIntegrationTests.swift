@@ -17,15 +17,14 @@ struct DiscoveryIntegrationTests {
         let discovery = MockNodeIntegratedDiscovery()
         let node = Node(configuration: NodeConfiguration(
             keyPair: keyPair,
-            discovery: discovery
+            services: [discovery]
         ))
 
         try await node.start()
         await node.shutdown()
 
         let state = await discovery.currentState()
-        #expect(state.registerHandlerCalls == 1)
-        #expect(state.startCalls == 1)
+        #expect(state.attachCalls == 1)
         #expect(state.shutdownCalls == 1)
     }
 
@@ -53,7 +52,7 @@ struct DiscoveryIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            discovery: serverDiscovery
+            services: [serverDiscovery]
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -62,7 +61,7 @@ struct DiscoveryIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            discovery: clientDiscovery
+            services: [clientDiscovery]
         ))
 
         try await server.start()
@@ -83,10 +82,13 @@ struct DiscoveryIntegrationTests {
         await client.disconnect(from: serverPeerID)
         await server.disconnect(from: clientPeerID)
 
-        let finalServerState = await serverDiscovery.currentState()
-        let finalClientState = await clientDiscovery.currentState()
-        #expect(finalServerState.disconnectedPeers.contains(clientPeerID))
-        #expect(finalClientState.disconnectedPeers.contains(serverPeerID))
+        // peerDisconnected is delivered asynchronously via event forwarding.
+        try await waitUntil(timeout: .seconds(2)) {
+            let serverState = await serverDiscovery.currentState()
+            let clientState = await clientDiscovery.currentState()
+            return serverState.disconnectedPeers.contains(clientPeerID)
+                && clientState.disconnectedPeers.contains(serverPeerID)
+        }
 
         await client.shutdown()
         await server.shutdown()
@@ -94,46 +96,38 @@ struct DiscoveryIntegrationTests {
     }
 }
 
-private actor MockNodeIntegratedDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable, NodeDiscoveryStartable, NodeDiscoveryPeerStreamService {
+private actor MockNodeIntegratedDiscovery: DiscoveryBehaviour, PeerObserver {
     struct State: Sendable {
-        var startCalls: Int
+        var attachCalls: Int
         var shutdownCalls: Int
-        var registerHandlerCalls: Int
         var connectedPeers: Set<PeerID>
         var disconnectedPeers: Set<PeerID>
     }
 
     nonisolated let discoveryProtocolID: String = "/test/discovery-integration/1.0.0"
+    nonisolated let localPeerID: PeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
 
-    private var startCalls: Int = 0
+    private var attachCalls: Int = 0
     private var shutdownCalls: Int = 0
-    private var registerHandlerCalls: Int = 0
     private var connectedPeers: Set<PeerID> = []
     private var disconnectedPeers: Set<PeerID> = []
-    private var peerStreams: [PeerID: MuxedStream] = [:]
 
     func currentState() -> State {
         State(
-            startCalls: startCalls,
+            attachCalls: attachCalls,
             shutdownCalls: shutdownCalls,
-            registerHandlerCalls: registerHandlerCalls,
             connectedPeers: connectedPeers,
             disconnectedPeers: disconnectedPeers
         )
     }
 
-    func start() async {
-        startCalls += 1
+    // MARK: - StreamService
+
+    nonisolated var protocolIDs: [String] {
+        [discoveryProtocolID]
     }
 
-    func registerHandler(registry: any HandlerRegistry) async {
-        registerHandlerCalls += 1
-        await registry.handle(discoveryProtocolID) { [weak self] context in
-            await self?.handleInboundStream(context)
-        }
-    }
-
-    private func handleInboundStream(_ context: StreamContext) async {
+    func handleInboundStream(_ context: StreamContext) async {
         do {
             try await context.stream.close()
         } catch {
@@ -141,22 +135,19 @@ private actor MockNodeIntegratedDiscovery: DiscoveryService, NodeDiscoveryHandle
         }
     }
 
-    func handlePeerConnected(_ peerID: PeerID, stream: MuxedStream) async {
-        connectedPeers.insert(peerID)
-        peerStreams[peerID] = stream
+    func attach(to context: any NodeContext) async {
+        attachCalls += 1
     }
 
-    func handlePeerDisconnected(_ peerID: PeerID) async {
-        disconnectedPeers.insert(peerID)
-        guard let stream = peerStreams.removeValue(forKey: peerID) else {
-            return
-        }
-        do {
-            try await stream.close()
-        } catch {
-            // Ignore close failures in tests.
-        }
+    func peerConnected(_ peer: PeerID) async {
+        connectedPeers.insert(peer)
     }
+
+    func peerDisconnected(_ peer: PeerID) async {
+        disconnectedPeers.insert(peer)
+    }
+
+    // MARK: - DiscoveryService
 
     func announce(addresses: [Multiaddr]) async throws {
         _ = addresses
@@ -167,7 +158,7 @@ private actor MockNodeIntegratedDiscovery: DiscoveryService, NodeDiscoveryHandle
         return []
     }
 
-    func knownPeers() async -> [PeerID] {
+    func collectKnownPeers() async -> [PeerID] {
         []
     }
 
@@ -186,15 +177,6 @@ private actor MockNodeIntegratedDiscovery: DiscoveryService, NodeDiscoveryHandle
 
     func shutdown() async {
         shutdownCalls += 1
-        let streams = Array(peerStreams.values)
-        peerStreams.removeAll()
-        for stream in streams {
-            do {
-                try await stream.close()
-            } catch {
-                // Ignore close failures in tests.
-            }
-        }
     }
 }
 

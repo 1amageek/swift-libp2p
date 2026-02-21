@@ -69,10 +69,16 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         underlying.remoteAddress
     }
 
+    public var hasActiveStreams: Bool {
+        state.withLock { !$0.streams.isEmpty }
+    }
+
     private let underlying: any SecuredConnection
     private let isInitiator: Bool
-    private let configuration: YamuxConfiguration
+    let configuration: YamuxConfiguration
     private let state: Mutex<YamuxConnectionState>
+    /// RTT estimator for window auto-tuning (B1).
+    let rttEstimator: RTTEstimator
     /// Serializes frame writes to prevent interleaving
     private let frameWriter: FrameWriter
 
@@ -94,6 +100,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         self.isInitiator = isInitiator
         self.configuration = configuration
         self.frameWriter = FrameWriter(connection: underlying)
+        self.rttEstimator = RTTEstimator()
 
         var initialState = YamuxConnectionState(isInitiator: isInitiator)
 
@@ -558,10 +565,11 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
     private func handlePing(_ frame: YamuxFrame) async throws {
         if frame.flags.contains(.ack) {
-            // Pong response - remove from pending pings
+            // Pong response - remove from pending pings and record RTT (B1)
             state.withLock { state in
                 _ = state.pendingPings.removeValue(forKey: frame.length)
             }
+            rttEstimator.pongReceived(id: frame.length)
             return
         }
 
@@ -697,6 +705,9 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             state.pendingPings[id] = ContinuousClock.now
             return id
         }
+
+        // Record ping sent for RTT estimation (B1)
+        rttEstimator.pingSent(id: pingID)
 
         let frame = YamuxFrame.ping(opaque: pingID, ack: false)
         await sendFrameBestEffort(frame, context: "keep-alive ping")

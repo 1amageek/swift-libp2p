@@ -38,13 +38,13 @@ struct PingInteropTests {
         defer { closeStream(stream) }
 
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await stream.read()) },
             write: { data in
                 try await stream.write(ByteBuffer(bytes: data))
             }
         )
-        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+        #expect(negotiationResult.protocolID == ProtocolID.ping)
 
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         try await stream.write(ByteBuffer(bytes: payload))

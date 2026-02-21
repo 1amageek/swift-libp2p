@@ -47,6 +47,10 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
         connectionState.withLock { $0.remoteAddress }
     }
 
+    public var hasActiveStreams: Bool {
+        connectionState.withLock { !$0.streams.isEmpty }
+    }
+
     private let connectionState: Mutex<ConnectionState>
 
     private struct ConnectionState: Sendable {

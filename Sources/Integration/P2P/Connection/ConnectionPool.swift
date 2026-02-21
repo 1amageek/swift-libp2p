@@ -73,6 +73,10 @@ internal struct ManagedConnection: Sendable {
 
     /// Whether this is a limited (relay) connection.
     var isLimited: Bool
+
+    /// Whether this connection should be kept alive (C3).
+    /// Set by protocols (e.g. GossipSub for mesh peers).
+    var keepAlive: Bool = false
 }
 
 /// Central manager for all connection state.
@@ -803,6 +807,23 @@ internal final class ConnectionPool: Sendable {
         }
     }
 
+    /// Sets the keep-alive flag for all connections to a peer (C3).
+    ///
+    /// Keep-alive connections are excluded from idle connection trimming.
+    /// Used by protocols like GossipSub to prevent mesh peer disconnection.
+    ///
+    /// - Parameters:
+    ///   - keepAlive: Whether to keep connections alive
+    ///   - peer: The peer whose connections to update
+    func setKeepAlive(_ keepAlive: Bool, for peer: PeerID) {
+        state.withLock { state in
+            guard let ids = state.peerConnections[peer] else { return }
+            for id in ids {
+                state.connections[id]?.keepAlive = keepAlive
+            }
+        }
+    }
+
     /// Gets connections that have been idle beyond the threshold.
     ///
     /// - Parameter threshold: How long without activity to consider idle
@@ -811,7 +832,10 @@ internal final class ConnectionPool: Sendable {
         let cutoff = ContinuousClock.now - threshold
         return state.withLock { state in
             state.connections.values.filter { managed in
-                managed.state.isConnected && managed.lastActivity < cutoff
+                managed.state.isConnected
+                    && !managed.keepAlive  // Keep-alive connections are never idle (C3)
+                    && managed.lastActivity < cutoff
+                    && !(managed.connection?.hasActiveStreams ?? false)
             }
         }
     }

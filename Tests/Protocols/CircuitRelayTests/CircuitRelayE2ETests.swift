@@ -33,7 +33,7 @@ final class TestRelayNode: Sendable {
 }
 
 /// Thread-safe handler registry for E2E tests.
-final class MockE2EHandlerRegistry: HandlerRegistry, Sendable {
+final class MockE2EHandlerRegistry: Sendable {
     private let state: Mutex<RegistryState>
 
     private struct RegistryState: Sendable {
@@ -44,7 +44,7 @@ final class MockE2EHandlerRegistry: HandlerRegistry, Sendable {
         self.state = Mutex(RegistryState())
     }
 
-    func handle(_ protocolID: String, handler: @escaping ProtocolHandler) async {
+    func handle(_ protocolID: String, handler: @escaping ProtocolHandler) {
         state.withLock { $0.handlers[protocolID] = handler }
     }
 
@@ -108,7 +108,8 @@ final class MockE2EStreamOpener: StreamOpener, Sendable {
                     remotePeer: peer, // This will be corrected by the calling context
                     remoteAddress: try Multiaddr("/memory/test"),
                     localPeer: provider.localPeer,
-                    localAddress: try Multiaddr("/memory/local")
+                    localAddress: try Multiaddr("/memory/local"),
+                    protocolID: protocolID
                 )
                 await handler(context)
             }
@@ -261,7 +262,6 @@ struct CircuitRelayE2ETests {
         let sourceKey = KeyPair.generateEd25519()
 
         let client = RelayClient()
-        await client.registerHandler(registry: MockE2EHandlerRegistry())
 
         // Create two mock reservations for different relays
         let reservation1 = Reservation(
@@ -356,7 +356,7 @@ struct CircuitRelayE2ETests {
         // Cleanup
         try await listener1.close()
         try await listener2.close()
-        client.shutdown()
+        await client.shutdown()
     }
 
     @Test("Multiple connections through same relay are handled correctly", .timeLimit(.minutes(1)))
@@ -418,7 +418,7 @@ struct CircuitRelayE2ETests {
         #expect(receivedPeers == expectedPeers, "Should receive peers in FIFO order")
 
         try await listener.close()
-        client.shutdown()
+        await client.shutdown()
     }
 
     // MARK: - Data Transfer Tests
@@ -539,7 +539,7 @@ struct CircuitRelayE2ETests {
         // acceptConnection on the client should get the connection (fallback behavior)
         // Since listener is closed, it shouldn't be registered anymore
 
-        client.shutdown()
+        await client.shutdown()
     }
 
     // MARK: - Event Tests
@@ -550,8 +550,7 @@ struct CircuitRelayE2ETests {
         let sourceKey = KeyPair.generateEd25519()
 
         let client = RelayClient()
-        let registry = MockE2EHandlerRegistry()
-        await client.registerHandler(registry: registry)
+        // Client handles Stop protocol via handleInboundStream
 
         // Collect events using actor for thread safety
         let collector = EventCollector()
@@ -574,17 +573,16 @@ struct CircuitRelayE2ETests {
         let connectData = CircuitRelayProtobuf.encode(connectMsg)
         try await clientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: connectData))
 
-        // Invoke handler
-        if let handler = registry.getHandler(for: CircuitRelayProtocol.stopProtocolID) {
-            let context = StreamContext(
-                stream: serverStream,
-                remotePeer: relayKey.peerID,
-                remoteAddress: try Multiaddr("/memory/relay"),
-                localPeer: sourceKey.peerID,
-                localAddress: try Multiaddr("/memory/local")
-            )
-            await handler(context)
-        }
+        // Invoke handler directly
+        let context = StreamContext(
+            stream: serverStream,
+            remotePeer: relayKey.peerID,
+            remoteAddress: try Multiaddr("/memory/relay"),
+            localPeer: sourceKey.peerID,
+            localAddress: try Multiaddr("/memory/local"),
+            protocolID: CircuitRelayProtocol.stopProtocolID
+        )
+        await client.handleInboundStream(context)
 
         // Wait for event
         try await Task.sleep(for: .milliseconds(100))
@@ -599,7 +597,7 @@ struct CircuitRelayE2ETests {
             return false
         }, "Should emit circuitEstablished event")
 
-        client.shutdown()
+        await client.shutdown()
     }
 
     // MARK: - Concurrent Access Tests
@@ -656,6 +654,6 @@ struct CircuitRelayE2ETests {
         #expect(successCount == connectionCount, "All \(connectionCount) queued connections should be accepted")
 
         try await listener.close()
-        client.shutdown()
+        await client.shutdown()
     }
 }

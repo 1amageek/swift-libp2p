@@ -94,7 +94,7 @@ struct AutoNATServiceTests {
         #expect(service.status == .unknown)
 
         // Properly shutdown and await event task
-        service.shutdown()
+        await service.shutdown()
         await eventTask.value
     }
 
@@ -141,7 +141,7 @@ struct AutoNATServiceTests {
         do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         // Shutdown should finish the stream
-        service.shutdown()
+        await service.shutdown()
 
         // eventTask should complete (not hang)
         let result = await eventTask.value
@@ -171,7 +171,7 @@ struct AutoNATServiceTests {
         do { try await Task.sleep(for: .milliseconds(10)) } catch { }
 
         // Shutdown should unblock the consumer
-        service.shutdown()
+        await service.shutdown()
 
         // Wait for the task to complete
         await eventTask.value

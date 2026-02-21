@@ -35,15 +35,15 @@ struct IdentifyIntegrationTests {
                 idleTimeout: .seconds(300)
             ),
             healthCheck: nil,
-            identifyService: identifyService
+            services: [identifyService]
         ))
 
         try await node.start()
 
         // Verify identify protocol handlers are registered
-        let protocols = await node.supportedProtocols
-        #expect(protocols.contains(LibP2PProtocol.identify))
-        #expect(protocols.contains(LibP2PProtocol.identifyPush))
+        let protocols = await node.supportedProtocols()
+        #expect(protocols.contains(ProtocolID.identify))
+        #expect(protocols.contains(ProtocolID.identifyPush))
 
         await node.shutdown()
         hub.reset()
@@ -76,7 +76,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            identifyService: serverIdentify
+            services: [serverIdentify]
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -131,7 +131,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            identifyService: serverIdentify
+            services: [serverIdentify]
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -186,7 +186,7 @@ struct IdentifyIntegrationTests {
                 idleTimeout: .seconds(300)
             ),
             healthCheck: nil,
-            identifyService: identifyService
+            services: [identifyService]
         ))
 
         try await node.start()
@@ -244,7 +244,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            identifyService: serverIdentify
+            services: [serverIdentify]
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -253,7 +253,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            identifyService: clientIdentify
+            services: [clientIdentify]
         ))
 
         try await server.start()

@@ -41,7 +41,6 @@ struct TraversalMechanismLocalDirectTests {
             ],
             connectedPeers: [],
             opener: nil,
-            registry: nil,
             getLocalAddresses: { [] },
             isLimitedConnection: { _ in false },
             dialAddress: { _ in peer }

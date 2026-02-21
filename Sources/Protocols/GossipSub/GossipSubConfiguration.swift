@@ -147,6 +147,68 @@ public struct GossipSubConfiguration: Sendable {
     /// Key: topic, Value: set of peer IDs.
     public var directPeers: [Topic: Set<PeerID>]
 
+    // MARK: - Custom Message ID (A1)
+
+    /// Custom function for computing message IDs.
+    /// Receives the full message and returns a MessageID.
+    /// Default: nil (uses source_peer_id || sequence_number).
+    public var messageIDFunction: (@Sendable (GossipSubMessage) -> MessageID)?
+
+    // MARK: - Subscription Filter (A2)
+
+    /// Subscription filter for topic subscriptions.
+    /// When set, controls which topics can be subscribed to locally
+    /// and filters incoming remote subscriptions.
+    public var subscriptionFilter: (any TopicSubscriptionFilter)?
+
+    // MARK: - Peer Exchange (A3)
+
+    /// Enable peer exchange in PRUNE messages (v1.1).
+    public var enablePeerExchange: Bool
+
+    /// Maximum number of PX peers to include in PRUNE.
+    public var prunePeers: Int
+
+    /// Minimum score of the pruning peer to accept its PX peers.
+    public var acceptPXThreshold: Double
+
+    // MARK: - IWANT Promise Tracking (A5)
+
+    /// Time to wait for a promised message after IWANT.
+    public var iwantFollowupTime: Duration
+
+    // MARK: - Validation Mode (A6)
+
+    /// Validation mode for incoming messages.
+    public enum ValidationMode: Sendable {
+        /// Require source, seqno, and valid signature.
+        case strict
+        /// Accept messages without source/seqno/signature, but validate if present.
+        case permissive
+        /// Reject messages that HAVE source, seqno, or signature (privacy mode).
+        case anonymous
+        /// No validation at all.
+        case none
+    }
+
+    /// Authenticity mode for outgoing messages.
+    public enum MessageAuthenticity: Sendable {
+        /// Sign messages with the provided key.
+        case signed
+        /// Set source peer ID but don't sign.
+        case author
+        /// No source, no seqno, no signature (requires custom messageIDFunction).
+        case anonymous
+    }
+
+    /// Validation mode for incoming messages.
+    /// When set, overrides `validateSignatures` / `strictSignatureVerification`.
+    public var validationMode: ValidationMode?
+
+    /// Authenticity mode for outgoing messages.
+    /// When set, overrides `signMessages`.
+    public var messageAuthenticity: MessageAuthenticity?
+
     // MARK: - Flood Publish
 
     /// Whether to flood publish to all peers (not just mesh).
@@ -190,6 +252,14 @@ public struct GossipSubConfiguration: Sendable {
         opportunisticGraftPeers: Int = 2,
         opportunisticGraftThreshold: Double = 1.0,
         directPeers: [Topic: Set<PeerID>] = [:],
+        messageIDFunction: (@Sendable (GossipSubMessage) -> MessageID)? = nil,
+        subscriptionFilter: (any TopicSubscriptionFilter)? = nil,
+        enablePeerExchange: Bool = false,
+        prunePeers: Int = 0,
+        acceptPXThreshold: Double = 10.0,
+        iwantFollowupTime: Duration = .seconds(3),
+        validationMode: ValidationMode? = nil,
+        messageAuthenticity: MessageAuthenticity? = nil,
         floodPublish: Bool = true,
         floodPublishMaxPeers: Int = 25
     ) {
@@ -224,6 +294,14 @@ public struct GossipSubConfiguration: Sendable {
         self.opportunisticGraftPeers = opportunisticGraftPeers
         self.opportunisticGraftThreshold = opportunisticGraftThreshold
         self.directPeers = directPeers
+        self.messageIDFunction = messageIDFunction
+        self.subscriptionFilter = subscriptionFilter
+        self.enablePeerExchange = enablePeerExchange
+        self.prunePeers = prunePeers
+        self.acceptPXThreshold = acceptPXThreshold
+        self.iwantFollowupTime = iwantFollowupTime
+        self.validationMode = validationMode
+        self.messageAuthenticity = messageAuthenticity
         self.floodPublish = floodPublish
         self.floodPublishMaxPeers = floodPublishMaxPeers
     }
@@ -241,8 +319,40 @@ public struct GossipSubConfiguration: Sendable {
         guard meshOutboundMin <= meshDegreeLow else {
             throw ConfigurationError.invalidMeshDegree("D_out (\(meshOutboundMin)) must be <= D_low (\(meshDegreeLow))")
         }
+        // D_out must be <= D/2 (rust-libp2p constraint)
+        guard meshOutboundMin <= meshDegree / 2 else {
+            throw ConfigurationError.invalidMeshDegree("D_out (\(meshOutboundMin)) must be <= D/2 (\(meshDegree / 2))")
+        }
         guard messageCacheGossipLength <= messageCacheLength else {
             throw ConfigurationError.invalidCacheConfig("mcache_gossip (\(messageCacheGossipLength)) must be <= mcache_len (\(messageCacheLength))")
+        }
+        // Strict validation requires signed authenticity (source + seqno + signature)
+        if let mode = validationMode, mode == .strict {
+            if let auth = messageAuthenticity, auth != .signed {
+                throw ConfigurationError.incompatibleAuthAndValidation(
+                    "Strict validation requires signed authenticity (got \(auth))"
+                )
+            }
+        }
+        // Anonymous validation requires anonymous authenticity
+        if let mode = validationMode, mode == .anonymous {
+            if let auth = messageAuthenticity, auth != .anonymous {
+                throw ConfigurationError.incompatibleAuthAndValidation(
+                    "Anonymous validation requires anonymous authenticity (got \(auth))"
+                )
+            }
+        }
+        // Anonymous authenticity requires compatible validation mode
+        if let auth = messageAuthenticity, auth == .anonymous {
+            if let mode = validationMode, mode == .strict {
+                throw ConfigurationError.incompatibleAuthAndValidation(
+                    "Anonymous authenticity requires anonymous or permissive validation mode"
+                )
+            }
+        }
+        // Anonymous validation requires custom messageIDFunction
+        if validationMode == .anonymous && messageIDFunction == nil {
+            throw ConfigurationError.anonymousModeRequiresCustomMessageID
         }
     }
 
@@ -250,6 +360,8 @@ public struct GossipSubConfiguration: Sendable {
     public enum ConfigurationError: Error, Sendable {
         case invalidMeshDegree(String)
         case invalidCacheConfig(String)
+        case incompatibleAuthAndValidation(String)
+        case anonymousModeRequiresCustomMessageID
     }
 }
 

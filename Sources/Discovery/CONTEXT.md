@@ -188,7 +188,7 @@ public struct BootstrapConfiguration: Sendable {
 ### CompositeDiscovery
 複数の発見サービスを組み合わせる:
 ```swift
-let composite = CompositeDiscovery(services: [
+let composite = CompositeDiscovery(localPeerID: localPeerID, services: [
     (swimService, weight: 1.0),
     (mdnsService, weight: 0.8)
 ])

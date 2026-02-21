@@ -1401,6 +1401,6 @@ struct KademliaClientModeTests {
             Issue.record("Expected modeChanged event, got: \(String(describing: receivedEvent))")
         }
 
-        service.shutdown()
+        await service.shutdown()
     }
 }

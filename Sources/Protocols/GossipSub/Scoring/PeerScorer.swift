@@ -18,6 +18,18 @@ public struct PeerScorerConfig: Sendable {
     /// Penalty for GRAFT during backoff period.
     public var graftBackoffPenalty: Double
 
+    /// Weight for behavioral penalty (P7) from broken IWANT promises.
+    /// The P7 score = behaviourPenaltyWeight * max(0, counter - threshold)^2
+    public var behaviourPenaltyWeight: Double
+
+    /// Threshold for behavioral penalty counter.
+    /// Counter must exceed this before penalty applies.
+    public var behaviourPenaltyThreshold: Double
+
+    /// Decay factor for the behavioral penalty counter (applied each decay interval).
+    /// Example: 0.99 means 1% decay per interval.
+    public var behaviourPenaltyDecay: Double
+
     /// Penalty for broken promise (IHAVE but no message on IWANT).
     public var brokenPromisePenalty: Double
 
@@ -74,6 +86,9 @@ public struct PeerScorerConfig: Sendable {
         invalidMessagePenalty: Double = -100.0,
         duplicateMessagePenalty: Double = -1.0,
         graftBackoffPenalty: Double = -10.0,
+        behaviourPenaltyWeight: Double = -10.0,
+        behaviourPenaltyThreshold: Double = 0.0,
+        behaviourPenaltyDecay: Double = 0.99,
         brokenPromisePenalty: Double = -50.0,
         excessiveIWantPenalty: Double = -10.0,
         topicMismatchPenalty: Double = -50.0,
@@ -91,6 +106,9 @@ public struct PeerScorerConfig: Sendable {
         self.invalidMessagePenalty = invalidMessagePenalty
         self.duplicateMessagePenalty = duplicateMessagePenalty
         self.graftBackoffPenalty = graftBackoffPenalty
+        self.behaviourPenaltyWeight = behaviourPenaltyWeight
+        self.behaviourPenaltyThreshold = behaviourPenaltyThreshold
+        self.behaviourPenaltyDecay = behaviourPenaltyDecay
         self.brokenPromisePenalty = brokenPromisePenalty
         self.excessiveIWantPenalty = excessiveIWantPenalty
         self.topicMismatchPenalty = topicMismatchPenalty
@@ -158,6 +176,10 @@ public final class PeerScorer: Sendable {
     private struct PeerScore: Sendable {
         var score: Double = 0.0
         var lastDecay: ContinuousClock.Instant = .now
+        /// Accumulated behaviour penalty counter (P7).
+        /// Incremented by broken promise count, decayed each interval.
+        /// P7 = weight * max(0, counter - threshold)^2
+        var behaviourPenaltyCounter: Double = 0.0
     }
 
     /// Per-topic state tracked for each peer.
@@ -334,6 +356,26 @@ public final class PeerScorer: Sendable {
     public func recordTopicMismatch(from peer: PeerID) {
         guard !isProtected(peer) else { return }
         applyPenalty(to: peer, amount: config.topicMismatchPenalty)
+    }
+
+    /// Applies behavioral penalty for broken IWANT promises (A5, P7).
+    ///
+    /// Increments the peer's behaviour penalty counter by `count`.
+    /// The counter is decayed each decay interval and the P7 score contribution is:
+    ///   P7 = behaviourPenaltyWeight * max(0, counter - threshold)^2
+    ///
+    /// This matches rust-libp2p's `add_penalty` / `score()` P7 computation.
+    ///
+    /// - Parameters:
+    ///   - peer: The peer that broke promises.
+    ///   - count: Number of broken promises in this check.
+    public func applyBehaviourPenalty(to peer: PeerID, count: Int) {
+        guard !isProtected(peer) else { return }
+        scores.withLock { scores in
+            var peerScore = scores[peer] ?? PeerScore()
+            peerScore.behaviourPenaltyCounter += Double(count)
+            scores[peer] = peerScore
+        }
     }
 
     /// Applies a custom penalty amount.
@@ -874,7 +916,17 @@ public final class PeerScorer: Sendable {
             return total
         }
 
-        return globalScore + topicScore
+        // P7: Behaviour penalty (broken IWANT promises, etc.)
+        let behaviourScore = scores.withLock { scores -> Double in
+            guard let ps = scores[peer] else { return 0.0 }
+            let excess = max(0.0, ps.behaviourPenaltyCounter - config.behaviourPenaltyThreshold)
+            if excess > 0 {
+                return config.behaviourPenaltyWeight * excess * excess
+            }
+            return 0.0
+        }
+
+        return globalScore + topicScore + behaviourScore
     }
 
     /// Resolves topic scoring parameters for a given topic.
@@ -967,10 +1019,19 @@ public final class PeerScorer: Sendable {
         if elapsed >= config.decayInterval {
             let decayPeriods = Int(elapsed / config.decayInterval)
             peerScore.score *= pow(config.decayFactor, Double(decayPeriods))
+
+            // Decay behaviour penalty counter
+            if peerScore.behaviourPenaltyCounter > 0 {
+                peerScore.behaviourPenaltyCounter *= pow(config.behaviourPenaltyDecay, Double(decayPeriods))
+                if peerScore.behaviourPenaltyCounter < 0.001 {
+                    peerScore.behaviourPenaltyCounter = 0
+                }
+            }
+
             peerScore.lastDecay = now
 
             // Remove scores that have decayed to near-zero to prevent memory leak
-            if abs(peerScore.score) < 0.001 {
+            if abs(peerScore.score) < 0.001 && peerScore.behaviourPenaltyCounter == 0 {
                 scores.removeValue(forKey: peer)
             } else {
                 scores[peer] = peerScore

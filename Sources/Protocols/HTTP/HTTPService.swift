@@ -43,9 +43,6 @@ public struct HTTPConfiguration: Sendable {
 ///     return .ok(body: Array("Hello, World!".utf8))
 /// }
 ///
-/// // Register handler with node
-/// await httpService.registerHandler(registry: node)
-///
 /// // Send a request to a peer
 /// let response = try await httpService.request(
 ///     HTTPRequest(method: .get, path: "/hello"),
@@ -53,7 +50,7 @@ public struct HTTPConfiguration: Sendable {
 ///     using: node
 /// )
 /// ```
-public final class HTTPService: ProtocolService, EventEmitting, Sendable {
+public final class HTTPService: EventEmitting, Sendable {
 
     // MARK: - Event
 
@@ -83,7 +80,7 @@ public final class HTTPService: ProtocolService, EventEmitting, Sendable {
         let handler: Handler
     }
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         [HTTPProtocol.protocolID]
@@ -153,17 +150,6 @@ public final class HTTPService: ProtocolService, EventEmitting, Sendable {
     public func route(path: String, handler: @escaping Handler) {
         routeState.withLock { routes in
             routes.append(Route(method: nil, path: path, handler: handler))
-        }
-    }
-
-    // MARK: - Handler Registration
-
-    /// Registers the HTTP protocol handler with a handler registry.
-    ///
-    /// - Parameter registry: The handler registry to register with
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(HTTPProtocol.protocolID) { [weak self] context in
-            await self?.handleIncoming(context: context)
         }
     }
 
@@ -432,4 +418,13 @@ public final class HTTPService: ProtocolService, EventEmitting, Sendable {
             state.stream = nil
         }
     }
+}
+
+// MARK: - StreamService
+
+extension HTTPService: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleIncoming(context: context)
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }

@@ -21,7 +21,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
 
     private struct RuntimeState: Sendable {
         var opener: (any StreamOpener)?
-        var registry: (any HandlerRegistry)?
         var getLocalAddresses: (@Sendable () -> [Multiaddr])?
         var getPeers: (@Sendable () -> [PeerID])?
         var isLimitedConnection: (@Sendable (PeerID) -> Bool)?
@@ -77,7 +76,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
 
     public func start(
         opener: any StreamOpener,
-        registry: any HandlerRegistry,
         getLocalAddresses: @escaping @Sendable () -> [Multiaddr],
         getPeers: @escaping @Sendable () -> [PeerID],
         isLimitedConnection: @escaping @Sendable (PeerID) -> Bool,
@@ -88,7 +86,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
                 return false
             }
             state.opener = opener
-            state.registry = registry
             state.getLocalAddresses = getLocalAddresses
             state.getPeers = getPeers
             state.isLimitedConnection = isLimitedConnection
@@ -106,7 +103,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
             transports: transports,
             connectedPeers: getPeers(),
             opener: opener,
-            registry: registry,
             getLocalAddresses: getLocalAddresses,
             isLimitedConnection: isLimitedConnection,
             dialAddress: dialAddress
@@ -140,7 +136,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
             transports: transports,
             connectedPeers: getPeers(),
             opener: runtime.opener,
-            registry: runtime.registry,
             getLocalAddresses: getLocalAddresses,
             isLimitedConnection: isLimitedConnection,
             dialAddress: dialAddress
@@ -208,7 +203,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
             state.isShutDown = true
             state.isRunning = false
             state.opener = nil
-            state.registry = nil
             state.getLocalAddresses = nil
             state.getPeers = nil
             state.isLimitedConnection = nil
@@ -390,4 +384,24 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
             return first
         }
     }
+}
+
+// MARK: - NodeService
+
+extension TraversalCoordinator: NodeService {
+    /// Adapts NodeContext into the parameters required by start().
+    ///
+    /// NodeContext provides listenAddresses and StreamOpener but lacks
+    /// getPeers, isLimitedConnection, and dialAddress. A full implementation
+    /// requires extending NodeContext (Phase 3). For now, this is a guard
+    /// against double-initialization: if start() was already called, this is a no-op.
+    public func attach(to context: any NodeContext) async {
+        // If already running (start() was called via the legacy path), skip.
+        // Phase 3 will replace the explicit start() call in Node with this method
+        // after NodeContext is extended with connection pool capabilities.
+        let alreadyRunning = runtimeState.withLock { $0.isRunning }
+        guard !alreadyRunning else { return }
+    }
+
+    // shutdown(): already defined as sync func — satisfies async requirement via SE-0296
 }

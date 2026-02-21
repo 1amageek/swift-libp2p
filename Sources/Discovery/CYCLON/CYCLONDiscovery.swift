@@ -17,9 +17,9 @@ public let cyclonProtocolID = "/cyclon/1.0.0"
 ///
 /// Conforms to `DiscoveryService` and uses the same actor + EventBroadcaster
 /// pattern as `SWIMMembership` and `MDNSDiscovery`.
-public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable, NodeDiscoveryStartableWithOpener {
+public actor CYCLONDiscovery: DiscoveryService {
 
-    private let localPeerID: PeerID
+    public let localPeerID: PeerID
     private let configuration: CYCLONConfiguration
     private let partialView: CYCLONPartialView
     private let logger: Logger
@@ -87,13 +87,6 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
         logger.debug("Seeded \(peers.count) peers")
     }
 
-    /// Registers the shuffle request handler with the node.
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(cyclonProtocolID) { [weak self] context in
-            await self?.handleIncomingStream(context: context)
-        }
-    }
-
     // MARK: - DiscoveryService
 
     public func announce(addresses: [Multiaddr]) async throws {
@@ -125,7 +118,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
         }
     }
 
-    public func knownPeers() async -> [PeerID] {
+    public func collectKnownPeers() async -> [PeerID] {
         partialView.allPeerIDs()
     }
 
@@ -265,7 +258,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
     // MARK: - Event Emission
 
     private func emitObservations(for entries: [CYCLONEntry]) {
-        let now = UInt64(Date().timeIntervalSince1970)
+        let now = UInt64(Date().timeIntervalSince1970 * 1000)
         for entry in entries {
             guard entry.peerID != localPeerID else { continue }
             sequenceNumber += 1
@@ -288,7 +281,7 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
             observer: localPeerID,
             kind: .unreachable,
             hints: entry.addresses,
-            timestamp: UInt64(Date().timeIntervalSince1970),
+            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
             sequenceNumber: sequenceNumber
         )
         broadcaster.emit(observation)
@@ -299,4 +292,22 @@ public actor CYCLONDiscovery: DiscoveryService, NodeDiscoveryHandlerRegistrable,
     private func ageToScore(_ age: UInt64) -> Double {
         max(0.0, 1.0 - (Double(age) / Double(configuration.maxAge)))
     }
+}
+
+// MARK: - DiscoveryBehaviour
+
+extension CYCLONDiscovery: DiscoveryBehaviour, StreamService {
+    public nonisolated var protocolIDs: [String] {
+        [cyclonProtocolID]
+    }
+
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleIncomingStream(context: context)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        await start(using: context)
+    }
+
+    // shutdown(): already defined as async method
 }

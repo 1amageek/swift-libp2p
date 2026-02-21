@@ -19,7 +19,7 @@ import Synchronization
 /// ```swift
 /// let mdns = MDNSDiscovery(...)
 /// let swim = SWIMMembership(...)
-/// let composite = CompositeDiscovery(services: [mdns, swim])
+/// let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mdns, swim])
 ///
 /// await composite.start()
 /// // ... use composite ...
@@ -32,6 +32,7 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
 
     // MARK: - Properties
 
+    public let localPeerID: PeerID
     private let services: [(service: any DiscoveryService, weight: Double)]
     private let state: Mutex<State>
 
@@ -50,7 +51,8 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     ///
     /// - Parameter services: Discovery services with their weights.
     ///   Weights are used when combining scores (higher = more trusted).
-    public init(services: [(service: any DiscoveryService, weight: Double)]) {
+    public init(localPeerID: PeerID, services: [(service: any DiscoveryService, weight: Double)]) {
+        self.localPeerID = localPeerID
         self.services = services
         self.state = Mutex(State())
     }
@@ -58,7 +60,8 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
     /// Creates a composite discovery service with equal weights.
     ///
     /// - Parameter services: Discovery services to combine.
-    public init(services: [any DiscoveryService]) {
+    public init(localPeerID: PeerID, services: [any DiscoveryService]) {
+        self.localPeerID = localPeerID
         self.services = services.map { ($0, 1.0) }
         self.state = Mutex(State())
     }
@@ -228,8 +231,8 @@ public final class CompositeDiscovery: DiscoveryService, Sendable {
         }
     }
 
-    /// Returns known peers from all services.
-    public func knownPeers() async -> [PeerID] {
+    /// Returns raw known peers from all services.
+    public func collectKnownPeers() async -> [PeerID] {
         var allPeers = Set<PeerID>()
 
         for (service, _) in services {

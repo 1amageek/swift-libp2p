@@ -18,7 +18,7 @@ swift-libp2pの統合エントリーポイント。`import P2P` だけで基本�
 - 基盤: `NIOCore`（ByteBuffer等）
 
 **内部利用（non-exported）:**
-- `P2PIdentify`（Behaviour 統合により AutoNAT/CircuitRelay/DCUtR/NAT は behaviours 経由で注入）
+- `P2PIdentify`（NodeService 統合により AutoNAT/CircuitRelay/DCUtR/NAT は services 経由で注入）
 
 **別途importが必要なアプリケーションプロトコル:**
 - `P2PGossipSub`, `P2PKademlia`, `P2PPlumtree`, `P2PRendezvous` 等
@@ -90,7 +90,7 @@ public struct NodeConfiguration: Sendable {
     public let resourceManager: (any ResourceManager)?   // nil=無制限
     public let traversal: TraversalConfiguration?        // nil=無効
     public let maxNegotiatingInboundStreams: Int          // default: 128
-    public let behaviours: [any Behaviour]               // 統一サービスライフサイクル
+    public let services: [any NodeService]               // 統一サービスライフサイクル
 }
 ```
 
@@ -241,7 +241,7 @@ public enum UpgradeError: Error, Sendable {
    ↓
 5. Start inbound stream handler
    ↓
-6. Notify behaviours: behaviour.peerConnected(peer)
+6. Notify PeerObserver services: observer.peerConnected(peer)
    ↓
 7. Emit NodeEvent.peerConnected
 ```
@@ -425,16 +425,26 @@ Node層は推奨される並行性パターンを実証:
 - Nodeへの弱参照を保持（循環参照防止）
 - `PingService`（P2PPing）を使用
 
-### Behaviour 統合（サービスライフサイクル）
+### サービス統合（NodeService / StreamService / PeerObserver）
 
-Node は `behaviours` 配列で全サービス（Protocol/Discovery）を統一管理する:
+Node は `services` 配列で全サービス（Protocol/Discovery）を統一管理する。
+サービスプロトコルは ISP（インターフェース分離原則）に従い3つに分割されている:
 
-1. **起動時**: `behaviour.attach(to: nodeContext)` で NodeContext を注入、`protocolIDs` があればハンドラ登録
-2. **接続時**: `behaviour.peerConnected(peer)` を通知（最初の接続のみ、重複除外済み）
-3. **切断時**: `behaviour.peerDisconnected(peer)` を通知（残接続なしの場合のみ）
-4. **シャットダウン時**: `behaviour.shutdown()` で全サービスを停止
+- **`NodeService`**: ライフサイクル管理（attach/shutdown）。全サービス共通。
+- **`StreamService: NodeService`**: インバウンドストリーム処理（protocolIDs/handleInboundStream）。プロトコルサービス用。
+- **`PeerObserver`**: ピア接続/切断の観察（peerConnected/peerDisconnected）。一部サービスのみ。
 
-`DiscoveryBehaviour` 準拠の Behaviour は自動的に auto-connect 対象として検出される。
+起動時のディスパッチ:
+1. **ハンドラ登録**: `StreamService` 準拠サービスの `protocolIDs` からハンドラを登録
+2. **attach**: 全 `NodeService` に `attach(to: nodeContext)` で NodeContext を注入
+3. **PeerObserver 収集**: `as? any PeerObserver` で観察対象を1回だけ収集
+
+ランタイムのディスパッチ:
+- **接続時**: `PeerObserver` 準拠サービスのみに `peerConnected(peer)` を通知（最初の接続のみ、重複除外済み）
+- **切断時**: `PeerObserver` 準拠サービスのみに `peerDisconnected(peer)` を通知（残接続なしの場合のみ）
+- **シャットダウン時**: 全 `NodeService` に `shutdown()` で停止
+
+`DiscoveryBehaviour` 準拠のサービスは自動的に auto-connect 対象として検出される。
 
 ### auto-connect（リアクティブ）
 
@@ -499,8 +509,8 @@ Tests/Integration/P2PTests/
 - [x] **Resource Manager** - マルチスコープのリソース制限 ✅ 2026-01-30 (GAP-9)
 - [x] **接続トリムアルゴリズムの検証テスト** - `ConnectionPoolTests` に watermark / protected / tags / oldest activity / grace period の回帰テストを追加
 - [x] **イベントストリームの挙動ドキュメント化** - lazy初期化、購読前イベント破棄、shutdown時finish/resetを明記
-- [x] **Discovery capability統合** - Behaviour プロトコルで統一（attach/peerConnected/peerDisconnected/shutdown）
-- [x] **Identify Push Node統合** - Behaviour として統合（IdentifyService が Behaviour 準拠）✅
+- [x] **Discovery capability統合** - NodeService/StreamService/PeerObserver で統一
+- [x] **Identify Push Node統合** - StreamService + PeerObserver として統合（IdentifyService 準拠）✅
 
 ### 低優先度
 - [x] **グレース期間の強制確認** - `ConnectionPoolTests.trimIfNeeded does not trim connections within grace period` で検証

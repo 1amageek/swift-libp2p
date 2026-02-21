@@ -9,10 +9,6 @@ private struct EventOpener: StreamOpener {
     }
 }
 
-private struct EventRegistry: HandlerRegistry {
-    func handle(_: String, handler _: @escaping ProtocolHandler) async {}
-}
-
 @Suite("TraversalEventStream")
 struct TraversalEventStreamTests {
     @Test("shutdown finishes events stream", .timeLimit(.minutes(1)))
@@ -26,7 +22,6 @@ struct TraversalEventStreamTests {
 
         await coordinator.start(
             opener: EventOpener(),
-            registry: EventRegistry(),
             getLocalAddresses: { [] },
             getPeers: { [] },
             isLimitedConnection: { _ in false },
@@ -40,7 +35,7 @@ struct TraversalEventStreamTests {
             return true
         }
 
-        coordinator.shutdown()
+        await coordinator.shutdown()
         let finished = await consumeTask.value
         #expect(finished)
     }

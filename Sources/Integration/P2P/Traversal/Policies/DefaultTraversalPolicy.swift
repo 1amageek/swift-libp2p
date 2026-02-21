@@ -37,10 +37,6 @@ public struct DefaultTraversalPolicy: TraversalPolicy, Sendable {
            case .connectionLimitReached = nodeError {
             return false
         }
-        if let traversalError = error as? TraversalError,
-           case .missingContext = traversalError {
-            return false
-        }
         return true
     }
 

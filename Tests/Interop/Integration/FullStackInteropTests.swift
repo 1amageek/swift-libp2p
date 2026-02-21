@@ -84,12 +84,12 @@ struct FullStackInteropTests {
         let stream = try await muxedConnection.newStream()
 
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await stream.read()) },
             write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+        #expect(negotiationResult.protocolID == ProtocolID.ping)
         print("[FullStack] Ping protocol negotiated")
 
         // Send ping
@@ -132,12 +132,12 @@ struct FullStackInteropTests {
         let identifyStream = try await connection.newStream()
 
         let identifyNegotiation = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.identify],
+            protocols: [ProtocolID.identify],
             read: { Data(buffer: try await identifyStream.read()) },
             write: { data in try await identifyStream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(identifyNegotiation.protocolID == LibP2PProtocol.identify)
+        #expect(identifyNegotiation.protocolID == ProtocolID.identify)
 
         // Get identify response
         let bytes: Data
@@ -162,12 +162,12 @@ struct FullStackInteropTests {
         let pingStream = try await connection.newStream()
 
         let pingNegotiation = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await pingStream.read()) },
             write: { data in try await pingStream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(pingNegotiation.protocolID == LibP2PProtocol.ping)
+        #expect(pingNegotiation.protocolID == ProtocolID.ping)
 
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
         try await pingStream.write(ByteBuffer(bytes: payload))
@@ -200,7 +200,7 @@ struct FullStackInteropTests {
         async let identifyTask = Task {
             let stream = try await connection.newStream()
             let result = try await MultistreamSelect.negotiate(
-                protocols: [LibP2PProtocol.identify],
+                protocols: [ProtocolID.identify],
                 read: { Data(buffer: try await stream.read()) },
                 write: { data in try await stream.write(ByteBuffer(bytes: data)) }
             )
@@ -211,7 +211,7 @@ struct FullStackInteropTests {
         async let pingTask = Task {
             let stream = try await connection.newStream()
             let result = try await MultistreamSelect.negotiate(
-                protocols: [LibP2PProtocol.ping],
+                protocols: [ProtocolID.ping],
                 read: { Data(buffer: try await stream.read()) },
                 write: { data in try await stream.write(ByteBuffer(bytes: data)) }
             )
@@ -226,8 +226,8 @@ struct FullStackInteropTests {
 
         let (identifyProtocol, (pingProtocol, pingSuccess)) = try await (identifyTask.value, pingTask.value)
 
-        #expect(identifyProtocol == LibP2PProtocol.identify)
-        #expect(pingProtocol == LibP2PProtocol.ping)
+        #expect(identifyProtocol == ProtocolID.identify)
+        #expect(pingProtocol == ProtocolID.ping)
         #expect(pingSuccess == true)
 
         print("[FullStack] Multi-protocol session successful")
@@ -259,7 +259,7 @@ struct FullStackInteropTests {
 
         let goStream = try await goConnection.newStream()
         let goResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await goStream.read()) },
             write: { data in try await goStream.write(ByteBuffer(bytes: data)) }
         )
@@ -282,7 +282,7 @@ struct FullStackInteropTests {
 
         let rustStream = try await rustConnection.newStream()
         let rustResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await rustStream.read()) },
             write: { data in try await rustStream.write(ByteBuffer(bytes: data)) }
         )

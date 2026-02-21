@@ -63,6 +63,15 @@ public enum GossipSubError: Error, Sendable, Equatable {
 
     /// Signing key required but not provided.
     case signingKeyRequired
+
+    /// Subscription not allowed by filter.
+    case subscriptionNotAllowed(Topic)
+
+    /// Too many subscriptions from a peer.
+    case tooManySubscriptions(count: Int, limit: Int)
+
+    /// Anonymous mode requires a custom message ID function.
+    case anonymousModeRequiresCustomMessageID
 }
 
 // MARK: - LocalizedError
@@ -110,6 +119,12 @@ extension GossipSubError: LocalizedError {
             return "Signing requires source peer ID to be set"
         case .signingKeyRequired:
             return "Signing key required but not provided. Use init(keyPair:...) to enable signing."
+        case .subscriptionNotAllowed(let topic):
+            return "Subscription not allowed for topic: \(topic)"
+        case .tooManySubscriptions(let count, let limit):
+            return "Too many subscriptions: \(count) (limit: \(limit))"
+        case .anonymousModeRequiresCustomMessageID:
+            return "Anonymous mode requires a custom messageIDFunction to avoid ID collisions"
         }
     }
 }

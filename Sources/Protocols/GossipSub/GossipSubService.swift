@@ -8,7 +8,7 @@ import Synchronization
 
 private let logger = Logger(label: "p2p.gossipsub")
 
-/// The main GossipSub service implementing the ProtocolService interface.
+/// The main GossipSub service implementing the StreamService interface.
 ///
 /// Provides a high-level API for pub/sub messaging using the GossipSub protocol.
 ///
@@ -19,9 +19,6 @@ private let logger = Logger(label: "p2p.gossipsub")
 ///     localPeerID: myPeerID,
 ///     configuration: .init()
 /// )
-///
-/// // Register handler with node
-/// await gossipsub.registerHandler(registry: node)
 ///
 /// // Subscribe to a topic
 /// let subscription = try await gossipsub.subscribe(to: "my-topic")
@@ -34,9 +31,9 @@ private let logger = Logger(label: "p2p.gossipsub")
 /// // Publish a message
 /// try await gossipsub.publish(data: myData, to: "my-topic", using: node)
 /// ```
-public final class GossipSubService: ProtocolService, Sendable {
+public final class GossipSubService: Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
         GossipSubProtocolID.all
@@ -62,6 +59,7 @@ public final class GossipSubService: ProtocolService, Sendable {
     private struct ServiceState: Sendable {
         var isStarted: Bool = false
         var peerStreams: [PeerID: MuxedStream] = [:]
+        var opener: (any StreamOpener)?
     }
 
     // MARK: - Initialization
@@ -117,20 +115,6 @@ public final class GossipSubService: ProtocolService, Sendable {
         self.serviceState = Mutex(ServiceState())
     }
 
-    // MARK: - Handler Registration
-
-    /// Registers the GossipSub protocol handler.
-    ///
-    /// - Parameter registry: The handler registry to register with
-    public func registerHandler(registry: any HandlerRegistry) async {
-        // Register handler for all protocol versions
-        for protocolID in protocolIDs {
-            await registry.handle(protocolID) { [weak self] context in
-                await self?.handleIncomingStream(context: context, protocolID: protocolID)
-            }
-        }
-    }
-
     // MARK: - Lifecycle
 
     /// Starts the GossipSub service.
@@ -151,7 +135,11 @@ public final class GossipSubService: ProtocolService, Sendable {
 
     /// Shuts down the GossipSub service.
     public func shutdown() {
-        serviceState.withLock { $0.isStarted = false }
+        serviceState.withLock { s in
+            s.isStarted = false
+            s.opener = nil
+            s.peerStreams.removeAll()
+        }
 
         heartbeat.withLock { hb in
             hb?.shutdown()
@@ -609,9 +597,41 @@ public final class GossipSubService: ProtocolService, Sendable {
     }
 }
 
-// MARK: - LibP2PProtocol Extension
+// MARK: - StreamService
 
-extension LibP2PProtocol {
+extension GossipSubService: StreamService, PeerObserver {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handleIncomingStream(context: context, protocolID: context.protocolID)
+    }
+
+    public func attach(to context: any NodeContext) async {
+        serviceState.withLock { $0.opener = context }
+        if !serviceState.withLock({ $0.isStarted }) {
+            start()
+        }
+    }
+
+    public func peerConnected(_ peer: PeerID) async {
+        guard let opener = serviceState.withLock({ $0.opener }) else { return }
+        do {
+            let protocolID = protocolIDs[0]
+            let stream = try await opener.newStream(to: peer, protocol: protocolID)
+            handlePeerConnected(peer, protocolID: protocolID, direction: .outbound, stream: stream)
+        } catch {
+            router.handlePeerDisconnected(peer)
+        }
+    }
+
+    public func peerDisconnected(_ peer: PeerID) async {
+        handlePeerDisconnected(peer)
+    }
+
+    // shutdown(): already defined as sync method — satisfies async requirement (SE-0296)
+}
+
+// MARK: - ProtocolID Extension
+
+extension ProtocolID {
     /// GossipSub protocol IDs.
     public static let gossipsub = GossipSubProtocolID.meshsub11
     public static let gossipsubV12 = GossipSubProtocolID.meshsub12

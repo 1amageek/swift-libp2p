@@ -77,19 +77,16 @@ public struct PingConfiguration: Sendable {
 /// ```swift
 /// let pingService = PingService()
 ///
-/// // Register handler with node
-/// await pingService.registerHandler(registry: node)
-///
 /// // Ping a peer
 /// let result = try await pingService.ping(remotePeer, using: node)
 /// print("RTT: \(result.rtt)")
 /// ```
-public final class PingService: ProtocolService, EventEmitting, Sendable {
+public final class PingService: EventEmitting, Sendable {
 
-    // MARK: - ProtocolService
+    // MARK: - StreamService
 
     public var protocolIDs: [String] {
-        [LibP2PProtocol.ping]
+        [ProtocolID.ping]
     }
 
     // MARK: - Properties
@@ -125,17 +122,6 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
         self.eventState = Mutex(EventState())
     }
 
-    // MARK: - Handler Registration
-
-    /// Registers the ping protocol handler.
-    ///
-    /// - Parameter registry: The handler registry to register with
-    public func registerHandler(registry: any HandlerRegistry) async {
-        await registry.handle(LibP2PProtocol.ping) { [weak self] context in
-            await self?.handlePing(context: context)
-        }
-    }
-
     // MARK: - Public API
 
     /// Pings a peer and measures RTT.
@@ -155,7 +141,7 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
         // Open ping stream
         let stream: MuxedStream
         do {
-            stream = try await opener.newStream(to: peer, protocol: LibP2PProtocol.ping)
+            stream = try await opener.newStream(to: peer, protocol: ProtocolID.ping)
         } catch {
             let pingError = PingError.unsupported
             emit(.failure(peer: peer, error: pingError))
@@ -326,4 +312,13 @@ public final class PingService: ProtocolService, EventEmitting, Sendable {
             state.stream = nil
         }
     }
+}
+
+// MARK: - StreamService
+
+extension PingService: StreamService {
+    public func handleInboundStream(_ context: StreamContext) async {
+        await handlePing(context: context)
+    }
+    // shutdown(): already defined (sync func satisfies async requirement)
 }

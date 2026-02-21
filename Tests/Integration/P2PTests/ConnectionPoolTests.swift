@@ -17,6 +17,8 @@ private final class MockMuxedConnection: MuxedConnection, @unchecked Sendable {
     let localAddress: Multiaddr?
     let remoteAddress: Multiaddr
 
+    var hasActiveStreams: Bool { false }
+
     var inboundStreams: AsyncStream<MuxedStream> {
         AsyncStream { $0.finish() }
     }

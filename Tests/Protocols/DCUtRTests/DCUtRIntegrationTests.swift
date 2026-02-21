@@ -133,27 +133,6 @@ enum DCUtRTestError: Error {
     case dialFailed
 }
 
-/// A mock HandlerRegistry that captures registered handlers.
-final class DCUtRMockRegistry: HandlerRegistry, Sendable {
-    private let state: Mutex<RegistryState>
-
-    private struct RegistryState: Sendable {
-        var handlers: [String: ProtocolHandler] = [:]
-    }
-
-    init() {
-        self.state = Mutex(RegistryState())
-    }
-
-    func handle(_ protocolID: String, handler: @escaping ProtocolHandler) async {
-        state.withLock { $0.handlers[protocolID] = handler }
-    }
-
-    func getHandler(for protocolID: String) -> ProtocolHandler? {
-        state.withLock { $0.handlers[protocolID] }
-    }
-}
-
 /// A mock StreamOpener for DCUtR tests.
 final class DCUtRMockOpener: StreamOpener, Sendable {
     private let state: Mutex<OpenerState>
@@ -238,7 +217,8 @@ func createDCUtRContext(
         remotePeer: remotePeer,
         remoteAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4001),
         localPeer: localPeer,
-        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002)
+        localAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4002),
+        protocolID: DCUtRProtocol.protocolID
     )
 }
 
@@ -283,10 +263,6 @@ struct DCUtRIntegrationTests {
         )
         let responder = DCUtRService(configuration: responderConfig)
 
-        // Register responder handler
-        let registry = DCUtRMockRegistry()
-        await responder.registerHandler(registry: registry)
-
         // Create paired streams
         let (initiatorStream, responderStream) = DCUtRMockStream.createPair(
             protocolID: DCUtRProtocol.protocolID
@@ -298,14 +274,12 @@ struct DCUtRIntegrationTests {
 
         // Run responder handler in background
         let responderTask = Task {
-            if let handler = registry.getHandler(for: DCUtRProtocol.protocolID) {
-                let context = createDCUtRContext(
-                    stream: responderStream,
-                    remotePeer: initiatorKey.peerID,
-                    localPeer: responderKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createDCUtRContext(
+                stream: responderStream,
+                remotePeer: initiatorKey.peerID,
+                localPeer: responderKey.peerID
+            )
+            await responder.handleInboundStream(context)
         }
 
         // Initiator starts upgrade
@@ -318,8 +292,8 @@ struct DCUtRIntegrationTests {
         await responderTask.value
 
         // Cleanup
-        initiator.shutdown()
-        responder.shutdown()
+        await initiator.shutdown()
+        await responder.shutdown()
 
         // Verify dial attempts
         #expect(initiatorDialer.dialAttempts.count > 0)
@@ -342,10 +316,6 @@ struct DCUtRIntegrationTests {
         )
         let responder = DCUtRService(configuration: responderConfig)
 
-        // Register responder handler
-        let registry = DCUtRMockRegistry()
-        await responder.registerHandler(registry: registry)
-
         // Create paired streams
         let (initiatorStream, responderStream) = DCUtRMockStream.createPair(
             protocolID: DCUtRProtocol.protocolID
@@ -356,14 +326,12 @@ struct DCUtRIntegrationTests {
 
         // Run responder
         let responderTask = Task {
-            if let handler = registry.getHandler(for: DCUtRProtocol.protocolID) {
-                let context = createDCUtRContext(
-                    stream: responderStream,
-                    remotePeer: initiatorKey.peerID,
-                    localPeer: responderKey.peerID
-                )
-                await handler(context)
-            }
+            let context = createDCUtRContext(
+                stream: responderStream,
+                remotePeer: initiatorKey.peerID,
+                localPeer: responderKey.peerID
+            )
+            await responder.handleInboundStream(context)
         }
 
         // Should fail due to no addresses
@@ -381,8 +349,8 @@ struct DCUtRIntegrationTests {
         try await responderStream.close()
         await responderTask.value
 
-        initiator.shutdown()
-        responder.shutdown()
+        await initiator.shutdown()
+        await responder.shutdown()
     }
 
     // MARK: - Role Tests
@@ -436,7 +404,7 @@ struct DCUtRIntegrationTests {
         try await responderTask.value
 
         // Cleanup
-        initiator.shutdown()
+        await initiator.shutdown()
     }
 
     @Test("Responder receives CONNECT and sends CONNECT response")
@@ -454,10 +422,6 @@ struct DCUtRIntegrationTests {
             dialer: { addr in try await dialer.dial(addr) }
         )
         let responder = DCUtRService(configuration: config)
-
-        // Register handler
-        let registry = DCUtRMockRegistry()
-        await responder.registerHandler(registry: registry)
 
         // Create streams
         let (initiatorStream, responderStream) = DCUtRMockStream.createPair(
@@ -482,19 +446,17 @@ struct DCUtRIntegrationTests {
         }
 
         // Run responder handler
-        if let handler = registry.getHandler(for: DCUtRProtocol.protocolID) {
-            let context = createDCUtRContext(
-                stream: responderStream,
-                remotePeer: initiatorKey.peerID,
-                localPeer: responderKey.peerID
-            )
-            await handler(context)
-        }
+        let context = createDCUtRContext(
+            stream: responderStream,
+            remotePeer: initiatorKey.peerID,
+            localPeer: responderKey.peerID
+        )
+        await responder.handleInboundStream(context)
 
         try await initiatorTask.value
 
         // Cleanup
-        responder.shutdown()
+        await responder.shutdown()
     }
 
     // MARK: - Failure Scenarios
@@ -547,7 +509,7 @@ struct DCUtRIntegrationTests {
         try await responderTask.value
 
         // Cleanup
-        initiator.shutdown()
+        await initiator.shutdown()
     }
 
     // MARK: - Protobuf Tests
@@ -640,7 +602,7 @@ struct DCUtRIntegrationTests {
         // Give eventTask time to collect events before shutting down
         try await Task.sleep(for: .milliseconds(10))
 
-        initiator.shutdown()  // Finish event stream to unblock eventTask
+        await initiator.shutdown()  // Finish event stream to unblock eventTask
         await eventTask.value  // Wait for eventTask to complete
 
         // Verify events were emitted
@@ -696,7 +658,7 @@ struct DCUtRIntegrationTests {
         do { try await maliciousResponderTask.value } catch { }
 
         // Cleanup
-        initiator.shutdown()
+        await initiator.shutdown()
     }
 
     @Test("Stream closed during message exchange")
@@ -741,7 +703,7 @@ struct DCUtRIntegrationTests {
         do { try await maliciousResponderTask.value } catch { }
 
         // Cleanup
-        initiator.shutdown()
+        await initiator.shutdown()
     }
 
     @Test("Responder handles stream closed before receiving CONNECT")
@@ -756,10 +718,6 @@ struct DCUtRIntegrationTests {
         )
         let responder = DCUtRService(configuration: config)
 
-        // Register handler
-        let registry = DCUtRMockRegistry()
-        await responder.registerHandler(registry: registry)
-
         // Create streams
         let (initiatorStream, responderStream) = DCUtRMockStream.createPair(
             protocolID: DCUtRProtocol.protocolID
@@ -769,18 +727,16 @@ struct DCUtRIntegrationTests {
         try await initiatorStream.close()
 
         // Responder should handle gracefully
-        if let handler = registry.getHandler(for: DCUtRProtocol.protocolID) {
-            let context = createDCUtRContext(
-                stream: responderStream,
-                remotePeer: initiatorKey.peerID,
-                localPeer: responderKey.peerID
-            )
-            // This should complete without crashing
-            await handler(context)
-        }
+        let context = createDCUtRContext(
+            stream: responderStream,
+            remotePeer: initiatorKey.peerID,
+            localPeer: responderKey.peerID
+        )
+        // This should complete without crashing
+        await responder.handleInboundStream(context)
 
         // Cleanup
-        responder.shutdown()
+        await responder.shutdown()
     }
 
     @Test("Responder handles malformed message")
@@ -794,10 +750,6 @@ struct DCUtRIntegrationTests {
             getLocalAddresses: { responderAddresses }
         )
         let responder = DCUtRService(configuration: config)
-
-        // Register handler
-        let registry = DCUtRMockRegistry()
-        await responder.registerHandler(registry: registry)
 
         // Create streams
         let (initiatorStream, responderStream) = DCUtRMockStream.createPair(
@@ -815,19 +767,17 @@ struct DCUtRIntegrationTests {
         }
 
         // Responder should handle gracefully
-        if let handler = registry.getHandler(for: DCUtRProtocol.protocolID) {
-            let context = createDCUtRContext(
-                stream: responderStream,
-                remotePeer: initiatorKey.peerID,
-                localPeer: responderKey.peerID
-            )
-            await handler(context)
-        }
+        let malformedContext = createDCUtRContext(
+            stream: responderStream,
+            remotePeer: initiatorKey.peerID,
+            localPeer: responderKey.peerID
+        )
+        await responder.handleInboundStream(malformedContext)
 
         do { try await malformedTask.value } catch { }
 
         // Cleanup
-        responder.shutdown()
+        await responder.shutdown()
     }
 
     // Note: Timeout test removed because DCUtRService.upgradeToDirectConnection

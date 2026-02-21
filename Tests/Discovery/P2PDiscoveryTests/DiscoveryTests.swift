@@ -9,6 +9,7 @@ import Synchronization
 /// Mock discovery service for testing.
 final class MockDiscoveryService: DiscoveryService, Sendable {
 
+    let localPeerID: PeerID
     private let _knownPeers: [PeerID]
     private let _candidates: [PeerID: [ScoredCandidate]]
     private let findDelay: Duration?
@@ -36,10 +37,12 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
     }
 
     init(
+        localPeerID: PeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey),
         knownPeers: [PeerID] = [],
         candidates: [PeerID: [ScoredCandidate]] = [:],
         findDelay: Duration? = nil
     ) {
+        self.localPeerID = localPeerID
         self._knownPeers = knownPeers
         self._candidates = candidates
         self.findDelay = findDelay
@@ -83,7 +86,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
         }
     }
 
-    func knownPeers() async -> [PeerID] {
+    func collectKnownPeers() async -> [PeerID] {
         _knownPeers
     }
 
@@ -310,10 +313,11 @@ struct CompositeDiscoveryTests {
 
     @Test("Initializes with weighted services")
     func initWithWeights() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService()
         let service2 = MockDiscoveryService()
 
-        let composite = CompositeDiscovery(services: [
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [
             (service: service1, weight: 1.0),
             (service: service2, weight: 0.5)
         ])
@@ -325,10 +329,11 @@ struct CompositeDiscoveryTests {
 
     @Test("Initializes with equal weights")
     func initWithEqualWeights() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService()
         let service2 = MockDiscoveryService()
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         // Verify it works by calling a method
         let peers = await composite.knownPeers()
@@ -337,10 +342,11 @@ struct CompositeDiscoveryTests {
 
     @Test("Announce forwards to all services")
     func announceForwardsToAll() async throws {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService()
         let service2 = MockDiscoveryService()
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         let addresses = [try testMultiaddr(4001)]
         try await composite.announce(addresses: addresses)
@@ -351,6 +357,7 @@ struct CompositeDiscoveryTests {
 
     @Test("Find merges candidates from all services")
     func findMergesCandidates() async throws {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let targetPeer = PeerID.test(1)
 
         let addr1 = try testMultiaddr(4001)
@@ -362,7 +369,7 @@ struct CompositeDiscoveryTests {
         let service1 = MockDiscoveryService(candidates: [targetPeer: [candidate1]])
         let service2 = MockDiscoveryService(candidates: [targetPeer: [candidate2]])
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         let results = try await composite.find(peer: targetPeer)
 
@@ -374,6 +381,7 @@ struct CompositeDiscoveryTests {
 
     @Test("Find applies weights to scores")
     func findAppliesWeights() async throws {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let targetPeer = PeerID.test(1)
         let addr1 = try testMultiaddr(4001)
         let addr2 = try testMultiaddr(4002)
@@ -384,7 +392,7 @@ struct CompositeDiscoveryTests {
         let service1 = MockDiscoveryService(candidates: [targetPeer: [candidate1]])
         let service2 = MockDiscoveryService(candidates: [targetPeer: [candidate2]])
 
-        let composite = CompositeDiscovery(services: [
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [
             (service: service1, weight: 2.0),  // Weight 2.0 → score becomes 2.0
             (service: service2, weight: 1.0)   // Weight 1.0 → score becomes 1.0
         ])
@@ -413,7 +421,8 @@ struct CompositeDiscoveryTests {
             candidates: [targetPeer: [candidate2]],
             findDelay: .milliseconds(150)
         )
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         let start = ContinuousClock.now
         let results = try await composite.find(peer: targetPeer)
@@ -426,6 +435,7 @@ struct CompositeDiscoveryTests {
 
     @Test("Find returns empty for unknown peer")
     func findReturnsEmptyForUnknown() async throws {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let knownPeer = PeerID.test(1)
         let unknownPeer = PeerID.test(2)
         let addr = try testMultiaddr(4001)
@@ -433,7 +443,7 @@ struct CompositeDiscoveryTests {
         let candidate = ScoredCandidate(peerID: knownPeer, addresses: [addr], score: 0.9)
         let service = MockDiscoveryService(candidates: [knownPeer: [candidate]])
 
-        let composite = CompositeDiscovery(services: [service])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         let results = try await composite.find(peer: unknownPeer)
 
@@ -442,6 +452,7 @@ struct CompositeDiscoveryTests {
 
     @Test("KnownPeers deduplicates across services")
     func knownPeersDeduplicates() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let peer1 = PeerID.test(1)
         let peer2 = PeerID.test(2)
         let peer3 = PeerID.test(3)
@@ -449,7 +460,7 @@ struct CompositeDiscoveryTests {
         let service1 = MockDiscoveryService(knownPeers: [peer1, peer2])
         let service2 = MockDiscoveryService(knownPeers: [peer2, peer3])
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         let peers = await composite.knownPeers()
 
@@ -462,10 +473,11 @@ struct CompositeDiscoveryTests {
 
     @Test("KnownPeers returns empty when no services have peers")
     func knownPeersEmpty() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService(knownPeers: [])
         let service2 = MockDiscoveryService(knownPeers: [])
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         let peers = await composite.knownPeers()
 
@@ -493,7 +505,8 @@ struct CompositeDiscoveryTests {
             targetPeer: [candidate1, candidate2, candidate3]
         ])
 
-        let composite = CompositeDiscovery(services: [service])
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         let results = try await composite.find(peer: targetPeer)
 
@@ -505,9 +518,10 @@ struct CompositeDiscoveryTests {
 
     @Test("CompositeDiscovery shuts down child services")
     func compositeShutdownsChildServices() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let mock1 = MockDiscoveryService()
         let mock2 = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [mock1, mock2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock1, mock2])
 
         await composite.start()
         await composite.shutdown()
@@ -518,8 +532,9 @@ struct CompositeDiscoveryTests {
 
     @Test("Shutdown is idempotent (double shutdown does not crash)")
     func shutdownIsIdempotent() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [service])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         // Start to initialize state
         await composite.start()
@@ -536,8 +551,9 @@ struct CompositeDiscoveryTests {
 
     @Test("Shutdown terminates observation stream", .timeLimit(.minutes(1)))
     func shutdownTerminatesObservationStream() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [service])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         // Start the composite
         await composite.start()
@@ -583,12 +599,113 @@ struct DiscoveryServiceProtocolTests {
 
     @Test("CompositeDiscovery conforms to protocol")
     func compositeConformsToProtocol() async throws {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let emptyServices: [any DiscoveryService] = []
-        let service: any DiscoveryService = CompositeDiscovery(services: emptyServices)
+        let service: any DiscoveryService = CompositeDiscovery(localPeerID: localPeerID, services: emptyServices)
 
         // Should compile and work with protocol type
         try await service.announce(addresses: [])
         let _ = try await service.find(peer: PeerID.test(1))
         let _ = await service.knownPeers()
+    }
+}
+
+// MARK: - Self-Filtering Tests
+
+@Suite("DiscoveryService Self-Filtering Tests")
+struct DiscoveryServiceSelfFilteringTests {
+
+    @Test("knownPeers() excludes localPeerID from collectKnownPeers() results")
+    func knownPeersExcludesSelf() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let otherPeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        // Mock includes localPeerID in raw results
+        let service = MockDiscoveryService(
+            localPeerID: localPeerID,
+            knownPeers: [localPeerID, otherPeer]
+        )
+
+        // collectKnownPeers() returns raw data including self
+        let raw = await service.collectKnownPeers()
+        #expect(raw.count == 2)
+        #expect(raw.contains(localPeerID))
+
+        // knownPeers() (protocol extension) filters self
+        let filtered = await service.knownPeers()
+        #expect(filtered.count == 1)
+        #expect(!filtered.contains(localPeerID))
+        #expect(filtered.contains(otherPeer))
+    }
+
+    @Test("knownPeers() returns empty when only self is known")
+    func knownPeersEmptyWhenOnlySelf() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        let service = MockDiscoveryService(
+            localPeerID: localPeerID,
+            knownPeers: [localPeerID]
+        )
+
+        let raw = await service.collectKnownPeers()
+        #expect(raw.count == 1)
+
+        let filtered = await service.knownPeers()
+        #expect(filtered.isEmpty)
+    }
+
+    @Test("knownPeers() passes through when self is not present")
+    func knownPeersPassesThroughWhenNoSelf() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let peer1 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let peer2 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        let service = MockDiscoveryService(
+            localPeerID: localPeerID,
+            knownPeers: [peer1, peer2]
+        )
+
+        let raw = await service.collectKnownPeers()
+        let filtered = await service.knownPeers()
+
+        // No self to filter, so same count
+        #expect(raw.count == filtered.count)
+        #expect(filtered.count == 2)
+    }
+
+    @Test("CompositeDiscovery knownPeers() excludes composite's localPeerID")
+    func compositeKnownPeersExcludesSelf() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let otherPeer1 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let otherPeer2 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        // Child service reports localPeerID as known (e.g., from incoming connection)
+        let service1 = MockDiscoveryService(knownPeers: [localPeerID, otherPeer1])
+        let service2 = MockDiscoveryService(knownPeers: [otherPeer2])
+
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
+
+        // knownPeers() (protocol extension) filters composite's localPeerID
+        let filtered = await composite.knownPeers()
+        #expect(!filtered.contains(localPeerID))
+        #expect(filtered.contains(otherPeer1))
+        #expect(filtered.contains(otherPeer2))
+    }
+
+    @Test("CompositeDiscovery collectKnownPeers vs knownPeers difference")
+    func compositeCollectVsKnown() async {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        // Child service returns the composite's localPeerID as a "known peer"
+        let service = MockDiscoveryService(knownPeers: [localPeerID])
+
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
+
+        let raw = await composite.collectKnownPeers()
+        let filtered = await composite.knownPeers()
+
+        // raw may contain self, filtered must not
+        #expect(filtered.count < raw.count || raw.isEmpty)
+        #expect(!filtered.contains(localPeerID))
     }
 }

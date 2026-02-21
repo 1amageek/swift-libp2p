@@ -938,9 +938,10 @@ struct CompositeDiscoveryAnnounceTests {
 
     @Test("Announce succeeds if at least one service succeeds")
     func announcePartialSuccess() async throws {
+        let localPeerID = makePeer()
         let service1 = MockDiscoveryService()
         let failingService = FailingDiscoveryService()
-        let composite = CompositeDiscovery(services: [service1, failingService])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, failingService])
 
         // Should not throw because service1 succeeds
         try await composite.announce(addresses: [Multiaddr.tcp(host: "1.2.3.4", port: 4001)])
@@ -949,9 +950,10 @@ struct CompositeDiscoveryAnnounceTests {
 
     @Test("Announce throws if all services fail")
     func announceAllFail() async {
+        let localPeerID = makePeer()
         let failing1 = FailingDiscoveryService()
         let failing2 = FailingDiscoveryService()
-        let composite = CompositeDiscovery(services: [failing1, failing2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [failing1, failing2])
 
         do {
             try await composite.announce(addresses: [Multiaddr.tcp(host: "1.2.3.4", port: 4001)])
@@ -963,9 +965,10 @@ struct CompositeDiscoveryAnnounceTests {
 
     @Test("Find throws if all services fail")
     func findAllFail() async {
+        let localPeerID = makePeer()
         let failing1 = FailingDiscoveryService()
         let failing2 = FailingDiscoveryService()
-        let composite = CompositeDiscovery(services: [failing1, failing2])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [failing1, failing2])
         let peer = makePeer()
 
         do {
@@ -978,13 +981,14 @@ struct CompositeDiscoveryAnnounceTests {
 
     @Test("Find succeeds if at least one service succeeds")
     func findPartialSuccess() async throws {
+        let localPeerID = makePeer()
         let peer = makePeer()
         let addr = Multiaddr.tcp(host: "1.2.3.4", port: 4001)
         let candidate = ScoredCandidate(peerID: peer, addresses: [addr], score: 0.8)
 
         let service1 = MockDiscoveryService(candidates: [peer: [candidate]])
         let failing = FailingDiscoveryService()
-        let composite = CompositeDiscovery(services: [service1, failing])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, failing])
 
         let results = try await composite.find(peer: peer)
         #expect(results.count == 1)
@@ -1008,7 +1012,8 @@ struct CompositeDiscoveryMergingTests {
         let service1 = MockDiscoveryService(candidates: [peer: [candidate1]])
         let service2 = MockDiscoveryService(candidates: [peer: [candidate2]])
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let localPeerID = makePeer()
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
 
         let results = try await composite.find(peer: peer)
         #expect(results.count == 1)
@@ -1030,7 +1035,8 @@ struct CompositeDiscoveryMergingTests {
         let service1 = MockDiscoveryService(candidates: [peer: [candidate1]])
         let service2 = MockDiscoveryService(candidates: [peer: [candidate2]])
 
-        let composite = CompositeDiscovery(services: [service1, service2])
+        let localPeerID = makePeer()
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
         let results = try await composite.find(peer: peer)
 
         #expect(results.count == 1)
@@ -1049,8 +1055,9 @@ struct CompositeDiscoveryMergingTests {
         let candidate1 = ScoredCandidate(peerID: peer1, addresses: [addr1], score: 0.3)
         let candidate2 = ScoredCandidate(peerID: peer2, addresses: [addr2], score: 0.9)
 
+        let localPeerID = makePeer()
         let service = MockDiscoveryService(candidates: [target: [candidate1, candidate2]])
-        let composite = CompositeDiscovery(services: [service])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         let results = try await composite.find(peer: target)
         #expect(results.count == 2)
@@ -1064,8 +1071,9 @@ struct CompositeDiscoveryLifecycleTests {
 
     @Test("Start is idempotent")
     func startIdempotent() async {
+        let localPeerID = makePeer()
         let service = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [service])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         await composite.start()
         await composite.start()  // Second start should be no-op
@@ -1079,8 +1087,9 @@ struct CompositeDiscoveryLifecycleTests {
 
     @Test("Operations work without calling start")
     func operationsWithoutStart() async throws {
+        let localPeerID = makePeer()
         let service = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [service])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
 
         // These should work even without start()
         try await composite.announce(addresses: [])
@@ -1092,7 +1101,8 @@ struct CompositeDiscoveryLifecycleTests {
 
     @Test("Empty services list works")
     func emptyServices() async throws {
-        let composite = CompositeDiscovery(services: [] as [any DiscoveryService])
+        let localPeerID = makePeer()
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [] as [any DiscoveryService])
 
         await composite.start()
 
@@ -1118,7 +1128,8 @@ struct CompositeDiscoveryLifecycleTests {
         let service1 = MockDiscoveryService(candidates: [peer: [candidate1]])
         let service2 = MockDiscoveryService(candidates: [peer: [candidate2]])
 
-        let composite = CompositeDiscovery(services: [
+        let localPeerID = makePeer()
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [
             (service: service1, weight: 3.0),
             (service: service2, weight: 1.0)
         ])
@@ -1137,8 +1148,9 @@ struct CompositeDiscoveryObservationTests {
 
     @Test("Observations from child services are forwarded", .timeLimit(.minutes(1)))
     func forwardsObservations() async throws {
+        let localPeerID = makePeer()
         let mock = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [mock])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock])
 
         await composite.start()
 
@@ -1180,8 +1192,9 @@ struct CompositeDiscoveryObservationTests {
 
     @Test("Forwarded observations get new sequence numbers", .timeLimit(.minutes(1)))
     func forwardedSequenceNumbers() async throws {
+        let localPeerID = makePeer()
         let mock = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [mock])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock])
 
         await composite.start()
 
@@ -1229,8 +1242,9 @@ struct CompositeDiscoveryObservationTests {
 
     @Test("Subscribe filters observations by peer", .timeLimit(.minutes(1)))
     func subscribeFilters() async throws {
+        let localPeerID = makePeer()
         let mock = MockDiscoveryService()
-        let composite = CompositeDiscovery(services: [mock])
+        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock])
 
         await composite.start()
 
@@ -1289,10 +1303,12 @@ private final class FailingDiscoveryService: DiscoveryService, Sendable {
 
     private struct TestError: Error {}
 
+    let localPeerID: PeerID
     private let eventStream: AsyncStream<PeerObservation>
     private let eventContinuation: AsyncStream<PeerObservation>.Continuation
 
-    init() {
+    init(localPeerID: PeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)) {
+        self.localPeerID = localPeerID
         let (stream, continuation) = AsyncStream<PeerObservation>.makeStream()
         self.eventStream = stream
         self.eventContinuation = continuation
@@ -1310,7 +1326,7 @@ private final class FailingDiscoveryService: DiscoveryService, Sendable {
         AsyncStream { $0.finish() }
     }
 
-    func knownPeers() async -> [PeerID] { [] }
+    func collectKnownPeers() async -> [PeerID] { [] }
 
     var observations: AsyncStream<PeerObservation> {
         eventStream

@@ -125,7 +125,7 @@ struct RustInteropTests {
 
         // Negotiate identify protocol using multistream-select
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.identify],
+            protocols: [ProtocolID.identify],
             read: {
                 let buffer = try await stream.read()
                 let data = Data(buffer: buffer)
@@ -138,7 +138,7 @@ struct RustInteropTests {
             }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
+        #expect(negotiationResult.protocolID == ProtocolID.identify)
 
         // Use remainder when identify response is coalesced with protocol confirmation.
         let bytes: Data
@@ -184,12 +184,12 @@ struct RustInteropTests {
         let stream = try await connection.newStream()
 
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.identify],
+            protocols: [ProtocolID.identify],
             read: { Data(buffer: try await stream.read()) },
             write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.identify)
+        #expect(negotiationResult.protocolID == ProtocolID.identify)
 
         // Use remainder when identify response is coalesced with protocol confirmation.
         let bytes: Data
@@ -243,12 +243,12 @@ struct RustInteropTests {
 
         // Negotiate ping protocol using multistream-select
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await stream.read()) },
             write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+        #expect(negotiationResult.protocolID == ProtocolID.ping)
 
         // Generate 32-byte random payload (libp2p ping spec)
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
@@ -290,12 +290,12 @@ struct RustInteropTests {
 
             // Negotiate ping protocol
             let negotiationResult = try await MultistreamSelect.negotiate(
-                protocols: [LibP2PProtocol.ping],
+                protocols: [ProtocolID.ping],
                 read: { Data(buffer: try await stream.read()) },
                 write: { data in try await stream.write(ByteBuffer(bytes: data)) }
             )
 
-            #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+            #expect(negotiationResult.protocolID == ProtocolID.ping)
 
             let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
             let startTime = ContinuousClock.now
@@ -343,12 +343,12 @@ struct RustInteropTests {
 
         // Negotiate ping protocol for bidirectional test
         let negotiationResult = try await MultistreamSelect.negotiate(
-            protocols: [LibP2PProtocol.ping],
+            protocols: [ProtocolID.ping],
             read: { Data(buffer: try await stream.read()) },
             write: { data in try await stream.write(ByteBuffer(bytes: data)) }
         )
 
-        #expect(negotiationResult.protocolID == LibP2PProtocol.ping)
+        #expect(negotiationResult.protocolID == ProtocolID.ping)
 
         // Send 32-byte payload as per ping protocol
         let payload = Data((0..<32).map { _ in UInt8.random(in: 0...255) })

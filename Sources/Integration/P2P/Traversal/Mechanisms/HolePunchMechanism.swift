@@ -28,12 +28,10 @@ public struct HolePunchMechanism: TraversalMechanism, Sendable {
             _ = try await context.dialAddress(address)
         }
         dcutr.setLocalAddressProvider(context.getLocalAddresses)
-        if let registry = context.registry {
-            await dcutr.registerHandler(registry: registry)
-        }
     }
 
     public func collectCandidates(context: TraversalContext) async -> [TraversalCandidate] {
+        guard context.opener != nil else { return [] }
         if requireLimitedConnection && !context.isLimitedConnection(context.targetPeer) {
             return []
         }

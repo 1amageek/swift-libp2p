@@ -32,7 +32,8 @@ struct NodeE2ETests {
             reconnectionPolicy: .disabled,
             idleTimeout: .seconds(300)
         ),
-        healthCheck: HealthMonitorConfiguration? = nil
+        healthCheck: HealthMonitorConfiguration? = nil,
+        services: [any NodeService] = []
     ) -> Node {
         var listenAddresses: [Multiaddr] = []
         if let addr = listenAddress {
@@ -46,7 +47,8 @@ struct NodeE2ETests {
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
             pool: pool,
-            healthCheck: healthCheck
+            healthCheck: healthCheck,
+            services: services
         )
         return Node(configuration: config)
     }
@@ -297,12 +299,9 @@ struct NodeE2ETests {
         let hub = MemoryHub()
         let serverAddr = Multiaddr.memory(id: "server6")
 
-        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr)
-        let client = makeNode(name: "client", hub: hub)
-
-        // Register ping handler on server
         let pingService = PingService()
-        await pingService.registerHandler(registry: server)
+        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr, services: [pingService])
+        let client = makeNode(name: "client", hub: hub)
 
         try await server.start()
         try await client.start()
@@ -327,11 +326,9 @@ struct NodeE2ETests {
         let hub = MemoryHub()
         let serverAddr = Multiaddr.memory(id: "server7")
 
-        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr)
-        let client = makeNode(name: "client", hub: hub)
-
         let pingService = PingService()
-        await pingService.registerHandler(registry: server)
+        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr, services: [pingService])
+        let client = makeNode(name: "client", hub: hub)
 
         try await server.start()
         try await client.start()

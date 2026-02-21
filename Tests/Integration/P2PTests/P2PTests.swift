@@ -74,7 +74,7 @@ struct P2PTests {
         await node.handle("/test/1.0.0") { _ in }
         await node.handle("/chat/1.0.0") { _ in }
 
-        let protocols = await node.supportedProtocols
+        let protocols = await node.supportedProtocols()
         #expect(protocols.contains("/test/1.0.0"))
         #expect(protocols.contains("/chat/1.0.0"))
         #expect(protocols.count == 2)
@@ -632,6 +632,7 @@ private final class MockMuxedConnection: MuxedConnection, Sendable {
     let remotePeer: PeerID = KeyPair.generateEd25519().peerID
     let localAddress: Multiaddr? = Multiaddr.tcp(host: "127.0.0.1", port: 4001)
     let remoteAddress: Multiaddr = Multiaddr.tcp(host: "127.0.0.1", port: 4002)
+    var hasActiveStreams: Bool { false }
 
     func newStream() async throws -> MuxedStream {
         fatalError("Not implemented in mock")

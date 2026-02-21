@@ -23,7 +23,6 @@ struct TraversalPolicyTests {
             transports: [],
             connectedPeers: [],
             opener: nil,
-            registry: nil,
             getLocalAddresses: { [] },
             isLimitedConnection: { _ in false },
             dialAddress: { _ in peer }
@@ -53,7 +52,6 @@ struct TraversalPolicyTests {
             transports: [],
             connectedPeers: [],
             opener: nil,
-            registry: nil,
             getLocalAddresses: { [] },
             isLimitedConnection: { _ in false },
             dialAddress: { _ in peer }
@@ -65,5 +63,38 @@ struct TraversalPolicyTests {
             context: context
         )
         #expect(shouldFallback == false)
+    }
+
+    @Test("allows fallback on missing context", .timeLimit(.minutes(1)))
+    func fallbackOnMissingContext() {
+        let policy = DefaultTraversalPolicy()
+        let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+
+        let candidate = TraversalCandidate(
+            mechanismID: "hole-punch",
+            peer: peer,
+            address: nil,
+            pathKind: .holePunch,
+            score: 1.0
+        )
+
+        let context = TraversalContext(
+            localPeer: peer,
+            targetPeer: peer,
+            knownAddresses: [],
+            transports: [],
+            connectedPeers: [],
+            opener: nil,
+            getLocalAddresses: { [] },
+            isLimitedConnection: { _ in false },
+            dialAddress: { _ in peer }
+        )
+
+        let shouldFallback = policy.shouldFallback(
+            after: TraversalError.missingContext("StreamOpener required"),
+            from: candidate,
+            context: context
+        )
+        #expect(shouldFallback == true)
     }
 }
