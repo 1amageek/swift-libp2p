@@ -137,9 +137,6 @@ public struct NodeConfiguration: Sendable {
     /// Health check configuration (nil to disable).
     public let healthCheck: HealthMonitorConfiguration?
 
-    /// Discovery service (nil to disable).
-    public let discovery: (any DiscoveryService)?
-
     /// Discovery configuration for auto-connect behavior.
     public let discoveryConfig: DiscoveryConfiguration
 
@@ -161,11 +158,15 @@ public struct NodeConfiguration: Sendable {
     /// Resource manager for system-wide resource accounting (nil for no limits).
     public let resourceManager: (any ResourceManager)?
 
-    /// Identify service for peer information exchange and auto-push (nil to disable).
-    public let identifyService: IdentifyService?
-
     /// Traversal configuration (nil to disable traversal orchestration).
     public let traversal: TraversalConfiguration?
+
+    /// Maximum concurrent inbound stream negotiations per connection (C2).
+    /// Default: 128 (rust-libp2p default).
+    public let maxNegotiatingInboundStreams: Int
+
+    /// Behaviours registered with this node (unified service lifecycle).
+    public let behaviours: [any Behaviour]
 
     public init(
         keyPair: KeyPair = .generateEd25519(),
@@ -175,7 +176,6 @@ public struct NodeConfiguration: Sendable {
         muxers: [any Muxer] = [],
         pool: PoolConfiguration = .init(),
         healthCheck: HealthMonitorConfiguration? = .default,
-        discovery: (any DiscoveryService)? = nil,
         discoveryConfig: DiscoveryConfiguration = .default,
         peerStore: (any PeerStore)? = nil,
         addressBookConfig: AddressBookConfiguration? = nil,
@@ -183,8 +183,9 @@ public struct NodeConfiguration: Sendable {
         protoBook: (any ProtoBook)? = nil,
         keyBook: (any KeyBook)? = nil,
         resourceManager: (any ResourceManager)? = nil,
-        identifyService: IdentifyService? = nil,
-        traversal: TraversalConfiguration? = nil
+        traversal: TraversalConfiguration? = nil,
+        maxNegotiatingInboundStreams: Int = 128,
+        behaviours: [any Behaviour] = []
     ) {
         self.keyPair = keyPair
         self.listenAddresses = listenAddresses
@@ -193,7 +194,6 @@ public struct NodeConfiguration: Sendable {
         self.muxers = muxers
         self.pool = pool
         self.healthCheck = healthCheck
-        self.discovery = discovery
         self.discoveryConfig = discoveryConfig
         self.peerStore = peerStore
         self.addressBookConfig = addressBookConfig
@@ -201,8 +201,9 @@ public struct NodeConfiguration: Sendable {
         self.protoBook = protoBook
         self.keyBook = keyBook
         self.resourceManager = resourceManager
-        self.identifyService = identifyService
         self.traversal = traversal
+        self.maxNegotiatingInboundStreams = maxNegotiatingInboundStreams
+        self.behaviours = behaviours
     }
 }
 
@@ -224,6 +225,29 @@ public enum NodeEvent: Sendable {
 
     /// A connection event occurred.
     case connection(ConnectionEvent)
+
+    // MARK: - Address Lifecycle Events (C4)
+
+    /// A new external address candidate was observed (e.g., from Identify).
+    case newExternalAddrCandidate(Multiaddr)
+
+    /// An external address was confirmed as reachable (e.g., by AutoNAT).
+    case externalAddrConfirmed(Multiaddr)
+
+    /// An external address expired (no longer reachable).
+    case externalAddrExpired(Multiaddr)
+
+    /// A new listen address is active.
+    case newListenAddr(Multiaddr)
+
+    /// A listen address expired.
+    case expiredListenAddr(Multiaddr)
+
+    /// Dialing a peer.
+    case dialing(PeerID)
+
+    /// An outgoing connection attempt failed.
+    case outgoingConnectionError(peer: PeerID?, error: any Error)
 }
 
 // MARK: - Node
@@ -238,7 +262,7 @@ public enum NodeEvent: Sendable {
 /// ## State Management
 /// Node does not directly manage connection state. All connection
 /// tracking is handled by the internal ConnectionPool.
-public actor Node: StreamOpener, HandlerRegistry {
+public actor Node: NodeContext {
 
     /// The configuration for this node.
     public let configuration: NodeConfiguration
@@ -246,6 +270,28 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// The peer ID of this node.
     public var peerID: PeerID {
         configuration.keyPair.peerID
+    }
+
+    // MARK: - NodeContext conformance
+
+    /// The local peer ID (NodeContext).
+    public nonisolated var localPeer: PeerID {
+        configuration.keyPair.peerID
+    }
+
+    /// The local key pair (NodeContext).
+    public nonisolated var localKeyPair: KeyPair {
+        configuration.keyPair
+    }
+
+    /// Returns the current listen addresses (NodeContext).
+    public func listenAddresses() -> [Multiaddr] {
+        _currentListenAddresses.current
+    }
+
+    /// Returns the list of supported protocol IDs (NodeContext).
+    public func supportedProtocols() -> [String] {
+        Array(handlers.keys)
     }
 
     // Internal components
@@ -284,14 +330,19 @@ public actor Node: StreamOpener, HandlerRegistry {
 
     // Background tasks
     private var idleCheckTask: Task<Void, Never>?
-    private var trimTask: Task<Void, Never>?
-    private var discoveryTask: Task<Void, Never>?
+    private var discoveryTasks: [Task<Void, Never>] = []
+    private var reconnectTasks: [Task<Void, Never>] = []
     private var acceptTasks: [Task<Void, Never>] = []
 
     // Dial coordination
     private nonisolated let dialBackoff = DialBackoff()
-    private var discoveryAttachedPeers: Set<PeerID> = []
     private var peerConnectedEmitted: Set<PeerID> = []
+
+    // Inbound stream negotiation limiter (C2)
+    private nonisolated let negotiationSemaphore: AsyncSemaphore
+
+    // Active behaviours (populated during start())
+    private var activeBehaviours: [any Behaviour] = []
 
     // Traversal orchestration
     private var traversalCoordinator: TraversalCoordinator?
@@ -300,19 +351,13 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// Resolved addresses for external advertisement (0.0.0.0 → actual interface IPs).
     private nonisolated let _advertisedAddresses = ListenAddressStore()
 
-    // Events
+    // Events — created eagerly in init to prevent event loss
     private var eventContinuation: AsyncStream<NodeEvent>.Continuation?
-    private var _events: AsyncStream<NodeEvent>?
+    private let _events: AsyncStream<NodeEvent>
 
     /// Event stream for monitoring node state changes.
     public var events: AsyncStream<NodeEvent> {
-        if let existing = _events {
-            return existing
-        }
-        let (stream, continuation) = AsyncStream<NodeEvent>.makeStream()
-        self._events = stream
-        self.eventContinuation = continuation
-        return stream
+        _events
     }
 
     /// Creates a new node with the given configuration.
@@ -333,6 +378,14 @@ public actor Node: StreamOpener, HandlerRegistry {
         )
         self._protoBook = configuration.protoBook ?? MemoryProtoBook()
         self._keyBook = configuration.keyBook ?? MemoryKeyBook()
+        self.negotiationSemaphore = AsyncSemaphore(count: configuration.maxNegotiatingInboundStreams)
+
+        // Create event stream eagerly to prevent event loss.
+        // If events are emitted before anyone subscribes, they are buffered
+        // in the AsyncStream until consumed.
+        let (stream, continuation) = AsyncStream<NodeEvent>.makeStream()
+        self._events = stream
+        self.eventContinuation = continuation
     }
 
     // MARK: - Protocol Handlers
@@ -363,10 +416,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         }
     }
 
-    /// Returns the list of supported protocols.
-    public var supportedProtocols: [String] {
-        Array(handlers.keys)
-    }
+    // supportedProtocols is provided by NodeContext conformance above
 
     // MARK: - Lifecycle
 
@@ -402,6 +452,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                                 localKeyPair: configuration.keyPair
                             )
                             securedListeners.append(listener)
+                            emit(.newListenAddr(listener.localAddress))
 
                             // Start secured accept loop
                             let acceptTask = Task { [weak self] in
@@ -413,6 +464,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                             // Standard transport
                             let listener = try await transport.listen(address)
                             listeners.append(listener)
+                            emit(.newListenAddr(listener.localAddress))
 
                             // Start accept loop
                             let acceptTask = Task { [weak self] in
@@ -441,23 +493,44 @@ public actor Node: StreamOpener, HandlerRegistry {
         let resolved = Self.resolveUnspecifiedAddresses(boundAddresses)
         _advertisedAddresses.update(resolved)
 
-        // Start discovery AFTER listeners are ready, so announce() has resolved addresses
-        // and we can accept inbound connections from discovered peers
-        if let discovery = configuration.discovery {
-            try await setupDiscoveryIntegration(discovery)
+        // --- Behaviour integration ---
+        let allBehaviours = configuration.behaviours
+        // Set activeBehaviours early so peer connections during start() are notified.
+        // Listeners are already accepting, and a connection arriving at any await
+        // point below would otherwise be silently lost (peerConnectedEmitted blocks
+        // future re-notification).
+        self.activeBehaviours = allBehaviours
 
-            // Announce resolved addresses to discovery service
-            if !resolved.isEmpty {
-                do {
-                    try await discovery.announce(addresses: resolved)
-                } catch {
-                    logger.warning("[P2P] Discovery announce failed: \(error)")
+        // Pass 1: Register handlers from all behaviours (before attach, so
+        // supportedProtocols() returns a complete list during attach)
+        for behaviour in allBehaviours {
+            for protocolID in behaviour.protocolIDs {
+                handlers[protocolID] = { context in
+                    await behaviour.handleInboundStream(context)
                 }
             }
+        }
 
-            // Start discovery auto-connect task (reactive via observations stream)
-            if configuration.discoveryConfig.autoConnect {
-                startDiscoveryTask(discovery: discovery)
+        // Pass 2: Attach behaviours (listeners are up, addresses resolved)
+        for behaviour in allBehaviours {
+            await behaviour.attach(to: self)
+        }
+
+        // Pass 3: Start discovery auto-connect for DiscoveryBehaviours
+        for behaviour in allBehaviours {
+            if let discovery = behaviour as? any DiscoveryBehaviour {
+                // Announce resolved addresses
+                if !resolved.isEmpty {
+                    do {
+                        try await discovery.announce(addresses: resolved)
+                    } catch {
+                        logger.warning("[P2P] Discovery announce failed: \(error)")
+                    }
+                }
+                // Start auto-connect task
+                if configuration.discoveryConfig.autoConnect {
+                    startDiscoveryTask(discovery: discovery)
+                }
             }
         }
 
@@ -471,7 +544,6 @@ public actor Node: StreamOpener, HandlerRegistry {
             let addressStore = _currentListenAddresses
             await coordinator.start(
                 opener: self,
-                registry: self,
                 getLocalAddresses: {
                     addressStore.current
                 },
@@ -487,24 +559,6 @@ public actor Node: StreamOpener, HandlerRegistry {
                 }
             )
             self.traversalCoordinator = coordinator
-        }
-
-        // Register IdentifyService handlers if configured
-        if let identify = configuration.identifyService {
-            await identify.registerHandlers(
-                registry: self,
-                localKeyPair: configuration.keyPair,
-                getListenAddresses: { [weak self] in
-                    guard let self else { return [] }
-                    return await self.listenAddresses
-                },
-                getSupportedProtocols: { [weak self] in
-                    guard let self else { return [] }
-                    return await self.supportedProtocols
-                },
-                opener: self
-            )
-            identify.startMaintenance()
         }
 
         // Start PeerStore GC if using MemoryPeerStore
@@ -537,7 +591,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         isRunning = false
 
         // Shutdown traversal coordinator first so event stream is finished promptly.
-        traversalCoordinator?.shutdown()
+        await traversalCoordinator?.shutdown()
         traversalCoordinator = nil
         _currentListenAddresses.clear()
         _advertisedAddresses.clear()
@@ -554,10 +608,10 @@ public actor Node: StreamOpener, HandlerRegistry {
         // Cancel background tasks
         idleCheckTask?.cancel()
         idleCheckTask = nil
-        trimTask?.cancel()
-        trimTask = nil
-        discoveryTask?.cancel()
-        discoveryTask = nil
+        for task in discoveryTasks { task.cancel() }
+        discoveryTasks.removeAll()
+        for task in reconnectTasks { task.cancel() }
+        reconnectTasks.removeAll()
 
         // Stop bootstrap
         if let bootstrap = _bootstrap {
@@ -573,6 +627,7 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Close all listeners
         for listener in listeners {
+            emit(.expiredListenAddr(listener.localAddress))
             do {
                 try await listener.close()
             } catch {
@@ -583,6 +638,7 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Close all secured listeners (QUIC, etc.)
         for listener in securedListeners {
+            emit(.expiredListenAddr(listener.localAddress))
             do {
                 try await listener.close()
             } catch {
@@ -611,20 +667,17 @@ public actor Node: StreamOpener, HandlerRegistry {
 
         // Clear tracking state
         dialBackoff.clear()
-        discoveryAttachedPeers.removeAll()
         peerConnectedEmitted.removeAll()
 
-        if let discovery = configuration.discovery {
-            await discovery.shutdown()
+        // Shutdown all active behaviours
+        for behaviour in activeBehaviours {
+            await behaviour.shutdown()
         }
+        activeBehaviours = []
 
-        // Shutdown IdentifyService
-        configuration.identifyService?.shutdown()
-
-        // Finish event stream
+        // Finish event stream (stream itself is let, just terminate the continuation)
         eventContinuation?.finish()
         eventContinuation = nil
-        _events = nil
     }
 
     // MARK: - Connections
@@ -683,12 +736,19 @@ public actor Node: StreamOpener, HandlerRegistry {
             if let peerID = address.peerID {
                 pool.removePendingDial(for: peerID)
             }
+            // Emit outgoing connection error (C4)
+            emit(.outgoingConnectionError(peer: address.peerID, error: error))
             throw error
         }
     }
 
     /// Performs the actual dial operation.
     private func performDial(to address: Multiaddr) async throws -> PeerID {
+        // Emit dialing event (C4)
+        if let peerID = address.peerID {
+            emit(.dialing(peerID))
+        }
+
         // Find a transport that can dial
         guard let transport = configuration.transports.first(where: { $0.canDial(address) }) else {
             throw NodeError.noSuitableTransport
@@ -817,7 +877,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         }
 
         // Emit events (guarded: only fires for first connection to this peer)
-        await onPeerConnected(remotePeer, address: address, isLimited: isRelay)
+        await onPeerConnected(remotePeer)
         emitConnectionEvent(.connected(peer: remotePeer, address: address, direction: .outbound))
 
         // Start health monitoring
@@ -935,7 +995,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         }
 
         // Emit events (guarded: only fires for first connection to this peer)
-        await onPeerConnected(remotePeer, address: address, isLimited: isLimited)
+        await onPeerConnected(remotePeer)
         emitConnectionEvent(.connected(peer: remotePeer, address: address, direction: .outbound))
 
         // Start health monitoring
@@ -1117,10 +1177,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         pool.connectedPeers
     }
 
-    /// Returns the actual listen addresses from active listeners.
-    public var listenAddresses: [Multiaddr] {
-        listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
-    }
+    // listenAddresses is provided by NodeContext conformance above
 
     /// Returns the resolved addresses suitable for external advertisement.
     ///
@@ -1178,6 +1235,20 @@ public actor Node: StreamOpener, HandlerRegistry {
     /// - Parameter peer: The peer to unprotect
     public func unprotect(_ peer: PeerID) {
         pool.unprotect(peer)
+    }
+
+    // MARK: - Keep-Alive (C3)
+
+    /// Sets the keep-alive flag for all connections to a peer.
+    ///
+    /// Keep-alive connections are excluded from idle connection trimming.
+    /// Used by protocols like GossipSub to prevent mesh peer disconnection.
+    ///
+    /// - Parameters:
+    ///   - keepAlive: Whether to keep connections alive
+    ///   - peer: The peer whose connections to update
+    public func setKeepAlive(_ keepAlive: Bool, for peer: PeerID) {
+        pool.setKeepAlive(keepAlive, for: peer)
     }
 
     // MARK: - Address Resolution
@@ -1280,18 +1351,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         eventContinuation?.yield(.connection(event))
     }
 
-    private func setupDiscoveryIntegration(_ discovery: any DiscoveryService) async throws {
-        if let registrable = discovery as? any NodeDiscoveryHandlerRegistrable {
-            await registrable.registerHandler(registry: self)
-        }
-        if let startableWithOpener = discovery as? any NodeDiscoveryStartableWithOpener {
-            await startableWithOpener.start(using: self)
-        } else if let startable = discovery as? any NodeDiscoveryStartable {
-            try await startable.start()
-        }
-    }
-
-    private func onPeerConnected(_ peer: PeerID, address: Multiaddr? = nil, isLimited: Bool = false) async {
+    private func onPeerConnected(_ peer: PeerID) async {
         // Only emit peerConnected once per unique peer.
         // Subsequent connections to the same peer (e.g., simultaneous connect)
         // are resolved by resolveSimultaneousConnect without re-emitting.
@@ -1299,10 +1359,14 @@ public actor Node: StreamOpener, HandlerRegistry {
         peerConnectedEmitted.insert(peer)
 
         emit(.peerConnected(peer))
-        configuration.identifyService?.peerConnected(peer)
-        await attachDiscoveryStreamIfNeeded(for: peer)
-        _ = address
-        _ = isLimited
+
+        // Notify all active behaviours sequentially.
+        // Behaviours like GossipSub/Plumtree call back into Node (via newStream)
+        // during peerConnected. Sequential await allows actor reentrancy to process
+        // these callbacks at each suspension point.
+        for behaviour in activeBehaviours {
+            await behaviour.peerConnected(peer)
+        }
     }
 
     private func onPeerDisconnected(_ peer: PeerID) async {
@@ -1312,9 +1376,12 @@ public actor Node: StreamOpener, HandlerRegistry {
         guard !pool.isConnected(to: peer) else { return }
         peerConnectedEmitted.remove(peer)
 
+        // Notify all active behaviours sequentially.
+        for behaviour in activeBehaviours {
+            await behaviour.peerDisconnected(peer)
+        }
+
         emit(.peerDisconnected(peer))
-        configuration.identifyService?.peerDisconnected(peer)
-        await detachDiscoveryStreamIfNeeded(for: peer)
     }
 
     /// Resolves simultaneous connect by closing the duplicate connection.
@@ -1358,34 +1425,6 @@ public actor Node: StreamOpener, HandlerRegistry {
                 }
             }
         }
-    }
-
-    private func attachDiscoveryStreamIfNeeded(for peer: PeerID) async {
-        guard let discovery = configuration.discovery as? any NodeDiscoveryPeerStreamService else {
-            return
-        }
-        guard !discoveryAttachedPeers.contains(peer) else {
-            return
-        }
-        discoveryAttachedPeers.insert(peer)
-
-        do {
-            let stream = try await newStream(to: peer, protocol: discovery.discoveryProtocolID)
-            await discovery.handlePeerConnected(peer, stream: stream)
-        } catch {
-            discoveryAttachedPeers.remove(peer)
-            logger.debug("Discovery stream setup failed for \(peer): \(error)")
-        }
-    }
-
-    private func detachDiscoveryStreamIfNeeded(for peer: PeerID) async {
-        guard discoveryAttachedPeers.remove(peer) != nil else {
-            return
-        }
-        guard let discovery = configuration.discovery as? any NodeDiscoveryPeerStreamService else {
-            return
-        }
-        await discovery.handlePeerDisconnected(peer)
     }
 
     /// Checks if an address is a circuit relay address.
@@ -1451,7 +1490,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         pool.incrementRetryCount(id)
         emitConnectionEvent(.reconnecting(peer: peer, attempt: attempt, nextDelay: delay))
 
-        Task { [weak self] in
+        let task = Task { [weak self] in
             let slept = await sleepUnlessCancelled(
                 for: delay,
                 context: "reconnect backoff for peer \(peer)"
@@ -1459,6 +1498,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             guard slept else { return }
             await self?.performReconnect(id: id, peer: peer, address: address, attempt: attempt)
         }
+        reconnectTasks.append(task)
     }
 
     private func performReconnect(id: ConnectionID, peer: PeerID, address: Multiaddr, attempt: Int) async {
@@ -1529,8 +1569,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                     await self?.handleConnectionClosed(id: id, peer: remotePeer)
                 }
 
-                let isRelay = transport.pathKind == .relay
-                await onPeerConnected(remotePeer, address: address, isLimited: isRelay)
+                await onPeerConnected(remotePeer)
                 emitConnectionEvent(.reconnected(peer: peer, attempt: attempt))
 
                 await healthMonitor?.startMonitoring(peer: remotePeer)
@@ -1608,8 +1647,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             }
 
             // Emit events
-            let isRelay = transport.pathKind == .relay
-            await onPeerConnected(remotePeer, address: address, isLimited: isRelay)
+            await onPeerConnected(remotePeer)
             emitConnectionEvent(.reconnected(peer: peer, attempt: attempt))
 
             // Start health monitoring
@@ -1667,7 +1705,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         let config = configuration.discoveryConfig
         let localPeerID = configuration.keyPair.peerID
 
-        discoveryTask = Task { [weak self, localPeerID] in
+        let task = Task { [weak self, localPeerID] in
             // Process initial known peers
             let peers = await discovery.knownPeers()
             for peer in peers {
@@ -1707,6 +1745,7 @@ public actor Node: StreamOpener, HandlerRegistry {
                 }
             }
         }
+        discoveryTasks.append(task)
     }
 
     private func tryAutoConnect(
@@ -1952,7 +1991,7 @@ public actor Node: StreamOpener, HandlerRegistry {
             }
 
             // Emit events (guarded: only fires for first connection to this peer)
-            await onPeerConnected(remotePeer, address: remoteAddress, isLimited: isRelay)
+            await onPeerConnected(remotePeer)
             emitConnectionEvent(.connected(peer: remotePeer, address: remoteAddress, direction: .inbound))
 
             // Start health monitoring
@@ -2065,7 +2104,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         }
 
         // Emit events (guarded: only fires for first connection to this peer)
-        await onPeerConnected(remotePeer, address: remoteAddress, isLimited: isRelay)
+        await onPeerConnected(remotePeer)
         emitConnectionEvent(.connected(peer: remotePeer, address: remoteAddress, direction: .inbound))
 
         // Start health monitoring
@@ -2076,6 +2115,7 @@ public actor Node: StreamOpener, HandlerRegistry {
         let supportedProtocols = Array(handlers.keys)
         let localPeer = configuration.keyPair.peerID
         let rm = configuration.resourceManager
+        let semaphore = negotiationSemaphore
 
         for await stream in connection.inboundStreams {
             let capturedHandlers = handlers
@@ -2086,11 +2126,15 @@ public actor Node: StreamOpener, HandlerRegistry {
             let localAddress = connection.localAddress
 
             Task {
+                // Limit concurrent inbound stream negotiations (C2)
+                await semaphore.wait()
+
                 // Reserve inbound stream resource
                 if let rm = rm {
                     do {
                         try rm.reserveInboundStream(from: remotePeer)
                     } catch {
+                        semaphore.signal()
                         await runBestEffort("close inbound stream after inbound stream resource reservation failure") {
                             try await stream.close()
                         }
@@ -2112,6 +2156,9 @@ public actor Node: StreamOpener, HandlerRegistry {
                         write: { try await stream.write(ByteBuffer(bytes: $0)) }
                     )
 
+                    // Release semaphore after negotiation completes (before handler runs)
+                    semaphore.signal()
+
                     // Preserve bytes read ahead during protocol negotiation for handler consumption.
                     let bufferedRemainder = reader.drainRemainder()
                     let negotiationRemainder = result.remainder + bufferedRemainder
@@ -2129,7 +2176,8 @@ public actor Node: StreamOpener, HandlerRegistry {
                             remotePeer: remotePeer,
                             remoteAddress: remoteAddress,
                             localPeer: localPeer,
-                            localAddress: localAddress
+                            localAddress: localAddress,
+                            protocolID: result.protocolID
                         )
                         await handler(context)
                     } else {
@@ -2138,6 +2186,8 @@ public actor Node: StreamOpener, HandlerRegistry {
                         }
                     }
                 } catch {
+                    // Release semaphore on negotiation failure
+                    semaphore.signal()
                     await runBestEffort("close inbound stream after handler failure") {
                         try await stream.close()
                     }
@@ -2150,17 +2200,18 @@ public actor Node: StreamOpener, HandlerRegistry {
 // MARK: - NodePingProvider
 
 /// Internal adapter to make Node work with HealthMonitor.
-private final class NodePingProvider: PingProvider, Sendable {
-    private let nodeRef: Mutex<Node?>
+/// Uses weak reference to Node to avoid Node → HealthMonitor → NodePingProvider → Node cycle.
+private final class NodePingProvider: PingProvider, @unchecked Sendable {
+    nonisolated(unsafe) private weak var node: Node?
     private let pingService: PingService
 
     init(node: Node) {
-        self.nodeRef = Mutex(node)
+        self.node = node
         self.pingService = PingService()
     }
 
     func ping(_ peer: PeerID) async throws -> Duration {
-        guard let node = nodeRef.withLock({ $0 }) else {
+        guard let node else {
             throw NodeError.nodeNotRunning
         }
 
@@ -2364,5 +2415,65 @@ private final class NodeConnectionProvider: BootstrapConnectionProvider, Sendabl
     func connectedPeers() async -> Set<PeerID> {
         guard let node = node else { return [] }
         return Set(await node.connectedPeers)
+    }
+}
+
+// MARK: - AsyncSemaphore (C2)
+
+/// Async-compatible counting semaphore for limiting concurrency.
+///
+/// Used to limit the number of concurrent inbound stream negotiations
+/// to prevent DoS attacks from opening too many streams simultaneously.
+internal final class AsyncSemaphore: Sendable {
+    private let state: Mutex<SemaphoreState>
+
+    private struct SemaphoreState: Sendable {
+        var count: Int
+        var waiters: [CheckedContinuation<Void, Never>]
+    }
+
+    /// Creates a semaphore with the given initial count.
+    init(count: Int) {
+        self.state = Mutex(SemaphoreState(count: count, waiters: []))
+    }
+
+    /// Waits until the semaphore count is positive, then decrements it.
+    func wait() async {
+        let shouldSuspend: Bool = state.withLock { state in
+            if state.count > 0 {
+                state.count -= 1
+                return false
+            }
+            return true
+        }
+
+        guard shouldSuspend else { return }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeImmediately = state.withLock { state -> Bool in
+                // Re-check: count may have increased while we were setting up
+                if state.count > 0 {
+                    state.count -= 1
+                    return true
+                }
+                state.waiters.append(continuation)
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Increments the semaphore count, resuming one waiter if any.
+    func signal() {
+        let waiter: CheckedContinuation<Void, Never>? = state.withLock { state in
+            if !state.waiters.isEmpty {
+                return state.waiters.removeFirst()
+            }
+            state.count += 1
+            return nil
+        }
+        waiter?.resume()
     }
 }

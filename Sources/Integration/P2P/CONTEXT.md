@@ -14,11 +14,11 @@ swift-libp2pの統合エントリーポイント。`import P2P` だけで基本�
 
 **`@_exported`（`import P2P` で利用可能）:**
 - Protocol抽象: `P2PCore`, `P2PTransport`, `P2PSecurity`, `P2PMux`, `P2PNegotiation`, `P2PDiscovery`, `P2PProtocols`
-- デフォルト実装: `P2PTransportTCP`, `P2PSecurityNoise`, `P2PSecurityPlaintext`, `P2PMuxYamux`, `P2PPing`
+- デフォルト実装: `P2PTransportTCP`, `P2PSecurityNoise`, `P2PSecurityPlaintext`, `P2PMuxYamux`, `P2PPing`, `P2PGossipSub`
 - 基盤: `NIOCore`（ByteBuffer等）
 
 **内部利用（non-exported）:**
-- `P2PIdentify`, `P2PAutoNAT`, `P2PCircuitRelay`, `P2PDCUtR`, `P2PNAT`
+- `P2PIdentify`（Behaviour 統合により AutoNAT/CircuitRelay/DCUtR/NAT は behaviours 経由で注入）
 
 **別途importが必要なアプリケーションプロトコル:**
 - `P2PGossipSub`, `P2PKademlia`, `P2PPlumtree`, `P2PRendezvous` 等
@@ -32,7 +32,7 @@ Sources/Integration/P2P/
 ├── P2P.swift                 # Node, NodeConfiguration, NodeEvent, DiscoveryConfiguration
 ├── ConnectionUpgrader.swift  # 接続アップグレードパイプライン (V1 Lazy対応)
 ├── Connection/               # 接続管理コンポーネント
-│   ├── ConnectionPool.swift      # 接続プール（内部、isLimited 対応）
+│   ├── ConnectionPool.swift      # 接続プール（内部、リレー経路識別対応）
 │   ├── ConnectionState.swift     # 接続状態マシン
 │   ├── ConnectionLimits.swift    # 接続制限設定
 │   ├── ConnectionGater.swift     # 接続フィルタリング
@@ -76,13 +76,21 @@ Sources/Integration/P2P/
 public struct NodeConfiguration: Sendable {
     public let keyPair: KeyPair
     public let listenAddresses: [Multiaddr]
-    public let transports: [any Transport]      // 優先順
-    public let security: [any SecurityUpgrader] // 優先順
-    public let muxers: [any Muxer]              // 優先順
-    public let pool: PoolConfiguration          // 接続プール設定
-    public let healthCheck: HealthMonitorConfiguration?  // ヘルスチェック（nil=無効）
-    public let discovery: (any DiscoveryService)?        // ディスカバリサービス
-    public let discoveryConfig: DiscoveryConfiguration   // 自動接続設定
+    public let transports: [any Transport]              // 優先順
+    public let security: [any SecurityUpgrader]         // 優先順
+    public let muxers: [any Muxer]                      // 優先順
+    public let pool: PoolConfiguration                  // 接続プール設定
+    public let healthCheck: HealthMonitorConfiguration? // ヘルスチェック（nil=無効）
+    public let discoveryConfig: DiscoveryConfiguration  // 自動接続設定
+    public let peerStore: (any PeerStore)?               // nil=MemoryPeerStore
+    public let addressBookConfig: AddressBookConfiguration?
+    public let bootstrap: BootstrapConfiguration?       // nil=無効
+    public let protoBook: (any ProtoBook)?               // nil=MemoryProtoBook
+    public let keyBook: (any KeyBook)?                   // nil=MemoryKeyBook
+    public let resourceManager: (any ResourceManager)?   // nil=無制限
+    public let traversal: TraversalConfiguration?        // nil=無効
+    public let maxNegotiatingInboundStreams: Int          // default: 128
+    public let behaviours: [any Behaviour]               // 統一サービスライフサイクル
 }
 ```
 
@@ -98,30 +106,48 @@ public struct DiscoveryConfiguration: Sendable {
 
 ### Node
 ```swift
-public actor Node {
+public actor Node: NodeContext {
     public init(configuration: NodeConfiguration)
 
     public var peerID: PeerID { get }
     public var connectedPeers: [PeerID] { get }
     public var connectionCount: Int { get }
     public func connectionTrimReport() -> ConnectionTrimReport
-    public var supportedProtocols: [String] { get }
+    public func supportedProtocols() -> [String]
+    public func listenAddresses() -> [Multiaddr]
     public var events: AsyncStream<NodeEvent> { get }
+
+    // Stores
+    public var peerStore: any PeerStore { get }
+    public var addressBook: any AddressBook { get }
+    public var protoBook: any ProtoBook { get }
+    public var keyBook: any KeyBook { get }
 
     // Lifecycle
     public func start() async throws
     public func shutdown() async
 
     // Protocol handlers
-    public func handle(_ protocolID: String, handler: @escaping StreamHandler)
+    public func handle(_ protocolID: String, handler: @escaping ProtocolHandler)
+    public func handleStream(_ protocolID: String, handler: @escaping @Sendable (MuxedStream) async -> Void)
 
     // Connections
     public func connect(to address: Multiaddr) async throws -> PeerID
+    public func connect(to peer: PeerID) async throws -> PeerID
     public func disconnect(from peer: PeerID) async
     public func connection(to peer: PeerID) -> MuxedConnection?
+    public func connectionState(of peer: PeerID) -> ConnectionState?
+    public func isLimitedConnection(to peer: PeerID) -> Bool
 
     // Streams
     public func newStream(to peer: PeerID, protocol: String) async throws -> MuxedStream
+
+    // Peer management
+    public func tag(_ peer: PeerID, with tag: String)
+    public func untag(_ peer: PeerID, tag: String)
+    public func protect(_ peer: PeerID)
+    public func unprotect(_ peer: PeerID)
+    public func setKeepAlive(_ keepAlive: Bool, for peer: PeerID)
 }
 ```
 
@@ -132,7 +158,16 @@ public enum NodeEvent: Sendable {
     case peerDisconnected(PeerID)
     case listenError(Multiaddr, any Error)
     case connectionError(PeerID?, any Error)
-    case connection(ConnectionEvent)  // 詳細な接続イベント
+    case connection(ConnectionEvent)           // 詳細な接続イベント
+
+    // Address Lifecycle Events
+    case newExternalAddrCandidate(Multiaddr)
+    case externalAddrConfirmed(Multiaddr)
+    case externalAddrExpired(Multiaddr)
+    case newListenAddr(Multiaddr)
+    case expiredListenAddr(Multiaddr)
+    case dialing(PeerID)
+    case outgoingConnectionError(peer: PeerID?, error: any Error)
 }
 ```
 
@@ -204,9 +239,11 @@ public enum UpgradeError: Error, Sendable {
    ↓
 4. Store in connection pool
    ↓
-5. Emit NodeEvent.peerConnected
+5. Start inbound stream handler
    ↓
-6. Start inbound stream handler
+6. Notify behaviours: behaviour.peerConnected(peer)
+   ↓
+7. Emit NodeEvent.peerConnected
 ```
 
 ---
@@ -214,7 +251,7 @@ public enum UpgradeError: Error, Sendable {
 ## ユーザー使用例
 
 ```swift
-import P2P  // TCP, Noise, Plaintext, Yamux, Ping, NIOCore 込み
+import P2P  // TCP, Noise, Plaintext, Yamux, Ping, GossipSub, NIOCore 込み
 
 // 設定は初期化時に完結
 let node = Node(configuration: NodeConfiguration(
@@ -275,7 +312,7 @@ Node (actor)
  │    ├── TraversalHintProvider — 外部ヒント注入（mesh等）
  │    └── TraversalPolicy       — 候補順序/フォールバック制御
  └── ConnectionPool
-      └── isLimited flag     — リレー接続の識別
+      └── isLimited flag     — リレー経由接続の識別（pool.add 時に設定）
 ```
 
 ### イベントフロー
@@ -388,18 +425,19 @@ Node層は推奨される並行性パターンを実証:
 - Nodeへの弱参照を保持（循環参照防止）
 - `PingService`（P2PPing）を使用
 
-### 自動接続ループ (Discovery統合)
+### Behaviour 統合（サービスライフサイクル）
 
-Nodeは`DiscoveryService`に対して以下を行う:
-1. 起動時に capability protocol を検出し、必要ならハンドラ登録・start を実行  
-   - `NodeDiscoveryHandlerRegistrable` → `registerHandler(registry:)`
-   - `NodeDiscoveryStartableWithOpener` → `start(using: StreamOpener)`
-   - `NodeDiscoveryStartable` → `start()`
-2. 接続時に capability protocol を検出し、必要なら専用ストリームを接続
-   - `NodeDiscoveryPeerStreamService` の `discoveryProtocolID` で `newStream` を開き、`handlePeerConnected` を通知
-3. 切断時に `handlePeerDisconnected` を通知
+Node は `behaviours` 配列で全サービス（Protocol/Discovery）を統一管理する:
 
-auto-connect自体はリアクティブ:
+1. **起動時**: `behaviour.attach(to: nodeContext)` で NodeContext を注入、`protocolIDs` があればハンドラ登録
+2. **接続時**: `behaviour.peerConnected(peer)` を通知（最初の接続のみ、重複除外済み）
+3. **切断時**: `behaviour.peerDisconnected(peer)` を通知（残接続なしの場合のみ）
+4. **シャットダウン時**: `behaviour.shutdown()` で全サービスを停止
+
+`DiscoveryBehaviour` 準拠の Behaviour は自動的に auto-connect 対象として検出される。
+
+### auto-connect（リアクティブ）
+
 1. 起動直後に `knownPeers()` を1回評価
 2. 以降は `observations` ストリームを購読して接続判断
 3. クールダウンは`await`前にアトミック設定（競合防止）
@@ -461,8 +499,8 @@ Tests/Integration/P2PTests/
 - [x] **Resource Manager** - マルチスコープのリソース制限 ✅ 2026-01-30 (GAP-9)
 - [x] **接続トリムアルゴリズムの検証テスト** - `ConnectionPoolTests` に watermark / protected / tags / oldest activity / grace period の回帰テストを追加
 - [x] **イベントストリームの挙動ドキュメント化** - lazy初期化、購読前イベント破棄、shutdown時finish/resetを明記
-- [x] **Discovery capability統合** - Node起動/接続/切断ライフサイクルに discovery の optional hook を接続（register/start/peer stream/shutdown）
-- [x] **Identify Push Node統合** - `NodeConfiguration.identifyService` でハンドラ登録・peerConnected/Disconnected通知・shutdown連動 ✅
+- [x] **Discovery capability統合** - Behaviour プロトコルで統一（attach/peerConnected/peerDisconnected/shutdown）
+- [x] **Identify Push Node統合** - Behaviour として統合（IdentifyService が Behaviour 準拠）✅
 
 ### 低優先度
 - [x] **グレース期間の強制確認** - `ConnectionPoolTests.trimIfNeeded does not trim connections within grace period` で検証
