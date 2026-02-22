@@ -715,6 +715,33 @@ struct GossipSubRouterTests {
         #expect(router.meshState.allMeshPeers.isEmpty)
     }
 
+    @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
+    func shutdownTerminatesEventStream() async {
+        let router = makeRouter()
+        let events = router.events
+
+        let consumeTask = Task {
+            var count = 0
+            for await _ in events { count += 1 }
+            return count
+        }
+
+        do { try await Task.sleep(for: .milliseconds(50)) } catch {}
+
+        await router.shutdown()
+
+        let count = await consumeTask.value
+        #expect(count == 0)
+    }
+
+    @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
+    func shutdownIsIdempotent() async {
+        let router = makeRouter()
+        await router.shutdown()
+        await router.shutdown()
+        await router.shutdown()
+    }
+
     // MARK: - Mesh Rebalancing Tests
 
     @Test("maintainMesh GRAFTs when below D_low")

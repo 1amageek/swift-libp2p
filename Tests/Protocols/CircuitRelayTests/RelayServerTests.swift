@@ -648,6 +648,14 @@ struct RelayServerShutdownTests {
         for await _ in events { count += 1 }
         #expect(count == 0)
     }
+
+    @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
+    func shutdownIsIdempotent() async {
+        let server = RelayServer()
+        await server.shutdown()
+        await server.shutdown()
+        await server.shutdown()
+    }
 }
 
 // MARK: - Error Scenario Tests

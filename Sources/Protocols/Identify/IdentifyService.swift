@@ -172,6 +172,9 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// Background cleanup task.
     private let cleanupTask: Mutex<Task<Void, Never>?>
 
+    /// In-flight auto-push task.
+    private let autoPushTask: Mutex<Task<Void, Never>?>
+
     /// Event stream for monitoring identify events.
     public var events: AsyncStream<IdentifyEvent> { channel.stream }
 
@@ -182,6 +185,7 @@ public final class IdentifyService: EventEmitting, Sendable {
         self.cacheState = Mutex(CacheState())
         self.autoPushState = Mutex(AutoPushState())
         self.cleanupTask = Mutex(nil)
+        self.autoPushTask = Mutex(nil)
     }
 
     // MARK: - Public API
@@ -353,8 +357,14 @@ public final class IdentifyService: EventEmitting, Sendable {
 
         emit(.autoPushTriggered(peerCount: peers.count))
 
-        // Run auto-push in background
-        Task { [weak self, configuration] in
+        // Cancel any in-flight auto-push before starting a new one
+        autoPushTask.withLock { task in
+            task?.cancel()
+            task = nil
+        }
+
+        // Run auto-push in background (tracked for shutdown cancellation)
+        let newTask = Task { [weak self, configuration] in
             guard let self = self else { return }
 
             let addresses: [Multiaddr]
@@ -370,6 +380,8 @@ public final class IdentifyService: EventEmitting, Sendable {
                 var inFlight = 0
 
                 for peer in peers {
+                    guard !Task.isCancelled else { break }
+
                     // Limit concurrent pushes
                     if inFlight >= configuration.maxConcurrentPushes {
                         await group.next()
@@ -378,6 +390,7 @@ public final class IdentifyService: EventEmitting, Sendable {
 
                     inFlight += 1
                     group.addTask {
+                        guard !Task.isCancelled else { return }
                         do {
                             try await self.push(
                                 to: peer,
@@ -402,6 +415,7 @@ public final class IdentifyService: EventEmitting, Sendable {
                 await group.waitForAll()
             }
         }
+        autoPushTask.withLock { $0 = newTask }
     }
 
     /// Returns cached info for a peer.
@@ -810,6 +824,12 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// Also stops the background maintenance task if running.
     public func shutdown() async {
         stopMaintenance()
+
+        // Cancel in-flight auto-push task
+        let pushTask = autoPushTask.withLock { task -> Task<Void, Never>? in
+            let t = task; task = nil; return t
+        }
+        pushTask?.cancel()
 
         // Clear auto-push state
         autoPushState.withLock { state in

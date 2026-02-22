@@ -298,8 +298,13 @@ public actor Node: NodeContext {
     // Protocol handlers (local copy for supportedProtocols query)
     private var localHandlers: [String: ProtocolHandler] = [:]
 
-    // State
-    private var isRunning = false
+    // Lifecycle state machine: idle → running → stopped
+    private enum NodeLifecycleState {
+        case idle      // Created, not yet started. handle/handleStream allowed.
+        case running   // Started. All operations allowed.
+        case stopped   // Shut down. Read-only queries only.
+    }
+    private var lifecycleState: NodeLifecycleState = .idle
 
     // Background tasks
     private var discoveryTasks: [Task<Void, Never>] = []
@@ -368,6 +373,7 @@ public actor Node: NodeContext {
         _ protocolID: String,
         handler: @escaping ProtocolHandler
     ) {
+        guard lifecycleState != .stopped else { return }
         localHandlers[protocolID] = handler
         Task { await swarm.registerHandler(for: protocolID, handler: handler) }
     }
@@ -381,6 +387,7 @@ public actor Node: NodeContext {
         _ protocolID: String,
         handler: @escaping @Sendable (MuxedStream) async -> Void
     ) {
+        guard lifecycleState != .stopped else { return }
         let wrappedHandler: ProtocolHandler = { context in
             await handler(context.stream)
         }
@@ -392,8 +399,12 @@ public actor Node: NodeContext {
 
     /// Starts the node.
     public func start() async throws {
-        guard !isRunning else { return }
-        isRunning = true
+        switch lifecycleState {
+        case .running: return
+        case .stopped: throw NodeError.nodeNotRunning
+        case .idle: break
+        }
+        lifecycleState = .running
 
         // Initialize health monitor if configured
         if let healthConfig = configuration.healthCheck {
@@ -519,8 +530,14 @@ public actor Node: NodeContext {
     }
 
     /// Shuts down the node.
+    ///
+    /// Safe to call from any lifecycle state:
+    /// - `idle`: transitions to `stopped`, finishes event stream
+    /// - `running`: full cleanup (services, swarm, events)
+    /// - `stopped`: no-op (idempotent)
     public func shutdown() async {
-        isRunning = false
+        guard lifecycleState != .stopped else { return }
+        lifecycleState = .stopped
 
         // Shutdown traversal coordinator first
         await traversalCoordinator?.shutdown()
@@ -574,12 +591,15 @@ public actor Node: NodeContext {
     /// Connects to a peer at the given address.
     @discardableResult
     public func connect(to address: Multiaddr) async throws -> PeerID {
-        try await swarm.dial(to: address)
+        guard lifecycleState == .running else { throw NodeError.nodeNotRunning }
+        return try await swarm.dial(to: address)
     }
 
     /// Connects to a peer using known addresses and traversal orchestration.
     @discardableResult
     public func connect(to peer: PeerID) async throws -> PeerID {
+        guard lifecycleState == .running else { throw NodeError.nodeNotRunning }
+
         // Already connected?
         if swarm.pool.isConnected(to: peer) { return peer }
 
@@ -618,13 +638,15 @@ public actor Node: NodeContext {
 
     /// Disconnects from a peer.
     public func disconnect(from peer: PeerID) async {
+        guard lifecycleState == .running else { return }
         await healthMonitor?.stopMonitoring(peer: peer)
         await swarm.closePeer(peer)
     }
 
     /// Opens a stream to a peer with the given protocol.
     public func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
-        try await swarm.newStream(to: peer, protocol: protocolID)
+        guard lifecycleState == .running else { throw NodeError.nodeNotRunning }
+        return try await swarm.newStream(to: peer, protocol: protocolID)
     }
 
     /// Returns the connection to a peer if connected.

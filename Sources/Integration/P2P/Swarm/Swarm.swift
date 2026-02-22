@@ -263,6 +263,8 @@ internal actor Swarm {
     ///
     /// If a dial to the same peer is already in progress, joins the existing dial.
     func dial(to address: Multiaddr) async throws -> PeerID {
+        guard isRunning else { throw NodeError.nodeNotRunning }
+
         // Self-connection guard
         let localPeerID = configuration.keyPair.peerID
         if let targetPeer = address.peerID, targetPeer == localPeerID {
@@ -337,6 +339,7 @@ internal actor Swarm {
 
     /// Opens a new stream to a peer with the given protocol.
     func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
+        guard isRunning else { throw NodeError.nodeNotRunning }
         guard let connection = pool.connection(to: peer) else {
             throw NodeError.notConnected(peer)
         }

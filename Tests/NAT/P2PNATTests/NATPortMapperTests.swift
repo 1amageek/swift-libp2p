@@ -140,6 +140,25 @@ struct NATPortMapperTests {
         }
     }
 
+    @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
+    func shutdownTerminatesEventStream() async {
+        let mapper = NATPortMapper()
+        let events = mapper.events
+
+        let consumeTask = Task {
+            var count = 0
+            for await _ in events { count += 1 }
+            return count
+        }
+
+        do { try await Task.sleep(for: .milliseconds(50)) } catch {}
+
+        await mapper.shutdown()
+
+        let count = await consumeTask.value
+        #expect(count == 0)
+    }
+
     @Test("Events stream created on access")
     func eventsStreamCreation() async {
         let mapper = NATPortMapper()

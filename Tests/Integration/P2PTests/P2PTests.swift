@@ -382,6 +382,7 @@ struct UpgradeAndNodeErrorTests {
     @Test("Node.connect throws noSuitableTransport when no transport can dial")
     func nodeNoSuitableTransport() async throws {
         let node = Node(configuration: .init(transports: [], security: [], muxers: []))
+        try await node.start()
         let address = Multiaddr.tcp(host: "127.0.0.1", port: 4001)
 
         do {
@@ -393,11 +394,14 @@ struct UpgradeAndNodeErrorTests {
                 return
             }
         }
+
+        await node.shutdown()
     }
 
     @Test("Node.newStream throws notConnected for unknown peer")
     func nodeNotConnected() async throws {
         let node = Node(configuration: .init(transports: [], security: [], muxers: []))
+        try await node.start()
         let peer = KeyPair.generateEd25519().peerID
 
         do {
@@ -410,6 +414,8 @@ struct UpgradeAndNodeErrorTests {
             }
             #expect(gotPeer == peer)
         }
+
+        await node.shutdown()
     }
 
     @Test("NodeError associated values are preserved")

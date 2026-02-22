@@ -213,6 +213,12 @@ Node                     Mesh Peers
 - 独立した操作 (publish/subscribe/mesh管理) の並列実行が重要
 - ロックを最小範囲に限定してスループット向上
 
+**Inbound stream-reading Task の設計判断:**
+- `processIncomingRPCs()` の Task は GossipSubService で追跡しない
+- Task は接続のライフタイムに束縛される: `Node.shutdown()` → `swarm.shutdown()` → 全接続 close → `stream.read()` が throw → ループ終了
+- `handlePeerDisconnected()` がクリーンアップを実行
+- Task 追跡は複雑化のみで利点なし（接続ライフタイム = Task ライフタイム）
+
 ### コンポーネント関係
 
 ```

@@ -39,4 +39,17 @@ struct TraversalEventStreamTests {
         let finished = await consumeTask.value
         #expect(finished)
     }
+
+    @Test("shutdown is idempotent", .timeLimit(.minutes(1)))
+    func shutdownIsIdempotent() async {
+        let localPeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let coordinator = TraversalCoordinator(
+            configuration: TraversalConfiguration(),
+            localPeer: localPeer,
+            transports: []
+        )
+        await coordinator.shutdown()
+        await coordinator.shutdown()
+        await coordinator.shutdown()
+    }
 }
