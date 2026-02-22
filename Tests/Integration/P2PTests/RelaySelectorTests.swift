@@ -141,4 +141,30 @@ struct RelaySelectorTests {
         let results = selector.select(from: [])
         #expect(results.isEmpty)
     }
+
+    @Test("Reset failures restore full score", .timeLimit(.minutes(1)))
+    func resetFailuresRestoreFullScore() {
+        let selector = DefaultRelaySelector()
+        let peer = makePeer()
+
+        // Before reset: 5 failures → failure score 0.0
+        let penalized = selector.select(from: [
+            RelayCandidateInfo(peer: peer, addresses: [], rtt: nil, recentFailures: 5, supportsRelay: true)
+        ])
+        #expect(penalized.count == 1)
+        let penalizedScore = penalized[0].score
+
+        // After reset: 0 failures → failure score 1.0
+        let reset = selector.select(from: [
+            RelayCandidateInfo(peer: peer, addresses: [], rtt: nil, recentFailures: 0, supportsRelay: true)
+        ])
+        #expect(reset.count == 1)
+        let resetScore = reset[0].score
+
+        // Reset score must be strictly higher than penalized score
+        #expect(resetScore > penalizedScore)
+        // With RTT neutral (0.5) and failures 0 (1.0):
+        // score = 0.6 * 0.5 + 0.4 * 1.0 = 0.7
+        #expect(abs(resetScore - 0.7) < 0.01)
+    }
 }

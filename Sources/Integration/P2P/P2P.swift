@@ -423,6 +423,14 @@ public actor Node: NodeContext {
         self.activeServices = allServices
         self.activePeerObservers = allServices.compactMap { $0 as? any PeerObserver }
 
+        // Register user-registered handlers first (from handle() calls in idle state).
+        // The fire-and-forget Tasks from handle() may not have completed yet,
+        // so this ensures they are registered before Swarm starts.
+        for (protocolID, handler) in localHandlers {
+            await swarm.registerHandler(for: protocolID, handler: handler)
+        }
+
+        // Register service handlers (may override user handlers for the same protocolID).
         for service in allServices {
             if let proto = service as? any StreamService {
                 for protocolID in proto.protocolIDs {
@@ -433,11 +441,6 @@ public actor Node: NodeContext {
                     await swarm.registerHandler(for: protocolID, handler: handler)
                 }
             }
-        }
-
-        // Register local handlers with swarm
-        for (protocolID, handler) in localHandlers {
-            await swarm.registerHandler(for: protocolID, handler: handler)
         }
 
         // Start Swarm (listeners, accept loops, idle check)

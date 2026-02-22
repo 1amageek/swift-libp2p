@@ -192,10 +192,15 @@ public final class AutoRelayService: EventEmitting, Sendable {
                        now - lastFailure < cooldown {
                         continue
                     }
-                    let failures = state.candidateFailures[peer]?.count ?? 0
+                    // Reset failure tracking after cooldown expires.
+                    // Without this, expired failures would permanently penalize
+                    // the peer's score via normalizeFailures().
+                    if state.candidateFailures[peer] != nil {
+                        state.candidateFailures.removeValue(forKey: peer)
+                    }
                     result.append(RelayCandidateInfo(
                         peer: peer, addresses: [], rtt: nil,
-                        recentFailures: failures, supportsRelay: true
+                        recentFailures: 0, supportsRelay: true
                     ))
                 }
                 return result

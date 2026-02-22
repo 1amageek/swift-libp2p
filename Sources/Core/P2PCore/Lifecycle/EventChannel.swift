@@ -77,7 +77,9 @@ public final class EventChannel<Element: Sendable>: Sendable {
             return existing
 
         case .finished:
-            let (stream, continuation) = AsyncStream<Element>.makeStream()
+            let (stream, continuation) = AsyncStream<Element>.makeStream(
+                bufferingPolicy: bufferingPolicy
+            )
             continuation.finish()
             return stream
 
