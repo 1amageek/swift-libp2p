@@ -140,7 +140,7 @@ func cleanup() -> Int                                // 手動クリーンアッ
 // メンテナンスAPI
 func startMaintenance()  // バックグラウンドクリーンアップ開始
 func stopMaintenance()   // 停止
-func shutdown()          // stopMaintenance() + イベントストリーム終了
+func shutdown() async    // stopMaintenance() + イベントストリーム終了
 ```
 
 **削除戦略**:

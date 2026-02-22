@@ -381,8 +381,8 @@ public struct NodeConfiguration: Sendable {
 - `Node.events` は最初のアクセス時に `AsyncStream.makeStream()` で生成される（lazy）。
 - 2回目以降の `events` アクセスは同一ストリームを返す（`_events` を再利用）。
 - `emit(_:)` は `eventContinuation` が存在する場合のみ `yield` するため、購読前イベントは保持されない。
-- `shutdown()` 時に `eventContinuation.finish()` を呼び、`eventContinuation = nil` / `_events = nil` へリセットする。
-- `shutdown()` 後に再度 `events` を参照すると新しいストリームが再生成される。
+- `shutdown() async` 時に `eventContinuation.finish()` を呼び、`eventContinuation = nil` / `_events = nil` へリセットする。
+- `shutdown()` 後に再度 `events` を参照すると即座に終了するストリームが返される。
 
 ---
 
@@ -442,7 +442,7 @@ Node は `services` 配列で全サービス（Protocol/Discovery）を統一管
 ランタイムのディスパッチ:
 - **接続時**: `PeerObserver` 準拠サービスのみに `peerConnected(peer)` を通知（最初の接続のみ、重複除外済み）
 - **切断時**: `PeerObserver` 準拠サービスのみに `peerDisconnected(peer)` を通知（残接続なしの場合のみ）
-- **シャットダウン時**: 全 `NodeService` に `shutdown()` で停止
+- **シャットダウン時**: 全 `NodeService` に `await shutdown()` で停止
 
 `DiscoveryBehaviour` 準拠のサービスは自動的に auto-connect 対象として検出される。
 

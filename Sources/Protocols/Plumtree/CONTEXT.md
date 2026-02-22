@@ -33,7 +33,7 @@ PlumtreeServiceは **EventBroadcaster（多消費者）** を使用。
 - **実装**: 2つのbroadcaster
   - `eventBroadcaster`: プロトコルイベント（pruneSent, graftSent等）
   - `messageBroadcaster`: メッセージ配信（トピックごとのフィルタリング）
-- **ライフサイクル**: `stop()` で両方のbroadcasterを `shutdown()`
+- **ライフサイクル**: `shutdown() async` で両方のbroadcasterを `shutdown()`
 
 ## Algorithm
 

@@ -117,7 +117,7 @@ Following go-libp2p's Host/Swarm pattern:
 ### Service Protocol Hierarchy
 
 ```
-NodeService              ── attach(to:), shutdown()
+NodeService              ── attach(to:), shutdown() async
   ├─ StreamService       ── protocolIDs, handleInboundStream(_:)
   └─ DiscoveryBehaviour  ── NodeService + DiscoveryService
 

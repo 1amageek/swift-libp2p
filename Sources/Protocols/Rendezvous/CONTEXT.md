@@ -106,7 +106,7 @@ Client                    RendezvousPoint
 
 ## Lifecycle
 
-- `shutdown()` - Terminates event stream (EventEmitting protocol)
+- `shutdown() async` - Terminates event stream (EventEmitting protocol)
 
 ## Configuration
 

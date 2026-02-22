@@ -40,7 +40,7 @@ WiFiBeaconAdapter (TransportAdapter 準拠)
 
 - Class + Mutex パターン（プロジェクト規約: Transport 層は Mutex）
 - `discoveries` は単一消費者パターン（EventEmitting）
-- `shutdown()` で `continuation.finish()` + `stream = nil`
+- `shutdown() async` で `continuation.finish()` + `stream = nil`
 
 ## 依存
 
