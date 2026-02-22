@@ -165,13 +165,8 @@ public final class AutoNATService: EventEmitting, Sendable {
     /// Service configuration.
     public let configuration: AutoNATConfiguration
 
-    /// Event state (dedicated).
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<AutoNATEvent>?
-        var continuation: AsyncStream<AutoNATEvent>.Continuation?
-    }
+    /// Event channel (dedicated).
+    private let channel = EventChannel<AutoNATEvent>()
 
     /// Service state (separated).
     private let serviceState: Mutex<ServiceState>
@@ -186,15 +181,7 @@ public final class AutoNATService: EventEmitting, Sendable {
     // MARK: - Events
 
     /// Stream of AutoNAT events.
-    public var events: AsyncStream<AutoNATEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<AutoNATEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<AutoNATEvent> { channel.stream }
 
     // MARK: - Status
 
@@ -215,7 +202,6 @@ public final class AutoNATService: EventEmitting, Sendable {
     /// - Parameter configuration: Service configuration.
     public init(configuration: AutoNATConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState(
             statusTracker: NATStatusTracker(minProbes: configuration.minProbes)
         ))
@@ -587,19 +573,13 @@ public final class AutoNATService: EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+    public func shutdown() async {
+        channel.finish()
     }
 
     /// Emits an event.
     private func emit(_ event: AutoNATEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     /// Dials multiple addresses in parallel, returning the first successful address.
@@ -770,7 +750,6 @@ extension AutoNATService: StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleAutoNAT(context: context)
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }
 
 // MARK: - Timeout Helper

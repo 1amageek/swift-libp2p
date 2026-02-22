@@ -11,36 +11,22 @@
 /// ## Implementation Requirements
 ///
 /// 1. `shutdown()` must be idempotent (safe to call multiple times)
-/// 2. `shutdown()` must call `continuation.finish()`
-/// 3. `shutdown()` must set `continuation` and `stream` to `nil`
+/// 2. `shutdown()` must call `channel.finish()`
 ///
 /// ## Recommended Pattern
 ///
+/// Use `EventChannel<Element>` to manage stream lifecycle:
+///
 /// ```swift
 /// public final class MyService: EventEmitting, Sendable {
-///     private let eventState = Mutex<EventState>(EventState())
+///     private let channel = EventChannel<MyEvent>()
 ///
-///     private struct EventState: Sendable {
-///         var stream: AsyncStream<MyEvent>?
-///         var continuation: AsyncStream<MyEvent>.Continuation?
-///     }
+///     public var events: AsyncStream<MyEvent> { channel.stream }
 ///
-///     public var events: AsyncStream<MyEvent> {
-///         eventState.withLock { state in
-///             if let existing = state.stream { return existing }
-///             let (stream, continuation) = AsyncStream<MyEvent>.makeStream()
-///             state.stream = stream
-///             state.continuation = continuation
-///             return stream
-///         }
-///     }
+///     private func emit(_ event: MyEvent) { channel.yield(event) }
 ///
-///     public func shutdown() {
-///         eventState.withLock { state in
-///             state.continuation?.finish()
-///             state.continuation = nil
-///             state.stream = nil
-///         }
+///     public func shutdown() async {
+///         channel.finish()
 ///     }
 /// }
 /// ```
@@ -54,11 +40,7 @@
 public protocol EventEmitting: Sendable {
     /// Terminates the event stream and releases resources.
     ///
-    /// This method must:
-    /// - Call `continuation.finish()` to signal stream completion
-    /// - Set `continuation` to `nil` to prevent further emissions
-    /// - Set `stream` to `nil` to allow re-creation if needed
-    ///
+    /// This method must call `channel.finish()` to signal stream completion.
     /// This method must be idempotent - safe to call multiple times.
-    func shutdown()
+    func shutdown() async
 }

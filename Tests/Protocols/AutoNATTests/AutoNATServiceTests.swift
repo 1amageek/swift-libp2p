@@ -124,71 +124,26 @@ struct AutoNATServiceTests {
 
     // MARK: - Shutdown Tests
 
-    @Test("Shutdown finishes event stream")
+    @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
     func shutdownFinishesEventStream() async {
         let service = AutoNATService()
+        let events = service.events
 
-        // Start consuming events in background
-        let eventTask = Task {
-            var count = 0
-            for await _ in service.events {
-                count += 1
-            }
-            return count
-        }
-
-        // Give eventTask time to start listening
-        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
-
-        // Shutdown should finish the stream
         await service.shutdown()
 
-        // eventTask should complete (not hang)
-        let result = await eventTask.value
-        #expect(result == 0)  // No events were emitted
-    }
-
-    @Test("Shutdown unblocks waiting consumers")
-    func shutdownUnblocksConsumers() async {
-        let service = AutoNATService()
-
-        actor Flag {
-            var completed = false
-            func set() { completed = true }
-            func get() -> Bool { completed }
-        }
-        let flag = Flag()
-
-        // Start a task that waits on events
-        let eventTask = Task {
-            for await _ in service.events {
-                // This loop should exit when shutdown is called
-            }
-            await flag.set()
-        }
-
-        // Give eventTask time to start listening
-        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
-
-        // Shutdown should unblock the consumer
-        await service.shutdown()
-
-        // Wait for the task to complete
-        await eventTask.value
-
-        // Verify the task completed
-        let completed = await flag.get()
-        #expect(completed)
+        var count = 0
+        for await _ in events { count += 1 }
+        #expect(count == 0)
     }
 
     @Test("Multiple shutdowns are safe")
-    func multipleShutdownsSafe() {
+    func multipleShutdownsSafe() async {
         let service = AutoNATService()
 
         // Should not crash when called multiple times
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
     }
 
     // MARK: - Probe Error Handling Tests

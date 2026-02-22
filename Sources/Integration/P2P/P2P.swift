@@ -24,6 +24,7 @@ import Synchronization
 @_exported import NIOCore
 // Internal
 import P2PIdentify
+import P2PCircuitRelay
 
 /// Logger for P2P operations.
 private let logger = Logger(label: "p2p.node")
@@ -256,8 +257,11 @@ public actor Node: NodeContext {
     }
 
     /// Returns the current listen addresses (NodeContext).
+    ///
+    /// Includes both direct listen addresses from Swarm and relay
+    /// addresses populated by `AutoRelayService`.
     public func listenAddresses() -> [Multiaddr] {
-        swarm.listenAddresses.current
+        swarm.listenAddresses.current + _relayAddresses.current
     }
 
     /// Returns the list of supported protocol IDs (NodeContext).
@@ -304,6 +308,9 @@ public actor Node: NodeContext {
     // Active services (populated during start())
     private var activeServices: [any NodeService] = []
     private var activePeerObservers: [any PeerObserver] = []
+
+    // Relay addresses (populated by AutoRelayService via callback)
+    private let _relayAddresses: ListenAddressStore = ListenAddressStore()
 
     // Traversal orchestration
     private var traversalCoordinator: TraversalCoordinator?
@@ -433,6 +440,16 @@ public actor Node: NodeContext {
             await service.attach(to: self)
         }
 
+        // --- AutoRelay integration ---
+        let relayStore = _relayAddresses
+        for service in allServices {
+            if let autoRelayService = service as? AutoRelayService {
+                autoRelayService.setRelayAddressCallback { addresses in
+                    relayStore.update(addresses)
+                }
+            }
+        }
+
         // --- Discovery integration ---
         let resolved = swarm.advertisedAddresses.current
         for service in allServices {
@@ -533,6 +550,9 @@ public actor Node: NodeContext {
         }
         activeServices = []
         activePeerObservers = []
+
+        // Clear relay addresses
+        _relayAddresses.clear()
 
         // Cancel event forwarding (no more behaviour dispatch needed)
         eventForwardingTask?.cancel()

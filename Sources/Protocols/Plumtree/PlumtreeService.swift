@@ -113,7 +113,7 @@ public final class PlumtreeService: Sendable {
     }
 
     /// Shuts down the Plumtree service.
-    public func shutdown() {
+    public func shutdown() async {
         let (flushTask, cleanupTask) = serviceState.withLock { s -> (Task<Void, Never>?, Task<Void, Never>?) in
             s.isStarted = false
             s.opener = nil
@@ -510,8 +510,6 @@ extension PlumtreeService: StreamService, PeerObserver {
     public func peerDisconnected(_ peer: PeerID) async {
         handlePeerDisconnected(peer)
     }
-
-    // shutdown(): already defined as sync method — satisfies async requirement (SE-0296)
 }
 
 // MARK: - ProtocolID Extension

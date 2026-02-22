@@ -67,63 +67,16 @@ struct DCUtRServiceTests {
 
     // MARK: - Shutdown Tests
 
-    @Test("Shutdown finishes event stream")
+    @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
     func shutdownFinishesEventStream() async {
         let service = DCUtRService()
+        let events = service.events
 
-        // Start consuming events in background
-        let eventTask = Task {
-            var count = 0
-            for await _ in service.events {
-                count += 1
-            }
-            return count
-        }
-
-        // Give eventTask time to start listening
-        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
-
-        // Shutdown should finish the stream
         await service.shutdown()
 
-        // eventTask should complete (not hang)
-        let result = await eventTask.value
-        #expect(result == 0)  // No events were emitted
-    }
-
-    @Test("Shutdown unblocks waiting consumers")
-    func shutdownUnblocksConsumers() async {
-        let service = DCUtRService()
-
-        actor Flag {
-            var completed = false
-            func set() { completed = true }
-            func get() -> Bool { completed }
-        }
-        let flag = Flag()
-
-        // Start a task that waits on events
-        let eventTask = Task {
-            for await _ in service.events {
-                // This loop should exit when shutdown is called
-            }
-            await flag.set()
-        }
-
-        // Give eventTask time to start listening
-        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
-
-        // Shutdown should unblock the consumer
-        await service.shutdown()
-
-        // Wait a bit for the task to complete
-        do { try await Task.sleep(for: .milliseconds(10)) } catch { }
-
-        // Verify the task completed
-        let completed = await flag.get()
-        #expect(completed)
-
-        eventTask.cancel()
+        var count = 0
+        for await _ in events { count += 1 }
+        #expect(count == 0)
     }
 
     @Test("Multiple shutdowns are safe")

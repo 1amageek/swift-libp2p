@@ -92,12 +92,7 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
 
     // MARK: - EventEmitting State
 
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<Event>?
-        var continuation: AsyncStream<Event>.Continuation?
-    }
+    private let channel = EventChannel<Event>()
 
     // MARK: - Service State
 
@@ -147,30 +142,17 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
     ) {
         self.cooldownDuration = cooldownDuration
         self.checkTimeout = checkTimeout
-        self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState())
     }
 
     // MARK: - EventEmitting
 
     /// Stream of AutoNAT v2 events (single consumer).
-    public var events: AsyncStream<Event> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<Event>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<Event> { channel.stream }
 
     /// Shuts down the service and finishes the event stream.
-    public func shutdown() {
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+    public func shutdown() async {
+        channel.finish()
         serviceState.withLock { state in
             state.pendingChecks.removeAll()
             state.lastCheckByPeer.removeAll()
@@ -477,9 +459,7 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
 
     /// Emits an event.
     private func emit(_ event: Event) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     /// Emits multiple events (collected outside a Mutex lock).

@@ -220,13 +220,8 @@ public final class HolePunchService: EventEmitting, Sendable {
     /// Service configuration.
     public let configuration: HolePunchServiceConfiguration
 
-    /// Event state (dedicated, per EventEmitting pattern).
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<HolePunchEvent>?
-        var continuation: AsyncStream<HolePunchEvent>.Continuation?
-    }
+    /// Event channel (dedicated).
+    private let channel = EventChannel<HolePunchEvent>()
 
     /// Service state (separated from event state).
     private let serviceState: Mutex<ServiceState>
@@ -242,17 +237,7 @@ public final class HolePunchService: EventEmitting, Sendable {
     // MARK: - Events (EventEmitting)
 
     /// Stream of hole punch events.
-    ///
-    /// Returns the same stream on each access (single consumer pattern).
-    public var events: AsyncStream<HolePunchEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<HolePunchEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<HolePunchEvent> { channel.stream }
 
     // MARK: - Initialization
 
@@ -261,7 +246,6 @@ public final class HolePunchService: EventEmitting, Sendable {
     /// - Parameter configuration: Service configuration.
     public init(configuration: HolePunchServiceConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState())
     }
 
@@ -424,12 +408,8 @@ public final class HolePunchService: EventEmitting, Sendable {
     /// terminate any consumers waiting on the `events` stream.
     ///
     /// This method is idempotent.
-    public func shutdown() {
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+    public func shutdown() async {
+        channel.finish()
         serviceState.withLock { state in
             state.isShutdown = true
             state.activePunches.removeAll()
@@ -565,8 +545,6 @@ public final class HolePunchService: EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: HolePunchEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 }

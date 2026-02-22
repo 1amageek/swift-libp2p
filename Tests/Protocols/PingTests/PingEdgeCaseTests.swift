@@ -178,20 +178,17 @@ struct PingEdgeCaseTests {
 
         await service.shutdown()
 
-        // After shutdown, iterating events should complete immediately
         var count = 0
-        for await _ in events {
-            count += 1
-        }
+        for await _ in events { count += 1 }
         #expect(count == 0)
     }
 
     @Test("Multiple shutdown calls are idempotent")
-    func shutdownIdempotent() {
+    func shutdownIdempotent() async {
         let service = PingService()
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
         // No crash = success
     }
 
@@ -202,7 +199,7 @@ struct PingEdgeCaseTests {
     }
 
     @Test("Events stream returns same stream on repeated access")
-    func eventsStreamSameInstance() {
+    func eventsStreamSameInstance() async {
         let service = PingService()
         // Access events twice - EventEmitting pattern returns the same stream
         let stream1 = service.events
@@ -210,15 +207,15 @@ struct PingEdgeCaseTests {
         // Both should be valid AsyncStreams (same backing continuation)
         _ = stream1
         _ = stream2
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Service created with custom configuration retains it")
-    func serviceRetainsConfiguration() {
+    func serviceRetainsConfiguration() async {
         let config = PingConfiguration(timeout: .seconds(15))
         let service = PingService(configuration: config)
         #expect(service.configuration.timeout == .seconds(15))
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Statistics with large RTT values")

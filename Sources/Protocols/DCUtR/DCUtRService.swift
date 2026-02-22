@@ -76,13 +76,8 @@ public final class DCUtRService: EventEmitting, Sendable {
     /// Set via `setLocalAddressProvider()` after construction (e.g., when traversal wires listen addresses).
     private let _localAddressProvider: Mutex<(@Sendable () -> [Multiaddr])?>
 
-    /// Event state (dedicated).
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<DCUtREvent>?
-        var continuation: AsyncStream<DCUtREvent>.Continuation?
-    }
+    /// Event channel (dedicated).
+    private let channel = EventChannel<DCUtREvent>()
 
     /// Service state (separated).
     private let serviceState: Mutex<ServiceState>
@@ -101,15 +96,7 @@ public final class DCUtRService: EventEmitting, Sendable {
     // MARK: - Events
 
     /// Stream of DCUtR events.
-    public var events: AsyncStream<DCUtREvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<DCUtREvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<DCUtREvent> { channel.stream }
 
     // MARK: - Initialization
 
@@ -120,7 +107,6 @@ public final class DCUtRService: EventEmitting, Sendable {
         self.configuration = configuration
         self._dialerOverride = Mutex(nil)
         self._localAddressProvider = Mutex(nil)
-        self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState())
     }
 
@@ -493,14 +479,10 @@ public final class DCUtRService: EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
+    public func shutdown() async {
         _dialerOverride.withLock { $0 = nil }
         _localAddressProvider.withLock { $0 = nil }
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
         serviceState.withLock { state in
             state.pendingUpgrades.removeAll()
         }
@@ -509,9 +491,7 @@ public final class DCUtRService: EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: DCUtREvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 }
 
@@ -528,5 +508,4 @@ extension DCUtRService: StreamService {
         let addresses = await context.listenAddresses()
         setLocalAddressProvider { addresses }
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }

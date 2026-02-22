@@ -14,7 +14,7 @@ import Synchronization
 struct AutoNATv2NonceTests {
 
     @Test("Nonce generation produces non-zero values")
-    func nonceGenerationProducesNonZero() {
+    func nonceGenerationProducesNonZero() async {
         let service = AutoNATv2Service()
 
         // Generate multiple nonces and verify they are non-zero
@@ -28,11 +28,11 @@ struct AutoNATv2NonceTests {
         }
 
         #expect(!allZero, "At least one of 100 nonces should be non-zero")
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Nonce generation produces unique values")
-    func nonceGenerationProducesUniqueValues() {
+    func nonceGenerationProducesUniqueValues() async {
         let service = AutoNATv2Service()
         var nonces = Set<UInt64>()
 
@@ -43,11 +43,11 @@ struct AutoNATv2NonceTests {
 
         // With 64-bit random nonces, collisions are astronomically unlikely
         #expect(nonces.count == 100, "100 nonces should all be unique")
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Register and verify nonce succeeds")
-    func registerAndVerifyNonce() throws {
+    func registerAndVerifyNonce() async throws {
         let service = AutoNATv2Service()
         let address = try Multiaddr("/ip4/203.0.113.1/tcp/4001")
         let nonce: UInt64 = 42
@@ -57,11 +57,11 @@ struct AutoNATv2NonceTests {
         let verified = service.verifyNonce(nonce, for: address)
         #expect(verified)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Verify nonce with wrong address fails")
-    func verifyNonceWithWrongAddress() throws {
+    func verifyNonceWithWrongAddress() async throws {
         let service = AutoNATv2Service()
         let correctAddress = try Multiaddr("/ip4/203.0.113.1/tcp/4001")
         let wrongAddress = try Multiaddr("/ip4/192.168.1.1/tcp/4001")
@@ -72,22 +72,22 @@ struct AutoNATv2NonceTests {
         let verified = service.verifyNonce(nonce, for: wrongAddress)
         #expect(!verified)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Verify unknown nonce fails")
-    func verifyUnknownNonce() throws {
+    func verifyUnknownNonce() async throws {
         let service = AutoNATv2Service()
         let address = try Multiaddr("/ip4/203.0.113.1/tcp/4001")
 
         let verified = service.verifyNonce(999, for: address)
         #expect(!verified)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Nonce can only be verified once")
-    func nonceCanOnlyBeVerifiedOnce() throws {
+    func nonceCanOnlyBeVerifiedOnce() async throws {
         let service = AutoNATv2Service()
         let address = try Multiaddr("/ip4/203.0.113.1/tcp/4001")
         let nonce: UInt64 = 42
@@ -102,11 +102,11 @@ struct AutoNATv2NonceTests {
         let second = service.verifyNonce(nonce, for: address)
         #expect(!second)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Multiple nonces can be registered simultaneously")
-    func multipleNoncesRegistered() throws {
+    func multipleNoncesRegistered() async throws {
         let service = AutoNATv2Service()
         let address1 = try Multiaddr("/ip4/203.0.113.1/tcp/4001")
         let address2 = try Multiaddr("/ip4/203.0.113.2/tcp/4002")
@@ -123,7 +123,7 @@ struct AutoNATv2NonceTests {
         #expect(service.verifyNonce(nonce2, for: address2))
         #expect(service.pendingCheckCount == 0)
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -172,7 +172,7 @@ struct AutoNATv2ConcurrentNonceTests {
         #expect(successes == 50)
         #expect(service.pendingCheckCount == 0)
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -203,7 +203,7 @@ struct AutoNATv2ExpiredNonceTests {
         #expect(removed == 2)
         #expect(service.pendingCheckCount == 0)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Expired nonce verification fails", .timeLimit(.minutes(1)))
@@ -224,11 +224,11 @@ struct AutoNATv2ExpiredNonceTests {
         let verified = service.verifyNonce(nonce, for: address)
         #expect(!verified)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Non-expired nonces survive cleanup", .timeLimit(.minutes(1)))
-    func nonExpiredNoncesSurviveCleanup() throws {
+    func nonExpiredNoncesSurviveCleanup() async throws {
         let service = AutoNATv2Service(
             cooldownDuration: .seconds(30),
             checkTimeout: .seconds(60) // Long timeout
@@ -243,7 +243,7 @@ struct AutoNATv2ExpiredNonceTests {
         #expect(removed == 0)
         #expect(service.pendingCheckCount == 2)
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -257,12 +257,12 @@ struct AutoNATv2RateLimitingTests {
     }
 
     @Test("First request to a peer is allowed")
-    func firstRequestAllowed() {
+    func firstRequestAllowed() async {
         let service = AutoNATv2Service(cooldownDuration: .seconds(30))
         let peer = makePeerID()
 
         #expect(service.canRequestFrom(peer: peer))
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Request within cooldown is rejected", .timeLimit(.minutes(1)))
@@ -288,7 +288,7 @@ struct AutoNATv2RateLimitingTests {
         // Second request should be rate limited
         #expect(!service.canRequestFrom(peer: peer))
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Request after cooldown is allowed", .timeLimit(.minutes(1)))
@@ -315,11 +315,11 @@ struct AutoNATv2RateLimitingTests {
         // Should be allowed after cooldown
         #expect(service.canRequestFrom(peer: peer))
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Different peers have independent cooldowns")
-    func differentPeersIndependentCooldowns() {
+    func differentPeersIndependentCooldowns() async {
         let service = AutoNATv2Service(cooldownDuration: .seconds(30))
         let peer1 = makePeerID()
         let peer2 = makePeerID()
@@ -328,7 +328,7 @@ struct AutoNATv2RateLimitingTests {
         #expect(service.canRequestFrom(peer: peer1))
         #expect(service.canRequestFrom(peer: peer2))
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -338,23 +338,23 @@ struct AutoNATv2RateLimitingTests {
 struct AutoNATv2ReachabilityTests {
 
     @Test("Initial reachability is unknown")
-    func initialReachabilityUnknown() {
+    func initialReachabilityUnknown() async {
         let service = AutoNATv2Service()
 
         #expect(service.currentReachability == .unknown)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Reset reachability returns to unknown")
-    func resetReachabilityReturnsToUnknown() {
+    func resetReachabilityReturnsToUnknown() async {
         let service = AutoNATv2Service()
 
         service.resetReachability()
 
         #expect(service.currentReachability == .unknown)
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Reachability equality")
@@ -590,14 +590,14 @@ struct AutoNATv2DialStatusTests {
 struct AutoNATv2EventTests {
 
     @Test("Event stream is available")
-    func eventStreamAvailable() {
+    func eventStreamAvailable() async {
         let service = AutoNATv2Service()
         _ = service.events
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Getting events returns same stream")
-    func eventsSameStream() {
+    func eventsSameStream() async {
         let service = AutoNATv2Service()
 
         let stream1 = service.events
@@ -608,7 +608,7 @@ struct AutoNATv2EventTests {
         _ = stream1
         _ = stream2
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Reset emits reachabilityChanged event", .timeLimit(.minutes(1)))
@@ -645,13 +645,13 @@ struct AutoNATv2EventTests {
         if let firstEvent = events.first {
             guard case .reachabilityChanged(let reachability) = firstEvent else {
                 Issue.record("Expected reachabilityChanged event")
-                service.shutdown()
+                await service.shutdown()
                 return
             }
             #expect(reachability == .unknown)
         }
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -663,75 +663,39 @@ struct AutoNATv2ShutdownTests {
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
     func shutdownFinishesEventStream() async {
         let service = AutoNATv2Service()
+        let events = service.events
 
-        let eventTask = Task {
-            var count = 0
-            for await _ in service.events {
-                count += 1
-            }
-            return count
-        }
+        await service.shutdown()
 
-        // Give time for task to start listening
-        do { try await Task.sleep(for: .milliseconds(20)) } catch { }
-
-        service.shutdown()
-
-        let result = await eventTask.value
-        #expect(result == 0)
-    }
-
-    @Test("Shutdown unblocks waiting consumers", .timeLimit(.minutes(1)))
-    func shutdownUnblocksConsumers() async {
-        let service = AutoNATv2Service()
-
-        actor Flag {
-            var completed = false
-            func set() { completed = true }
-            func get() -> Bool { completed }
-        }
-        let flag = Flag()
-
-        let eventTask = Task {
-            for await _ in service.events {
-                // Loop should exit when shutdown is called
-            }
-            await flag.set()
-        }
-
-        do { try await Task.sleep(for: .milliseconds(20)) } catch { }
-
-        service.shutdown()
-        await eventTask.value
-
-        let completed = await flag.get()
-        #expect(completed)
+        var count = 0
+        for await _ in events { count += 1 }
+        #expect(count == 0)
     }
 
     @Test("Multiple shutdowns are safe")
-    func multipleShutdownsSafe() {
+    func multipleShutdownsSafe() async {
         let service = AutoNATv2Service()
 
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Shutdown cleans up continuation and stream")
-    func shutdownCleansUpState() {
+    func shutdownCleansUpState() async {
         let service = AutoNATv2Service()
 
         // Access events to create the stream
         _ = service.events
 
         // Shutdown should clean up
-        service.shutdown()
+        await service.shutdown()
 
         // Getting events after shutdown should create a new stream
         // (since stream was set to nil)
         _ = service.events
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -791,14 +755,14 @@ struct AutoNATv2ErrorTests {
 struct AutoNATv2HandlerTests {
 
     @Test("Handler initializes with service")
-    func handlerInitialization() {
+    func handlerInitialization() async {
         let service = AutoNATv2Service()
         let handler = AutoNATv2Handler(service: service)
 
         // Handler should be created without issues
         _ = handler
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -808,45 +772,45 @@ struct AutoNATv2HandlerTests {
 struct AutoNATv2ProtocolTests {
 
     @Test("Protocol ID is correct")
-    func protocolIDCorrect() {
+    func protocolIDCorrect() async {
         let service = AutoNATv2Service()
         #expect(service.protocolID == "/libp2p/autonat/2/dial-request")
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Dial-back protocol ID is correct")
-    func dialBackProtocolIDCorrect() {
+    func dialBackProtocolIDCorrect() async {
         let service = AutoNATv2Service()
         #expect(service.dialBackProtocolID == "/libp2p/autonat/2/dial-back")
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Default cooldown duration is 30 seconds")
-    func defaultCooldownDuration() {
+    func defaultCooldownDuration() async {
         let service = AutoNATv2Service()
         #expect(service.cooldownDuration == .seconds(30))
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Custom cooldown duration is respected")
-    func customCooldownDuration() {
+    func customCooldownDuration() async {
         let service = AutoNATv2Service(cooldownDuration: .seconds(60))
         #expect(service.cooldownDuration == .seconds(60))
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Default check timeout is 60 seconds")
-    func defaultCheckTimeout() {
+    func defaultCheckTimeout() async {
         let service = AutoNATv2Service()
         #expect(service.checkTimeout == .seconds(60))
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Custom check timeout is respected")
-    func customCheckTimeout() {
+    func customCheckTimeout() async {
         let service = AutoNATv2Service(checkTimeout: .seconds(120))
         #expect(service.checkTimeout == .seconds(120))
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -1022,7 +986,7 @@ struct AutoNATv2WireFormatTests {
 struct AutoNATv2ShutdownServiceStateTests {
 
     @Test("Shutdown clears pending checks")
-    func shutdownClearsPendingChecks() throws {
+    func shutdownClearsPendingChecks() async throws {
         let service = AutoNATv2Service()
         let address = try Multiaddr("/ip4/203.0.113.1/tcp/4001")
 
@@ -1030,23 +994,23 @@ struct AutoNATv2ShutdownServiceStateTests {
         service.registerPendingCheck(address: address, nonce: 2)
         #expect(service.pendingCheckCount == 2)
 
-        service.shutdown()
+        await service.shutdown()
 
         #expect(service.pendingCheckCount == 0)
     }
 
     @Test("Shutdown resets reachability to unknown")
-    func shutdownResetsReachability() {
+    func shutdownResetsReachability() async {
         let service = AutoNATv2Service()
 
         // The initial state is unknown, but after shutdown it should also be unknown
-        service.shutdown()
+        await service.shutdown()
 
         #expect(service.currentReachability == .unknown)
     }
 
     @Test("Shutdown clears peer cooldown tracking")
-    func shutdownClearsPeerCooldowns() {
+    func shutdownClearsPeerCooldowns() async {
         let service = AutoNATv2Service(cooldownDuration: .seconds(3600))
         let peer = KeyPair.generateEd25519().peerID
 
@@ -1077,7 +1041,7 @@ struct AutoNATv2ShutdownServiceStateTests {
 
         // Give the task time to execute (in real code, better patterns exist)
         // Instead, just verify shutdown clears the state
-        service.shutdown()
+        await service.shutdown()
 
         // After shutdown, the peer should be allowed again because lastCheckByPeer was cleared
         #expect(service.canRequestFrom(peer: peer))

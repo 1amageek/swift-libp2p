@@ -130,12 +130,7 @@ public final class AutoRelay: EventEmitting, Sendable {
 
     // MARK: - EventEmitting State
 
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<Event>?
-        var continuation: AsyncStream<Event>.Continuation?
-    }
+    private let channel = EventChannel<Event>()
 
     // MARK: - Service State
 
@@ -169,15 +164,7 @@ public final class AutoRelay: EventEmitting, Sendable {
     // MARK: - Events
 
     /// Stream of AutoRelay events (single consumer).
-    public var events: AsyncStream<Event> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<Event>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<Event> { channel.stream }
 
     // MARK: - Initialization
 
@@ -192,7 +179,6 @@ public final class AutoRelay: EventEmitting, Sendable {
     ) {
         self.localPeer = localPeer
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState())
     }
 
@@ -407,33 +393,27 @@ public final class AutoRelay: EventEmitting, Sendable {
     /// Shuts down the AutoRelay service and finishes the event stream.
     ///
     /// Clears active relays, candidates, and terminates the event stream.
-    public func shutdown() {
+    public func shutdown() async {
         serviceState.withLock { state in
             state.isShutDown = true
             state.activeRelays.removeAll()
             state.candidates.removeAll()
         }
 
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
     }
 
     // MARK: - Private Helpers
 
     /// Emits a single event.
     private func emit(_ event: Event) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     /// Emits multiple events (collected outside a Mutex lock).
     private func emitAll(_ events: [Event]) {
         for event in events {
-            emit(event)
+            channel.yield(event)
         }
     }
 

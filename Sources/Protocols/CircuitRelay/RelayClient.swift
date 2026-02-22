@@ -72,13 +72,8 @@ public final class RelayClient: EventEmitting, Sendable {
     /// Client configuration.
     public let configuration: RelayClientConfiguration
 
-    /// Event state (dedicated).
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<CircuitRelayEvent>?
-        var continuation: AsyncStream<CircuitRelayEvent>.Continuation?
-    }
+    /// Event channel (dedicated).
+    private let channel = EventChannel<CircuitRelayEvent>()
 
     /// Client state (separated).
     private let clientState: Mutex<ClientState>
@@ -149,15 +144,7 @@ public final class RelayClient: EventEmitting, Sendable {
     // MARK: - Events
 
     /// Stream of relay client events.
-    public var events: AsyncStream<CircuitRelayEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<CircuitRelayEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<CircuitRelayEvent> { channel.stream }
 
     // MARK: - Initialization
 
@@ -166,7 +153,6 @@ public final class RelayClient: EventEmitting, Sendable {
     /// - Parameter configuration: Client configuration.
     public init(configuration: RelayClientConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.clientState = Mutex(ClientState())
         self.listeners = Mutex([:])
     }
@@ -576,9 +562,7 @@ public final class RelayClient: EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: CircuitRelayEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Shutdown
@@ -587,7 +571,7 @@ public final class RelayClient: EventEmitting, Sendable {
     ///
     /// Call this method when the client is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
+    public func shutdown() async {
         // Cancel all renewal tasks
         clientState.withLock { s in
             for (_, task) in s.renewalTasks {
@@ -598,11 +582,7 @@ public final class RelayClient: EventEmitting, Sendable {
             s.reservationOpeners.removeAll()
         }
 
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
     }
 
     // MARK: - Reservation Management
@@ -795,5 +775,4 @@ extension RelayClient: StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleStop(context: context)
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }

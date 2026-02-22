@@ -120,7 +120,7 @@ struct HolePunchServiceEventTests {
         _ = service.events
 
         // Both should work - we verify by shutting down and seeing both complete
-        service.shutdown()
+        await service.shutdown()
 
         var count1 = 0
         for await _ in stream1 {
@@ -135,22 +135,13 @@ struct HolePunchServiceEventTests {
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
     func shutdownFinishesStream() async {
         let service = HolePunchService()
+        let events = service.events
 
-        let eventTask = Task {
-            var count = 0
-            for await _ in service.events {
-                count += 1
-            }
-            return count
-        }
+        await service.shutdown()
 
-        // Give eventTask time to start listening
-        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-
-        service.shutdown()
-
-        let result = await eventTask.value
-        #expect(result == 0)
+        var count = 0
+        for await _ in events { count += 1 }
+        #expect(count == 0)
     }
 
     @Test("Event emission delivers events to consumer", .timeLimit(.minutes(1)))
@@ -199,7 +190,7 @@ struct HolePunchServiceEventTests {
             #expect(p == peer)
         }
 
-        service.shutdown()
+        await service.shutdown()
     }
 }
 
@@ -211,7 +202,6 @@ struct HolePunchServiceFailureTests {
     @Test("Punch fails with no suitable addresses (all private)", .timeLimit(.minutes(1)))
     func punchFailsNoSuitableAddresses() async throws {
         let service = HolePunchService()
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -237,12 +227,13 @@ struct HolePunchServiceFailureTests {
         #expect(service.totalPeerAttempts == 1)
         #expect(service.failureCount == 1)
         #expect(service.successCount == 0)
+
+        await service.shutdown()
     }
 
     @Test("Punch fails with empty address list", .timeLimit(.minutes(1)))
     func punchFailsEmptyAddresses() async throws {
         let service = HolePunchService()
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -257,12 +248,14 @@ struct HolePunchServiceFailureTests {
         } catch let error as HolePunchServiceError {
             #expect(error == .noSuitableAddresses)
         }
+
+        await service.shutdown()
     }
 
     @Test("Punch fails after shutdown", .timeLimit(.minutes(1)))
     func punchFailsAfterShutdown() async throws {
         let service = HolePunchService()
-        service.shutdown()
+        await service.shutdown()
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -286,7 +279,6 @@ struct HolePunchServiceFailureTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let relay = KeyPair.generateEd25519().peerID
 
@@ -309,6 +301,8 @@ struct HolePunchServiceFailureTests {
         #expect(service.totalPeerAttempts == 3)
         // Invariant: totalPeerAttempts == successCount + failureCount
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
+
+        await service.shutdown()
     }
 }
 
@@ -325,7 +319,6 @@ struct HolePunchServiceConcurrencyTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         // We test the limit by checking activePunches when maxConcurrentPunches is 1.
         // With only private addresses, the punch fails immediately,
@@ -333,7 +326,7 @@ struct HolePunchServiceConcurrencyTests {
         #expect(service.configuration.maxConcurrentPunches == 1)
 
         // After shutdown, active punches should be empty
-        service.shutdown()
+        await service.shutdown()
         #expect(service.activePunches().isEmpty)
     }
 }
@@ -485,20 +478,20 @@ struct HolePunchTransportTypeTests {
 struct HolePunchServiceShutdownTests {
 
     @Test("Shutdown is idempotent")
-    func shutdownIdempotent() {
+    func shutdownIdempotent() async {
         let service = HolePunchService()
 
         // Multiple shutdowns should not crash
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
     }
 
     @Test("Shutdown clears active punches", .timeLimit(.minutes(1)))
     func shutdownClearsActivePunches() async {
         let service = HolePunchService()
 
-        service.shutdown()
+        await service.shutdown()
 
         #expect(service.activePunches().isEmpty)
     }
@@ -506,39 +499,21 @@ struct HolePunchServiceShutdownTests {
     @Test("Shutdown unblocks event consumers", .timeLimit(.minutes(1)))
     func shutdownUnblocksConsumers() async {
         let service = HolePunchService()
+        let events = service.events
 
-        actor Flag {
-            var completed = false
-            func set() { completed = true }
-            func get() -> Bool { completed }
-        }
-        let flag = Flag()
+        await service.shutdown()
 
-        let eventTask = Task {
-            for await _ in service.events {
-                // Should exit when shutdown is called
-            }
-            await flag.set()
-        }
-
-        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-
-        service.shutdown()
-
-        do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-
-        let completed = await flag.get()
-        #expect(completed)
-
-        eventTask.cancel()
+        var count = 0
+        for await _ in events { count += 1 }
+        #expect(count == 0)
     }
 
     @Test("Statistics are preserved after shutdown")
-    func statisticsPreservedAfterShutdown() {
+    func statisticsPreservedAfterShutdown() async {
         let service = HolePunchService()
 
         // Shutdown does not reset statistics
-        service.shutdown()
+        await service.shutdown()
 
         #expect(service.totalPeerAttempts == 0)
         #expect(service.successCount == 0)
@@ -666,7 +641,6 @@ struct HolePunchServiceAddressFilteringTests {
     @Test("Private IPv4 addresses are filtered out")
     func privateIPv4Filtered() async throws {
         let service = HolePunchService(configuration: .init(retryAttempts: 1))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -690,6 +664,8 @@ struct HolePunchServiceAddressFilteringTests {
         } catch let error as HolePunchServiceError {
             #expect(error == .noSuitableAddresses)
         }
+
+        await service.shutdown()
     }
 
     @Test("Public IPv4 addresses pass filtering")
@@ -699,7 +675,6 @@ struct HolePunchServiceAddressFilteringTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -722,6 +697,8 @@ struct HolePunchServiceAddressFilteringTests {
             // Should fail with allAttemptsFailed or timeout, NOT noSuitableAddresses
             #expect(error != .noSuitableAddresses)
         }
+
+        await service.shutdown()
     }
 
     @Test("Mixed addresses: only public ones are used")
@@ -731,7 +708,6 @@ struct HolePunchServiceAddressFilteringTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -752,6 +728,8 @@ struct HolePunchServiceAddressFilteringTests {
             // Should not be noSuitableAddresses since we have 1 public address
             #expect(error != .noSuitableAddresses)
         }
+
+        await service.shutdown()
     }
 }
 
@@ -766,7 +744,6 @@ struct HolePunchServiceStatisticsTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let relay = KeyPair.generateEd25519().peerID
 
@@ -787,6 +764,8 @@ struct HolePunchServiceStatisticsTests {
         #expect(service.totalPeerAttempts == 3)
         // Invariant: totalPeerAttempts == successCount + failureCount
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
+
+        await service.shutdown()
     }
 
     @Test("Failure count tracks failed punches")
@@ -795,7 +774,6 @@ struct HolePunchServiceStatisticsTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -812,6 +790,8 @@ struct HolePunchServiceStatisticsTests {
 
         #expect(service.failureCount == 1)
         #expect(service.successCount == 0)
+
+        await service.shutdown()
     }
 
     @Test("Active punches is empty after completion")
@@ -820,7 +800,6 @@ struct HolePunchServiceStatisticsTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -837,6 +816,8 @@ struct HolePunchServiceStatisticsTests {
 
         // After completion (success or failure), active punches should be empty
         #expect(service.activePunches().isEmpty)
+
+        await service.shutdown()
     }
 }
 
@@ -852,7 +833,6 @@ struct HolePunchServiceRetryTests {
             retryAttempts: 2,
             retryDelay: .milliseconds(10)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -874,6 +854,8 @@ struct HolePunchServiceRetryTests {
         #expect(service.failureCount == 1)
         // Invariant: totalPeerAttempts == successCount + failureCount
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
+
+        await service.shutdown()
     }
 
     @Test("No retries needed for address filtering failure")
@@ -882,7 +864,6 @@ struct HolePunchServiceRetryTests {
             retryAttempts: 5,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -899,6 +880,8 @@ struct HolePunchServiceRetryTests {
 
         // Address filtering failure should not retry
         #expect(service.totalPeerAttempts == 1)
+
+        await service.shutdown()
     }
 }
 
@@ -908,30 +891,33 @@ struct HolePunchServiceRetryTests {
 struct HolePunchServiceTransportDetectionTests {
 
     @Test("Preferred TCP transport is used")
-    func preferredTCPUsed() {
+    func preferredTCPUsed() async {
         let config = HolePunchServiceConfiguration(preferredTransport: .tcp)
         let service = HolePunchService(configuration: config)
-        defer { service.shutdown() }
 
         #expect(service.configuration.preferredTransport == .tcp)
+
+        await service.shutdown()
     }
 
     @Test("Preferred QUIC transport is used")
-    func preferredQUICUsed() {
+    func preferredQUICUsed() async {
         let config = HolePunchServiceConfiguration(preferredTransport: .quic)
         let service = HolePunchService(configuration: config)
-        defer { service.shutdown() }
 
         #expect(service.configuration.preferredTransport == .quic)
+
+        await service.shutdown()
     }
 
     @Test("Auto-detect when no preference set")
-    func autoDetectNoPreference() {
+    func autoDetectNoPreference() async {
         let config = HolePunchServiceConfiguration(preferredTransport: nil)
         let service = HolePunchService(configuration: config)
-        defer { service.shutdown() }
 
         #expect(service.configuration.preferredTransport == nil)
+
+        await service.shutdown()
     }
 
     @Test("QUIC detected from quic-v1 protocol component, not just UDP port", .timeLimit(.minutes(1)))
@@ -945,7 +931,6 @@ struct HolePunchServiceTransportDetectionTests {
             retryDelay: .milliseconds(1),
             preferredTransport: nil
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -965,6 +950,8 @@ struct HolePunchServiceTransportDetectionTests {
 
         // Verify it doesn't fail with noSuitableAddresses (address is public)
         #expect(service.totalPeerAttempts == 1)
+
+        await service.shutdown()
     }
 
     @Test("TCP address with UDP port does not falsely detect QUIC", .timeLimit(.minutes(1)))
@@ -977,7 +964,6 @@ struct HolePunchServiceTransportDetectionTests {
             retryDelay: .milliseconds(1),
             preferredTransport: nil
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -997,6 +983,8 @@ struct HolePunchServiceTransportDetectionTests {
 
         // The key verification is that it doesn't crash and proceeds normally
         #expect(service.totalPeerAttempts == 1)
+
+        await service.shutdown()
     }
 }
 
@@ -1016,7 +1004,6 @@ struct HolePunchServiceTOCTOURaceTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let relay = KeyPair.generateEd25519().peerID
 
@@ -1057,6 +1044,8 @@ struct HolePunchServiceTOCTOURaceTests {
         // All 5 tasks should complete (either rejected or failed at transport)
         #expect(results.count == 5)
         _ = rejectedCount  // Value depends on timing
+
+        await service.shutdown()
     }
 
     @Test("Peer is removed from active set on failure", .timeLimit(.minutes(1)))
@@ -1067,7 +1056,6 @@ struct HolePunchServiceTOCTOURaceTests {
             retryAttempts: 1,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -1096,6 +1084,8 @@ struct HolePunchServiceTOCTOURaceTests {
             // Should NOT be maxConcurrentPunchesReached since the slot was freed
             #expect(error != .maxConcurrentPunchesReached)
         }
+
+        await service.shutdown()
     }
 
     @Test("Shutdown rejected punch does not register in active set", .timeLimit(.minutes(1)))
@@ -1105,7 +1095,7 @@ struct HolePunchServiceTOCTOURaceTests {
             retryAttempts: 1
         ))
 
-        service.shutdown()
+        await service.shutdown()
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -1139,7 +1129,6 @@ struct HolePunchServiceStatisticsInvariantTests {
             retryAttempts: 3,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let relay = KeyPair.generateEd25519().peerID
 
@@ -1162,6 +1151,8 @@ struct HolePunchServiceStatisticsInvariantTests {
         #expect(service.successCount == 0)
         #expect(service.failureCount == 5)
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
+
+        await service.shutdown()
     }
 
     @Test("Invariant holds with mixed public and private address failures", .timeLimit(.minutes(1)))
@@ -1171,7 +1162,6 @@ struct HolePunchServiceStatisticsInvariantTests {
             retryAttempts: 2,
             retryDelay: .milliseconds(1)
         ))
-        defer { service.shutdown() }
 
         let relay = KeyPair.generateEd25519().peerID
 
@@ -1204,5 +1194,7 @@ struct HolePunchServiceStatisticsInvariantTests {
         #expect(service.failureCount == 2)
         #expect(service.successCount == 0)
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
+
+        await service.shutdown()
     }
 }

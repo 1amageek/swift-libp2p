@@ -36,7 +36,7 @@ final class GossipPromises: Sendable {
     /// Called when a message is delivered (from any peer).
     /// Removes all promises for this message.
     func messageDelivered(_ messageID: MessageID) {
-        state.withLock { state in
+        _ = state.withLock { state in
             state.promises.removeValue(forKey: messageID)
         }
     }

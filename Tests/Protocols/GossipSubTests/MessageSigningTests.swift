@@ -225,7 +225,7 @@ struct MessageSigningTests {
     // MARK: - Service Tests
 
     @Test("Service with KeyPair enables signing")
-    func serviceWithKeyPairEnablesSigning() throws {
+    func serviceWithKeyPairEnablesSigning() async throws {
         let keyPair = KeyPair.generateEd25519()
 
         var config = GossipSubConfiguration()
@@ -233,13 +233,14 @@ struct MessageSigningTests {
 
         let service = GossipSubService(keyPair: keyPair, configuration: config)
         service.start()
-        defer { service.shutdown() }
 
         #expect(service.localPeerID == keyPair.peerID)
+
+        await service.shutdown()
     }
 
     @Test("Service with localPeerID only requires testing config")
-    func serviceWithPeerIDRequiresTestingConfig() throws {
+    func serviceWithPeerIDRequiresTestingConfig() async throws {
         let keyPair = KeyPair.generateEd25519()
 
         // This should work because .testing has signMessages=false
@@ -248,9 +249,10 @@ struct MessageSigningTests {
             configuration: .testing
         )
         service.start()
-        defer { service.shutdown() }
 
         #expect(service.localPeerID == keyPair.peerID)
+
+        await service.shutdown()
     }
 
     // MARK: - Wire Format Compatibility

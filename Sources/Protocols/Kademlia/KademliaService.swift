@@ -201,13 +201,8 @@ public final class KademliaService: EventEmitting, Sendable {
     /// The provider store.
     public let providerStore: ProviderStore
 
-    /// Event state (dedicated).
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<KademliaEvent>?
-        var continuation: AsyncStream<KademliaEvent>.Continuation?
-    }
+    /// Event channel (dedicated).
+    private let channel = EventChannel<KademliaEvent>()
 
     /// Service state (separated).
     private let serviceState: Mutex<ServiceState>
@@ -245,7 +240,6 @@ public final class KademliaService: EventEmitting, Sendable {
         self.routingTable = RoutingTable(localPeerID: localPeerID, kValue: configuration.kValue)
         self.recordStore = RecordStore(defaultTTL: configuration.recordTTL)
         self.providerStore = ProviderStore(defaultTTL: configuration.providerTTL)
-        self.eventState = Mutex(EventState())
         self.serviceState = Mutex(ServiceState(mode: configuration.mode))
         self.cleanupTask = Mutex(nil)
         self.refreshTask = Mutex(nil)
@@ -255,20 +249,10 @@ public final class KademliaService: EventEmitting, Sendable {
     // MARK: - Events
 
     /// Stream of Kademlia events.
-    public var events: AsyncStream<KademliaEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<KademliaEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<KademliaEvent> { channel.stream }
 
     private func emit(_ event: KademliaEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Shutdown
@@ -277,17 +261,13 @@ public final class KademliaService: EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
+    public func shutdown() async {
         stopMaintenance()
         stopRefresh()
         stopRepublish()
         serviceState.withLock { $0.opener = nil }
-        eventState.withLock { state in
-            state.continuation?.yield(.stopped)
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.yield(.stopped)
+        channel.finish()
     }
 
     // MARK: - Maintenance
@@ -1316,5 +1296,4 @@ extension KademliaService: StreamService {
         startRefresh(using: context)
         startRepublish(using: context)
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }

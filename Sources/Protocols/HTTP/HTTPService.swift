@@ -91,13 +91,8 @@ public final class HTTPService: EventEmitting, Sendable {
     /// Configuration for this service.
     public let configuration: HTTPConfiguration
 
-    /// Event stream state.
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var continuation: AsyncStream<Event>.Continuation?
-        var stream: AsyncStream<Event>?
-    }
+    /// Event channel.
+    private let channel = EventChannel<Event>()
 
     /// Registered routes.
     private let routeState: Mutex<[Route]>
@@ -105,17 +100,7 @@ public final class HTTPService: EventEmitting, Sendable {
     // MARK: - EventEmitting
 
     /// Event stream for monitoring HTTP events.
-    public var events: AsyncStream<Event> {
-        eventState.withLock { state in
-            if let existing = state.stream {
-                return existing
-            }
-            let (stream, continuation) = AsyncStream<Event>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<Event> { channel.stream }
 
     // MARK: - Initialization
 
@@ -124,7 +109,6 @@ public final class HTTPService: EventEmitting, Sendable {
     /// - Parameter configuration: Service configuration
     public init(configuration: HTTPConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.routeState = Mutex([])
     }
 
@@ -400,23 +384,14 @@ public final class HTTPService: EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: Event) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Shutdown
 
     /// Shuts down the service and finishes the event stream.
-    ///
-    /// Call this method when the service is no longer needed to properly
-    /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+    public func shutdown() async {
+        channel.finish()
     }
 }
 
@@ -426,5 +401,4 @@ extension HTTPService: StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleIncoming(context: context)
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }

@@ -75,7 +75,7 @@ public struct HolePunchMechanism: TraversalMechanism, Sendable {
         )
     }
 
-    public func shutdown() {
-        dcutr.shutdown()
+    public func shutdown() async {
+        await dcutr.shutdown()
     }
 }

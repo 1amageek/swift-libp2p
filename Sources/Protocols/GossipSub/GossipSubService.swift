@@ -134,7 +134,7 @@ public final class GossipSubService: Sendable {
     }
 
     /// Shuts down the GossipSub service.
-    public func shutdown() {
+    public func shutdown() async {
         serviceState.withLock { s in
             s.isStarted = false
             s.opener = nil
@@ -146,7 +146,7 @@ public final class GossipSubService: Sendable {
             hb = nil
         }
 
-        router.shutdown()
+        await router.shutdown()
     }
 
     /// Whether the service is started.
@@ -625,8 +625,6 @@ extension GossipSubService: StreamService, PeerObserver {
     public func peerDisconnected(_ peer: PeerID) async {
         handlePeerDisconnected(peer)
     }
-
-    // shutdown(): already defined as sync method — satisfies async requirement (SE-0296)
 }
 
 // MARK: - ProtocolID Extension

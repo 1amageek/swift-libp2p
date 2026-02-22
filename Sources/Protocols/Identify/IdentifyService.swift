@@ -113,13 +113,8 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// Configuration for this service.
     public let configuration: IdentifyConfiguration
 
-    /// Event state (dedicated).
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var continuation: AsyncStream<IdentifyEvent>.Continuation?
-        var stream: AsyncStream<IdentifyEvent>?
-    }
+    /// Event channel (dedicated).
+    private let channel = EventChannel<IdentifyEvent>()
 
     /// Cache state (separated from event state).
     private let cacheState: Mutex<CacheState>
@@ -178,23 +173,12 @@ public final class IdentifyService: EventEmitting, Sendable {
     private let cleanupTask: Mutex<Task<Void, Never>?>
 
     /// Event stream for monitoring identify events.
-    public var events: AsyncStream<IdentifyEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream {
-                return existing
-            }
-            let (stream, continuation) = AsyncStream<IdentifyEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<IdentifyEvent> { channel.stream }
 
     // MARK: - Initialization
 
     public init(configuration: IdentifyConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.cacheState = Mutex(CacheState())
         self.autoPushState = Mutex(AutoPushState())
         self.cleanupTask = Mutex(nil)
@@ -734,9 +718,7 @@ public final class IdentifyService: EventEmitting, Sendable {
     }
 
     private func emit(_ event: IdentifyEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Inbound Stream Handlers
@@ -826,7 +808,7 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     /// Also stops the background maintenance task if running.
-    public func shutdown() {
+    public func shutdown() async {
         stopMaintenance()
 
         // Clear auto-push state
@@ -838,11 +820,7 @@ public final class IdentifyService: EventEmitting, Sendable {
             state.getSupportedProtocols = nil
         }
 
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
     }
 }
 
@@ -877,7 +855,4 @@ extension IdentifyService: StreamService, PeerObserver {
     // peerConnected(_:) and peerDisconnected(_:) are defined as sync methods
     // on IdentifyService. A sync method satisfies an async protocol requirement
     // via SE-0296, so no wrapper methods are needed.
-
-    // shutdown() is defined as a sync method on IdentifyService.
-    // It satisfies the async requirement via SE-0296.
 }

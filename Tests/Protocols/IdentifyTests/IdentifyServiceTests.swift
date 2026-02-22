@@ -275,13 +275,13 @@ struct IdentifyServiceTests {
     }
 
     @Test("Shutdown is idempotent")
-    func shutdownIsIdempotent() {
+    func shutdownIsIdempotent() async {
         let service = IdentifyService()
 
         // Multiple shutdowns should not crash
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
 
         // Service should still be usable for cached data
         #expect(service.allCachedInfo.isEmpty)
@@ -312,7 +312,7 @@ struct IdentifyServiceTests {
     }
 
     @Test("startMaintenance is idempotent")
-    func startMaintenanceIdempotent() {
+    func startMaintenanceIdempotent() async {
         let service = IdentifyService()
 
         // Multiple starts should not crash or create multiple tasks
@@ -320,7 +320,7 @@ struct IdentifyServiceTests {
         service.startMaintenance()
         service.startMaintenance()
 
-        service.shutdown()
+        await service.shutdown()
     }
 
     @Test("stopMaintenance is idempotent")

@@ -70,13 +70,21 @@ public final class RelayServer: EventEmitting, Sendable {
     /// Server configuration.
     public let configuration: RelayServerConfiguration
 
-    /// Event state (dedicated).
-    private let eventState: Mutex<EventState>
+    /// Whether the server is accepting new reservations.
+    ///
+    /// When `false`, all incoming RESERVE requests are refused with
+    /// `.reservationRefused`. Existing reservations and circuits are
+    /// not affected. This flag is controlled by `SupernodeService`.
+    private let _acceptingReservations: Mutex<Bool> = Mutex(true)
 
-    private struct EventState: Sendable {
-        var stream: AsyncStream<CircuitRelayEvent>?
-        var continuation: AsyncStream<CircuitRelayEvent>.Continuation?
+    /// Gets or sets whether the server accepts new reservations.
+    public var isAcceptingReservations: Bool {
+        get { _acceptingReservations.withLock { $0 } }
+        set { _acceptingReservations.withLock { $0 = newValue } }
     }
+
+    /// Event channel (dedicated).
+    private let channel = EventChannel<CircuitRelayEvent>()
 
     /// Server state (separated).
     private let serverState: Mutex<ServerState>
@@ -113,15 +121,7 @@ public final class RelayServer: EventEmitting, Sendable {
     // MARK: - Events
 
     /// Stream of relay server events.
-    public var events: AsyncStream<CircuitRelayEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<CircuitRelayEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<CircuitRelayEvent> { channel.stream }
 
     // MARK: - Initialization
 
@@ -130,7 +130,6 @@ public final class RelayServer: EventEmitting, Sendable {
     /// - Parameter configuration: Server configuration.
     public init(configuration: RelayServerConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
         self.serverState = Mutex(ServerState())
     }
 
@@ -198,6 +197,17 @@ public final class RelayServer: EventEmitting, Sendable {
         requester: PeerID,
         context: StreamContext
     ) async {
+        // Check gating flag (SupernodeService controls this)
+        guard isAcceptingReservations else {
+            do {
+                try await sendHopStatus(stream: stream, status: .reservationRefused)
+            } catch {
+                logger.debug("Failed to send reservation refused status: \(error)")
+            }
+            emit(.reservationDenied(from: requester, reason: .reservationRefused))
+            return
+        }
+
         // Check limits
         let (canReserve, reason) = serverState.withLock { s -> (Bool, HopStatus?) in
             // Check max reservations
@@ -532,9 +542,7 @@ public final class RelayServer: EventEmitting, Sendable {
     }
 
     private func emit(_ event: CircuitRelayEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Shutdown
@@ -543,7 +551,7 @@ public final class RelayServer: EventEmitting, Sendable {
     ///
     /// Call this method when the server is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
+    public func shutdown() async {
         let tasks = serverState.withLock { s -> [Task<Void, Never>] in
             let tasks = Array(s.cleanupTasks.values)
             s.cleanupTasks.removeAll()
@@ -553,11 +561,7 @@ public final class RelayServer: EventEmitting, Sendable {
             task.cancel()
         }
         nodeContextRef.withLock { $0 = nil }
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
     }
 
     private func scheduleReservationCleanup(peer: PeerID, at expiration: ContinuousClock.Instant) {
@@ -602,5 +606,4 @@ extension RelayServer: StreamService {
     public func attach(to context: any NodeContext) async {
         nodeContextRef.withLock { $0 = context }
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }

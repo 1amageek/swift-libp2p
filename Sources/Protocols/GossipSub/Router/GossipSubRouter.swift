@@ -72,13 +72,8 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// IWANT promise tracking (A5).
     let gossipPromises: GossipPromises
 
-    /// Event state.
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var continuation: AsyncStream<GossipSubEvent>.Continuation?
-        var stream: AsyncStream<GossipSubEvent>?
-    }
+    /// Event channel.
+    private let channel = EventChannel<GossipSubEvent>()
 
     // MARK: - Initialization
 
@@ -117,8 +112,6 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         self.validators = Mutex([:])
         self.directPeerState = Mutex(configuration.directPeers)
         self.gossipPromises = GossipPromises()
-        self.eventState = Mutex(EventState())
-
         // Sync protected peers from initial direct peer configuration
         let allDirectPeers = configuration.directPeers.values
             .reduce(into: Set<PeerID>()) { $0.formUnion($1) }
@@ -208,17 +201,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     // MARK: - Event Stream
 
     /// Event stream for monitoring router events.
-    public var events: AsyncStream<GossipSubEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream {
-                return existing
-            }
-            let (stream, continuation) = AsyncStream<GossipSubEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<GossipSubEvent> { channel.stream }
 
     // MARK: - Subscription Management
 
@@ -1306,9 +1289,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: GossipSubEvent) {
-        eventState.withLock { state in
-            _ = state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Helper Methods
@@ -1331,7 +1312,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     // MARK: - Shutdown
 
     /// Shuts down the router.
-    public func shutdown() {
+    public func shutdown() async {
         subscriptions.cancelAll()
         peerState.clear()
         meshState.clear()
@@ -1342,10 +1323,6 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         validators.withLock { $0.removeAll() }
         directPeerState.withLock { $0.removeAll() }
 
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
     }
 }

@@ -15,11 +15,6 @@ private struct NATPortMapperState: Sendable {
     var isShutdown = false
 }
 
-/// Event state for NATPortMapper.
-private struct NATPortMapperEventState: Sendable {
-    var stream: AsyncStream<NATPortMapperEvent>?
-    var continuation: AsyncStream<NATPortMapperEvent>.Continuation?
-}
 
 /// NAT port mapping service.
 ///
@@ -30,14 +25,13 @@ public final class NATPortMapper: EventEmitting, Sendable {
     public let configuration: NATPortMapperConfiguration
 
     private let state: Mutex<NATPortMapperState>
-    private let eventState: Mutex<NATPortMapperEventState>
+    private let channel = EventChannel<NATPortMapperEvent>()
     private let handlers: [any NATProtocolHandler]
 
     /// Creates a new NATPortMapper.
     public init(configuration: NATPortMapperConfiguration = .default) {
         self.configuration = configuration
         self.state = Mutex(NATPortMapperState())
-        self.eventState = Mutex(NATPortMapperEventState())
 
         var handlers: [any NATProtocolHandler] = []
         if configuration.tryUPnP { handlers.append(UPnPHandler()) }
@@ -47,15 +41,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
     }
 
     /// Stream of events from this mapper.
-    public var events: AsyncStream<NATPortMapperEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<NATPortMapperEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<NATPortMapperEvent> { channel.stream }
 
     // MARK: - Public API
 
@@ -148,7 +134,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
     }
 
     /// Shuts down the mapper and cancels all renewal tasks.
-    public func shutdown() {
+    public func shutdown() async {
         let tasks = state.withLock { state -> [Task<Void, Never>] in
             guard !state.isShutdown else { return [] }
             state.isShutdown = true
@@ -162,11 +148,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
             task.cancel()
         }
 
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+        channel.finish()
     }
 
     // MARK: - Private
@@ -205,9 +187,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
     }
 
     private func emit(_ event: NATPortMapperEvent) {
-        eventState.withLock { state in
-            _ = state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     private func handlerForGateway(_ gateway: NATGatewayType) throws -> any NATProtocolHandler {

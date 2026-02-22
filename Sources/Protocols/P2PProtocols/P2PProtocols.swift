@@ -19,14 +19,12 @@ public protocol NodeService: Sendable {
     func attach(to context: any NodeContext) async
 
     /// Called during Node.shutdown(). Clean up resources.
-    /// Async to support Discovery services that need async cleanup.
-    /// Sync implementations satisfy the async requirement via SE-0296.
+    /// All implementations must be async.
     func shutdown() async
 }
 
 extension NodeService {
     public func attach(to context: any NodeContext) async {}
-    public func shutdown() async {}
 }
 
 // MARK: - StreamService (Inbound Stream Handling)

@@ -638,28 +638,15 @@ struct RelayServerConfigurationTests {
 struct RelayServerShutdownTests {
 
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesEventStream() async throws {
+    func shutdownFinishesEventStream() async {
         let server = RelayServer()
+        let events = server.events
 
-        let streamFinished = Mutex(false)
-        let task = Task {
-            for await _ in server.events {
-                // Consume events
-            }
-            streamFinished.withLock { $0 = true }
-        }
-
-        // Give time for iteration to start
-        try await Task.sleep(for: .milliseconds(50))
-
-        // Shutdown
         await server.shutdown()
 
-        // Wait for stream to finish
-        try await Task.sleep(for: .milliseconds(100))
-
-        #expect(streamFinished.withLock { $0 })
-        task.cancel()
+        var count = 0
+        for await _ in events { count += 1 }
+        #expect(count == 0)
     }
 }
 

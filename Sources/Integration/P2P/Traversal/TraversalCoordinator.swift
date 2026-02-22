@@ -10,14 +10,8 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
     public let localPeer: PeerID
     private let transports: [any Transport]
 
-    private let eventState: Mutex<EventState>
+    private let channel: EventChannel<TraversalEvent>
     private let runtimeState: Mutex<RuntimeState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<TraversalEvent>?
-        var continuation: AsyncStream<TraversalEvent>.Continuation?
-        var isFinished: Bool = false
-    }
 
     private struct RuntimeState: Sendable {
         var opener: (any StreamOpener)?
@@ -45,22 +39,7 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
         case blocked([TraversalAttemptFailure])
     }
 
-    public var events: AsyncStream<TraversalEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            if state.isFinished {
-                let (stream, continuation) = AsyncStream<TraversalEvent>.makeStream()
-                continuation.finish()
-                return stream
-            }
-            let (stream, continuation) = AsyncStream<TraversalEvent>.makeStream(
-                bufferingPolicy: .bufferingNewest(configuration.eventBufferSize)
-            )
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<TraversalEvent> { channel.stream }
 
     public init(
         configuration: TraversalConfiguration,
@@ -70,7 +49,9 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
         self.configuration = configuration
         self.localPeer = localPeer
         self.transports = transports
-        self.eventState = Mutex(EventState())
+        self.channel = EventChannel<TraversalEvent>(
+            bufferingPolicy: .bufferingNewest(configuration.eventBufferSize)
+        )
         self.runtimeState = Mutex(RuntimeState())
     }
 
@@ -197,7 +178,7 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
         throw TraversalError.allAttemptsFailed(failures)
     }
 
-    public func shutdown() {
+    public func shutdown() async {
         let shouldShutdown = runtimeState.withLock { state -> Bool in
             if state.isShutDown { return false }
             state.isShutDown = true
@@ -211,20 +192,15 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
         }
         guard shouldShutdown else { return }
 
-        configuration.mechanisms.forEach { $0.shutdown() }
-
-        eventState.withLock { state in
-            state.isFinished = true
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
+        for mechanism in configuration.mechanisms {
+            await mechanism.shutdown()
         }
+
+        channel.finish()
     }
 
     private func emit(_ event: TraversalEvent) {
-        eventState.withLock { state in
-            _ = state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     private func deduplicate(_ candidates: [TraversalCandidate]) -> [TraversalCandidate] {
@@ -402,6 +378,4 @@ extension TraversalCoordinator: NodeService {
         let alreadyRunning = runtimeState.withLock { $0.isRunning }
         guard !alreadyRunning else { return }
     }
-
-    // shutdown(): already defined as sync func — satisfies async requirement via SE-0296
 }

@@ -94,32 +94,16 @@ public final class PingService: EventEmitting, Sendable {
     /// Configuration for this service.
     public let configuration: PingConfiguration
 
-    /// Event stream state.
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var continuation: AsyncStream<PingEvent>.Continuation?
-        var stream: AsyncStream<PingEvent>?
-    }
+    /// Event channel for monitoring ping events.
+    private let channel = EventChannel<PingEvent>()
 
     /// Event stream for monitoring ping events.
-    public var events: AsyncStream<PingEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream {
-                return existing
-            }
-            let (stream, continuation) = AsyncStream<PingEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<PingEvent> { channel.stream }
 
     // MARK: - Initialization
 
     public init(configuration: PingConfiguration = .init()) {
         self.configuration = configuration
-        self.eventState = Mutex(EventState())
     }
 
     // MARK: - Public API
@@ -294,9 +278,7 @@ public final class PingService: EventEmitting, Sendable {
     }
 
     private func emit(_ event: PingEvent) {
-        _ = eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        channel.yield(event)
     }
 
     // MARK: - Shutdown
@@ -305,12 +287,8 @@ public final class PingService: EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() {
-        eventState.withLock { state in
-            state.continuation?.finish()
-            state.continuation = nil
-            state.stream = nil
-        }
+    public func shutdown() async {
+        channel.finish()
     }
 }
 
@@ -320,5 +298,4 @@ extension PingService: StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handlePing(context: context)
     }
-    // shutdown(): already defined (sync func satisfies async requirement)
 }

@@ -696,7 +696,7 @@ struct GossipSubRouterTests {
     // MARK: - Shutdown Tests
 
     @Test("Shutdown clears all state")
-    func shutdownClearsState() throws {
+    func shutdownClearsState() async throws {
         let router = makeRouter()
         let topic = Topic("test-topic")
 
@@ -709,7 +709,7 @@ struct GossipSubRouterTests {
             topic: topic
         ))
 
-        router.shutdown()
+        await router.shutdown()
 
         #expect(router.meshState.subscribedTopics.isEmpty)
         #expect(router.meshState.allMeshPeers.isEmpty)

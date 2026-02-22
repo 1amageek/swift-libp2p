@@ -135,44 +135,25 @@ swift-p2p-discovery の6層アーキテクチャの配置先（詳細は `docs/A
 
 ```swift
 public final class MyService: EventEmitting, Sendable {
-    // イベント状態（専用）
-    private let eventState: Mutex<EventState>
-
-    private struct EventState: Sendable {
-        var stream: AsyncStream<MyEvent>?
-        var continuation: AsyncStream<MyEvent>.Continuation?
-    }
+    // EventChannel がストリーム管理を一括担当
+    private let channel = EventChannel<MyEvent>()
 
     // 業務状態（分離）
     private let serviceState: Mutex<ServiceState>
 
     // events: 同じストリームを返す（単一消費者）
-    public var events: AsyncStream<MyEvent> {
-        eventState.withLock { state in
-            if let existing = state.stream { return existing }
-            let (stream, continuation) = AsyncStream<MyEvent>.makeStream()
-            state.stream = stream
-            state.continuation = continuation
-            return stream
-        }
-    }
+    public var events: AsyncStream<MyEvent> { channel.stream }
 
-    private func emit(_ event: MyEvent) {
-        eventState.withLock { $0.continuation?.yield(event) }
-    }
+    private func emit(_ event: MyEvent) { channel.yield(event) }
 
     // EventEmitting 準拠
-    public func shutdown() {
-        eventState.withLock { state in
-            state.continuation?.finish()  // 必須！
-            state.continuation = nil
-            state.stream = nil            // 必須！
-        }
+    public func shutdown() async {
+        channel.finish()
     }
 }
 ```
 
-**注意**: `continuation.finish()` と `stream = nil` の両方が必須。どちらかが欠けると `for await` がハングする。
+**EventChannel の保証**: `finish()` 後の `stream` アクセスで即座に終了するストリームを返す。`finish()` は冪等。
 
 #### パターンB: EventBroadcaster（多消費者）
 
@@ -251,7 +232,7 @@ func doWork() {
 
 | レイヤー | メソッド | シグネチャ | 理由 |
 |---------|---------|-----------|------|
-| Protocols層 | `shutdown()` | `func shutdown()` | EventEmittingプロトコル準拠 |
+| Protocols層 | `shutdown()` | `func shutdown() async` | EventEmittingプロトコル準拠 |
 | Discovery層 | `shutdown()` | `func shutdown() async` | 非同期リソース（トランスポート/ブラウザ）のクリーンアップ |
 | Transport/Mux/Security層 | `close()` | `func close() async throws` | I/O完了待ち |
 

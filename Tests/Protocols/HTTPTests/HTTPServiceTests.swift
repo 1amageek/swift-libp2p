@@ -551,13 +551,13 @@ struct HTTPServiceTests {
     }
 
     @Test("Shutdown is idempotent")
-    func shutdownIsIdempotent() {
+    func shutdownIsIdempotent() async {
         let service = HTTPService()
 
         // Multiple shutdowns should not crash
-        service.shutdown()
-        service.shutdown()
-        service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
+        await service.shutdown()
 
         // Service should still report correct protocol IDs
         #expect(service.protocolIDs == ["/http/1.1"])
