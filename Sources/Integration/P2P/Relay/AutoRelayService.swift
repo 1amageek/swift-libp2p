@@ -212,32 +212,9 @@ public final class AutoRelayService: EventEmitting, Sendable {
             return
         }
 
-        // 4. Collect connected peers as candidates, rank via selector (single lock)
+        // 4. Collect connected peers as candidates, rank via selector
         if configuration.useConnectedPeers {
-            let now = ContinuousClock.now
-            let cooldown = configuration.failureCooldown
-            let candidateInfos: [RelayCandidateInfo] = serviceState.withLock { state in
-                var result: [RelayCandidateInfo] = []
-                result.reserveCapacity(state.connectedPeers.count)
-                for peer in state.connectedPeers {
-                    if let info = state.candidateFailures[peer],
-                       let lastFailure = info.lastFailureTime,
-                       now - lastFailure < cooldown {
-                        continue
-                    }
-                    // Reset failure tracking after cooldown expires.
-                    // Without this, expired failures would permanently penalize
-                    // the peer's score via normalizeFailures().
-                    if state.candidateFailures[peer] != nil {
-                        state.candidateFailures.removeValue(forKey: peer)
-                    }
-                    result.append(RelayCandidateInfo(
-                        peer: peer, addresses: [], rtt: nil,
-                        recentFailures: 0, supportsRelay: true
-                    ))
-                }
-                return result
-            }
+            let candidateInfos = buildCandidateInfos()
 
             // 5. Rank eligible peers using the selector
             let ranked = configuration.selector.select(from: candidateInfos)
@@ -291,6 +268,55 @@ public final class AutoRelayService: EventEmitting, Sendable {
         oldTask?.cancel()
     }
 
+    // MARK: - Candidate Building
+
+    /// Builds candidate infos from current connected peers, applying cooldown
+    /// filtering and failure decay.
+    ///
+    /// - Peers within cooldown period are excluded entirely.
+    /// - When cooldown expires (`lastFailureTime != nil`), failure count is halved (decay).
+    ///   If decayed count reaches 0, the failure record is removed.
+    /// - After decay is applied (`lastFailureTime` set to `nil`), no further decay occurs
+    ///   until the peer fails again.
+    private func buildCandidateInfos() -> [RelayCandidateInfo] {
+        let now = ContinuousClock.now
+        let cooldown = configuration.failureCooldown
+        return serviceState.withLock { state in
+            var result: [RelayCandidateInfo] = []
+            result.reserveCapacity(state.connectedPeers.count)
+            for peer in state.connectedPeers {
+                var failureCount = 0
+                if var info = state.candidateFailures[peer] {
+                    // Within cooldown: exclude from candidates
+                    if let lastFailure = info.lastFailureTime,
+                       now - lastFailure < cooldown {
+                        continue
+                    }
+                    // Cooldown just expired: apply one-time decay (halve count)
+                    if info.lastFailureTime != nil {
+                        let decayed = info.count / 2
+                        if decayed == 0 {
+                            state.candidateFailures.removeValue(forKey: peer)
+                        } else {
+                            info.count = decayed
+                            info.lastFailureTime = nil
+                            state.candidateFailures[peer] = info
+                        }
+                        failureCount = decayed
+                    } else {
+                        // Already decayed (lastFailureTime == nil): use count as-is
+                        failureCount = info.count
+                    }
+                }
+                result.append(RelayCandidateInfo(
+                    peer: peer, addresses: [], rtt: nil,
+                    recentFailures: failureCount, supportsRelay: true
+                ))
+            }
+            return result
+        }
+    }
+
     // MARK: - Failure Tracking
 
     private func recordFailure(for peer: PeerID) {
@@ -300,6 +326,28 @@ public final class AutoRelayService: EventEmitting, Sendable {
             info.lastFailureTime = .now
             state.candidateFailures[peer] = info
         }
+    }
+
+    // MARK: - Internal API (testable)
+
+    /// Injects a failure record for a peer. Used by tests to simulate failures
+    /// without running the full reservation cycle.
+    func injectFailureForTesting(
+        peer: PeerID,
+        count: Int,
+        lastFailureTime: ContinuousClock.Instant? = .now
+    ) {
+        serviceState.withLock { state in
+            state.candidateFailures[peer] = CandidateFailureInfo(
+                count: count,
+                lastFailureTime: lastFailureTime
+            )
+        }
+    }
+
+    /// Exposes candidate building for test verification.
+    func buildCandidateInfosForTesting() -> [RelayCandidateInfo] {
+        buildCandidateInfos()
     }
 
     // MARK: - Event Emission
