@@ -132,7 +132,7 @@ struct NodeE2ETests {
         let serverPeerID = await server.peerID
 
         let eventTask = Task { @Sendable in
-            for await event in await client.events {
+            for await event in client.events {
                 clientEvents.withLock { $0.append(event) }
                 let count = clientEvents.withLock { $0.count }
                 if count >= 1 {
@@ -429,7 +429,7 @@ struct NodeE2ETests {
 
         let trimmedContexts = Mutex<[ConnectionTrimmedContext]>([])
         let eventTask = Task { @Sendable in
-            for await event in await server.events {
+            for await event in server.events {
                 guard case .connection(let connectionEvent) = event else { continue }
                 guard case .trimmedWithContext(peer: _, context: let context) = connectionEvent else { continue }
                 trimmedContexts.withLock { $0.append(context) }
@@ -499,7 +499,7 @@ struct NodeE2ETests {
 
         let constrainedEvents = Mutex<[(target: Int, selected: Int, trimmable: Int, active: Int)]>([])
         let eventTask = Task { @Sendable in
-            for await event in await server.events {
+            for await event in server.events {
                 guard case .connection(let connectionEvent) = event else { continue }
                 guard case .trimConstrained(
                     target: let target,
@@ -642,7 +642,7 @@ struct NodeE2ETests {
 
         let disconnectReceived = Mutex(false)
         let eventTask = Task { @Sendable in
-            for await event in await client.events {
+            for await event in client.events {
                 if case .peerDisconnected(let peer) = event, peer == serverPeerID {
                     disconnectReceived.withLock { $0 = true }
                     break
@@ -976,7 +976,7 @@ struct NodeE2ETests {
         // Collect events from client
         let peerConnectedCount = Mutex(0)
         let eventTask = Task {
-            for await event in await client.events {
+            for await event in client.events {
                 if case .peerConnected = event {
                     peerConnectedCount.withLock { $0 += 1 }
                 }
@@ -1015,7 +1015,7 @@ struct NodeE2ETests {
         // Collect disconnect events
         let disconnectedCount = Mutex(0)
         let eventTask = Task {
-            for await event in await client.events {
+            for await event in client.events {
                 if case .peerDisconnected = event {
                     disconnectedCount.withLock { $0 += 1 }
                 }

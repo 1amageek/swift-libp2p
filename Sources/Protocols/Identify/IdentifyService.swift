@@ -152,6 +152,10 @@ public final class IdentifyService: EventEmitting, Sendable {
     }
 
     /// Internal auto-push state.
+    ///
+    /// `autoPushTask` and `isShutDown` live here (same Mutex as push state)
+    /// so that `notifyAddressesChanged()` can atomically check shutdown status
+    /// before storing a new task, eliminating the race with `shutdown()`.
     private struct AutoPushState: Sendable {
         /// Currently connected peers that support identify push.
         var connectedPeers: Set<PeerID> = []
@@ -167,13 +171,16 @@ public final class IdentifyService: EventEmitting, Sendable {
 
         /// Closure to get current supported protocols.
         var getSupportedProtocols: (@Sendable () async -> [String])?
+
+        /// In-flight auto-push task.
+        var autoPushTask: Task<Void, Never>?
+
+        /// Whether shutdown has been called.
+        var isShutDown: Bool = false
     }
 
     /// Background cleanup task.
     private let cleanupTask: Mutex<Task<Void, Never>?>
-
-    /// In-flight auto-push task.
-    private let autoPushTask: Mutex<Task<Void, Never>?>
 
     /// Event stream for monitoring identify events.
     public var events: AsyncStream<IdentifyEvent> { channel.stream }
@@ -185,7 +192,6 @@ public final class IdentifyService: EventEmitting, Sendable {
         self.cacheState = Mutex(CacheState())
         self.autoPushState = Mutex(AutoPushState())
         self.cleanupTask = Mutex(nil)
-        self.autoPushTask = Mutex(nil)
     }
 
     // MARK: - Public API
@@ -357,14 +363,9 @@ public final class IdentifyService: EventEmitting, Sendable {
 
         emit(.autoPushTriggered(peerCount: peers.count))
 
-        // Cancel any in-flight auto-push before starting a new one
-        autoPushTask.withLock { task in
-            task?.cancel()
-            task = nil
-        }
-
         // Run auto-push in background (tracked for shutdown cancellation)
         let newTask = Task { [weak self, configuration] in
+            guard !Task.isCancelled else { return }
             guard let self = self else { return }
 
             let addresses: [Multiaddr]
@@ -415,7 +416,24 @@ public final class IdentifyService: EventEmitting, Sendable {
                 await group.waitForAll()
             }
         }
-        autoPushTask.withLock { $0 = newTask }
+        // Atomic swap: check shutdown + store new task in single lock.
+        // If shutdown already ran, discard the new task immediately.
+        enum SwapResult {
+            case swapped(old: Task<Void, Never>?)
+            case shutDown
+        }
+        let result: SwapResult = autoPushState.withLock { state -> SwapResult in
+            guard !state.isShutDown else { return .shutDown }
+            let old = state.autoPushTask
+            state.autoPushTask = newTask
+            return .swapped(old: old)
+        }
+        switch result {
+        case .swapped(let old):
+            old?.cancel()
+        case .shutDown:
+            newTask.cancel()
+        }
     }
 
     /// Returns cached info for a peer.
@@ -825,20 +843,20 @@ public final class IdentifyService: EventEmitting, Sendable {
     public func shutdown() async {
         stopMaintenance()
 
-        // Cancel in-flight auto-push task
-        let pushTask = autoPushTask.withLock { task -> Task<Void, Never>? in
-            let t = task; task = nil; return t
-        }
-        pushTask?.cancel()
-
-        // Clear auto-push state
-        autoPushState.withLock { state in
+        // Atomically mark shutdown and extract the in-flight push task.
+        // This ensures no new push task can be stored after isShutDown = true.
+        let pushTask = autoPushState.withLock { state -> Task<Void, Never>? in
+            state.isShutDown = true
+            let t = state.autoPushTask
+            state.autoPushTask = nil
             state.connectedPeers.removeAll()
             state.openerRef = nil
             state.localKeyPair = nil
             state.getListenAddresses = nil
             state.getSupportedProtocols = nil
+            return t
         }
+        pushTask?.cancel()
 
         channel.finish()
     }

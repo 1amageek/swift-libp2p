@@ -51,7 +51,7 @@ public final class SupernodeService: EventEmitting, Sendable {
     private let serviceState: Mutex<ServiceState>
 
     private struct ServiceState: Sendable {
-        var connectedPeerCount: Int = 0
+        var connectedPeers: Set<PeerID> = []
         var isRelayActive: Bool = false
         var isShutDown: Bool = false
     }
@@ -118,7 +118,7 @@ public final class SupernodeService: EventEmitting, Sendable {
 
         // 2. Connected peer count check
         if isEligible {
-            let peerCount = serviceState.withLock { $0.connectedPeerCount }
+            let peerCount = serviceState.withLock { $0.connectedPeers.count }
             if peerCount < configuration.minConnectedPeers {
                 isEligible = false
                 reason = "insufficient peers (\(peerCount)/\(configuration.minConnectedPeers))"
@@ -176,10 +176,10 @@ extension SupernodeService: NodeService {
 
 extension SupernodeService: PeerObserver {
     public func peerConnected(_ peer: PeerID) async {
-        serviceState.withLock { $0.connectedPeerCount += 1 }
+        _ = serviceState.withLock { $0.connectedPeers.insert(peer) }
     }
 
     public func peerDisconnected(_ peer: PeerID) async {
-        serviceState.withLock { $0.connectedPeerCount = max(0, $0.connectedPeerCount - 1) }
+        _ = serviceState.withLock { $0.connectedPeers.remove(peer) }
     }
 }

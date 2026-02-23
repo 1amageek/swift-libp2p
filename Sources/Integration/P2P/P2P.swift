@@ -320,14 +320,11 @@ public actor Node: NodeContext {
     // Traversal orchestration
     private var traversalCoordinator: TraversalCoordinator?
 
-    // Events — created eagerly in init to prevent event loss
-    private var eventContinuation: AsyncStream<NodeEvent>.Continuation?
-    private let _events: AsyncStream<NodeEvent>
+    // Events
+    private nonisolated let channel = EventChannel<NodeEvent>()
 
     /// Event stream for monitoring node state changes.
-    public var events: AsyncStream<NodeEvent> {
-        _events
-    }
+    public nonisolated var events: AsyncStream<NodeEvent> { channel.stream }
 
     /// Creates a new node with the given configuration.
     public init(configuration: NodeConfiguration) {
@@ -356,10 +353,7 @@ public actor Node: NodeContext {
         self._protoBook = configuration.protoBook ?? MemoryProtoBook()
         self._keyBook = configuration.keyBook ?? MemoryKeyBook()
 
-        // Create event stream eagerly to prevent event loss.
-        let (stream, continuation) = AsyncStream<NodeEvent>.makeStream()
-        self._events = stream
-        self.eventContinuation = continuation
+        // EventChannel handles stream lifecycle (lazy creation, safe shutdown)
     }
 
     // MARK: - Protocol Handlers
@@ -585,8 +579,7 @@ public actor Node: NodeContext {
         eventForwardingTask = nil
 
         // Finish event stream
-        eventContinuation?.finish()
-        eventContinuation = nil
+        channel.finish()
     }
 
     // MARK: - Connections (delegated to Swarm)
@@ -846,7 +839,7 @@ public actor Node: NodeContext {
     // MARK: - Private: Event Emission
 
     private func emit(_ event: NodeEvent) {
-        eventContinuation?.yield(event)
+        channel.yield(event)
     }
 }
 

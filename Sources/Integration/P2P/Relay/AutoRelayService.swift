@@ -64,9 +64,12 @@ public final class AutoRelayService: EventEmitting, Sendable {
         var lastFailureTime: ContinuousClock.Instant?
     }
 
-    // MARK: - Background Task
+    // MARK: - Background Tasks
 
     private let monitorTask: Mutex<Task<Void, Never>?>
+    private let triggerTask: Mutex<Task<Void, Never>?>
+    private let isMonitorCycleRunning = Mutex(false)
+    private let needsRecheck = Mutex(false)
 
     // MARK: - Relay Address Callback
 
@@ -104,6 +107,7 @@ public final class AutoRelayService: EventEmitting, Sendable {
         )
         self.serviceState = Mutex(ServiceState())
         self.monitorTask = Mutex(nil)
+        self.triggerTask = Mutex(nil)
         self.relayAddressCallback = Mutex(nil)
 
         // Register static relays as candidates
@@ -145,6 +149,29 @@ public final class AutoRelayService: EventEmitting, Sendable {
     }
 
     private func monitorCycle() async {
+        // Prevent concurrent execution (periodic loop + trigger can overlap)
+        let canRun = isMonitorCycleRunning.withLock { running -> Bool in
+            guard !running else { return false }
+            running = true
+            return true
+        }
+        guard canRun else {
+            // Signal the running cycle to re-evaluate when done
+            needsRecheck.withLock { $0 = true }
+            return
+        }
+        defer { isMonitorCycleRunning.withLock { $0 = false } }
+
+        needsRecheck.withLock { $0 = false }
+        await monitorCycleBody()
+
+        // Drain pending rechecks (trigger was requested during execution)
+        while needsRecheck.withLock({ v -> Bool in let r = v; v = false; return r }) {
+            await monitorCycleBody()
+        }
+    }
+
+    private func monitorCycleBody() async {
         // 1. Read NAT status from AutoNAT
         let natStatus = autoNAT.status
         let reachability: AutoRelayReachability = switch natStatus {
@@ -169,8 +196,14 @@ public final class AutoRelayService: EventEmitting, Sendable {
                 emit(.activated)
             }
         } else if reachability != .privateOnly && previousReachability == .privateOnly {
-            serviceState.withLock { $0.wasActivated = false }
-            emit(.deactivated)
+            let shouldDeactivate = serviceState.withLock { state -> Bool in
+                guard state.wasActivated else { return false }
+                state.wasActivated = false
+                return true
+            }
+            if shouldDeactivate {
+                emit(.deactivated)
+            }
         }
 
         // 3. Public? Nothing to do (AutoRelay clears active relays)
@@ -248,10 +281,14 @@ public final class AutoRelayService: EventEmitting, Sendable {
     }
 
     private func triggerImmediateReservationCycle() {
-        Task { [weak self] in
+        let newTask = Task { [weak self] in
             guard let self else { return }
             await self.monitorCycle()
         }
+        let oldTask = triggerTask.withLock { t -> Task<Void, Never>? in
+            let old = t; t = newTask; return old
+        }
+        oldTask?.cancel()
     }
 
     // MARK: - Failure Tracking
@@ -275,6 +312,7 @@ public final class AutoRelayService: EventEmitting, Sendable {
 
     public func shutdown() async {
         monitorTask.withLock { t in t?.cancel(); t = nil }
+        triggerTask.withLock { t in t?.cancel(); t = nil }
         serviceState.withLock { $0.isShutDown = true }
         await autoRelay.shutdown()
         relayAddressCallback.withLock { $0 = nil }

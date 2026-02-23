@@ -182,6 +182,7 @@ struct AutoRelayServiceTests {
 private final class MockNodeContext: NodeContext, @unchecked Sendable {
     let localPeer: PeerID
     let localKeyPair: KeyPair
+    private let _peerStore = MemoryPeerStore()
 
     init(localPeer: PeerID) {
         self.localPeer = localPeer
@@ -191,7 +192,7 @@ private final class MockNodeContext: NodeContext, @unchecked Sendable {
     func listenAddresses() async -> [Multiaddr] { [] }
     func supportedProtocols() async -> [String] { [] }
     var peerStore: any PeerStore {
-        get async { MemoryPeerStore() }
+        get async { _peerStore }
     }
 
     func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {

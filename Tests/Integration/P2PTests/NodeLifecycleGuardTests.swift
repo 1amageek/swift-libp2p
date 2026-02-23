@@ -94,7 +94,7 @@ struct NodeLifecycleGuardTests {
         let node = makeNode(hub: hub, name: "idle-shutdown-events")
 
         let consumeTask = Task {
-            for await _ in await node.events {}
+            for await _ in node.events {}
             return true
         }
 
