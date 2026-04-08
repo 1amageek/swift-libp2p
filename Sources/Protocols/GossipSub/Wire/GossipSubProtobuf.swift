@@ -321,493 +321,512 @@ public enum GossipSubProtobuf {
 
     /// Decodes a GossipSubRPC from protobuf wire format.
     public static func decode(_ data: Data) throws -> GossipSubRPC {
-        var subscriptions: [GossipSubRPC.SubscriptionOpt] = []
-        var messages: [GossipSubMessage] = []
-        var control: ControlMessageBatch?
+        try data.withUnsafeBytes { bytes in
+            var subscriptions: [GossipSubRPC.SubscriptionOpt] = []
+            var messages: [GossipSubMessage] = []
+            var control: ControlMessageBatch?
 
-        var offset = data.startIndex
+            var offset = 0
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
+
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+
+                let fieldData = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                offset = fieldEnd
+
+                switch fieldNumber {
+                case 1:
+                    subscriptions.append(try decodeSubOpts(fieldData))
+                case 2:
+                    messages.append(try decodeMessage(fieldData))
+                case 3:
+                    control = try decodeControl(fieldData)
+                default:
+                    break
+                }
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-
-            let fieldEnd = offset + Int(length)
-            guard fieldEnd <= data.endIndex else {
-                throw GossipSubError.invalidProtobuf("Field truncated")
-            }
-
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            switch fieldNumber {
-            case 1: // subscriptions
-                let sub = try decodeSubOpts(fieldData)
-                subscriptions.append(sub)
-
-            case 2: // publish
-                let msg = try decodeMessage(fieldData)
-                messages.append(msg)
-
-            case 3: // control
-                control = try decodeControl(fieldData)
-
-            default:
-                break
-            }
+            return GossipSubRPC(
+                subscriptions: subscriptions,
+                messages: messages,
+                control: control
+            )
         }
-
-        return GossipSubRPC(
-            subscriptions: subscriptions,
-            messages: messages,
-            control: control
-        )
     }
 
     private static func decodeSubOpts(_ data: Data) throws -> GossipSubRPC.SubscriptionOpt {
-        var subscribe = false
-        var topic: Topic?
+        try data.withUnsafeBytes { bytes in
+            var subscribe = false
+            var topic: Topic?
 
-        var offset = data.startIndex
+            var offset = 0
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            switch fieldNumber {
-            case 1: // subscribe (bool/varint)
-                guard wireType == 0 else {
-                    offset = try skipField(in: data, at: offset, wireType: wireType)
-                    continue
+                switch fieldNumber {
+                case 1:
+                    guard wireType == wireTypeVarint else {
+                        offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                        continue
+                    }
+                    let (value, valueBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += valueBytes
+                    subscribe = value != 0
+
+                case 2:
+                    guard wireType == wireTypeLengthDelimited else {
+                        offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                        continue
+                    }
+                    let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let fieldEnd = offset + Int(length)
+                    guard fieldEnd <= bytes.count else {
+                        throw GossipSubError.invalidProtobuf("Field truncated")
+                    }
+                    if let str = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
+                        topic = Topic(str)
+                    }
+                    offset = fieldEnd
+
+                default:
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
                 }
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                subscribe = value != 0
-
-            case 2: // topicid (string)
-                guard wireType == wireTypeLengthDelimited else {
-                    offset = try skipField(in: data, at: offset, wireType: wireType)
-                    continue
-                }
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + Int(length)
-                if let str = String(data: Data(data[offset..<fieldEnd]), encoding: .utf8) {
-                    topic = Topic(str)
-                }
-                offset = fieldEnd
-
-            default:
-                offset = try skipField(in: data, at: offset, wireType: wireType)
             }
-        }
 
-        guard let topic = topic else {
-            throw GossipSubError.invalidProtobuf("Missing topic in SubOpts")
-        }
+            guard let topic else {
+                throw GossipSubError.invalidProtobuf("Missing topic in SubOpts")
+            }
 
-        return GossipSubRPC.SubscriptionOpt(subscribe: subscribe, topic: topic)
+            return GossipSubRPC.SubscriptionOpt(subscribe: subscribe, topic: topic)
+        }
     }
 
     private static func decodeMessage(_ data: Data) throws -> GossipSubMessage {
-        var source: PeerID?
-        var messageData = Data()
-        var sequenceNumber = Data()
-        var topic: Topic?
-        var signature: Data?
-        var key: Data?
+        try data.withUnsafeBytes { bytes in
+            var source: PeerID?
+            var messageData = Data()
+            var sequenceNumber = Data()
+            var topic: Topic?
+            var signature: Data?
+            var key: Data?
 
-        var offset = data.startIndex
+            var offset = 0
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
-            }
-
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            switch fieldNumber {
-            case 1: // from
-                source = try PeerID(bytes: fieldData)
-
-            case 2: // data
-                messageData = fieldData
-
-            case 3: // seqno
-                sequenceNumber = fieldData
-
-            case 4: // topic
-                if let str = String(data: fieldData, encoding: .utf8) {
-                    topic = Topic(str)
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
                 }
 
-            case 5: // signature
-                signature = fieldData
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                let fieldData = data[fieldRange(in: data, offset: offset, end: fieldEnd)]
+                offset = fieldEnd
 
-            case 6: // key
-                key = fieldData
-
-            default:
-                break
+                switch fieldNumber {
+                case 1:
+                    source = try PeerID(bytes: Data(fieldData))
+                case 2:
+                    messageData = Data(fieldData)
+                case 3:
+                    sequenceNumber = Data(fieldData)
+                case 4:
+                    if let str = String(bytes: fieldData, encoding: .utf8) {
+                        topic = Topic(str)
+                    }
+                case 5:
+                    signature = Data(fieldData)
+                case 6:
+                    key = Data(fieldData)
+                default:
+                    break
+                }
             }
-        }
 
-        guard let topic = topic else {
-            throw GossipSubError.invalidProtobuf("Missing topic in Message")
-        }
+            guard let topic else {
+                throw GossipSubError.invalidProtobuf("Missing topic in Message")
+            }
 
-        return GossipSubMessage(
-            source: source,
-            data: messageData,
-            sequenceNumber: sequenceNumber,
-            topic: topic,
-            signature: signature,
-            key: key
-        )
+            return GossipSubMessage(
+                source: source,
+                data: messageData,
+                sequenceNumber: sequenceNumber,
+                topic: topic,
+                signature: signature,
+                key: key
+            )
+        }
     }
 
     private static func decodeControl(_ data: Data) throws -> ControlMessageBatch {
-        var batch = ControlMessageBatch()
+        try data.withUnsafeBytes { bytes in
+            var batch = ControlMessageBatch()
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                let fieldData = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                offset = fieldEnd
+
+                switch fieldNumber {
+                case 1:
+                    batch.ihaves.append(try decodeIHave(fieldData))
+                case 2:
+                    batch.iwants.append(try decodeIWant(fieldData))
+                case 3:
+                    batch.grafts.append(try decodeGraft(fieldData))
+                case 4:
+                    batch.prunes.append(try decodePrune(fieldData))
+                case 5:
+                    batch.idontwants.append(try decodeIDontWant(fieldData))
+                default:
+                    break
+                }
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            switch fieldNumber {
-            case 1: // ihave
-                let ihave = try decodeIHave(fieldData)
-                batch.ihaves.append(ihave)
-
-            case 2: // iwant
-                let iwant = try decodeIWant(fieldData)
-                batch.iwants.append(iwant)
-
-            case 3: // graft
-                let graft = try decodeGraft(fieldData)
-                batch.grafts.append(graft)
-
-            case 4: // prune
-                let prune = try decodePrune(fieldData)
-                batch.prunes.append(prune)
-
-            case 5: // idontwant (v1.2)
-                let idontwant = try decodeIDontWant(fieldData)
-                batch.idontwants.append(idontwant)
-
-            default:
-                break
-            }
+            return batch
         }
-
-        return batch
     }
 
     private static func decodeIHave(_ data: Data) throws -> ControlMessage.IHave {
-        var topic: Topic?
-        var messageIDs: [MessageID] = []
+        try data.withUnsafeBytes { bytes in
+            var topic: Topic?
+            var messageIDs: [MessageID] = []
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
-
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
-            }
-
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            switch fieldNumber {
-            case 1: // topicID
-                if let str = String(data: fieldData, encoding: .utf8) {
-                    topic = Topic(str)
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
                 }
 
-            case 2: // messageIDs
-                messageIDs.append(MessageID(bytes: fieldData))
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                let fieldData = data[fieldRange(in: data, offset: offset, end: fieldEnd)]
+                offset = fieldEnd
 
-            default:
-                break
+                switch fieldNumber {
+                case 1:
+                    if let str = String(bytes: fieldData, encoding: .utf8) {
+                        topic = Topic(str)
+                    }
+                case 2:
+                    messageIDs.append(MessageID(bytes: Data(fieldData)))
+                default:
+                    break
+                }
             }
-        }
 
-        guard let topic = topic else {
-            throw GossipSubError.invalidProtobuf("Missing topic in IHave")
-        }
+            guard let topic else {
+                throw GossipSubError.invalidProtobuf("Missing topic in IHave")
+            }
 
-        return ControlMessage.IHave(topic: topic, messageIDs: messageIDs)
+            return ControlMessage.IHave(topic: topic, messageIDs: messageIDs)
+        }
     }
 
     private static func decodeIWant(_ data: Data) throws -> ControlMessage.IWant {
-        var messageIDs: [MessageID] = []
+        try data.withUnsafeBytes { bytes in
+            var messageIDs: [MessageID] = []
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                if fieldNumber == 1 {
+                    messageIDs.append(MessageID(bytes: Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])))
+                }
+                offset = fieldEnd
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            if fieldNumber == 1 {
-                messageIDs.append(MessageID(bytes: fieldData))
-            }
+            return ControlMessage.IWant(messageIDs: messageIDs)
         }
-
-        return ControlMessage.IWant(messageIDs: messageIDs)
     }
 
     private static func decodeGraft(_ data: Data) throws -> ControlMessage.Graft {
-        var topic: Topic?
+        try data.withUnsafeBytes { bytes in
+            var topic: Topic?
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
-            }
-
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            if fieldNumber == 1 {
-                if let str = String(data: fieldData, encoding: .utf8) {
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                if fieldNumber == 1,
+                   let str = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
                     topic = Topic(str)
                 }
+                offset = fieldEnd
             }
-        }
 
-        guard let topic = topic else {
-            throw GossipSubError.invalidProtobuf("Missing topic in Graft")
-        }
+            guard let topic else {
+                throw GossipSubError.invalidProtobuf("Missing topic in Graft")
+            }
 
-        return ControlMessage.Graft(topic: topic)
+            return ControlMessage.Graft(topic: topic)
+        }
     }
 
     private static func decodePrune(_ data: Data) throws -> ControlMessage.Prune {
-        var topic: Topic?
-        var peers: [ControlMessage.Prune.PeerInfo] = []
-        var backoff: UInt64?
+        try data.withUnsafeBytes { bytes in
+            var topic: Topic?
+            var peers: [ControlMessage.Prune.PeerInfo] = []
+            var backoff: UInt64?
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                switch fieldNumber {
+                case 1:
+                    guard wireType == wireTypeLengthDelimited else {
+                        offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                        continue
+                    }
+                    let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let fieldEnd = offset + Int(length)
+                    guard fieldEnd <= bytes.count else {
+                        throw GossipSubError.invalidProtobuf("Field truncated")
+                    }
+                    if let str = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
+                        topic = Topic(str)
+                    }
+                    offset = fieldEnd
 
-            switch fieldNumber {
-            case 1: // topicID (string)
-                guard wireType == wireTypeLengthDelimited else {
-                    offset = try skipField(in: data, at: offset, wireType: wireType)
-                    continue
+                case 2:
+                    guard wireType == wireTypeLengthDelimited else {
+                        offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                        continue
+                    }
+                    let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let fieldEnd = offset + Int(length)
+                    guard fieldEnd <= bytes.count else {
+                        throw GossipSubError.invalidProtobuf("Field truncated")
+                    }
+                    peers.append(try decodePeerInfo(Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])))
+                    offset = fieldEnd
+
+                case 3:
+                    guard wireType == wireTypeVarint else {
+                        offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                        continue
+                    }
+                    let (value, valueBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += valueBytes
+                    backoff = value
+
+                default:
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
                 }
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + Int(length)
-                if let str = String(data: Data(data[offset..<fieldEnd]), encoding: .utf8) {
-                    topic = Topic(str)
-                }
-                offset = fieldEnd
-
-            case 2: // peers (repeated PeerInfo)
-                guard wireType == wireTypeLengthDelimited else {
-                    offset = try skipField(in: data, at: offset, wireType: wireType)
-                    continue
-                }
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + Int(length)
-                let peerInfo = try decodePeerInfo(Data(data[offset..<fieldEnd]))
-                peers.append(peerInfo)
-                offset = fieldEnd
-
-            case 3: // backoff (uint64)
-                guard wireType == 0 else {
-                    offset = try skipField(in: data, at: offset, wireType: wireType)
-                    continue
-                }
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                backoff = value
-
-            default:
-                offset = try skipField(in: data, at: offset, wireType: wireType)
             }
-        }
 
-        guard let topic = topic else {
-            throw GossipSubError.invalidProtobuf("Missing topic in Prune")
-        }
+            guard let topic else {
+                throw GossipSubError.invalidProtobuf("Missing topic in Prune")
+            }
 
-        return ControlMessage.Prune(topic: topic, peers: peers, backoff: backoff)
+            return ControlMessage.Prune(topic: topic, peers: peers, backoff: backoff)
+        }
     }
 
     private static func decodePeerInfo(_ data: Data) throws -> ControlMessage.Prune.PeerInfo {
-        var peerID: PeerID?
-        var signedPeerRecord: Data?
+        try data.withUnsafeBytes { bytes in
+            var peerID: PeerID?
+            var signedPeerRecord: Data?
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                let fieldData = data[fieldRange(in: data, offset: offset, end: fieldEnd)]
+                offset = fieldEnd
+
+                switch fieldNumber {
+                case 1:
+                    peerID = try PeerID(bytes: Data(fieldData))
+                case 2:
+                    signedPeerRecord = Data(fieldData)
+                default:
+                    break
+                }
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            switch fieldNumber {
-            case 1: // peerID
-                peerID = try PeerID(bytes: fieldData)
-
-            case 2: // signedPeerRecord
-                signedPeerRecord = fieldData
-
-            default:
-                break
+            guard let peerID else {
+                throw GossipSubError.invalidProtobuf("Missing peerID in PeerInfo")
             }
-        }
 
-        guard let peerID = peerID else {
-            throw GossipSubError.invalidProtobuf("Missing peerID in PeerInfo")
+            return ControlMessage.Prune.PeerInfo(peerID: peerID, signedPeerRecord: signedPeerRecord)
         }
-
-        return ControlMessage.Prune.PeerInfo(peerID: peerID, signedPeerRecord: signedPeerRecord)
     }
 
     private static func decodeIDontWant(_ data: Data) throws -> ControlMessage.IDontWant {
-        var messageIDs: [MessageID] = []
+        try data.withUnsafeBytes { bytes in
+            var messageIDs: [MessageID] = []
+            var offset = 0
 
-        var offset = data.startIndex
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(in: data, at: offset, wireType: wireType)
-                continue
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= bytes.count else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+                if fieldNumber == 1 {
+                    messageIDs.append(MessageID(bytes: Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])))
+                }
+                offset = fieldEnd
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + Int(length)
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
-            if fieldNumber == 1 {
-                messageIDs.append(MessageID(bytes: fieldData))
-            }
+            return ControlMessage.IDontWant(messageIDs: messageIDs)
         }
-
-        return ControlMessage.IDontWant(messageIDs: messageIDs)
     }
 
     // MARK: - Helpers
 
-    private static func skipField(in data: Data, at offset: Int, wireType: UInt64) throws -> Int {
+    private static func skipField(in buffer: UnsafeRawBufferPointer, at offset: Int, wireType: UInt64) throws -> Int {
         var newOffset = offset
         switch wireType {
-        case 0: // Varint
-            let (_, bytes) = try Varint.decode(Data(data[newOffset...]))
+        case 0:
+            let (_, bytes) = try Varint.decode(from: buffer, at: newOffset)
             newOffset += bytes
-        case 1: // 64-bit
+        case 1:
             newOffset += 8
-        case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
+        case 2:
+            let (length, lengthBytes) = try Varint.decode(from: buffer, at: newOffset)
             newOffset += lengthBytes + Int(length)
-        case 5: // 32-bit
+        case 5:
             newOffset += 4
         default:
             throw GossipSubError.invalidProtobuf("Unknown wire type \(wireType)")
         }
+        guard newOffset <= buffer.count else {
+            throw GossipSubError.invalidProtobuf("Field truncated")
+        }
         return newOffset
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 }

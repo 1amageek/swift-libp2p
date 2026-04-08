@@ -122,6 +122,43 @@ struct GossipSubWireBenchmarks {
         }
     }
 
+    @Test("GossipSubProtobuf.decode - publish RPC")
+    func decodePublishRPC() throws {
+        let privateKey = PrivateKey.generateEd25519()
+        let peerID = privateKey.publicKey.peerID
+        let topic = Topic("/meshsub/1.1.0/some-application/blocks/v1/json")
+        let data = Data(repeating: 0x42, count: 256)
+        let seqno = Data([0, 1, 2, 3, 4, 5, 6, 7])
+        let message = try GossipSubMessage.Builder(data: data, topic: topic)
+            .source(peerID)
+            .sequenceNumber(seqno)
+            .sign(with: privateKey)
+            .build()
+        let encoded = GossipSubProtobuf.encode(GossipSubRPC(messages: [message]))
+
+        try benchmark("GossipSubProtobuf.decode publish RPC", iterations: 250_000) {
+            blackHole(try GossipSubProtobuf.decode(encoded))
+        }
+    }
+
+    @Test("GossipSubProtobuf.decode - control RPC")
+    func decodeControlRPC() throws {
+        let topic = Topic("/meshsub/1.1.0/some-application/blocks/v1/json")
+        let ids = (0..<20).map { index in
+            MessageID(bytes: Data(repeating: UInt8(index), count: 20))
+        }
+        var control = ControlMessageBatch()
+        control.add(.ihave(.init(topic: topic, messageIDs: ids)))
+        control.add(.iwant(.init(messageIDs: Array(ids.prefix(10)))))
+        control.add(.graft(.init(topic: topic)))
+        control.add(.idontwant(.init(messageIDs: Array(ids.suffix(8)))))
+        let encoded = GossipSubProtobuf.encode(GossipSubRPC(control: control))
+
+        try benchmark("GossipSubProtobuf.decode control RPC", iterations: 250_000) {
+            blackHole(try GossipSubProtobuf.decode(encoded))
+        }
+    }
+
     @Test("Length-prefixed framing - publish RPC")
     func framePublishRPC() throws {
         let privateKey = PrivateKey.generateEd25519()
