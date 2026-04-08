@@ -12,13 +12,11 @@ public struct Multihash: Sendable, Hashable {
 
     /// The raw digest bytes.
     public let digest: Data
+    private let _bytes: Data
 
     /// The full multihash bytes (code + length + digest).
     public var bytes: Data {
-        var result = Varint.encode(code.rawValue)
-        result.append(contentsOf: Varint.encode(UInt64(digest.count)))
-        result.append(digest)
-        return result
+        _bytes
     }
 
     /// Creates a multihash with the specified code and digest.
@@ -29,6 +27,7 @@ public struct Multihash: Sendable, Hashable {
     public init(code: HashCode, digest: Data) {
         self.code = code
         self.digest = digest
+        self._bytes = Self.encodeBytes(code: code, digest: digest)
     }
 
     /// Maximum allowed digest length to prevent DoS attacks.
@@ -61,6 +60,7 @@ public struct Multihash: Sendable, Hashable {
 
         self.code = code
         self.digest = Data(digestStart.prefix(digestLength))
+        self._bytes = Self.encodeBytes(code: code, digest: self.digest)
     }
 
     /// Creates a SHA-256 multihash of the given data.
@@ -78,6 +78,13 @@ public struct Multihash: Sendable, Hashable {
     /// - Returns: An identity multihash
     public static func identity(_ data: Data) -> Multihash {
         Multihash(code: .identity, digest: data)
+    }
+
+    private static func encodeBytes(code: HashCode, digest: Data) -> Data {
+        var result = Varint.encode(code.rawValue)
+        result.append(contentsOf: Varint.encode(UInt64(digest.count)))
+        result.append(digest)
+        return result
     }
 }
 
