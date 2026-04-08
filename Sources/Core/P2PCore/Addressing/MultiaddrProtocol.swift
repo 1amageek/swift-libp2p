@@ -297,39 +297,52 @@ public enum MultiaddrProtocol: Sendable, Hashable {
 
     /// Creates a protocol from its code and value bytes.
     public static func decode(code: UInt64, from data: Data) throws -> (MultiaddrProtocol, Int) {
+        try decode(code: code, from: data, at: 0)
+    }
+
+    /// Creates a protocol from its code and value bytes at the given offset.
+    public static func decode(code: UInt64, from data: Data, at offset: Int) throws -> (MultiaddrProtocol, Int) {
         switch code {
         case 4: // ip4
-            guard data.count >= 4 else { throw MultiaddrError.invalidAddress }
-            let addr = data.prefix(4).map { String($0) }.joined(separator: ".")
+            guard offset + 4 <= data.count else { throw MultiaddrError.invalidAddress }
+            let bytes = data[fieldRange(in: data, offset: offset, end: offset + 4)]
+            let addr = bytes.map { String($0) }.joined(separator: ".")
             return (.ip4(addr), 4)
 
         case 42: // ip6zone
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             guard length <= 1024 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let zone = String(decoding: start.prefix(len), as: UTF8.self)
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let zone = String(decoding: data[valueStart..<valueEnd], as: UTF8.self)
             guard isValidZoneID(zone) else { throw MultiaddrError.invalidAddress }
             return (.ip6zone(zone), lengthBytes + len)
 
         case 41: // ip6
-            guard data.count >= 16 else { throw MultiaddrError.invalidAddress }
+            guard offset + 16 <= data.count else { throw MultiaddrError.invalidAddress }
             var groups: [UInt16] = []
             for i in 0..<8 {
-                let value = UInt16(data[i * 2]) << 8 | UInt16(data[i * 2 + 1])
+                let firstIndex = data.index(data.startIndex, offsetBy: offset + (i * 2))
+                let secondIndex = data.index(after: firstIndex)
+                let value = UInt16(data[firstIndex]) << 8 | UInt16(data[secondIndex])
                 groups.append(value)
             }
             return (.ip6(compressIPv6(groups)), 16)
 
         case 6: // tcp
-            guard data.count >= 2 else { throw MultiaddrError.invalidAddress }
-            let port = UInt16(data[0]) << 8 | UInt16(data[1])
+            guard offset + 2 <= data.count else { throw MultiaddrError.invalidAddress }
+            let highIndex = data.index(data.startIndex, offsetBy: offset)
+            let lowIndex = data.index(after: highIndex)
+            let port = UInt16(data[highIndex]) << 8 | UInt16(data[lowIndex])
             return (.tcp(port), 2)
 
         case 273: // udp
-            guard data.count >= 2 else { throw MultiaddrError.invalidAddress }
-            let port = UInt16(data[0]) << 8 | UInt16(data[1])
+            guard offset + 2 <= data.count else { throw MultiaddrError.invalidAddress }
+            let highIndex = data.index(data.startIndex, offsetBy: offset)
+            let lowIndex = data.index(after: highIndex)
+            let port = UInt16(data[highIndex]) << 8 | UInt16(data[lowIndex])
             return (.udp(port), 2)
 
         case 460: // quic
@@ -354,33 +367,35 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             return (.webtransport, 0)
 
         case 466: // certhash
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             guard length <= 1024 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let hash = Data(start.prefix(len))
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let hash = Data(data[fieldRange(in: data, offset: valueStart, end: valueEnd)])
             return (.certhash(hash), lengthBytes + len)
 
         case 421: // p2p
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             // PeerIDs are typically < 100 bytes, 4KB is more than enough
             guard length <= 4096 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let peerIDBytes = Data(start.prefix(len))
-            let peerID = try PeerID(bytes: peerIDBytes)
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let peerID = try PeerID(bytes: Data(data[fieldRange(in: data, offset: valueStart, end: valueEnd)]))
             return (.p2p(peerID), lengthBytes + len)
 
         case 53, 54, 55, 56: // dns, dns4, dns6, dnsaddr
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             // DNS names should be < 256 bytes according to spec
             guard length <= 4096 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let name = String(decoding: start.prefix(len), as: UTF8.self)
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let name = String(decoding: data[fieldRange(in: data, offset: valueStart, end: valueEnd)], as: UTF8.self)
             let proto: MultiaddrProtocol
             switch code {
             case 53: proto = .dns(name)
@@ -392,32 +407,35 @@ public enum MultiaddrProtocol: Sendable, Hashable {
             return (proto, lengthBytes + len)
 
         case 400: // unix
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             // Unix paths should be < 4KB
             guard length <= 4096 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let path = String(decoding: start.prefix(len), as: UTF8.self)
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let path = String(decoding: data[fieldRange(in: data, offset: valueStart, end: valueEnd)], as: UTF8.self)
             return (.unix(path), lengthBytes + len)
 
         case 777: // memory
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             // Memory IDs should be short
             guard length <= 1024 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let id = String(decoding: start.prefix(len), as: UTF8.self)
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let id = String(decoding: data[fieldRange(in: data, offset: valueStart, end: valueEnd)], as: UTF8.self)
             return (.memory(id), lengthBytes + len)
 
         case 0x01B0, 0x01B1, 0x01B2, 0x01B3: // ble, wifi-direct, lora, nfc
-            let (length, lengthBytes) = try Varint.decode(data)
+            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
             guard length <= 256 else { throw MultiaddrError.fieldTooLarge }
             let len = Int(length)
-            let start = data.dropFirst(lengthBytes)
-            guard start.count >= len else { throw MultiaddrError.invalidAddress }
-            let addrData = Data(start.prefix(len))
+            let valueStart = offset + lengthBytes
+            let valueEnd = valueStart + len
+            guard valueEnd <= data.count else { throw MultiaddrError.invalidAddress }
+            let addrData = Data(data[fieldRange(in: data, offset: valueStart, end: valueEnd)])
             let proto: MultiaddrProtocol
             switch code {
             case 0x01B0: proto = .ble(addrData)
@@ -431,6 +449,12 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         default:
             throw MultiaddrError.unknownProtocol(code)
         }
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 
     /// Creates a protocol from its name and value string.

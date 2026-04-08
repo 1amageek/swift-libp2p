@@ -132,20 +132,20 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         }
 
         var protocols: [MultiaddrProtocol] = []
-        var remaining = bytes
+        var offset = 0
 
-        while !remaining.isEmpty {
+        while offset < bytes.count {
             // Check component count to prevent DoS
             guard protocols.count < multiaddrMaxComponents else {
                 throw MultiaddrError.tooManyComponents(count: protocols.count + 1, max: multiaddrMaxComponents)
             }
 
-            let (code, codeBytes) = try Varint.decode(remaining)
-            remaining = remaining.dropFirst(codeBytes)
+            let (code, codeBytes) = try Varint.decode(from: bytes, at: offset)
+            offset += codeBytes
 
-            let (proto, valueBytes) = try MultiaddrProtocol.decode(code: code, from: Data(remaining))
+            let (proto, valueBytes) = try MultiaddrProtocol.decode(code: code, from: bytes, at: offset)
             protocols.append(proto)
-            remaining = remaining.dropFirst(valueBytes)
+            offset += valueBytes
         }
 
         self.protocols = protocols
