@@ -54,6 +54,8 @@ Notes:
   slice-safe indexing to avoid rebuilding `Data` while decoding nested fields.
 - `Multiaddr`: when decoding from bytes, preserve the validated wire bytes
   instead of re-encoding protocol components back into `_bytes`.
+- `Multiaddr`: defer `description` construction on binary decode paths and use
+  wire bytes for equality/hash instead of cached strings.
 - `PublicKey`: switched protobuf decode to 0-based offset varint parsing.
 - `Envelope`: switched unmarshal to 0-based offset varint parsing and removed
   avoidable field copies.
@@ -165,21 +167,21 @@ scripts/run-benchmarks.sh --configuration release --suite KademliaWireBenchmarks
 
 | Benchmark | Result |
 | --- | ---: |
-| `KademliaProtobuf.encode findNodeResponse` | `9261.06 ns/op` |
-| `KademliaProtobuf.encode(into:) findNodeResponse` | `4275.97 ns/op` |
-| `KademliaProtobuf.encode getValueResponse` | `4215.06 ns/op` |
-| `KademliaProtobuf.encode(into:) getValueResponse` | `2058.72 ns/op` |
-| `KademliaProtobuf.decode findNodeResponse` | `22920.45 ns/op` |
-| `KademliaProtobuf.decode getValueResponse` | `9250.74 ns/op` |
+| `KademliaProtobuf.encode findNodeResponse` | `9214.02 ns/op` |
+| `KademliaProtobuf.encode(into:) findNodeResponse` | `4434.95 ns/op` |
+| `KademliaProtobuf.encode getValueResponse` | `4275.05 ns/op` |
+| `KademliaProtobuf.encode(into:) getValueResponse` | `2091.52 ns/op` |
+| `KademliaProtobuf.decode findNodeResponse` | `15090.71 ns/op` |
+| `KademliaProtobuf.decode getValueResponse` | `6324.49 ns/op` |
 
 Relevant comparisons from this run:
 
-- `KademliaProtobuf.encode findNodeResponse`: `9719.38 -> 9261.06 ns/op`
-- `KademliaProtobuf.encode(into:) findNodeResponse`: `4428.24 -> 4275.97 ns/op`
-- `KademliaProtobuf.encode getValueResponse`: `4325.00 -> 4215.06 ns/op`
-- `KademliaProtobuf.encode(into:) getValueResponse`: `2111.70 -> 2058.72 ns/op`
-- `KademliaProtobuf.decode findNodeResponse`: `43092.12 -> 22920.45 ns/op`
-- `KademliaProtobuf.decode getValueResponse`: `17117.30 -> 9250.74 ns/op`
+- `KademliaProtobuf.encode findNodeResponse`: `9261.06 -> 9214.02 ns/op`
+- `KademliaProtobuf.encode(into:) findNodeResponse`: `4275.97 -> 4434.95 ns/op`
+- `KademliaProtobuf.encode getValueResponse`: `4215.06 -> 4275.05 ns/op`
+- `KademliaProtobuf.encode(into:) getValueResponse`: `2058.72 -> 2091.52 ns/op`
+- `KademliaProtobuf.decode findNodeResponse`: `22920.45 -> 15090.71 ns/op`
+- `KademliaProtobuf.decode getValueResponse`: `9250.74 -> 6324.49 ns/op`
 
 ### Other Established Baselines
 
@@ -218,6 +220,9 @@ Sampling with `sample` during release benchmark runs showed:
 - With eager PeerID formatting removed, the next Kademlia decode cost was
   rebuilding `Multiaddr._bytes` from decoded protocol components. Preserving the
   validated wire bytes cut Kademlia decode roughly in half again.
+- After preserving wire bytes, the next visible Multiaddr cost was eager
+  `description` construction during binary decode. Deferring that formatting
+  brought Kademlia decode down by another third.
 
 ## Tests Run Alongside the Optimizations
 

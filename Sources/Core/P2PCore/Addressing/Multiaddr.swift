@@ -20,7 +20,7 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
     /// The protocol components of this address.
     public let protocols: [MultiaddrProtocol]
     private let _bytes: Data
-    private let _description: String
+    private let _description: String?
 
     /// Creates a Multiaddr from protocol components.
     ///
@@ -150,7 +150,7 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
         self.protocols = protocols
         self._bytes = bytes
-        self._description = Self.describe(protocols)
+        self._description = nil
     }
 
     /// The binary representation of this address.
@@ -160,7 +160,19 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
     /// The string representation of this address.
     public var description: String {
-        _description
+        _description ?? Self.describe(protocols)
+    }
+
+    static func __derived_struct_equals(_ lhs: Multiaddr, _ rhs: Multiaddr) -> Bool {
+        lhs._bytes == rhs._bytes
+    }
+
+    public static func == (lhs: Multiaddr, rhs: Multiaddr) -> Bool {
+        __derived_struct_equals(lhs, rhs)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(_bytes)
     }
 
     private static func encodeBytes(from protocols: [MultiaddrProtocol]) -> Data {
