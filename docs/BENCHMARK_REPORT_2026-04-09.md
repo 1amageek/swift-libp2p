@@ -45,6 +45,8 @@ Notes:
   encode paths, exposed more hot paths as `@inlinable`.
 - `Multihash`: cached encoded bytes to avoid rebuilding `code + length + digest`
   on every access.
+- `Multihash(bytes:)`: switched decode to 0-based offset varint parsing and
+  retained consumed bytes directly instead of rebuilding the multihash payload.
 - `Multiaddr`: cached `bytes` and `description`.
 - `PublicKey`: switched protobuf decode to 0-based offset varint parsing.
 - `Envelope`: switched unmarshal to 0-based offset varint parsing and removed
@@ -78,13 +80,22 @@ scripts/run-benchmarks.sh --configuration release --suite CoreWireBenchmarks
 
 | Benchmark | Result |
 | --- | ---: |
-| `PublicKey.decode protobuf ed25519` | `351.76 ns/op` |
-| `Envelope.unmarshal signed PeerRecord` | `403.69 ns/op` |
+| `Multihash.decode sha256` | `29.03 ns/op` |
+| `Multihash.decode sha256 legacy` | `488.08 ns/op` |
+| `PublicKey.decode protobuf ed25519` | `379.20 ns/op` |
+| `Envelope.unmarshal signed PeerRecord` | `418.35 ns/op` |
 
 Compared with the immediately previous baseline:
 
-- `PublicKey.decode protobuf ed25519`: `368.05 -> 351.76 ns/op`
-- `Envelope.unmarshal signed PeerRecord`: `431.33 -> 403.69 ns/op`
+- `Multihash.decode sha256`: `485.23 -> 29.03 ns/op`
+- `PublicKey.decode protobuf ed25519`: `385.03 -> 379.20 ns/op`
+- `Envelope.unmarshal signed PeerRecord`: `441.27 -> 418.35 ns/op`
+
+The `Multihash` benchmark now includes a same-suite legacy implementation for
+sanity checking. On the latest run:
+
+- `Multihash.decode sha256`: `29.03 ns/op`
+- `Multihash.decode sha256 legacy`: `488.08 ns/op`
 
 ### GossipSub Wire Benchmarks
 
@@ -185,6 +196,7 @@ Sampling with `sample` during release benchmark runs showed:
 Focused validation performed during this benchmark cycle included:
 
 - `EnvelopeTests`
+- `MultihashTests`
 - `PeerRecordTests`
 - `IdentifyProtobufTests`
 - `PeerIDTests`

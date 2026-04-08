@@ -39,13 +39,12 @@ public struct Multihash: Sendable, Hashable {
     /// - Parameter data: The multihash bytes
     /// - Throws: `MultihashError` if the data is malformed
     public init(bytes data: Data) throws {
-        let (codeValue, codeBytes) = try Varint.decode(data)
+        let (codeValue, codeBytes) = try Varint.decode(from: data, at: 0)
         guard let code = HashCode(rawValue: codeValue) else {
             throw MultihashError.unknownCode(codeValue)
         }
 
-        let remaining = data.dropFirst(codeBytes)
-        let (length, lengthBytes) = try Varint.decode(Data(remaining))
+        let (length, lengthBytes) = try Varint.decode(from: data, at: codeBytes)
 
         // Bounds check: prevent DoS from huge length values
         guard length <= Self.maxDigestLength else {
@@ -53,14 +52,18 @@ public struct Multihash: Sendable, Hashable {
         }
 
         let digestLength = Int(length)
-        let digestStart = remaining.dropFirst(lengthBytes)
-        guard digestStart.count >= digestLength else {
+        let digestStart = codeBytes + lengthBytes
+        let digestEnd = digestStart + digestLength
+        guard digestEnd <= data.count else {
             throw MultihashError.insufficientData
         }
 
+        let digestRange = Self.fieldRange(in: data, offset: digestStart, end: digestEnd)
+        let bytesRange = Self.fieldRange(in: data, offset: 0, end: digestEnd)
+
         self.code = code
-        self.digest = Data(digestStart.prefix(digestLength))
-        self._bytes = Self.encodeBytes(code: code, digest: self.digest)
+        self.digest = data[digestRange]
+        self._bytes = data[bytesRange]
     }
 
     /// Creates a SHA-256 multihash of the given data.
@@ -85,6 +88,12 @@ public struct Multihash: Sendable, Hashable {
         result.append(contentsOf: Varint.encode(UInt64(digest.count)))
         result.append(digest)
         return result
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 }
 
