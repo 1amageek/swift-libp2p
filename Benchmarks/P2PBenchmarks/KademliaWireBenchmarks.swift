@@ -64,6 +64,31 @@ struct KademliaWireBenchmarks {
         }
     }
 
+    @Test("KademliaProtobuf.decode - find node response")
+    func decodeFindNodeResponse() throws {
+        let peers = try samplePeers(count: 20)
+        let encoded = KademliaProtobuf.encode(.findNodeResponse(closerPeers: peers))
+
+        try benchmark("KademliaProtobuf.decode findNodeResponse", iterations: 250_000) {
+            blackHole(try KademliaProtobuf.decode(encoded))
+        }
+    }
+
+    @Test("KademliaProtobuf.decode - get value response")
+    func decodeGetValueResponse() throws {
+        let peers = try samplePeers(count: 8)
+        let record = KademliaRecord(
+            key: Data("kad:key:/providers/example".utf8),
+            value: Data(repeating: 0x42, count: 512),
+            timeReceived: "2026-04-08T22:00:00Z"
+        )
+        let encoded = KademliaProtobuf.encode(.getValueResponse(record: record, closerPeers: peers))
+
+        try benchmark("KademliaProtobuf.decode getValueResponse", iterations: 200_000) {
+            blackHole(try KademliaProtobuf.decode(encoded))
+        }
+    }
+
     private func samplePeers(count: Int) throws -> [KademliaPeer] {
         let baseAddresses = try [
             Multiaddr("/ip4/127.0.0.1/tcp/4001"),

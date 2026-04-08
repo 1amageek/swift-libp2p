@@ -137,7 +137,7 @@ enum IdentifyProtobuf {
 
         while offset < data.endIndex {
             // Read field tag
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -148,7 +148,7 @@ enum IdentifyProtobuf {
                 // Skip unknown wire types
                 if wireType == 0 {
                     // Varint - read and discard
-                    let (_, varBytes) = try Varint.decode(Data(data[offset...]))
+                    let (_, varBytes) = try Varint.decode(from: data, at: offset)
                     offset += varBytes
                 } else if wireType == 1 {
                     // 64-bit - skip 8 bytes
@@ -163,21 +163,19 @@ enum IdentifyProtobuf {
             }
 
             // Read field length
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
+            let length = try Varint.toInt(lengthValue)
 
-            let fieldEnd = offset + Int(length)
+            let fieldEnd = offset + length
             guard fieldEnd <= data.endIndex else {
                 throw IdentifyError.invalidProtobuf("Field truncated")
             }
 
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
-
             switch fieldNumber {
             case 1: // publicKey
                 do {
-                    publicKey = try PublicKey(protobufEncoded: fieldData)
+                    publicKey = try PublicKey(protobufEncoded: Data(data[offset..<fieldEnd]))
                 } catch {
                     print("[IdentifyProtobuf] Failed to decode publicKey: \(error)")
                     throw IdentifyError.invalidProtobuf("publicKey decode failed: \(error)")
@@ -185,7 +183,7 @@ enum IdentifyProtobuf {
 
             case 2: // listenAddrs
                 do {
-                    let addr = try Multiaddr(bytes: fieldData)
+                    let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
                     listenAddresses.append(addr)
                 } catch {
                     // listenAddrs is repeated/optional, skip invalid entries
@@ -193,13 +191,13 @@ enum IdentifyProtobuf {
                 }
 
             case 3: // protocols
-                if let proto = String(data: fieldData, encoding: .utf8) {
+                if let proto = String(bytes: data[offset..<fieldEnd], encoding: .utf8) {
                     protocols.append(proto)
                 }
 
             case 4: // observedAddr
                 do {
-                    observedAddress = try Multiaddr(bytes: fieldData)
+                    observedAddress = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
                 } catch {
                     // observedAddr is optional, skip if decode fails
                     print("[IdentifyProtobuf] WARNING: Failed to decode observedAddr: \(error), skipping")
@@ -207,14 +205,14 @@ enum IdentifyProtobuf {
                 }
 
             case 5: // protocolVersion
-                protocolVersion = String(data: fieldData, encoding: .utf8)
+                protocolVersion = String(bytes: data[offset..<fieldEnd], encoding: .utf8)
 
             case 6: // agentVersion
-                agentVersion = String(data: fieldData, encoding: .utf8)
+                agentVersion = String(bytes: data[offset..<fieldEnd], encoding: .utf8)
 
             case 8: // signedPeerRecord
                 do {
-                    signedPeerRecord = try Envelope.unmarshal(fieldData)
+                    signedPeerRecord = try Envelope.unmarshal(Data(data[offset..<fieldEnd]))
                 } catch {
                     // signedPeerRecord is optional, log and skip if decode fails
                     print("[IdentifyProtobuf] WARNING: Failed to decode signedPeerRecord: \(error), continuing without it")
@@ -225,6 +223,8 @@ enum IdentifyProtobuf {
                 // Skip unknown fields
                 break
             }
+
+            offset = fieldEnd
         }
 
         return IdentifyInfo(

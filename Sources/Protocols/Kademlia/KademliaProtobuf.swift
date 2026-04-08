@@ -152,7 +152,7 @@ enum KademliaProtobuf {
         var offset = data.startIndex
 
         while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -160,14 +160,15 @@ enum KademliaProtobuf {
 
             switch (fieldNumber, wireType) {
             case (1, wireTypeVarint): // type
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
+                let (value, valueBytes) = try Varint.decode(from: data, at: offset)
                 offset += valueBytes
                 type = KademliaMessageType(rawValue: UInt32(value)) ?? .findNode
 
             case (10, wireTypeLengthDelimited): // key
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("Key field truncated")
                 }
@@ -175,9 +176,10 @@ enum KademliaProtobuf {
                 offset = fieldEnd
 
             case (3, wireTypeLengthDelimited): // record
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("Record field truncated")
                 }
@@ -185,9 +187,10 @@ enum KademliaProtobuf {
                 offset = fieldEnd
 
             case (8, wireTypeLengthDelimited): // closerPeers
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("CloserPeers field truncated")
                 }
@@ -196,9 +199,10 @@ enum KademliaProtobuf {
                 offset = fieldEnd
 
             case (9, wireTypeLengthDelimited): // providerPeers
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("ProviderPeers field truncated")
                 }
@@ -295,7 +299,7 @@ enum KademliaProtobuf {
         var offset = data.startIndex
 
         while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -303,9 +307,10 @@ enum KademliaProtobuf {
 
             switch (fieldNumber, wireType) {
             case (1, wireTypeLengthDelimited): // id
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("Peer ID truncated")
                 }
@@ -313,9 +318,10 @@ enum KademliaProtobuf {
                 offset = fieldEnd
 
             case (2, wireTypeLengthDelimited): // addrs
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.endIndex else {
                     throw KademliaError.encodingError("Address truncated")
                 }
@@ -324,7 +330,7 @@ enum KademliaProtobuf {
                 offset = fieldEnd
 
             case (3, wireTypeVarint): // connection
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
+                let (value, valueBytes) = try Varint.decode(from: data, at: offset)
                 offset += valueBytes
                 connectionType = KademliaPeerConnectionType(rawValue: UInt32(value)) ?? .notConnected
 
@@ -457,7 +463,7 @@ enum KademliaProtobuf {
         var offset = data.startIndex
 
         while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
+            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
             let fieldNumber = tag >> 3
@@ -468,9 +474,10 @@ enum KademliaProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
-            let fieldEnd = offset + Int(length)
+            let length = try Varint.toInt(lengthValue)
+            let fieldEnd = offset + length
             guard fieldEnd <= data.endIndex else {
                 throw KademliaError.encodingError("Record field truncated")
             }
@@ -481,7 +488,7 @@ enum KademliaProtobuf {
             case 2: // value
                 value = Data(data[offset..<fieldEnd])
             case 5: // timeReceived
-                timeReceived = String(data: Data(data[offset..<fieldEnd]), encoding: .utf8)
+                timeReceived = String(bytes: data[offset..<fieldEnd], encoding: .utf8)
             default:
                 break
             }
@@ -502,13 +509,14 @@ enum KademliaProtobuf {
 
         switch wireType {
         case 0: // Varint
-            let (_, varBytes) = try Varint.decode(Data(data[newOffset...]))
+            let (_, varBytes) = try Varint.decode(from: data, at: newOffset)
             newOffset += varBytes
         case 1: // 64-bit
             newOffset += 8
         case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += lengthBytes + Int(length)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: newOffset)
+            let length = try Varint.toInt(lengthValue)
+            newOffset += lengthBytes + length
         case 5: // 32-bit
             newOffset += 4
         default:
