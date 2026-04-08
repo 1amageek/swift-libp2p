@@ -57,6 +57,8 @@ Notes:
   avoidable field copies.
 - `PeerID`: replaced `matches(publicKey:)` reconstruction with direct multihash
   comparison for identity and SHA-256 cases.
+- `PeerID`: removed eager Base58 generation from binary decode paths and defer
+  string formatting to `description` access.
 
 ### Protocols
 
@@ -161,21 +163,21 @@ scripts/run-benchmarks.sh --configuration release --suite KademliaWireBenchmarks
 
 | Benchmark | Result |
 | --- | ---: |
-| `KademliaProtobuf.encode findNodeResponse` | `9429.87 ns/op` |
-| `KademliaProtobuf.encode(into:) findNodeResponse` | `4448.33 ns/op` |
-| `KademliaProtobuf.encode getValueResponse` | `4232.40 ns/op` |
-| `KademliaProtobuf.encode(into:) getValueResponse` | `2087.01 ns/op` |
-| `KademliaProtobuf.decode findNodeResponse` | `92479.64 ns/op` |
-| `KademliaProtobuf.decode getValueResponse` | `36060.45 ns/op` |
+| `KademliaProtobuf.encode findNodeResponse` | `9719.38 ns/op` |
+| `KademliaProtobuf.encode(into:) findNodeResponse` | `4428.24 ns/op` |
+| `KademliaProtobuf.encode getValueResponse` | `4325.00 ns/op` |
+| `KademliaProtobuf.encode(into:) getValueResponse` | `2111.70 ns/op` |
+| `KademliaProtobuf.decode findNodeResponse` | `43092.12 ns/op` |
+| `KademliaProtobuf.decode getValueResponse` | `17117.30 ns/op` |
 
 Relevant comparisons from this run:
 
-- `KademliaProtobuf.encode findNodeResponse`: `9337.64 -> 9429.87 ns/op`
-- `KademliaProtobuf.encode(into:) findNodeResponse`: `4373.48 -> 4448.33 ns/op`
-- `KademliaProtobuf.encode getValueResponse`: `4196.33 -> 4232.40 ns/op`
-- `KademliaProtobuf.encode(into:) getValueResponse`: `2072.50 -> 2087.01 ns/op`
-- `KademliaProtobuf.decode findNodeResponse`: `94526.07 -> 92479.64 ns/op`
-- `KademliaProtobuf.decode getValueResponse`: `37043.61 -> 36060.45 ns/op`
+- `KademliaProtobuf.encode findNodeResponse`: `9429.87 -> 9719.38 ns/op`
+- `KademliaProtobuf.encode(into:) findNodeResponse`: `4448.33 -> 4428.24 ns/op`
+- `KademliaProtobuf.encode getValueResponse`: `4232.40 -> 4325.00 ns/op`
+- `KademliaProtobuf.encode(into:) getValueResponse`: `2087.01 -> 2111.70 ns/op`
+- `KademliaProtobuf.decode findNodeResponse`: `92479.64 -> 43092.12 ns/op`
+- `KademliaProtobuf.decode getValueResponse`: `36060.45 -> 17117.30 ns/op`
 
 ### Other Established Baselines
 
@@ -208,6 +210,9 @@ Sampling with `sample` during release benchmark runs showed:
 - A later Kademlia decode regression turned out to be slice indexing in
   `MultiaddrProtocol.decode`. Switching nested Multiaddr parsing to offset-based,
   slice-safe indexing removed the release-only trap and preserved the decode win.
+- After that, sampling still showed `Base58.encode(_:)` under `PeerID(bytes:)`
+  during Kademlia peer decode. Removing eager PeerID description generation cut
+  Kademlia decode nearly in half again.
 
 ## Tests Run Alongside the Optimizations
 

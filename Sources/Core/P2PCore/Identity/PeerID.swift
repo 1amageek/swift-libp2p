@@ -15,10 +15,6 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
     /// The multihash representation of this PeerID.
     public let multihash: Multihash
 
-    /// Cached Base58 string representation. Pre-computed to avoid
-    /// repeated O(n²) Base58 encoding on every `description` access.
-    private let _description: String
-
     /// Creates a PeerID from a public key.
     ///
     /// - Parameter publicKey: The public key to derive the PeerID from
@@ -32,7 +28,6 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
         } else {
             self.multihash = Multihash.sha256(encoded)
         }
-        self._description = self.multihash.bytes.base58EncodedString
     }
 
     /// Creates a PeerID from a key pair.
@@ -47,7 +42,6 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
     /// - Parameter multihash: The multihash
     public init(multihash: Multihash) {
         self.multihash = multihash
-        self._description = multihash.bytes.base58EncodedString
     }
 
     /// Creates a PeerID from raw multihash bytes.
@@ -56,7 +50,6 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
     /// - Throws: `MultihashError` if the bytes are invalid
     public init(bytes: Data) throws {
         self.multihash = try Multihash(bytes: bytes)
-        self._description = multihash.bytes.base58EncodedString
     }
 
     /// Creates a PeerID from a Base58-encoded string.
@@ -82,7 +75,6 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
         }
 
         self.multihash = try Multihash(bytes: data)
-        self._description = multihash.bytes.base58EncodedString
     }
 
     /// The raw bytes of this PeerID (multihash bytes).
@@ -103,7 +95,7 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
 
     /// The Base58btc string representation of this PeerID.
     public var description: String {
-        _description
+        multihash.bytes.base58EncodedString
     }
 
     /// A short representation for logging (last 8 characters).
@@ -135,6 +127,22 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
         default:
             return false
         }
+    }
+
+    static func __derived_struct_equals(_ lhs: PeerID, _ rhs: PeerID) -> Bool {
+        lhs.multihash == rhs.multihash
+    }
+}
+
+extension PeerID: Equatable {
+    public static func == (lhs: PeerID, rhs: PeerID) -> Bool {
+        __derived_struct_equals(lhs, rhs)
+    }
+}
+
+extension PeerID {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(multihash)
     }
 }
 
