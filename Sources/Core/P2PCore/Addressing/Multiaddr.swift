@@ -19,6 +19,8 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
 
     /// The protocol components of this address.
     public let protocols: [MultiaddrProtocol]
+    private let _bytes: Data
+    private let _description: String
 
     /// Creates a Multiaddr from protocol components.
     ///
@@ -50,6 +52,8 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         }
 
         self.protocols = protocols
+        self._bytes = Self.encodeBytes(from: protocols)
+        self._description = Self.describe(protocols)
     }
 
     /// Creates a Multiaddr from protocol components without validation.
@@ -63,6 +67,8 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
     /// - Warning: No validation is performed. Use `init(protocols:)` for untrusted input.
     public init(uncheckedProtocols: [MultiaddrProtocol]) {
         self.protocols = uncheckedProtocols
+        self._bytes = Self.encodeBytes(from: uncheckedProtocols)
+        self._description = Self.describe(uncheckedProtocols)
     }
 
     /// Creates a Multiaddr from its string representation.
@@ -111,6 +117,8 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         }
 
         self.protocols = protocols
+        self._bytes = Self.encodeBytes(from: protocols)
+        self._description = Self.describe(protocols)
     }
 
     /// Creates a Multiaddr from its binary representation.
@@ -141,11 +149,21 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         }
 
         self.protocols = protocols
+        self._bytes = Self.encodeBytes(from: protocols)
+        self._description = Self.describe(protocols)
     }
 
     /// The binary representation of this address.
     public var bytes: Data {
-        // Pre-allocate capacity: each protocol typically uses 3-20 bytes
+        _bytes
+    }
+
+    /// The string representation of this address.
+    public var description: String {
+        _description
+    }
+
+    private static func encodeBytes(from protocols: [MultiaddrProtocol]) -> Data {
         var result = Data(capacity: protocols.count * 12)
         for proto in protocols {
             result.append(contentsOf: proto.bytes)
@@ -153,8 +171,7 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         return result
     }
 
-    /// The string representation of this address.
-    public var description: String {
+    private static func describe(_ protocols: [MultiaddrProtocol]) -> String {
         "/" + protocols.map { proto in
             if let value = proto.valueString {
                 return "\(proto.name)/\(value)"
@@ -304,7 +321,6 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
     }
 
 }
-
 public enum MultiaddrError: Error, Equatable {
     case invalidFormat
     case invalidAddress
