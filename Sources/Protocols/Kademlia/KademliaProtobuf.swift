@@ -149,9 +149,9 @@ enum KademliaProtobuf {
         var closerPeers: [KademliaPeer] = []
         var providerPeers: [KademliaPeer] = []
 
-        var offset = data.startIndex
+        var offset = 0
 
-        while offset < data.endIndex {
+        while offset < data.count {
             let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
@@ -169,10 +169,10 @@ enum KademliaProtobuf {
                 offset += lengthBytes
                 let length = try Varint.toInt(lengthValue)
                 let fieldEnd = offset + length
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw KademliaError.encodingError("Key field truncated")
                 }
-                key = Data(data[offset..<fieldEnd])
+                key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 offset = fieldEnd
 
             case (3, wireTypeLengthDelimited): // record
@@ -180,10 +180,10 @@ enum KademliaProtobuf {
                 offset += lengthBytes
                 let length = try Varint.toInt(lengthValue)
                 let fieldEnd = offset + length
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw KademliaError.encodingError("Record field truncated")
                 }
-                record = try decodeRecord(Data(data[offset..<fieldEnd]))
+                record = try decodeRecord(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 offset = fieldEnd
 
             case (8, wireTypeLengthDelimited): // closerPeers
@@ -191,10 +191,10 @@ enum KademliaProtobuf {
                 offset += lengthBytes
                 let length = try Varint.toInt(lengthValue)
                 let fieldEnd = offset + length
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw KademliaError.encodingError("CloserPeers field truncated")
                 }
-                let peer = try decodePeer(Data(data[offset..<fieldEnd]))
+                let peer = try decodePeer(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 closerPeers.append(peer)
                 offset = fieldEnd
 
@@ -203,10 +203,10 @@ enum KademliaProtobuf {
                 offset += lengthBytes
                 let length = try Varint.toInt(lengthValue)
                 let fieldEnd = offset + length
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw KademliaError.encodingError("ProviderPeers field truncated")
                 }
-                let peer = try decodePeer(Data(data[offset..<fieldEnd]))
+                let peer = try decodePeer(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 providerPeers.append(peer)
                 offset = fieldEnd
 
@@ -296,9 +296,9 @@ enum KademliaProtobuf {
         var addresses: [Multiaddr] = []
         var connectionType: KademliaPeerConnectionType = .notConnected
 
-        var offset = data.startIndex
+        var offset = 0
 
-        while offset < data.endIndex {
+        while offset < data.count {
             let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
@@ -311,10 +311,10 @@ enum KademliaProtobuf {
                 offset += lengthBytes
                 let length = try Varint.toInt(lengthValue)
                 let fieldEnd = offset + length
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw KademliaError.encodingError("Peer ID truncated")
                 }
-                id = try PeerID(bytes: Data(data[offset..<fieldEnd]))
+                id = try PeerID(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 offset = fieldEnd
 
             case (2, wireTypeLengthDelimited): // addrs
@@ -322,10 +322,10 @@ enum KademliaProtobuf {
                 offset += lengthBytes
                 let length = try Varint.toInt(lengthValue)
                 let fieldEnd = offset + length
-                guard fieldEnd <= data.endIndex else {
+                guard fieldEnd <= data.count else {
                     throw KademliaError.encodingError("Address truncated")
                 }
-                let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                let addr = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 addresses.append(addr)
                 offset = fieldEnd
 
@@ -460,9 +460,9 @@ enum KademliaProtobuf {
         var value: Data?
         var timeReceived: String?
 
-        var offset = data.startIndex
+        var offset = 0
 
-        while offset < data.endIndex {
+        while offset < data.count {
             let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
 
@@ -478,17 +478,17 @@ enum KademliaProtobuf {
             offset += lengthBytes
             let length = try Varint.toInt(lengthValue)
             let fieldEnd = offset + length
-            guard fieldEnd <= data.endIndex else {
+            guard fieldEnd <= data.count else {
                 throw KademliaError.encodingError("Record field truncated")
             }
 
             switch fieldNumber {
             case 1: // key
-                key = Data(data[offset..<fieldEnd])
+                key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
             case 2: // value
-                value = Data(data[offset..<fieldEnd])
+                value = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
             case 5: // timeReceived
-                timeReceived = String(bytes: data[offset..<fieldEnd], encoding: .utf8)
+                timeReceived = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
             default:
                 break
             }
@@ -523,10 +523,16 @@ enum KademliaProtobuf {
             throw KademliaError.encodingError("Unknown wire type \(wireType)")
         }
 
-        guard newOffset <= data.endIndex else {
+        guard newOffset <= data.count else {
             throw KademliaError.encodingError("Field extends beyond data")
         }
 
         return newOffset
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 }

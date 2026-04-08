@@ -133,9 +133,9 @@ enum IdentifyProtobuf {
         var agentVersion: String?
         var signedPeerRecord: Envelope?
 
-        var offset = data.startIndex
+        var offset = 0
 
-        while offset < data.endIndex {
+        while offset < data.count {
             // Read field tag
             let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
             offset += tagBytes
@@ -168,14 +168,14 @@ enum IdentifyProtobuf {
             let length = try Varint.toInt(lengthValue)
 
             let fieldEnd = offset + length
-            guard fieldEnd <= data.endIndex else {
+            guard fieldEnd <= data.count else {
                 throw IdentifyError.invalidProtobuf("Field truncated")
             }
 
             switch fieldNumber {
             case 1: // publicKey
                 do {
-                    publicKey = try PublicKey(protobufEncoded: Data(data[offset..<fieldEnd]))
+                    publicKey = try PublicKey(protobufEncoded: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 } catch {
                     print("[IdentifyProtobuf] Failed to decode publicKey: \(error)")
                     throw IdentifyError.invalidProtobuf("publicKey decode failed: \(error)")
@@ -183,7 +183,7 @@ enum IdentifyProtobuf {
 
             case 2: // listenAddrs
                 do {
-                    let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                    let addr = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                     listenAddresses.append(addr)
                 } catch {
                     // listenAddrs is repeated/optional, skip invalid entries
@@ -191,13 +191,13 @@ enum IdentifyProtobuf {
                 }
 
             case 3: // protocols
-                if let proto = String(bytes: data[offset..<fieldEnd], encoding: .utf8) {
+                if let proto = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
                     protocols.append(proto)
                 }
 
             case 4: // observedAddr
                 do {
-                    observedAddress = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
+                    observedAddress = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 } catch {
                     // observedAddr is optional, skip if decode fails
                     print("[IdentifyProtobuf] WARNING: Failed to decode observedAddr: \(error), skipping")
@@ -205,14 +205,14 @@ enum IdentifyProtobuf {
                 }
 
             case 5: // protocolVersion
-                protocolVersion = String(bytes: data[offset..<fieldEnd], encoding: .utf8)
+                protocolVersion = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
 
             case 6: // agentVersion
-                agentVersion = String(bytes: data[offset..<fieldEnd], encoding: .utf8)
+                agentVersion = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
 
             case 8: // signedPeerRecord
                 do {
-                    signedPeerRecord = try Envelope.unmarshal(Data(data[offset..<fieldEnd]))
+                    signedPeerRecord = try Envelope.unmarshal(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                 } catch {
                     // signedPeerRecord is optional, log and skip if decode fails
                     print("[IdentifyProtobuf] WARNING: Failed to decode signedPeerRecord: \(error), continuing without it")
@@ -236,5 +236,11 @@ enum IdentifyProtobuf {
             agentVersion: agentVersion,
             signedPeerRecord: signedPeerRecord
         )
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 }
