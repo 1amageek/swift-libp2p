@@ -146,16 +146,21 @@ scripts/run-benchmarks.sh --configuration release --suite IdentifyWireBenchmarks
 
 | Benchmark | Result |
 | --- | ---: |
-| `IdentifyProtobuf.encode full info` | `1600.45 ns/op` |
-| `IdentifyProtobuf.encode(into:) full info` | `1533.48 ns/op` |
-| `IdentifyProtobuf.encode minimal info` | `277.27 ns/op` |
-| `IdentifyProtobuf.encode(into:) minimal info` | `214.02 ns/op` |
-| `IdentifyProtobuf.decode full info` | `6055.48 ns/op` |
-| `IdentifyProtobuf.decode minimal info` | `156.39 ns/op` |
+| `IdentifyProtobuf.encode full info` | `1576.42 ns/op` |
+| `IdentifyProtobuf.encode(into:) full info` | `1518.51 ns/op` |
+| `IdentifyProtobuf.encode minimal info` | `270.14 ns/op` |
+| `IdentifyProtobuf.encode(into:) minimal info` | `198.41 ns/op` |
+| `IdentifyProtobuf.decode full info` | `2540.62 ns/op` |
+| `IdentifyProtobuf.decode minimal info` | `129.83 ns/op` |
 
-Relevant comparison:
+Relevant comparisons:
 
-- `IdentifyProtobuf.decode full info`: `6394.41 -> 6055.48 ns/op`
+- `IdentifyProtobuf.encode full info`: `1600.45 -> 1576.42 ns/op`
+- `IdentifyProtobuf.encode(into:) full info`: `1533.48 -> 1518.51 ns/op`
+- `IdentifyProtobuf.encode minimal info`: `277.27 -> 270.14 ns/op`
+- `IdentifyProtobuf.encode(into:) minimal info`: `214.02 -> 198.41 ns/op`
+- `IdentifyProtobuf.decode full info`: `6055.48 -> 2540.62 ns/op`
+- `IdentifyProtobuf.decode minimal info`: `156.39 -> 129.83 ns/op`
 
 ### Kademlia Wire Benchmarks
 
@@ -223,6 +228,10 @@ Sampling with `sample` during release benchmark runs showed:
 - After preserving wire bytes, the next visible Multiaddr cost was eager
   `description` construction during binary decode. Deferring that formatting
   brought Kademlia decode down by another third.
+- `IdentifyProtobuf.decode` was still paying repeated `Data.withUnsafeBytes`
+  overhead on every tag and length decode. Switching the outer parse loop to a
+  single raw-buffer walk cut `decode full info` from `6055.48 ns/op` to
+  `2540.62 ns/op`.
 
 ## Tests Run Alongside the Optimizations
 

@@ -125,122 +125,133 @@ enum IdentifyProtobuf {
 
     /// Decodes IdentifyInfo from protobuf wire format.
     static func decode(_ data: Data) throws -> IdentifyInfo {
-        var publicKey: PublicKey?
-        var listenAddresses: [Multiaddr] = []
-        var protocols: [String] = []
-        var observedAddress: Multiaddr?
-        var protocolVersion: String?
-        var agentVersion: String?
-        var signedPeerRecord: Envelope?
+        try data.withUnsafeBytes { bytes in
+            var publicKey: PublicKey?
+            var listenAddresses: [Multiaddr] = []
+            var protocols: [String] = []
+            var observedAddress: Multiaddr?
+            var protocolVersion: String?
+            var agentVersion: String?
+            var signedPeerRecord: Envelope?
 
-        var offset = 0
+            var offset = 0
 
-        while offset < data.count {
-            // Read field tag
-            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
-            offset += tagBytes
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            // All our fields are length-delimited (wire type 2)
-            guard wireType == wireTypeLengthDelimited else {
-                // Skip unknown wire types
-                if wireType == 0 {
-                    // Varint - read and discard
-                    let (_, varBytes) = try Varint.decode(from: data, at: offset)
-                    offset += varBytes
-                } else if wireType == 1 {
-                    // 64-bit - skip 8 bytes
-                    offset += 8
-                } else if wireType == 5 {
-                    // 32-bit - skip 4 bytes
-                    offset += 4
-                } else {
-                    throw IdentifyError.invalidProtobuf("Unexpected wire type \(wireType)")
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
+                    continue
                 }
-                continue
+
+                let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let length = try Varint.toInt(lengthValue)
+
+                let fieldEnd = offset + length
+                guard fieldEnd <= bytes.count else {
+                    throw IdentifyError.invalidProtobuf("Field truncated")
+                }
+
+                switch fieldNumber {
+                case 1: // publicKey
+                    do {
+                        publicKey = try PublicKey(protobufEncoded: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                    } catch {
+                        print("[IdentifyProtobuf] Failed to decode publicKey: \(error)")
+                        throw IdentifyError.invalidProtobuf("publicKey decode failed: \(error)")
+                    }
+
+                case 2: // listenAddrs
+                    do {
+                        let addr = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                        listenAddresses.append(addr)
+                    } catch {
+                        // listenAddrs is repeated/optional, skip invalid entries
+                        print("[IdentifyProtobuf] WARNING: Failed to decode listenAddr: \(error), skipping")
+                    }
+
+                case 3: // protocols
+                    if let proto = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
+                        protocols.append(proto)
+                    }
+
+                case 4: // observedAddr
+                    do {
+                        observedAddress = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                    } catch {
+                        // observedAddr is optional, skip if decode fails
+                        print("[IdentifyProtobuf] WARNING: Failed to decode observedAddr: \(error), skipping")
+                        observedAddress = nil
+                    }
+
+                case 5: // protocolVersion
+                    protocolVersion = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
+
+                case 6: // agentVersion
+                    agentVersion = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
+
+                case 8: // signedPeerRecord
+                    do {
+                        signedPeerRecord = try Envelope.unmarshal(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                    } catch {
+                        // signedPeerRecord is optional, log and skip if decode fails
+                        print("[IdentifyProtobuf] WARNING: Failed to decode signedPeerRecord: \(error), continuing without it")
+                        signedPeerRecord = nil
+                    }
+
+                default:
+                    break
+                }
+
+                offset = fieldEnd
             }
 
-            // Read field length
-            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-            offset += lengthBytes
-            let length = try Varint.toInt(lengthValue)
-
-            let fieldEnd = offset + length
-            guard fieldEnd <= data.count else {
-                throw IdentifyError.invalidProtobuf("Field truncated")
-            }
-
-            switch fieldNumber {
-            case 1: // publicKey
-                do {
-                    publicKey = try PublicKey(protobufEncoded: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                } catch {
-                    print("[IdentifyProtobuf] Failed to decode publicKey: \(error)")
-                    throw IdentifyError.invalidProtobuf("publicKey decode failed: \(error)")
-                }
-
-            case 2: // listenAddrs
-                do {
-                    let addr = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                    listenAddresses.append(addr)
-                } catch {
-                    // listenAddrs is repeated/optional, skip invalid entries
-                    print("[IdentifyProtobuf] WARNING: Failed to decode listenAddr: \(error), skipping")
-                }
-
-            case 3: // protocols
-                if let proto = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
-                    protocols.append(proto)
-                }
-
-            case 4: // observedAddr
-                do {
-                    observedAddress = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                } catch {
-                    // observedAddr is optional, skip if decode fails
-                    print("[IdentifyProtobuf] WARNING: Failed to decode observedAddr: \(error), skipping")
-                    observedAddress = nil
-                }
-
-            case 5: // protocolVersion
-                protocolVersion = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
-
-            case 6: // agentVersion
-                agentVersion = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
-
-            case 8: // signedPeerRecord
-                do {
-                    signedPeerRecord = try Envelope.unmarshal(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                } catch {
-                    // signedPeerRecord is optional, log and skip if decode fails
-                    print("[IdentifyProtobuf] WARNING: Failed to decode signedPeerRecord: \(error), continuing without it")
-                    signedPeerRecord = nil
-                }
-
-            default:
-                // Skip unknown fields
-                break
-            }
-
-            offset = fieldEnd
+            return IdentifyInfo(
+                publicKey: publicKey,
+                listenAddresses: listenAddresses,
+                protocols: protocols,
+                observedAddress: observedAddress,
+                protocolVersion: protocolVersion,
+                agentVersion: agentVersion,
+                signedPeerRecord: signedPeerRecord
+            )
         }
-
-        return IdentifyInfo(
-            publicKey: publicKey,
-            listenAddresses: listenAddresses,
-            protocols: protocols,
-            observedAddress: observedAddress,
-            protocolVersion: protocolVersion,
-            agentVersion: agentVersion,
-            signedPeerRecord: signedPeerRecord
-        )
     }
 
     private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
         let startIndex = data.index(data.startIndex, offsetBy: offset)
         let endIndex = data.index(data.startIndex, offsetBy: end)
         return startIndex..<endIndex
+    }
+
+    private static func skipField(
+        wireType: UInt64,
+        buffer: UnsafeRawBufferPointer,
+        offset: Int
+    ) throws -> Int {
+        var newOffset = offset
+
+        switch wireType {
+        case 0:
+            let (_, bytesRead) = try Varint.decode(from: buffer, at: newOffset)
+            newOffset += bytesRead
+        case 1:
+            newOffset += 8
+        case 5:
+            newOffset += 4
+        default:
+            throw IdentifyError.invalidProtobuf("Unexpected wire type \(wireType)")
+        }
+
+        guard newOffset <= buffer.count else {
+            throw IdentifyError.invalidProtobuf("Field truncated")
+        }
+
+        return newOffset
     }
 }
