@@ -149,7 +149,7 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         }
 
         self.protocols = protocols
-        self._bytes = Self.encodeBytes(from: protocols)
+        self._bytes = bytes
         self._description = Self.describe(protocols)
     }
 
