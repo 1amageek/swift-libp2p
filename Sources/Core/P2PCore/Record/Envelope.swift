@@ -133,7 +133,7 @@ public struct Envelope: Sendable, Equatable {
         var offset = 0
 
         // Public key (typically small, 4KB max)
-        let (publicKeyLength, pkLenBytes) = try Varint.decode(data[offset...])
+        let (publicKeyLength, pkLenBytes) = try Varint.decode(from: data, at: offset)
         guard publicKeyLength <= 4096 else {
             throw EnvelopeError.fieldTooLarge(publicKeyLength)
         }
@@ -143,11 +143,11 @@ public struct Envelope: Sendable, Equatable {
         guard publicKeyEnd <= data.count else {
             throw EnvelopeError.invalidFormat
         }
-        let publicKey = try PublicKey(protobufEncoded: Data(data[offset..<publicKeyEnd]))
+        let publicKey = try PublicKey(protobufEncoded: data[fieldRange(in: data, offset: offset, end: publicKeyEnd)])
         offset = publicKeyEnd
 
         // Payload type (typically a few bytes)
-        let (payloadTypeLength, ptLenBytes) = try Varint.decode(data[offset...])
+        let (payloadTypeLength, ptLenBytes) = try Varint.decode(from: data, at: offset)
         guard payloadTypeLength <= 256 else {
             throw EnvelopeError.fieldTooLarge(payloadTypeLength)
         }
@@ -157,11 +157,11 @@ public struct Envelope: Sendable, Equatable {
         guard payloadTypeEnd <= data.count else {
             throw EnvelopeError.invalidFormat
         }
-        let payloadType = Data(data[offset..<payloadTypeEnd])
+        let payloadType = data[fieldRange(in: data, offset: offset, end: payloadTypeEnd)]
         offset = payloadTypeEnd
 
         // Payload
-        let (payloadLength, pLenBytes) = try Varint.decode(data[offset...])
+        let (payloadLength, pLenBytes) = try Varint.decode(from: data, at: offset)
         guard payloadLength <= maxFieldLength else {
             throw EnvelopeError.fieldTooLarge(payloadLength)
         }
@@ -171,11 +171,11 @@ public struct Envelope: Sendable, Equatable {
         guard payloadEnd <= data.count else {
             throw EnvelopeError.invalidFormat
         }
-        let payload = Data(data[offset..<payloadEnd])
+        let payload = data[fieldRange(in: data, offset: offset, end: payloadEnd)]
         offset = payloadEnd
 
         // Signature (typically 64-512 bytes)
-        let (signatureLength, sLenBytes) = try Varint.decode(data[offset...])
+        let (signatureLength, sLenBytes) = try Varint.decode(from: data, at: offset)
         guard signatureLength <= 1024 else {
             throw EnvelopeError.fieldTooLarge(signatureLength)
         }
@@ -185,7 +185,7 @@ public struct Envelope: Sendable, Equatable {
         guard signatureEnd <= data.count else {
             throw EnvelopeError.invalidFormat
         }
-        let signature = Data(data[offset..<signatureEnd])
+        let signature = data[fieldRange(in: data, offset: offset, end: signatureEnd)]
 
         return Envelope(
             publicKey: publicKey,
@@ -232,6 +232,12 @@ public struct Envelope: Sendable, Equatable {
         data.append(payload)
 
         return data
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 
 }

@@ -167,40 +167,41 @@ public struct PublicKey: Sendable, Hashable {
     /// - Parameter data: The protobuf-encoded public key
     /// - Throws: `PublicKeyError` if decoding fails
     public init(protobufEncoded data: Data) throws {
-        var remaining = data
+        var offset = 0
         var keyType: KeyType?
         var keyData: Data?
 
-        while !remaining.isEmpty {
-            let (fieldTag, fieldBytes) = try Varint.decode(remaining)
-            remaining = remaining.dropFirst(fieldBytes)
+        while offset < data.count {
+            let (fieldTag, fieldBytes) = try Varint.decode(from: data, at: offset)
+            offset += fieldBytes
 
             let fieldNumber = fieldTag >> 3
             let wireType = fieldTag & 0x07
 
             switch (fieldNumber, wireType) {
             case (1, 0): // KeyType varint
-                let (typeValue, typeBytes) = try Varint.decode(remaining)
-                remaining = remaining.dropFirst(typeBytes)
+                let (typeValue, typeBytes) = try Varint.decode(from: data, at: offset)
+                offset += typeBytes
                 guard let type = KeyType(rawValue: typeValue) else {
                     throw PublicKeyError.unknownKeyType(typeValue)
                 }
                 keyType = type
 
             case (2, 2): // Data length-delimited
-                let (length, lengthBytes) = try Varint.decode(remaining)
-                remaining = remaining.dropFirst(lengthBytes)
+                let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+                offset += lengthBytes
                 // Bounds check: prevent DoS from huge length values
                 // Public keys are typically 32-256 bytes, 4KB is more than enough
                 guard length <= 4096 else {
                     throw PublicKeyError.keyDataTooLarge(length)
                 }
                 let keyLength = Int(length)
-                guard remaining.count >= keyLength else {
+                let keyDataEnd = offset + keyLength
+                guard keyDataEnd <= data.count else {
                     throw PublicKeyError.invalidProtobuf
                 }
-                keyData = Data(remaining.prefix(keyLength))
-                remaining = remaining.dropFirst(keyLength)
+                keyData = data[Self.fieldRange(in: data, offset: offset, end: keyDataEnd)]
+                offset = keyDataEnd
 
             default:
                 throw PublicKeyError.invalidProtobuf
@@ -212,6 +213,12 @@ public struct PublicKey: Sendable, Hashable {
         }
 
         try self.init(keyType: type, rawBytes: data)
+    }
+
+    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
+        let startIndex = data.index(data.startIndex, offsetBy: offset)
+        let endIndex = data.index(data.startIndex, offsetBy: end)
+        return startIndex..<endIndex
     }
 }
 
