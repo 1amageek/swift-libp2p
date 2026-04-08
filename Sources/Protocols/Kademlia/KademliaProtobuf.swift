@@ -143,119 +143,117 @@ enum KademliaProtobuf {
 
     /// Decodes a KademliaMessage from protobuf wire format.
     static func decode(_ data: Data) throws -> KademliaMessage {
-        var type: KademliaMessageType = .findNode
-        var key: Data?
-        var record: KademliaRecord?
-        var closerPeers: [KademliaPeer] = []
-        var providerPeers: [KademliaPeer] = []
+        try data.withUnsafeBytes { bytes in
+            var type: KademliaMessageType = .findNode
+            var key: Data?
+            var record: KademliaRecord?
+            var closerPeers: [KademliaPeer] = []
+            var providerPeers: [KademliaPeer] = []
 
-        var offset = 0
+            var offset = 0
 
-        while offset < data.count {
-            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
-            offset += tagBytes
+            while offset < bytes.count {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            switch (fieldNumber, wireType) {
-            case (1, wireTypeVarint): // type
-                let (value, valueBytes) = try Varint.decode(from: data, at: offset)
-                offset += valueBytes
-                type = KademliaMessageType(rawValue: UInt32(value)) ?? .findNode
+                switch (fieldNumber, wireType) {
+                case (1, wireTypeVarint):
+                    let (value, valueBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += valueBytes
+                    type = KademliaMessageType(rawValue: UInt32(value)) ?? .findNode
 
-            case (10, wireTypeLengthDelimited): // key
-                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= data.count else {
-                    throw KademliaError.encodingError("Key field truncated")
+                case (10, wireTypeLengthDelimited):
+                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let length = try Varint.toInt(lengthValue)
+                    let fieldEnd = offset + length
+                    guard fieldEnd <= bytes.count else {
+                        throw KademliaError.encodingError("Key field truncated")
+                    }
+                    key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                    offset = fieldEnd
+
+                case (3, wireTypeLengthDelimited):
+                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let length = try Varint.toInt(lengthValue)
+                    let fieldEnd = offset + length
+                    guard fieldEnd <= bytes.count else {
+                        throw KademliaError.encodingError("Record field truncated")
+                    }
+                    record = try decodeRecord(data, offset: offset, end: fieldEnd)
+                    offset = fieldEnd
+
+                case (8, wireTypeLengthDelimited):
+                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let length = try Varint.toInt(lengthValue)
+                    let fieldEnd = offset + length
+                    guard fieldEnd <= bytes.count else {
+                        throw KademliaError.encodingError("CloserPeers field truncated")
+                    }
+                    closerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
+                    offset = fieldEnd
+
+                case (9, wireTypeLengthDelimited):
+                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let length = try Varint.toInt(lengthValue)
+                    let fieldEnd = offset + length
+                    guard fieldEnd <= bytes.count else {
+                        throw KademliaError.encodingError("ProviderPeers field truncated")
+                    }
+                    providerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
+                    offset = fieldEnd
+
+                default:
+                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
                 }
-                key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                offset = fieldEnd
+            }
 
-            case (3, wireTypeLengthDelimited): // record
-                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= data.count else {
-                    throw KademliaError.encodingError("Record field truncated")
+            switch type {
+            case .findNode:
+                if closerPeers.isEmpty, let key {
+                    return .findNode(key: key)
                 }
-                record = try decodeRecord(data, offset: offset, end: fieldEnd)
-                offset = fieldEnd
+                return .findNodeResponse(closerPeers: closerPeers)
 
-            case (8, wireTypeLengthDelimited): // closerPeers
-                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= data.count else {
-                    throw KademliaError.encodingError("CloserPeers field truncated")
+            case .getValue:
+                if record != nil || !closerPeers.isEmpty {
+                    return .getValueResponse(record: record, closerPeers: closerPeers)
                 }
-                let peer = try decodePeer(data, offset: offset, end: fieldEnd)
-                closerPeers.append(peer)
-                offset = fieldEnd
-
-            case (9, wireTypeLengthDelimited): // providerPeers
-                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= data.count else {
-                    throw KademliaError.encodingError("ProviderPeers field truncated")
+                guard let key else {
+                    throw KademliaError.encodingError("Missing key in GET_VALUE")
                 }
-                let peer = try decodePeer(data, offset: offset, end: fieldEnd)
-                providerPeers.append(peer)
-                offset = fieldEnd
+                return .getValue(key: key)
 
-            default:
-                // Skip unknown fields
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-            }
-        }
+            case .putValue:
+                guard let record else {
+                    throw KademliaError.encodingError("Missing record in PUT_VALUE")
+                }
+                return .putValue(record: record)
 
-        // Construct message based on type
-        switch type {
-        case .findNode:
-            if closerPeers.isEmpty, let key {
-                return .findNode(key: key)
-            }
-            return .findNodeResponse(closerPeers: closerPeers)
+            case .addProvider:
+                guard let key else {
+                    throw KademliaError.encodingError("Missing key in ADD_PROVIDER")
+                }
+                return .addProvider(key: key, providers: providerPeers)
 
-        case .getValue:
-            if record != nil || !closerPeers.isEmpty {
-                return .getValueResponse(record: record, closerPeers: closerPeers)
-            }
-            guard let key = key else {
-                throw KademliaError.encodingError("Missing key in GET_VALUE")
-            }
-            return .getValue(key: key)
+            case .getProviders:
+                if !providerPeers.isEmpty || !closerPeers.isEmpty {
+                    return .getProvidersResponse(providers: providerPeers, closerPeers: closerPeers)
+                }
+                guard let key else {
+                    throw KademliaError.encodingError("Missing key in GET_PROVIDERS")
+                }
+                return .getProviders(key: key)
 
-        case .putValue:
-            guard let record = record else {
-                throw KademliaError.encodingError("Missing record in PUT_VALUE")
+            case .ping:
+                throw KademliaError.protocolViolation("PING is deprecated")
             }
-            return .putValue(record: record)
-
-        case .addProvider:
-            guard let key = key else {
-                throw KademliaError.encodingError("Missing key in ADD_PROVIDER")
-            }
-            return .addProvider(key: key, providers: providerPeers)
-
-        case .getProviders:
-            if !providerPeers.isEmpty || !closerPeers.isEmpty {
-                return .getProvidersResponse(providers: providerPeers, closerPeers: closerPeers)
-            }
-            guard let key = key else {
-                throw KademliaError.encodingError("Missing key in GET_PROVIDERS")
-            }
-            return .getProviders(key: key)
-
-        case .ping:
-            throw KademliaError.protocolViolation("PING is deprecated")
         }
     }
 
@@ -292,58 +290,59 @@ enum KademliaProtobuf {
     }
 
     private static func decodePeer(_ data: Data, offset startOffset: Int, end: Int) throws -> KademliaPeer {
-        var id: PeerID?
-        var addresses: [Multiaddr] = []
-        var connectionType: KademliaPeerConnectionType = .notConnected
+        try data.withUnsafeBytes { bytes in
+            var id: PeerID?
+            var addresses: [Multiaddr] = []
+            var connectionType: KademliaPeerConnectionType = .notConnected
 
-        var offset = startOffset
+            var offset = startOffset
 
-        while offset < end {
-            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
-            offset += tagBytes
+            while offset < end {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            switch (fieldNumber, wireType) {
-            case (1, wireTypeLengthDelimited): // id
-                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= end else {
-                    throw KademliaError.encodingError("Peer ID truncated")
+                switch (fieldNumber, wireType) {
+                case (1, wireTypeLengthDelimited):
+                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let length = try Varint.toInt(lengthValue)
+                    let fieldEnd = offset + length
+                    guard fieldEnd <= end else {
+                        throw KademliaError.encodingError("Peer ID truncated")
+                    }
+                    id = try PeerID(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                    offset = fieldEnd
+
+                case (2, wireTypeLengthDelimited):
+                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += lengthBytes
+                    let length = try Varint.toInt(lengthValue)
+                    let fieldEnd = offset + length
+                    guard fieldEnd <= end else {
+                        throw KademliaError.encodingError("Address truncated")
+                    }
+                    addresses.append(try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)]))
+                    offset = fieldEnd
+
+                case (3, wireTypeVarint):
+                    let (value, valueBytes) = try Varint.decode(from: bytes, at: offset)
+                    offset += valueBytes
+                    connectionType = KademliaPeerConnectionType(rawValue: UInt32(value)) ?? .notConnected
+
+                default:
+                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
                 }
-                id = try PeerID(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                offset = fieldEnd
-
-            case (2, wireTypeLengthDelimited): // addrs
-                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= end else {
-                    throw KademliaError.encodingError("Address truncated")
-                }
-                let addr = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                addresses.append(addr)
-                offset = fieldEnd
-
-            case (3, wireTypeVarint): // connection
-                let (value, valueBytes) = try Varint.decode(from: data, at: offset)
-                offset += valueBytes
-                connectionType = KademliaPeerConnectionType(rawValue: UInt32(value)) ?? .notConnected
-
-            default:
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
             }
-        }
 
-        guard let peerID = id else {
-            throw KademliaError.encodingError("Missing peer ID")
-        }
+            guard let peerID = id else {
+                throw KademliaError.encodingError("Missing peer ID")
+            }
 
-        return KademliaPeer(id: peerID, addresses: addresses, connectionType: connectionType)
+            return KademliaPeer(id: peerID, addresses: addresses, connectionType: connectionType)
+        }
     }
 
     // MARK: - Record Encoding
@@ -456,74 +455,76 @@ enum KademliaProtobuf {
     }
 
     private static func decodeRecord(_ data: Data, offset startOffset: Int, end: Int) throws -> KademliaRecord {
-        var key: Data?
-        var value: Data?
-        var timeReceived: String?
+        try data.withUnsafeBytes { bytes in
+            var key: Data?
+            var value: Data?
+            var timeReceived: String?
 
-        var offset = startOffset
+            var offset = startOffset
 
-        while offset < end {
-            let (tag, tagBytes) = try Varint.decode(from: data, at: offset)
-            offset += tagBytes
+            while offset < end {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-                continue
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
+                    continue
+                }
+
+                let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
+                guard fieldEnd <= end else {
+                    throw KademliaError.encodingError("Record field truncated")
+                }
+
+                switch fieldNumber {
+                case 1:
+                    key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                case 2:
+                    value = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
+                case 5:
+                    timeReceived = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
+                default:
+                    break
+                }
+                offset = fieldEnd
             }
 
-            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
-            offset += lengthBytes
-            let length = try Varint.toInt(lengthValue)
-            let fieldEnd = offset + length
-            guard fieldEnd <= end else {
-                throw KademliaError.encodingError("Record field truncated")
+            guard let recordKey = key, let recordValue = value else {
+                throw KademliaError.encodingError("Missing key or value in record")
             }
 
-            switch fieldNumber {
-            case 1: // key
-                key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-            case 2: // value
-                value = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-            case 5: // timeReceived
-                timeReceived = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
-            default:
-                break
-            }
-            offset = fieldEnd
+            return KademliaRecord(key: recordKey, value: recordValue, timeReceived: timeReceived)
         }
-
-        guard let recordKey = key, let recordValue = value else {
-            throw KademliaError.encodingError("Missing key or value in record")
-        }
-
-        return KademliaRecord(key: recordKey, value: recordValue, timeReceived: timeReceived)
     }
 
     // MARK: - Helpers
 
-    private static func skipField(wireType: UInt64, data: Data, offset: Int) throws -> Int {
+    private static func skipField(wireType: UInt64, buffer: UnsafeRawBufferPointer, offset: Int) throws -> Int {
         var newOffset = offset
 
         switch wireType {
-        case 0: // Varint
-            let (_, varBytes) = try Varint.decode(from: data, at: newOffset)
+        case 0:
+            let (_, varBytes) = try Varint.decode(from: buffer, at: newOffset)
             newOffset += varBytes
-        case 1: // 64-bit
+        case 1:
             newOffset += 8
-        case 2: // Length-delimited
-            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: newOffset)
+        case 2:
+            let (lengthValue, lengthBytes) = try Varint.decode(from: buffer, at: newOffset)
             let length = try Varint.toInt(lengthValue)
             newOffset += lengthBytes + length
-        case 5: // 32-bit
+        case 5:
             newOffset += 4
         default:
             throw KademliaError.encodingError("Unknown wire type \(wireType)")
         }
 
-        guard newOffset <= data.count else {
+        guard newOffset <= buffer.count else {
             throw KademliaError.encodingError("Field extends beyond data")
         }
 

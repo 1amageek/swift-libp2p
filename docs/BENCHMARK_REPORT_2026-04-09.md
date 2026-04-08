@@ -176,21 +176,21 @@ scripts/run-benchmarks.sh --configuration release --suite KademliaWireBenchmarks
 
 | Benchmark | Result |
 | --- | ---: |
-| `KademliaProtobuf.encode findNodeResponse` | `9214.02 ns/op` |
-| `KademliaProtobuf.encode(into:) findNodeResponse` | `4434.95 ns/op` |
-| `KademliaProtobuf.encode getValueResponse` | `4275.05 ns/op` |
-| `KademliaProtobuf.encode(into:) getValueResponse` | `2091.52 ns/op` |
-| `KademliaProtobuf.decode findNodeResponse` | `15090.71 ns/op` |
-| `KademliaProtobuf.decode getValueResponse` | `6324.49 ns/op` |
+| `KademliaProtobuf.encode findNodeResponse` | `8904.89 ns/op` |
+| `KademliaProtobuf.encode(into:) findNodeResponse` | `4216.22 ns/op` |
+| `KademliaProtobuf.encode getValueResponse` | `4075.86 ns/op` |
+| `KademliaProtobuf.encode(into:) getValueResponse` | `1960.71 ns/op` |
+| `KademliaProtobuf.decode findNodeResponse` | `12665.03 ns/op` |
+| `KademliaProtobuf.decode getValueResponse` | `5341.52 ns/op` |
 
 Relevant comparisons from this run:
 
-- `KademliaProtobuf.encode findNodeResponse`: `9261.06 -> 9214.02 ns/op`
-- `KademliaProtobuf.encode(into:) findNodeResponse`: `4275.97 -> 4434.95 ns/op`
-- `KademliaProtobuf.encode getValueResponse`: `4215.06 -> 4275.05 ns/op`
-- `KademliaProtobuf.encode(into:) getValueResponse`: `2058.72 -> 2091.52 ns/op`
-- `KademliaProtobuf.decode findNodeResponse`: `22920.45 -> 15090.71 ns/op`
-- `KademliaProtobuf.decode getValueResponse`: `9250.74 -> 6324.49 ns/op`
+- `KademliaProtobuf.encode findNodeResponse`: `9261.06 -> 8904.89 ns/op`
+- `KademliaProtobuf.encode(into:) findNodeResponse`: `4275.97 -> 4216.22 ns/op`
+- `KademliaProtobuf.encode getValueResponse`: `4215.06 -> 4075.86 ns/op`
+- `KademliaProtobuf.encode(into:) getValueResponse`: `2058.72 -> 1960.71 ns/op`
+- `KademliaProtobuf.decode findNodeResponse`: `22920.45 -> 12665.03 ns/op`
+- `KademliaProtobuf.decode getValueResponse`: `9250.74 -> 5341.52 ns/op`
 
 ### Other Established Baselines
 
@@ -238,6 +238,11 @@ Sampling with `sample` during release benchmark runs showed:
 - After preserving wire bytes, the next visible Multiaddr cost was eager
   `description` construction during binary decode. Deferring that formatting
   brought Kademlia decode down by another third.
+- Even after those wins, Kademlia decode was still paying repeated
+  `Data.withUnsafeBytes` setup through `Varint.decode(from: data, at:)`. Moving
+  the message, peer, and record loops to a single raw-buffer walk reduced
+  `decode findNodeResponse` from `15090.71 ns/op` to `12665.03 ns/op` and
+  `decode getValueResponse` from `6324.49 ns/op` to `5341.52 ns/op`.
 - `IdentifyProtobuf.decode` was still paying repeated `Data.withUnsafeBytes`
   overhead on every tag and length decode. Switching the outer parse loop to a
   single raw-buffer walk cut `decode full info` from `6055.48 ns/op` to
