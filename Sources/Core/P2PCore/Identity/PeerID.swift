@@ -120,8 +120,21 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
     /// - Parameter publicKey: The public key to validate against
     /// - Returns: `true` if the PeerID matches the public key
     public func matches(publicKey: PublicKey) -> Bool {
-        let derived = PeerID(publicKey: publicKey)
-        return self == derived
+        let encoded = publicKey.protobufEncoded
+
+        switch multihash.code {
+        case .identity:
+            guard publicKey.keyType.supportsIdentityEncoding, encoded.count <= 42 else {
+                return false
+            }
+            return multihash.digest == encoded
+
+        case .sha2_256:
+            return multihash.digest == Data(SHA256.hash(data: encoded))
+
+        default:
+            return false
+        }
     }
 }
 

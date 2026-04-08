@@ -52,6 +52,22 @@ struct PeerIDTests {
         #expect(peerID.matches(publicKey: keyPair.publicKey))
     }
 
+    @Test("PeerID matches ECDSA public key")
+    func peerIDMatchesECDSAPublicKey() {
+        let keyPair = KeyPair.generateECDSA()
+        let peerID = keyPair.peerID
+
+        #expect(peerID.matches(publicKey: keyPair.publicKey))
+    }
+
+    @Test("PeerID rejects mismatched public key")
+    func peerIDRejectsMismatchedPublicKey() {
+        let peerID = KeyPair.generateEd25519().peerID
+        let differentKey = KeyPair.generateEd25519().publicKey
+
+        #expect(!peerID.matches(publicKey: differentKey))
+    }
+
     @Test("Different keys produce different PeerIDs")
     func differentKeysDifferentPeerIDs() {
         let keyPair1 = KeyPair.generateEd25519()

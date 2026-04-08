@@ -309,7 +309,7 @@ extension GossipSubMessage {
                 return false
             }
             // Verify key matches source PeerID
-            guard pk.peerID == source else {
+            guard source.matches(publicKey: pk) else {
                 return false
             }
             publicKey = pk
