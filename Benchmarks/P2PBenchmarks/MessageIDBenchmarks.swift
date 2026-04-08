@@ -3,8 +3,9 @@ import Testing
 import Foundation
 import Crypto
 import P2PGossipSub
+import P2PCore
 
-@Suite("MessageID Benchmarks")
+@Suite("MessageID Benchmarks", .serialized)
 struct MessageIDBenchmarks {
 
     @Test("init(bytes:) - FNV-1a hash computation (20B)")
@@ -84,6 +85,15 @@ struct MessageIDBenchmarks {
         let data = Data("test message payload for hashing".utf8)
         benchmark("MessageID.computeFromHash", iterations: 100_000) {
             blackHole(MessageID.computeFromHash(data))
+        }
+    }
+
+    @Test("compute(source:sequenceNumber:) - peer bytes + seqno")
+    func computeFromSourceAndSequenceNumber() {
+        let peerID = KeyPair.generateEd25519().peerID
+        let sequenceNumber = Data(repeating: 0x42, count: 8)
+        benchmark("MessageID.compute(source:sequenceNumber:)", iterations: 500_000) {
+            blackHole(MessageID.compute(source: peerID, sequenceNumber: sequenceNumber))
         }
     }
 

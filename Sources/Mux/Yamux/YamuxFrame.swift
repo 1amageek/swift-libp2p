@@ -86,23 +86,39 @@ struct YamuxFrame: Sendable {
 
     /// Encodes the frame to a ByteBuffer.
     func encode() -> ByteBuffer {
-        let payloadSize = type == .data ? Int(length) : 0
         var buf = ByteBuffer()
-        buf.reserveCapacity(yamuxHeaderSize + payloadSize)
+        encode(into: &buf)
+        return buf
+    }
 
-        // Write 12-byte header (writeInteger defaults to big-endian)
-        buf.writeInteger(yamuxVersion)
-        buf.writeInteger(type.rawValue)
-        buf.writeInteger(flags.rawValue)
-        buf.writeInteger(streamID)
-        buf.writeInteger(length)
+    /// Encodes the frame into an existing ByteBuffer.
+    ///
+    /// The encoded bytes are appended to the buffer. Call `clear()` first when
+    /// reusing a scratch buffer for single-frame writes.
+    func encode(into buf: inout ByteBuffer) {
+        let payloadSize = type == .data ? Int(length) : 0
+        buf.reserveCapacity(buf.writerIndex + yamuxHeaderSize + payloadSize)
+
+        _ = buf.writeWithUnsafeMutableBytes(minimumWritableBytes: yamuxHeaderSize) { ptr in
+            ptr[0] = yamuxVersion
+            ptr[1] = type.rawValue
+            ptr[2] = UInt8(truncatingIfNeeded: flags.rawValue >> 8)
+            ptr[3] = UInt8(truncatingIfNeeded: flags.rawValue)
+            ptr[4] = UInt8(truncatingIfNeeded: streamID >> 24)
+            ptr[5] = UInt8(truncatingIfNeeded: streamID >> 16)
+            ptr[6] = UInt8(truncatingIfNeeded: streamID >> 8)
+            ptr[7] = UInt8(truncatingIfNeeded: streamID)
+            ptr[8] = UInt8(truncatingIfNeeded: length >> 24)
+            ptr[9] = UInt8(truncatingIfNeeded: length >> 16)
+            ptr[10] = UInt8(truncatingIfNeeded: length >> 8)
+            ptr[11] = UInt8(truncatingIfNeeded: length)
+            return yamuxHeaderSize
+        }
 
         // Payload (if present)
         if var payload = data {
             buf.writeBuffer(&payload)
         }
-
-        return buf
     }
 
     /// Decodes a frame from a ByteBuffer.
@@ -113,20 +129,29 @@ struct YamuxFrame: Sendable {
     /// - Returns: The decoded frame, or nil if more data is needed
     /// - Throws: `YamuxError` if the frame is malformed
     static func decode(from buffer: inout ByteBuffer) throws -> YamuxFrame? {
-        guard buffer.readableBytes >= yamuxHeaderSize else {
-            return nil
+        let header = buffer.withUnsafeReadableBytes { ptr -> (UInt8, UInt8, UInt16, UInt32, UInt32)? in
+            guard ptr.count >= yamuxHeaderSize else {
+                return nil
+            }
+
+            let version = ptr[0]
+            let typeRaw = ptr[1]
+            let flagsRaw = (UInt16(ptr[2]) << 8) | UInt16(ptr[3])
+            let streamID =
+                (UInt32(ptr[4]) << 24) |
+                (UInt32(ptr[5]) << 16) |
+                (UInt32(ptr[6]) << 8) |
+                UInt32(ptr[7])
+            let length =
+                (UInt32(ptr[8]) << 24) |
+                (UInt32(ptr[9]) << 16) |
+                (UInt32(ptr[10]) << 8) |
+                UInt32(ptr[11])
+
+            return (version, typeRaw, flagsRaw, streamID, length)
         }
 
-        // Save reader index to restore on partial read
-        let savedReaderIndex = buffer.readerIndex
-
-        // Parse header using readInteger (big-endian)
-        guard let version: UInt8 = buffer.readInteger(),
-              let typeRaw: UInt8 = buffer.readInteger(),
-              let flagsRaw: UInt16 = buffer.readInteger(),
-              let streamID: UInt32 = buffer.readInteger(),
-              let length: UInt32 = buffer.readInteger() else {
-            buffer.moveReaderIndex(to: savedReaderIndex)
+        guard let (version, typeRaw, flagsRaw, streamID, length) = header else {
             return nil
         }
 
@@ -148,11 +173,11 @@ struct YamuxFrame: Sendable {
             throw YamuxError.frameTooLarge(size: length, max: yamuxMaxFrameSize)
         }
 
-        guard buffer.readableBytes >= payloadLength else {
-            // Not enough data for payload - restore reader index
-            buffer.moveReaderIndex(to: savedReaderIndex)
+        guard buffer.readableBytes >= yamuxHeaderSize + payloadLength else {
             return nil
         }
+
+        buffer.moveReaderIndex(forwardBy: yamuxHeaderSize)
 
         // Read payload as a zero-copy slice (shares underlying storage)
         let frameData: ByteBuffer?

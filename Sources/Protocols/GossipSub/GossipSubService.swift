@@ -524,10 +524,10 @@ public final class GossipSubService: Sendable {
     /// Encodes an RPC with length prefix.
     private func encodeRPC(_ rpc: GossipSubRPC) -> ByteBuffer {
         let encoded = GossipSubProtobuf.encode(rpc)
-        var data = Data()
-        data.append(contentsOf: Varint.encode(UInt64(encoded.count)))
-        data.append(encoded)
-        return ByteBuffer(bytes: data)
+        var buffer = ByteBufferAllocator().buffer(capacity: encoded.count + 10)
+        Varint.encode(UInt64(encoded.count), into: &buffer)
+        buffer.writeBytes(encoded)
+        return buffer
     }
 
     /// Sends an RPC to a peer.

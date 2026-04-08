@@ -4,7 +4,7 @@ import Foundation
 import P2PCore
 import NIOCore
 
-@Suite("Varint Benchmarks")
+@Suite("Varint Benchmarks", .serialized)
 struct VarintBenchmarks {
 
     @Test("encode(0) - 1 byte output")

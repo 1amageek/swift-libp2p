@@ -4,7 +4,7 @@ import Foundation
 @testable import P2PMuxYamux
 import NIOCore
 
-@Suite("YamuxFrame Benchmarks")
+@Suite("YamuxFrame Benchmarks", .serialized)
 struct YamuxFrameBenchmarks {
 
     @Test("encode - header only (windowUpdate)")
@@ -15,12 +15,35 @@ struct YamuxFrameBenchmarks {
         }
     }
 
+    @Test("encode(into:) - header only reusable buffer")
+    func encodeHeaderOnlyIntoReusableBuffer() {
+        let frame = YamuxFrame.windowUpdate(streamID: 1, delta: 65536)
+        var buffer = ByteBuffer()
+        benchmark("YamuxFrame encode(into:) headerOnly", iterations: 5_000_000) {
+            buffer.clear()
+            frame.encode(into: &buffer)
+            blackHole(buffer)
+        }
+    }
+
     @Test("encode - 1KB payload")
     func encode1KB() {
         let payload = ByteBuffer(repeating: 0xAB, count: 1024)
         let frame = YamuxFrame.data(streamID: 1, data: payload)
         benchmark("YamuxFrame encode 1KB", iterations: 1_000_000) {
             blackHole(frame.encode())
+        }
+    }
+
+    @Test("encode(into:) - 1KB reusable buffer")
+    func encode1KBIntoReusableBuffer() {
+        let payload = ByteBuffer(repeating: 0xAB, count: 1024)
+        let frame = YamuxFrame.data(streamID: 1, data: payload)
+        var buffer = ByteBuffer()
+        benchmark("YamuxFrame encode(into:) 1KB", iterations: 1_000_000) {
+            buffer.clear()
+            frame.encode(into: &buffer)
+            blackHole(buffer)
         }
     }
 

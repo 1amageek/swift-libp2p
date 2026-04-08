@@ -4,7 +4,7 @@ import Foundation
 import Crypto
 import P2PKademlia
 
-@Suite("KademliaKey Benchmarks")
+@Suite("KademliaKey Benchmarks", .serialized)
 struct KademliaKeyBenchmarks {
 
     @Test("init(bytes:) - 32 bytes Data to 4xUInt64")

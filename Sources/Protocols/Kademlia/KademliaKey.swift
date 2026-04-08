@@ -28,6 +28,7 @@ public struct KademliaKey: Sendable, Hashable {
     ///   - w1: Bytes 8-15
     ///   - w2: Bytes 16-23
     ///   - w3: Bytes 24-31
+    @inlinable
     public init(w0: UInt64, w1: UInt64, w2: UInt64, w3: UInt64) {
         self.w0 = w0
         self.w1 = w1
@@ -39,15 +40,11 @@ public struct KademliaKey: Sendable, Hashable {
     ///
     /// - Parameter bytes: The raw key bytes (must be 32 bytes).
     /// - Precondition: `bytes.count == 32`
+    @inlinable
     public init(bytes: Data) {
         precondition(bytes.count == 32, "KademliaKey must be 32 bytes")
         self = bytes.withUnsafeBytes { ptr in
-            KademliaKey(
-                w0: ptr.load(fromByteOffset: 0, as: UInt64.self).bigEndian,
-                w1: ptr.load(fromByteOffset: 8, as: UInt64.self).bigEndian,
-                w2: ptr.load(fromByteOffset: 16, as: UInt64.self).bigEndian,
-                w3: ptr.load(fromByteOffset: 24, as: UInt64.self).bigEndian
-            )
+            KademliaKey(from: ptr)
         }
     }
 
@@ -57,6 +54,7 @@ public struct KademliaKey: Sendable, Hashable {
     ///
     /// - Parameter bytes: The raw key bytes (must be 32 bytes).
     /// - Throws: `KademliaKeyError.invalidLength` if bytes is not 32 bytes.
+    @inlinable
     public init(validating bytes: Data) throws {
         guard bytes.count == 32 else {
             throw KademliaKeyError.invalidLength(actual: bytes.count, expected: 32)
@@ -67,15 +65,18 @@ public struct KademliaKey: Sendable, Hashable {
     /// Creates a key by hashing arbitrary data with SHA-256.
     ///
     /// - Parameter data: The data to hash.
+    @inlinable
     public init(hashing data: Data) {
         let hash = SHA256.hash(data: data)
-        let temp = Data(hash)
-        self.init(bytes: temp)
+        self = hash.withUnsafeBytes { ptr in
+            KademliaKey(from: ptr)
+        }
     }
 
     /// Creates a key from a PeerID.
     ///
     /// - Parameter peerID: The peer ID to derive the key from.
+    @inlinable
     public init(from peerID: PeerID) {
         self.init(hashing: peerID.bytes)
     }
@@ -83,6 +84,7 @@ public struct KademliaKey: Sendable, Hashable {
     /// Creates a key from a string (hashed).
     ///
     /// - Parameter string: The string to hash.
+    @inlinable
     public init(from string: String) {
         self.init(hashing: Data(string.utf8))
     }
@@ -92,6 +94,7 @@ public struct KademliaKey: Sendable, Hashable {
     /// This is a computed property that reconstructs Data from the internal
     /// UInt64 representation. Prefer using the UInt64 accessors (w0-w3)
     /// for performance-sensitive operations.
+    @inlinable
     public var bytes: Data {
         var data = Data(count: 32)
         data.withUnsafeMutableBytes { ptr in
@@ -109,6 +112,7 @@ public struct KademliaKey: Sendable, Hashable {
     ///
     /// - Parameter other: The other key.
     /// - Returns: A new key representing the XOR distance.
+    @inlinable
     public func distance(to other: KademliaKey) -> KademliaKey {
         KademliaKey(
             w0: w0 ^ other.w0,
@@ -122,6 +126,7 @@ public struct KademliaKey: Sendable, Hashable {
     ///
     /// Uses hardware `leadingZeroBitCount` on UInt64 for maximum speed.
     /// This is used to determine the k-bucket index.
+    @inlinable
     public var leadingZeroBits: Int {
         if w0 != 0 { return w0.leadingZeroBitCount }
         if w1 != 0 { return 64 + w1.leadingZeroBitCount }
@@ -136,6 +141,7 @@ public struct KademliaKey: Sendable, Hashable {
     /// Bucket 255 is for the closest peers (distance starts with 255 zeros).
     ///
     /// - Returns: The bucket index (0-255), or nil if distance is zero (same key).
+    @inlinable
     public var bucketIndex: Int? {
         let zeros = leadingZeroBits
         if zeros >= 256 {
@@ -152,6 +158,7 @@ public struct KademliaKey: Sendable, Hashable {
     ///   - lhs: First key.
     ///   - rhs: Second key.
     /// - Returns: True if lhs < rhs.
+    @inlinable
     public static func < (lhs: KademliaKey, rhs: KademliaKey) -> Bool {
         if lhs.w0 != rhs.w0 { return lhs.w0 < rhs.w0 }
         if lhs.w1 != rhs.w1 { return lhs.w1 < rhs.w1 }
@@ -167,10 +174,23 @@ public struct KademliaKey: Sendable, Hashable {
     ///   - target: The target key.
     ///   - other: The key to compare against.
     /// - Returns: True if self is closer to target than other.
+    @inlinable
     public func isCloser(to target: KademliaKey, than other: KademliaKey) -> Bool {
         let selfDistance = self.distance(to: target)
         let otherDistance = other.distance(to: target)
         return selfDistance < otherDistance
+    }
+}
+
+internal extension KademliaKey {
+    @inlinable
+    init(from bytes: UnsafeRawBufferPointer) {
+        self.init(
+            w0: bytes.loadUnaligned(fromByteOffset: 0, as: UInt64.self).bigEndian,
+            w1: bytes.loadUnaligned(fromByteOffset: 8, as: UInt64.self).bigEndian,
+            w2: bytes.loadUnaligned(fromByteOffset: 16, as: UInt64.self).bigEndian,
+            w3: bytes.loadUnaligned(fromByteOffset: 24, as: UInt64.self).bigEndian
+        )
     }
 }
 
@@ -187,6 +207,7 @@ extension KademliaKey: CustomStringConvertible {
 // MARK: - Comparable
 
 extension KademliaKey: Comparable {
+    @inlinable
     public static func == (lhs: KademliaKey, rhs: KademliaKey) -> Bool {
         lhs.w0 == rhs.w0 && lhs.w1 == rhs.w1 && lhs.w2 == rhs.w2 && lhs.w3 == rhs.w3
     }

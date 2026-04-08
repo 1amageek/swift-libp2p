@@ -12,7 +12,8 @@ public struct Topic: Sendable, Hashable, CustomStringConvertible {
     public let value: String
 
     /// Pre-computed hash value for O(1) Dictionary/Set operations.
-    private let _hashValue: Int
+    @usableFromInline
+    internal let _hashValue: Int
 
     /// Pre-computed UTF-8 bytes for O(1) wire encoding.
     public let utf8Bytes: Data
@@ -20,18 +21,32 @@ public struct Topic: Sendable, Hashable, CustomStringConvertible {
     /// Creates a topic from a string.
     ///
     /// - Parameter value: The topic identifier string
+    @inlinable
     public init(_ value: String) {
         self.value = value
-        self.utf8Bytes = Data(value.utf8)
-        var hasher = Hasher()
-        hasher.combine(value)
-        self._hashValue = hasher.finalize()
+        let utf8Bytes = Data(value.utf8)
+        self.utf8Bytes = utf8Bytes
+
+        if utf8Bytes.count <= 16 {
+            var hash: UInt64 = 14695981039346656037
+            for byte in utf8Bytes {
+                hash ^= UInt64(byte)
+                hash &*= 1099511628211
+            }
+            self._hashValue = Int(bitPattern: UInt(truncatingIfNeeded: hash))
+        } else {
+            var hasher = Hasher()
+            hasher.combine(value)
+            self._hashValue = hasher.finalize()
+        }
     }
 
+    @inlinable
     public func hash(into hasher: inout Hasher) {
         hasher.combine(_hashValue)
     }
 
+    @inlinable
     public static func == (lhs: Topic, rhs: Topic) -> Bool {
         lhs._hashValue == rhs._hashValue && lhs.value == rhs.value
     }
@@ -75,6 +90,7 @@ public struct TopicHash: Sendable, Hashable {
     public let bytes: Data
 
     /// Creates a topic hash from raw bytes.
+    @inlinable
     public init(bytes: Data) {
         self.bytes = bytes
     }
@@ -82,9 +98,10 @@ public struct TopicHash: Sendable, Hashable {
     /// Creates a topic hash from a topic by hashing its value.
     ///
     /// Uses SHA-256 to hash the topic string.
+    @inlinable
     public init(topic: Topic) {
         // For simplicity, we use the UTF-8 bytes directly as the hash
         // In a full implementation, this would be SHA-256(topic.value)
-        self.bytes = Data(topic.value.utf8)
+        self.bytes = topic.utf8Bytes
     }
 }

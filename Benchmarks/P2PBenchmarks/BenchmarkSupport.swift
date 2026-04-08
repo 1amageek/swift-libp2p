@@ -7,6 +7,18 @@ func blackHole<T>(_ value: T) {
     withUnsafePointer(to: value) { _ = $0 }
 }
 
+/// Converts a Duration to nanoseconds as a Double.
+func durationNanoseconds(_ duration: Duration) -> Double {
+    Double(duration.components.seconds) * 1_000_000_000
+        + Double(duration.components.attoseconds) / 1_000_000_000
+}
+
+/// Converts a Duration to seconds as a Double.
+func durationSeconds(_ duration: Duration) -> Double {
+    Double(duration.components.seconds)
+        + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+}
+
 /// Runs a benchmark with warmup and measurement phases.
 ///
 /// - Parameters:
@@ -28,9 +40,8 @@ func benchmark(_ name: String, iterations: Int, block: () -> Void) {
         }
     }
 
-    let totalNs = total.components.seconds * 1_000_000_000
-        + total.components.attoseconds / 1_000_000_000
-    let perIter = totalNs / Int64(iterations)
+    let totalNs = durationNanoseconds(total)
+    let perIter = totalNs / Double(iterations)
     print("  \(name): \(perIter) ns/op (\(iterations) iters)")
 }
 
@@ -56,8 +67,7 @@ func benchmark(_ name: String, iterations: Int, block: () throws -> Void) throws
     }
     elapsed = clock.now - start
 
-    let totalNs = elapsed.components.seconds * 1_000_000_000
-        + elapsed.components.attoseconds / 1_000_000_000
-    let perIter = totalNs / Int64(iterations)
+    let totalNs = durationNanoseconds(elapsed)
+    let perIter = totalNs / Double(iterations)
     print("  \(name): \(perIter) ns/op (\(iterations) iters)")
 }

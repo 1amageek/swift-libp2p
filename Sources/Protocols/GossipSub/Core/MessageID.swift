@@ -10,24 +10,29 @@ import P2PCore
 ///
 /// Hash value is pre-computed at initialization using FNV-1a for O(1) Dictionary/Set operations.
 public struct MessageID: Sendable, Hashable, CustomStringConvertible {
+    @usableFromInline
+    internal static let fnvOffsetBasis: UInt64 = 14695981039346656037
+    @usableFromInline
+    internal static let fnvPrime: UInt64 = 1099511628211
+
     /// The raw bytes of the message ID.
     public let bytes: Data
 
     /// Pre-computed hash value (FNV-1a).
-    private let _hashValue: Int
+    @usableFromInline
+    internal let _hashValue: Int
 
     /// Creates a message ID from raw bytes.
     ///
     /// - Parameter bytes: The raw message ID bytes
+    @inlinable
     public init(bytes: Data) {
         self.bytes = bytes
-        // FNV-1a hash: compute once, use for every Dictionary/Set operation
-        var h: UInt64 = 14695981039346656037  // FNV offset basis
-        for byte in bytes {
-            h ^= UInt64(byte)
-            h &*= 1099511628211  // FNV prime
+        var hash = Self.fnvOffsetBasis
+        bytes.withUnsafeBytes { rawBuffer in
+            Self.updateHash(&hash, with: rawBuffer)
         }
-        self._hashValue = Int(bitPattern: UInt(h))
+        self._hashValue = Self.finalizeHash(hash)
     }
 
     /// Creates a message ID from a hex string.
@@ -40,10 +45,12 @@ public struct MessageID: Sendable, Hashable, CustomStringConvertible {
         self.init(bytes: data)
     }
 
+    @inlinable
     public func hash(into hasher: inout Hasher) {
         hasher.combine(_hashValue)
     }
 
+    @inlinable
     public static func == (lhs: MessageID, rhs: MessageID) -> Bool {
         lhs._hashValue == rhs._hashValue && lhs.bytes == rhs.bytes
     }
@@ -64,13 +71,21 @@ extension MessageID {
     ///   - source: The source peer ID (optional)
     ///   - sequenceNumber: The message sequence number
     /// - Returns: The computed message ID
+    @inlinable
     public static func compute(source: PeerID?, sequenceNumber: Data) -> MessageID {
+        let sourceBytes = source?.bytes
         var bytes = Data()
-        if let source = source {
-            bytes.append(source.bytes)
+        bytes.reserveCapacity((sourceBytes?.count ?? 0) + sequenceNumber.count)
+
+        var hash = Self.fnvOffsetBasis
+        if let sourceBytes {
+            bytes.append(sourceBytes)
+            Self.updateHash(&hash, with: sourceBytes)
         }
         bytes.append(sequenceNumber)
-        return MessageID(bytes: bytes)
+        Self.updateHash(&hash, with: sequenceNumber)
+
+        return MessageID(bytes: bytes, precomputedHash: hash)
     }
 
     /// Computes a message ID by hashing the message data.
@@ -81,12 +96,47 @@ extension MessageID {
     ///
     /// - Parameter data: The message data
     /// - Returns: The computed message ID (first 20 bytes of SHA-256 hash)
+    @inlinable
     public static func computeFromHash(_ data: Data) -> MessageID {
-        // Use first 20 bytes of SHA-256 hash
-        // This matches the default message ID length used by go-libp2p and rust-libp2p
         let digest = SHA256.hash(data: data)
-        let hashBytes = Data(digest.prefix(20))
-        return MessageID(bytes: hashBytes)
+        return digest.withUnsafeBytes { rawBuffer in
+            let prefix = UnsafeRawBufferPointer(rebasing: rawBuffer[..<20])
+            var hash = Self.fnvOffsetBasis
+            Self.updateHash(&hash, with: prefix)
+            let hashBytes = Data(prefix)
+            return MessageID(bytes: hashBytes, precomputedHash: hash)
+        }
+    }
+}
+
+// MARK: - Internal Helpers
+
+internal extension MessageID {
+    @inlinable
+    init(bytes: Data, precomputedHash: UInt64) {
+        self.bytes = bytes
+        self._hashValue = Self.finalizeHash(precomputedHash)
+    }
+
+    @inlinable
+    static func updateHash(_ hash: inout UInt64, with bytes: Data) {
+        for byte in bytes {
+            hash ^= UInt64(byte)
+            hash &*= Self.fnvPrime
+        }
+    }
+
+    @inlinable
+    static func updateHash(_ hash: inout UInt64, with bytes: UnsafeRawBufferPointer) {
+        for byte in bytes {
+            hash ^= UInt64(byte)
+            hash &*= Self.fnvPrime
+        }
+    }
+
+    @inlinable
+    static func finalizeHash(_ hash: UInt64) -> Int {
+        Int(bitPattern: UInt(truncatingIfNeeded: hash))
     }
 }
 

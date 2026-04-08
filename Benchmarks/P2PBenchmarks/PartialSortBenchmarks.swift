@@ -3,6 +3,7 @@ import Foundation
 import P2PCore
 import Testing
 
+@Suite("PartialSort Benchmarks", .serialized)
 struct PartialSortBenchmarks {
 
     // MARK: - Baseline: Full Sort + Prefix
@@ -36,29 +37,29 @@ struct PartialSortBenchmarks {
 
     // MARK: - Optimized: Partial Sort
 
-    @Test("Partial sort (k=20, n=100)")
+    @Test("Partial sort comparable (k=20, n=100)")
     func partialSortSmall() {
         let data = (0..<100).shuffled()
-        benchmark("Partial sort (k=20, n=100)", iterations: 100_000) {
-            let result = data.smallest(20, by: <)
+        benchmark("Partial sort comparable (k=20, n=100)", iterations: 100_000) {
+            let result = data.smallest(20)
             blackHole(result)
         }
     }
 
-    @Test("Partial sort (k=20, n=500)")
+    @Test("Partial sort comparable (k=20, n=500)")
     func partialSortMedium() {
         let data = (0..<500).shuffled()
-        benchmark("Partial sort (k=20, n=500)", iterations: 10_000) {
-            let result = data.smallest(20, by: <)
+        benchmark("Partial sort comparable (k=20, n=500)", iterations: 10_000) {
+            let result = data.smallest(20)
             blackHole(result)
         }
     }
 
-    @Test("Partial sort (k=20, n=1000)")
+    @Test("Partial sort comparable (k=20, n=1000)")
     func partialSortLarge() {
         let data = (0..<1000).shuffled()
-        benchmark("Partial sort (k=20, n=1000)", iterations: 5_000) {
-            let result = data.smallest(20, by: <)
+        benchmark("Partial sort comparable (k=20, n=1000)", iterations: 5_000) {
+            let result = data.smallest(20)
             blackHole(result)
         }
     }
@@ -69,7 +70,7 @@ struct PartialSortBenchmarks {
     func partialSortFullSize() {
         let data = (0..<100).shuffled()
         benchmark("Partial sort when k == n", iterations: 50_000) {
-            let result = data.smallest(100, by: <)
+            let result = data.smallest(100)
             blackHole(result)
         }
     }
@@ -78,7 +79,7 @@ struct PartialSortBenchmarks {
     func partialSortOversized() {
         let data = (0..<50).shuffled()
         benchmark("Partial sort when k > n", iterations: 50_000) {
-            let result = data.smallest(100, by: <)
+            let result = data.smallest(100)
             blackHole(result)
         }
     }
@@ -87,7 +88,7 @@ struct PartialSortBenchmarks {
     func partialSortMinElement() {
         let data = (0..<500).shuffled()
         benchmark("Partial sort with k=1", iterations: 50_000) {
-            let result = data.smallest(1, by: <)
+            let result = data.smallest(1)
             blackHole(result)
         }
     }
@@ -107,7 +108,7 @@ struct PartialSortBenchmarks {
         let peers = (0..<200).map { _ in MockPeer(distance: UInt64.random(in: 0...UInt64.max)) }
 
         benchmark("KademliaQuery selectCandidates (n=200, k=20)", iterations: 10_000) {
-            let result = peers.smallest(20, by: <)
+            let result = peers.smallest(20)
             blackHole(result)
         }
     }
@@ -133,7 +134,7 @@ struct PartialSortBenchmarks {
         }
 
         benchmark("ConnectionPool trim (n=150, k=30)", iterations: 10_000) {
-            let result = connections.smallest(30, by: <)
+            let result = connections.smallest(30)
             blackHole(result)
         }
     }
@@ -166,16 +167,16 @@ struct PartialSortBenchmarks {
             blackHole(result)
         }
         let fullDuration = ContinuousClock.now - fullStart
-        let fullSortTime = Double(fullDuration.components.attoseconds) / 1e18
+        let fullSortTime = durationSeconds(fullDuration)
 
         // Measure partial sort
         let partialStart = ContinuousClock.now
         for _ in 0..<10_000 {
-            let result = data.smallest(20, by: <)
+            let result = data.smallest(20)
             blackHole(result)
         }
         let partialDuration = ContinuousClock.now - partialStart
-        let partialSortTime = Double(partialDuration.components.attoseconds) / 1e18
+        let partialSortTime = durationSeconds(partialDuration)
 
         let speedup = fullSortTime / partialSortTime
         print("Full sort:    \(String(format: "%.6f", fullSortTime))s (10,000 iterations)")

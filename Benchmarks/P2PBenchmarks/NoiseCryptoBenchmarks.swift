@@ -4,7 +4,7 @@ import Foundation
 import Crypto
 @testable import P2PSecurityNoise
 
-@Suite("NoiseCrypto Benchmarks")
+@Suite("NoiseCrypto Benchmarks", .serialized)
 struct NoiseCryptoBenchmarks {
 
     // MARK: - CipherState

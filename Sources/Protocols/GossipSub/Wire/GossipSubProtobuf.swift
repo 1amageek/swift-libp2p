@@ -71,7 +71,7 @@ public enum GossipSubProtobuf {
         for sub in rpc.subscriptions {
             let subData = encodeSubOpts(sub)
             result.append(tagRPCSubscriptions)
-            result.append(contentsOf: Varint.encode(UInt64(subData.count)))
+            Varint.encode(UInt64(subData.count), into: &result)
             result.append(subData)
         }
 
@@ -79,7 +79,7 @@ public enum GossipSubProtobuf {
         for message in rpc.messages {
             let msgData = encodeMessage(message)
             result.append(tagRPCMessages)
-            result.append(contentsOf: Varint.encode(UInt64(msgData.count)))
+            Varint.encode(UInt64(msgData.count), into: &result)
             result.append(msgData)
         }
 
@@ -87,7 +87,7 @@ public enum GossipSubProtobuf {
         if let control = rpc.control, !control.isEmpty {
             let ctrlData = encodeControl(control)
             result.append(tagRPCControl)
-            result.append(contentsOf: Varint.encode(UInt64(ctrlData.count)))
+            Varint.encode(UInt64(ctrlData.count), into: &result)
             result.append(ctrlData)
         }
 
@@ -95,63 +95,64 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeSubOpts(_ sub: GossipSubRPC.SubscriptionOpt) -> Data {
-        var result = Data(capacity: 4 + sub.topic.value.utf8.count)
+        let topicBytes = sub.topic.utf8Bytes
+        var result = Data(capacity: 4 + topicBytes.count)
 
         // Field 1: subscribe (bool as varint)
         result.append(tagSubOptsSubscribe)
         result.append(sub.subscribe ? 1 : 0)
 
         // Field 2: topicid (string)
-        let topicBytes = sub.topic.utf8Bytes
         result.append(tagSubOptsTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
+        Varint.encode(UInt64(topicBytes.count), into: &result)
         result.append(topicBytes)
 
         return result
     }
 
     private static func encodeMessage(_ message: GossipSubMessage) -> Data {
+        let topicBytes = message.topic.utf8Bytes
         // Estimate: tag+varint overhead per field + actual data sizes
         let estimatedSize = 32 + message.data.count + message.sequenceNumber.count
-            + message.topic.value.utf8.count + (message.signature?.count ?? 0) + (message.key?.count ?? 0)
+            + topicBytes.count + (message.signature?.count ?? 0) + (message.key?.count ?? 0)
         var result = Data(capacity: estimatedSize)
 
         // Field 1: from (optional bytes)
         if let source = message.source {
+            let sourceBytes = source.bytes
             result.append(tagMessageFrom)
-            result.append(contentsOf: Varint.encode(UInt64(source.bytes.count)))
-            result.append(source.bytes)
+            Varint.encode(UInt64(sourceBytes.count), into: &result)
+            result.append(sourceBytes)
         }
 
         // Field 2: data (bytes)
         result.append(tagMessageData)
-        result.append(contentsOf: Varint.encode(UInt64(message.data.count)))
+        Varint.encode(UInt64(message.data.count), into: &result)
         result.append(message.data)
 
         // Field 3: seqno (bytes)
         if !message.sequenceNumber.isEmpty {
             result.append(tagMessageSeqno)
-            result.append(contentsOf: Varint.encode(UInt64(message.sequenceNumber.count)))
+            Varint.encode(UInt64(message.sequenceNumber.count), into: &result)
             result.append(message.sequenceNumber)
         }
 
         // Field 4: topic (string) - required
-        let topicBytes = message.topic.utf8Bytes
         result.append(tagMessageTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
+        Varint.encode(UInt64(topicBytes.count), into: &result)
         result.append(topicBytes)
 
         // Field 5: signature (optional bytes)
         if let sig = message.signature {
             result.append(tagMessageSignature)
-            result.append(contentsOf: Varint.encode(UInt64(sig.count)))
+            Varint.encode(UInt64(sig.count), into: &result)
             result.append(sig)
         }
 
         // Field 6: key (optional bytes)
         if let key = message.key {
             result.append(tagMessageKey)
-            result.append(contentsOf: Varint.encode(UInt64(key.count)))
+            Varint.encode(UInt64(key.count), into: &result)
             result.append(key)
         }
 
@@ -168,7 +169,7 @@ public enum GossipSubProtobuf {
         for ihave in control.ihaves {
             let ihaveData = encodeIHave(ihave)
             result.append(tagControlIHave)
-            result.append(contentsOf: Varint.encode(UInt64(ihaveData.count)))
+            Varint.encode(UInt64(ihaveData.count), into: &result)
             result.append(ihaveData)
         }
 
@@ -176,7 +177,7 @@ public enum GossipSubProtobuf {
         for iwant in control.iwants {
             let iwantData = encodeIWant(iwant)
             result.append(tagControlIWant)
-            result.append(contentsOf: Varint.encode(UInt64(iwantData.count)))
+            Varint.encode(UInt64(iwantData.count), into: &result)
             result.append(iwantData)
         }
 
@@ -184,7 +185,7 @@ public enum GossipSubProtobuf {
         for graft in control.grafts {
             let graftData = encodeGraft(graft)
             result.append(tagControlGraft)
-            result.append(contentsOf: Varint.encode(UInt64(graftData.count)))
+            Varint.encode(UInt64(graftData.count), into: &result)
             result.append(graftData)
         }
 
@@ -192,7 +193,7 @@ public enum GossipSubProtobuf {
         for prune in control.prunes {
             let pruneData = encodePrune(prune)
             result.append(tagControlPrune)
-            result.append(contentsOf: Varint.encode(UInt64(pruneData.count)))
+            Varint.encode(UInt64(pruneData.count), into: &result)
             result.append(pruneData)
         }
 
@@ -200,7 +201,7 @@ public enum GossipSubProtobuf {
         for idontwant in control.idontwants {
             let idontwantData = encodeIDontWant(idontwant)
             result.append(tagControlIDontWant)
-            result.append(contentsOf: Varint.encode(UInt64(idontwantData.count)))
+            Varint.encode(UInt64(idontwantData.count), into: &result)
             result.append(idontwantData)
         }
 
@@ -208,19 +209,19 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeIHave(_ ihave: ControlMessage.IHave) -> Data {
-        let topicBytes = Data(ihave.topic.value.utf8)
+        let topicBytes = ihave.topic.utf8Bytes
         // Estimate: tag+varint+topic + per-messageID (tag+varint+~32 bytes)
         var result = Data(capacity: 4 + topicBytes.count + ihave.messageIDs.count * 36)
 
         // Field 1: topicID (string)
         result.append(tagIHaveTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
+        Varint.encode(UInt64(topicBytes.count), into: &result)
         result.append(topicBytes)
 
         // Field 2: messageIDs (repeated bytes)
         for msgID in ihave.messageIDs {
             result.append(tagIHaveMessageIDs)
-            result.append(contentsOf: Varint.encode(UInt64(msgID.bytes.count)))
+            Varint.encode(UInt64(msgID.bytes.count), into: &result)
             result.append(msgID.bytes)
         }
 
@@ -234,7 +235,7 @@ public enum GossipSubProtobuf {
         // Field 1: messageIDs (repeated bytes)
         for msgID in iwant.messageIDs {
             result.append(tagIWantMessageIDs)
-            result.append(contentsOf: Varint.encode(UInt64(msgID.bytes.count)))
+            Varint.encode(UInt64(msgID.bytes.count), into: &result)
             result.append(msgID.bytes)
         }
 
@@ -242,39 +243,39 @@ public enum GossipSubProtobuf {
     }
 
     private static func encodeGraft(_ graft: ControlMessage.Graft) -> Data {
-        let topicBytes = Data(graft.topic.value.utf8)
+        let topicBytes = graft.topic.utf8Bytes
         var result = Data(capacity: 4 + topicBytes.count)
 
         // Field 1: topicID (string)
         result.append(tagGraftTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
+        Varint.encode(UInt64(topicBytes.count), into: &result)
         result.append(topicBytes)
 
         return result
     }
 
     private static func encodePrune(_ prune: ControlMessage.Prune) -> Data {
-        let topicBytes = Data(prune.topic.value.utf8)
+        let topicBytes = prune.topic.utf8Bytes
         // Estimate: topic + peers + backoff
         var result = Data(capacity: 4 + topicBytes.count + prune.peers.count * 48 + 12)
 
         // Field 1: topicID (string)
         result.append(tagPruneTopic)
-        result.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
+        Varint.encode(UInt64(topicBytes.count), into: &result)
         result.append(topicBytes)
 
         // Field 2: peers (repeated PeerInfo)
         for peer in prune.peers {
             let peerData = encodePeerInfo(peer)
             result.append(tagPrunePeers)
-            result.append(contentsOf: Varint.encode(UInt64(peerData.count)))
+            Varint.encode(UInt64(peerData.count), into: &result)
             result.append(peerData)
         }
 
         // Field 3: backoff (optional uint64)
         if let backoff = prune.backoff {
             result.append(tagPruneBackoff)
-            result.append(contentsOf: Varint.encode(backoff))
+            Varint.encode(backoff, into: &result)
         }
 
         return result
@@ -285,13 +286,14 @@ public enum GossipSubProtobuf {
 
         // Field 1: peerID (bytes)
         result.append(tagPeerInfoPeerID)
-        result.append(contentsOf: Varint.encode(UInt64(info.peerID.bytes.count)))
-        result.append(info.peerID.bytes)
+        let peerIDBytes = info.peerID.bytes
+        Varint.encode(UInt64(peerIDBytes.count), into: &result)
+        result.append(peerIDBytes)
 
         // Field 2: signedPeerRecord (optional bytes)
         if let record = info.signedPeerRecord {
             result.append(tagPeerInfoRecord)
-            result.append(contentsOf: Varint.encode(UInt64(record.count)))
+            Varint.encode(UInt64(record.count), into: &result)
             result.append(record)
         }
 
@@ -305,7 +307,7 @@ public enum GossipSubProtobuf {
         // Field 1: messageIDs (repeated bytes)
         for msgID in idontwant.messageIDs {
             result.append(tagIDontWantMessageIDs)
-            result.append(contentsOf: Varint.encode(UInt64(msgID.bytes.count)))
+            Varint.encode(UInt64(msgID.bytes.count), into: &result)
             result.append(msgID.bytes)
         }
 

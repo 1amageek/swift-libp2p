@@ -3,7 +3,7 @@ import Testing
 import Foundation
 import P2PGossipSub
 
-@Suite("Topic Benchmarks")
+@Suite("Topic Benchmarks", .serialized)
 struct TopicBenchmarks {
 
     @Test("init - short string (\"blocks\")")
@@ -56,6 +56,14 @@ struct TopicBenchmarks {
         }
         benchmark("Topic == (different)", iterations: 10_000_000) {
             blackHole(a == c)
+        }
+    }
+
+    @Test("TopicHash.init(topic:) - reuse topic bytes")
+    func topicHashInit() {
+        let topic = Topic("/meshsub/1.1.0/some-application/blocks/v1/json")
+        benchmark("TopicHash.init(topic:)", iterations: 5_000_000) {
+            blackHole(TopicHash(topic: topic))
         }
     }
 

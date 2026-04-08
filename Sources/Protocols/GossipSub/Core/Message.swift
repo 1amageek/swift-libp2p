@@ -85,6 +85,8 @@ public struct GossipSubMessage: Sendable, Hashable {
 // MARK: - Message Builder
 
 extension GossipSubMessage {
+    private static let signingDomainPrefix = Data("libp2p-pubsub:".utf8)
+
     /// Builder for creating signed messages.
     public struct Builder {
         private var data: Data
@@ -174,32 +176,33 @@ extension GossipSubMessage {
         ///
         /// Format: "libp2p-pubsub:" + protobuf(from, data, seqno, topic)
         private static func buildSigningData(source: PeerID, data: Data, seqno: Data, topic: Topic) -> Data {
-            let prefix = Data("libp2p-pubsub:".utf8)
-            var messageBytes = Data()
+            let topicBytes = topic.utf8Bytes
+            let fromBytes = source.bytes
+            let estimatedSize = signingDomainPrefix.count + 16 + fromBytes.count + data.count + seqno.count + topicBytes.count
+            var result = Data(capacity: estimatedSize)
+            result.append(GossipSubMessage.signingDomainPrefix)
 
             // Field 1: from (source peer ID bytes)
-            let fromBytes = source.bytes
-            messageBytes.append(0x0a) // tag 1, wire type 2 (length-delimited)
-            messageBytes.append(contentsOf: Varint.encode(UInt64(fromBytes.count)))
-            messageBytes.append(fromBytes)
+            result.append(0x0a) // tag 1, wire type 2 (length-delimited)
+            Varint.encode(UInt64(fromBytes.count), into: &result)
+            result.append(fromBytes)
 
             // Field 2: data
-            messageBytes.append(0x12) // tag 2, wire type 2
-            messageBytes.append(contentsOf: Varint.encode(UInt64(data.count)))
-            messageBytes.append(data)
+            result.append(0x12) // tag 2, wire type 2
+            Varint.encode(UInt64(data.count), into: &result)
+            result.append(data)
 
             // Field 3: seqno
-            messageBytes.append(0x1a) // tag 3, wire type 2
-            messageBytes.append(contentsOf: Varint.encode(UInt64(seqno.count)))
-            messageBytes.append(seqno)
+            result.append(0x1a) // tag 3, wire type 2
+            Varint.encode(UInt64(seqno.count), into: &result)
+            result.append(seqno)
 
             // Field 4: topic
-            let topicBytes = Data(topic.value.utf8)
-            messageBytes.append(0x22) // tag 4, wire type 2
-            messageBytes.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
-            messageBytes.append(topicBytes)
+            result.append(0x22) // tag 4, wire type 2
+            Varint.encode(UInt64(topicBytes.count), into: &result)
+            result.append(topicBytes)
 
-            return prefix + messageBytes
+            return result
         }
 
         /// Builds the message.
@@ -339,39 +342,44 @@ extension GossipSubMessage {
     ///
     /// Format: "libp2p-pubsub:" + protobuf(from, seqno, topic, data)
     private func buildSigningData() -> Data {
-        // Signature domain prefix
-        let prefix = Data("libp2p-pubsub:".utf8)
+        let topicBytes = topic.utf8Bytes
+        let fromBytes = source?.bytes
+        let estimatedSize = Self.signingDomainPrefix.count
+            + 16
+            + (fromBytes?.count ?? 0)
+            + data.count
+            + sequenceNumber.count
+            + topicBytes.count
 
         // Build protobuf-style message bytes (same order as wire format)
-        var messageBytes = Data()
+        var result = Data(capacity: estimatedSize)
+        result.append(Self.signingDomainPrefix)
 
         // Field 1: from (source peer ID bytes)
-        if let source = source {
-            let fromBytes = source.bytes
-            messageBytes.append(0x0a) // tag 1, wire type 2 (length-delimited)
-            messageBytes.append(contentsOf: Varint.encode(UInt64(fromBytes.count)))
-            messageBytes.append(fromBytes)
+        if let fromBytes {
+            result.append(0x0a) // tag 1, wire type 2 (length-delimited)
+            Varint.encode(UInt64(fromBytes.count), into: &result)
+            result.append(fromBytes)
         }
 
         // Field 2: data
-        messageBytes.append(0x12) // tag 2, wire type 2
-        messageBytes.append(contentsOf: Varint.encode(UInt64(data.count)))
-        messageBytes.append(data)
+        result.append(0x12) // tag 2, wire type 2
+        Varint.encode(UInt64(data.count), into: &result)
+        result.append(data)
 
         // Field 3: seqno
         if !sequenceNumber.isEmpty {
-            messageBytes.append(0x1a) // tag 3, wire type 2
-            messageBytes.append(contentsOf: Varint.encode(UInt64(sequenceNumber.count)))
-            messageBytes.append(sequenceNumber)
+            result.append(0x1a) // tag 3, wire type 2
+            Varint.encode(UInt64(sequenceNumber.count), into: &result)
+            result.append(sequenceNumber)
         }
 
         // Field 4: topic
-        let topicBytes = Data(topic.value.utf8)
-        messageBytes.append(0x22) // tag 4, wire type 2
-        messageBytes.append(contentsOf: Varint.encode(UInt64(topicBytes.count)))
-        messageBytes.append(topicBytes)
+        result.append(0x22) // tag 4, wire type 2
+        Varint.encode(UInt64(topicBytes.count), into: &result)
+        result.append(topicBytes)
 
-        return prefix + messageBytes
+        return result
     }
 }
 

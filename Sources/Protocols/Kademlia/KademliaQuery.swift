@@ -95,6 +95,15 @@ public struct QueryPeer: Sendable {
     }
 }
 
+extension QueryPeer: Comparable {
+    public static func < (lhs: QueryPeer, rhs: QueryPeer) -> Bool {
+        if lhs.distance != rhs.distance {
+            return lhs.distance < rhs.distance
+        }
+        return lhs.peer.id < rhs.peer.id
+    }
+}
+
 /// Delegate for executing queries.
 public protocol KademliaQueryDelegate: Sendable {
     /// Sends a FIND_NODE request to a peer.
@@ -514,11 +523,11 @@ public struct KademliaQuery: Sendable {
         let notContacted = Array(peers.values.filter { $0.state == .notContacted })
 
         guard skademliaConfig.enabled && skademliaConfig.useSiblingBroadcast else {
-            return notContacted.smallest(count, by: { $0.distance < $1.distance })
+            return notContacted.smallest(count)
         }
 
         // Sibling Broadcast: select alpha closest peers + additional peers from diverse distance bands
-        let baseCandidates = notContacted.smallest(count, by: { $0.distance < $1.distance })
+        let baseCandidates = notContacted.smallest(count)
         let basePeerIDs = Set(baseCandidates.map { $0.peer.id })
 
         // Group remaining not-contacted peers by distance band (bucket index)
@@ -560,7 +569,7 @@ public struct KademliaQuery: Sendable {
         count: Int
     ) -> [KademliaPeer] {
         Array(peers.values.filter { $0.state == .succeeded })
-            .smallest(count, by: { $0.distance < $1.distance })
+            .smallest(count)
             .map { $0.peer }
     }
 

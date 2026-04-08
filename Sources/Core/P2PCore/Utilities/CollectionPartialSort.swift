@@ -4,6 +4,9 @@
 /// the entire collection (O(n log k) instead of O(n log n)).
 
 extension Collection {
+    @usableFromInline
+    internal static var insertionOptimizedThreshold: Int { 32 }
+
     /// Returns the k smallest elements according to the given predicate.
     ///
     /// This is more efficient than `sorted(by:).prefix(k)` when k << count,
@@ -14,13 +17,17 @@ extension Collection {
     ///   - areInIncreasingOrder: Comparison predicate (same as `sorted(by:)`)
     /// - Returns: Array of up to k smallest elements, sorted
     ///
-    /// - Complexity: O(n log k) where n is the collection count
+    /// Uses an adaptive strategy:
+    /// - `k == 1` uses a single linear pass.
+    /// - Small `k` uses an insertion-optimized top-k buffer.
+    /// - Larger `k` falls back to a max-heap.
     ///
     /// Example:
     /// ```swift
     /// let numbers = [5, 2, 8, 1, 9, 3, 7]
     /// let smallest3 = numbers.smallest(3, by: <)  // [1, 2, 3]
     /// ```
+    @inlinable
     public func smallest(
         _ k: Int,
         by areInIncreasingOrder: (Element, Element) throws -> Bool
@@ -28,10 +35,21 @@ extension Collection {
         guard k > 0 else { return [] }
         guard !isEmpty else { return [] }
 
-        // For small k, use min-heap approach: O(n log k)
-        // For large k (k > count/2), fall back to full sort
         if k >= count {
             return try sorted(by: areInIncreasingOrder)
+        }
+        if k == 1 {
+            var iterator = makeIterator()
+            guard var minimum = iterator.next() else { return [] }
+            while let element = iterator.next() {
+                if try areInIncreasingOrder(element, minimum) {
+                    minimum = element
+                }
+            }
+            return [minimum]
+        }
+        if k <= Self.insertionOptimizedThreshold {
+            return try insertionOptimizedSmallest(k, by: areInIncreasingOrder)
         }
 
         // Build a max-heap of size k (stores k smallest elements)
@@ -56,11 +74,133 @@ extension Collection {
             }
         }
 
-        // Extract elements from heap in sorted order
+        // For the small fixed-size heaps used here, in-place heap sort avoids
+        // the extra comparator overhead that `Array.sort` tends to add.
         var result = heap
         try heapSort(&result, by: areInIncreasingOrder)
         return result
     }
+
+    @usableFromInline
+    internal func insertionOptimizedSmallest(
+        _ k: Int,
+        by areInIncreasingOrder: (Element, Element) throws -> Bool
+    ) rethrows -> [Element] {
+        var result: [Element] = []
+        result.reserveCapacity(k)
+
+        for element in self {
+            if result.count < k {
+                let insertionIndex = try binarySearchInsertionIndex(
+                    of: element,
+                    in: result,
+                    by: areInIncreasingOrder
+                )
+                result.insert(element, at: insertionIndex)
+                continue
+            }
+
+            guard let currentLargest = result.last,
+                  try areInIncreasingOrder(element, currentLargest) else {
+                continue
+            }
+
+            let insertionIndex = try binarySearchInsertionIndex(
+                of: element,
+                in: result,
+                by: areInIncreasingOrder
+            )
+            result.insert(element, at: insertionIndex)
+            result.removeLast()
+        }
+
+        return result
+    }
+}
+
+extension Array {
+    @usableFromInline
+    internal static var fullSortPreferredCountThreshold: Int { 2_048 }
+
+    /// Returns the k smallest elements according to the given predicate.
+    ///
+    /// Arrays get an additional fast path that uses `Array.sorted(by:)` for
+    /// small and medium inputs, which the optimizer handles much better than
+    /// the generic `Collection.sorted(by:)` path.
+    @inlinable
+    public func smallest(
+        _ k: Int,
+        by areInIncreasingOrder: (Element, Element) throws -> Bool
+    ) rethrows -> [Element] {
+        guard k > 0 else { return [] }
+        guard !isEmpty else { return [] }
+
+        if k >= count {
+            return try sorted(by: areInIncreasingOrder)
+        }
+        if k == 1 {
+            var minimum = self[0]
+            for element in dropFirst() {
+                if try areInIncreasingOrder(element, minimum) {
+                    minimum = element
+                }
+            }
+            return [minimum]
+        }
+        if count <= Self.fullSortPreferredCountThreshold {
+            return try Array(sorted(by: areInIncreasingOrder).prefix(k))
+        }
+
+        return try ArraySlice(self).smallest(k, by: areInIncreasingOrder)
+    }
+}
+
+extension Array where Element: Comparable {
+    /// Returns the k smallest elements using the element's natural order.
+    @inlinable
+    public func smallest(_ k: Int) -> [Element] {
+        guard k > 0 else { return [] }
+        guard !isEmpty else { return [] }
+
+        if k >= count {
+            return sorted()
+        }
+        if k == 1 {
+            var minimum = self[0]
+            for element in dropFirst() {
+                if element < minimum {
+                    minimum = element
+                }
+            }
+            return [minimum]
+        }
+        if count <= Self.fullSortPreferredCountThreshold {
+            return Array(sorted().prefix(k))
+        }
+
+        return ArraySlice(self).smallest(k, by: <)
+    }
+}
+
+@usableFromInline
+internal func binarySearchInsertionIndex<T>(
+    of value: T,
+    in sortedValues: [T],
+    by areInIncreasingOrder: (T, T) throws -> Bool
+) rethrows -> Int {
+    var low = 0
+    var high = sortedValues.count
+
+    while low < high {
+        let mid = (low + high) / 2
+        if try areInIncreasingOrder(sortedValues[mid], value) {
+            low = mid + 1
+        } else {
+            high = mid
+        }
+    }
+
+    return low
 }
 
 // MARK: - Max-Heap Utilities
@@ -69,7 +209,8 @@ extension Collection {
 ///
 /// After this operation, `array[0]` is the maximum element.
 /// - Complexity: O(n)
-private func heapify<T>(
+@usableFromInline
+internal func heapify<T>(
     _ array: inout [T],
     by areInIncreasingOrder: (T, T) throws -> Bool
 ) rethrows {
@@ -85,7 +226,8 @@ private func heapify<T>(
 ///
 /// Assumes subtrees are already valid max-heaps.
 /// - Complexity: O(log n)
-private func siftDown<T>(
+@usableFromInline
+internal func siftDown<T>(
     _ array: inout [T],
     startIndex: Int,
     by areInIncreasingOrder: (T, T) throws -> Bool
@@ -122,7 +264,8 @@ private func siftDown<T>(
 /// Sorts a max-heap in-place in ascending order.
 ///
 /// - Complexity: O(n log n)
-private func heapSort<T>(
+@usableFromInline
+internal func heapSort<T>(
     _ array: inout [T],
     by areInIncreasingOrder: (T, T) throws -> Bool
 ) rethrows {
@@ -138,8 +281,9 @@ private func heapSort<T>(
     }
 }
 
-/// Sift down with a size limit (for heap sort).
-private func siftDownWithLimit<T>(
+/// Restores heap order within a truncated prefix, used during heap sort.
+@usableFromInline
+internal func siftDownWithLimit<T>(
     _ array: inout [T],
     startIndex: Int,
     limit: Int,
@@ -152,15 +296,11 @@ private func siftDownWithLimit<T>(
         let rightChild = 2 * index + 2
         var largest = index
 
-        if leftChild < limit {
-            if try areInIncreasingOrder(array[largest], array[leftChild]) {
-                largest = leftChild
-            }
+        if leftChild < limit, try areInIncreasingOrder(array[largest], array[leftChild]) {
+            largest = leftChild
         }
-        if rightChild < limit {
-            if try areInIncreasingOrder(array[largest], array[rightChild]) {
-                largest = rightChild
-            }
+        if rightChild < limit, try areInIncreasingOrder(array[largest], array[rightChild]) {
+            largest = rightChild
         }
 
         if largest == index {

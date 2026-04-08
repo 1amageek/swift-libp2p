@@ -16,13 +16,16 @@ private let readBufferCompactThreshold = 64 * 1024
 /// and corrupt the frame boundary on the wire.
 private actor FrameWriter {
     private let connection: any SecuredConnection
+    private var scratchBuffer = ByteBuffer()
 
     init(connection: any SecuredConnection) {
         self.connection = connection
     }
 
-    func write(_ data: ByteBuffer) async throws {
-        try await connection.write(data)
+    func write(_ frame: YamuxFrame) async throws {
+        scratchBuffer.clear()
+        frame.encode(into: &scratchBuffer)
+        try await connection.write(scratchBuffer)
     }
 }
 
@@ -252,7 +255,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             throw YamuxError.connectionClosed
         }
         // Use frameWriter actor to serialize all writes and prevent interleaving
-        try await frameWriter.write(frame.encode())
+        try await frameWriter.write(frame)
     }
 
     func removeStream(_ id: UInt64) {

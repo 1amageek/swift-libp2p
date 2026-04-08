@@ -12,16 +12,17 @@ public enum Varint {
     ///
     /// - Parameter value: The value to encode
     /// - Returns: The varint-encoded bytes
+    @inlinable
     public static func encode(_ value: UInt64) -> Data {
-        // Stack-allocated tuple buffer (max 10 bytes for UInt64 varint)
-        var buf: (UInt8, UInt8, UInt8, UInt8, UInt8,
-                  UInt8, UInt8, UInt8, UInt8, UInt8) = (0,0,0,0,0, 0,0,0,0,0)
-        let count = withUnsafeMutableBytes(of: &buf) { ptr in
-            encode(value, into: ptr)
-        }
-        return withUnsafeBytes(of: &buf) { ptr in
-            Data(ptr.prefix(count))
-        }
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: 10, alignment: 1)
+        let count = encode(value, into: UnsafeMutableRawBufferPointer(start: storage, count: 10))
+        return Data(
+            bytesNoCopy: storage,
+            count: count,
+            deallocator: .custom { pointer, _ in
+                pointer.deallocate()
+            }
+        )
     }
 
     /// Encodes a UInt64 value directly into a buffer without heap allocation.
@@ -43,6 +44,26 @@ public enum Varint {
         return i + 1
     }
 
+    /// Encodes a UInt64 value directly into a Data buffer without an intermediate allocation.
+    ///
+    /// - Parameters:
+    ///   - value: The value to encode
+    ///   - data: Destination Data buffer (will be mutated)
+    /// - Returns: Number of bytes written
+    @discardableResult
+    @inlinable
+    public static func encode(_ value: UInt64, into data: inout Data) -> Int {
+        data.reserveCapacity(data.count + 10)
+        return withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 10) { buffer in
+            let count = encode(
+                value,
+                into: UnsafeMutableRawBufferPointer(start: buffer.baseAddress, count: buffer.count)
+            )
+            data.append(buffer.baseAddress!, count: count)
+            return count
+        }
+    }
+
     /// Encodes a UInt64 value into a ByteBuffer (zero-copy, NIO-optimized).
     ///
     /// This is the most efficient encoding method when working with SwiftNIO,
@@ -52,6 +73,7 @@ public enum Varint {
     ///   - value: The value to encode
     ///   - buffer: The ByteBuffer to write into (will be mutated)
     /// - Returns: Number of bytes written
+    @discardableResult
     @inlinable
     public static func encode(_ value: UInt64, into buffer: inout ByteBuffer) -> Int {
         // Reserve space for maximum varint size (10 bytes)
@@ -88,6 +110,7 @@ public enum Varint {
     /// - Parameter data: The data to decode from
     /// - Returns: A tuple of (decoded value, bytes consumed)
     /// - Throws: `VarintError` if the data is malformed
+    @inlinable
     public static func decode(_ data: Data) throws -> (value: UInt64, bytesRead: Int) {
         try data.withUnsafeBytes { ptr in
             try decode(from: ptr, at: 0)
@@ -104,6 +127,7 @@ public enum Varint {
     ///   - offset: Logical offset from the start of data
     /// - Returns: Decoded value and number of bytes consumed
     /// - Throws: `.insufficientData` if incomplete, `.overflow` if malformed
+    @inlinable
     public static func decode(from data: Data, at offset: Int) throws -> (value: UInt64, bytesRead: Int) {
         try data.withUnsafeBytes { ptr in
             try decode(from: ptr, at: offset)
@@ -156,6 +180,7 @@ public enum Varint {
     /// - Parameter data: The data to decode from
     /// - Returns: A tuple of (decoded value, remaining data)
     /// - Throws: `VarintError` if the data is malformed
+    @inlinable
     public static func decodeWithRemainder(_ data: Data) throws -> (value: UInt64, remainder: Data) {
         let (value, bytesRead) = try decode(data)
         return (value, data.dropFirst(bytesRead))
@@ -182,6 +207,7 @@ extension Varint {
     /// - Returns: A tuple of (decoded value as Int, bytes consumed)
     /// - Throws: `VarintError.valueExceedsIntMax` if the value is too large,
     ///           or other `VarintError` cases for malformed data
+    @inlinable
     public static func decodeAsInt(_ data: Data) throws -> (value: Int, bytesRead: Int) {
         let (value, bytesRead) = try decode(data)
         guard let intValue = Int(exactly: value) else {
@@ -195,6 +221,7 @@ extension Varint {
     /// - Parameter data: The data to decode from
     /// - Returns: A tuple of (decoded value as Int, remaining data)
     /// - Throws: `VarintError.valueExceedsIntMax` if the value is too large
+    @inlinable
     public static func decodeAsIntWithRemainder(_ data: Data) throws -> (value: Int, remainder: Data) {
         let (value, bytesRead) = try decodeAsInt(data)
         return (value, data.dropFirst(bytesRead))
@@ -205,6 +232,7 @@ extension Varint {
     /// - Parameter value: The UInt64 value to convert
     /// - Returns: The value as Int
     /// - Throws: `VarintError.valueExceedsIntMax` if the value exceeds Int.max
+    @inlinable
     public static func toInt(_ value: UInt64) throws -> Int {
         guard let intValue = Int(exactly: value) else {
             throw VarintError.valueExceedsIntMax(value)
