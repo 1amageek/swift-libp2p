@@ -321,64 +321,24 @@ public enum GossipSubProtobuf {
 
     /// Decodes a GossipSubRPC from protobuf wire format.
     public static func decode(_ data: Data) throws -> GossipSubRPC {
-        try data.withUnsafeBytes { bytes in
-            var subscriptions: [GossipSubRPC.SubscriptionOpt] = []
-            var messages: [GossipSubMessage] = []
-            var control: ControlMessageBatch?
-
-            var offset = 0
-
-            while offset < bytes.count {
-                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
-                offset += tagBytes
-
-                let fieldNumber = tag >> 3
-                let wireType = tag & 0x07
-
-                guard wireType == wireTypeLengthDelimited else {
-                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
-                    continue
-                }
-
-                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                offset += lengthBytes
-
-                let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
-                    throw GossipSubError.invalidProtobuf("Field truncated")
-                }
-
-                let fieldData = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                offset = fieldEnd
-
-                switch fieldNumber {
-                case 1:
-                    subscriptions.append(try decodeSubOpts(fieldData))
-                case 2:
-                    messages.append(try decodeMessage(fieldData))
-                case 3:
-                    control = try decodeControl(fieldData)
-                default:
-                    break
-                }
-            }
-
-            return GossipSubRPC(
-                subscriptions: subscriptions,
-                messages: messages,
-                control: control
-            )
-        }
+        try decode(data, offset: 0, end: data.count)
     }
 
     private static func decodeSubOpts(_ data: Data) throws -> GossipSubRPC.SubscriptionOpt {
+        try decodeSubOpts(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeSubOpts(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> GossipSubRPC.SubscriptionOpt {
         try data.withUnsafeBytes { bytes in
             var subscribe = false
             var topic: Topic?
+            var offset = startOffset
 
-            var offset = 0
-
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -403,7 +363,7 @@ public enum GossipSubProtobuf {
                     let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                     offset += lengthBytes
                     let fieldEnd = offset + Int(length)
-                    guard fieldEnd <= bytes.count else {
+                    guard fieldEnd <= end else {
                         throw GossipSubError.invalidProtobuf("Field truncated")
                     }
                     if let str = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
@@ -425,6 +385,14 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeMessage(_ data: Data) throws -> GossipSubMessage {
+        try decodeMessage(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeMessage(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> GossipSubMessage {
         try data.withUnsafeBytes { bytes in
             var source: PeerID?
             var messageData = Data()
@@ -432,10 +400,9 @@ public enum GossipSubProtobuf {
             var topic: Topic?
             var signature: Data?
             var key: Data?
+            var offset = startOffset
 
-            var offset = 0
-
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -450,7 +417,7 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
                 let fieldData = data[fieldRange(in: data, offset: offset, end: fieldEnd)]
@@ -492,11 +459,19 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeControl(_ data: Data) throws -> ControlMessageBatch {
+        try decodeControl(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeControl(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessageBatch {
         try data.withUnsafeBytes { bytes in
             var batch = ControlMessageBatch()
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -511,26 +486,25 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
-                let fieldData = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                offset = fieldEnd
 
                 switch fieldNumber {
                 case 1:
-                    batch.ihaves.append(try decodeIHave(fieldData))
+                    batch.ihaves.append(try decodeIHave(data, offset: offset, end: fieldEnd))
                 case 2:
-                    batch.iwants.append(try decodeIWant(fieldData))
+                    batch.iwants.append(try decodeIWant(data, offset: offset, end: fieldEnd))
                 case 3:
-                    batch.grafts.append(try decodeGraft(fieldData))
+                    batch.grafts.append(try decodeGraft(data, offset: offset, end: fieldEnd))
                 case 4:
-                    batch.prunes.append(try decodePrune(fieldData))
+                    batch.prunes.append(try decodePrune(data, offset: offset, end: fieldEnd))
                 case 5:
-                    batch.idontwants.append(try decodeIDontWant(fieldData))
+                    batch.idontwants.append(try decodeIDontWant(data, offset: offset, end: fieldEnd))
                 default:
                     break
                 }
+                offset = fieldEnd
             }
 
             return batch
@@ -538,12 +512,20 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeIHave(_ data: Data) throws -> ControlMessage.IHave {
+        try decodeIHave(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeIHave(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessage.IHave {
         try data.withUnsafeBytes { bytes in
             var topic: Topic?
             var messageIDs: [MessageID] = []
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -558,7 +540,7 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
                 let fieldData = data[fieldRange(in: data, offset: offset, end: fieldEnd)]
@@ -585,11 +567,19 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeIWant(_ data: Data) throws -> ControlMessage.IWant {
+        try decodeIWant(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeIWant(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessage.IWant {
         try data.withUnsafeBytes { bytes in
             var messageIDs: [MessageID] = []
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -604,7 +594,7 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
                 if fieldNumber == 1 {
@@ -618,11 +608,19 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeGraft(_ data: Data) throws -> ControlMessage.Graft {
+        try decodeGraft(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeGraft(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessage.Graft {
         try data.withUnsafeBytes { bytes in
             var topic: Topic?
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -637,7 +635,7 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
                 if fieldNumber == 1,
@@ -656,13 +654,21 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodePrune(_ data: Data) throws -> ControlMessage.Prune {
+        try decodePrune(data, offset: 0, end: data.count)
+    }
+
+    private static func decodePrune(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessage.Prune {
         try data.withUnsafeBytes { bytes in
             var topic: Topic?
             var peers: [ControlMessage.Prune.PeerInfo] = []
             var backoff: UInt64?
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -678,7 +684,7 @@ public enum GossipSubProtobuf {
                     let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                     offset += lengthBytes
                     let fieldEnd = offset + Int(length)
-                    guard fieldEnd <= bytes.count else {
+                    guard fieldEnd <= end else {
                         throw GossipSubError.invalidProtobuf("Field truncated")
                     }
                     if let str = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8) {
@@ -694,10 +700,10 @@ public enum GossipSubProtobuf {
                     let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                     offset += lengthBytes
                     let fieldEnd = offset + Int(length)
-                    guard fieldEnd <= bytes.count else {
+                    guard fieldEnd <= end else {
                         throw GossipSubError.invalidProtobuf("Field truncated")
                     }
-                    peers.append(try decodePeerInfo(Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])))
+                    peers.append(try decodePeerInfo(data, offset: offset, end: fieldEnd))
                     offset = fieldEnd
 
                 case 3:
@@ -723,12 +729,20 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodePeerInfo(_ data: Data) throws -> ControlMessage.Prune.PeerInfo {
+        try decodePeerInfo(data, offset: 0, end: data.count)
+    }
+
+    private static func decodePeerInfo(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessage.Prune.PeerInfo {
         try data.withUnsafeBytes { bytes in
             var peerID: PeerID?
             var signedPeerRecord: Data?
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -743,7 +757,7 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
                 let fieldData = data[fieldRange(in: data, offset: offset, end: fieldEnd)]
@@ -768,11 +782,19 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeIDontWant(_ data: Data) throws -> ControlMessage.IDontWant {
+        try decodeIDontWant(data, offset: 0, end: data.count)
+    }
+
+    private static func decodeIDontWant(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> ControlMessage.IDontWant {
         try data.withUnsafeBytes { bytes in
             var messageIDs: [MessageID] = []
-            var offset = 0
+            var offset = startOffset
 
-            while offset < bytes.count {
+            while offset < end {
                 let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += tagBytes
 
@@ -787,7 +809,7 @@ public enum GossipSubProtobuf {
                 let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
                 offset += lengthBytes
                 let fieldEnd = offset + Int(length)
-                guard fieldEnd <= bytes.count else {
+                guard fieldEnd <= end else {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
                 if fieldNumber == 1 {
@@ -797,6 +819,59 @@ public enum GossipSubProtobuf {
             }
 
             return ControlMessage.IDontWant(messageIDs: messageIDs)
+        }
+    }
+
+    private static func decode(
+        _ data: Data,
+        offset startOffset: Int,
+        end: Int
+    ) throws -> GossipSubRPC {
+        try data.withUnsafeBytes { bytes in
+            var subscriptions: [GossipSubRPC.SubscriptionOpt] = []
+            var messages: [GossipSubMessage] = []
+            var control: ControlMessageBatch?
+            var offset = startOffset
+
+            while offset < end {
+                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += tagBytes
+
+                let fieldNumber = tag >> 3
+                let wireType = tag & 0x07
+
+                guard wireType == wireTypeLengthDelimited else {
+                    offset = try skipField(in: bytes, at: offset, wireType: wireType)
+                    continue
+                }
+
+                let (length, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+                offset += lengthBytes
+
+                let fieldEnd = offset + Int(length)
+                guard fieldEnd <= end else {
+                    throw GossipSubError.invalidProtobuf("Field truncated")
+                }
+
+                switch fieldNumber {
+                case 1:
+                    subscriptions.append(try decodeSubOpts(data, offset: offset, end: fieldEnd))
+                case 2:
+                    messages.append(try decodeMessage(data, offset: offset, end: fieldEnd))
+                case 3:
+                    control = try decodeControl(data, offset: offset, end: fieldEnd)
+                default:
+                    break
+                }
+
+                offset = fieldEnd
+            }
+
+            return GossipSubRPC(
+                subscriptions: subscriptions,
+                messages: messages,
+                control: control
+            )
         }
     }
 

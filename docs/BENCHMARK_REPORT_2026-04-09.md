@@ -120,25 +120,25 @@ scripts/run-benchmarks.sh --configuration release --suite GossipSubWireBenchmark
 
 | Benchmark | Result |
 | --- | ---: |
-| `GossipSubMessage.Builder.sign` | `52365.61 ns/op` |
-| `GossipSubMessage.verifySignature` | `30468.52 ns/op` |
-| `GossipSubProtobuf.encode publish RPC` | `570.01 ns/op` |
-| `GossipSubProtobuf.encode(into:) publish RPC` | `496.73 ns/op` |
-| `GossipSubProtobuf.encode control RPC` | `1986.52 ns/op` |
-| `GossipSubProtobuf.encode(into:) control RPC` | `1794.29 ns/op` |
-| `GossipSubProtobuf.decode publish RPC` | `1113.80 ns/op` |
-| `GossipSubProtobuf.decode control RPC` | `5165.76 ns/op` |
-| `GossipSub RPC framing publish RPC` | `77.20 ns/op` |
+| `GossipSubMessage.Builder.sign` | `57154.36 ns/op` |
+| `GossipSubMessage.verifySignature` | `30320.01 ns/op` |
+| `GossipSubProtobuf.encode publish RPC` | `592.31 ns/op` |
+| `GossipSubProtobuf.encode(into:) publish RPC` | `505.92 ns/op` |
+| `GossipSubProtobuf.encode control RPC` | `1992.04 ns/op` |
+| `GossipSubProtobuf.encode(into:) control RPC` | `1909.24 ns/op` |
+| `GossipSubProtobuf.decode publish RPC` | `1071.67 ns/op` |
+| `GossipSubProtobuf.decode control RPC` | `4702.72 ns/op` |
+| `GossipSub RPC framing publish RPC` | `78.42 ns/op` |
 
 Compared with earlier baselines from this optimization run:
 
-- `GossipSubMessage.verifySignature`: `40792.42 -> 30468.52 ns/op`
-- `GossipSubProtobuf.encode publish RPC`: `1246.96 -> 570.01 ns/op`
-- `GossipSubProtobuf.encode(into:) publish RPC`: `1430.28 -> 496.73 ns/op`
-- `GossipSubProtobuf.encode control RPC`: `5329.00 -> 1986.52 ns/op`
-- `GossipSubProtobuf.encode(into:) control RPC`: `5989.35 -> 1794.29 ns/op`
-- `GossipSubProtobuf.decode publish RPC`: `2244.71 -> 1113.80 ns/op`
-- `GossipSubProtobuf.decode control RPC`: `12144.65 -> 5165.76 ns/op`
+- `GossipSubMessage.verifySignature`: `40792.42 -> 30320.01 ns/op`
+- `GossipSubProtobuf.encode publish RPC`: `1246.96 -> 592.31 ns/op`
+- `GossipSubProtobuf.encode(into:) publish RPC`: `1430.28 -> 505.92 ns/op`
+- `GossipSubProtobuf.encode control RPC`: `5329.00 -> 1992.04 ns/op`
+- `GossipSubProtobuf.encode(into:) control RPC`: `5989.35 -> 1909.24 ns/op`
+- `GossipSubProtobuf.decode publish RPC`: `2244.71 -> 1071.67 ns/op`
+- `GossipSubProtobuf.decode control RPC`: `12144.65 -> 4702.72 ns/op`
 
 ### Identify Wire Benchmarks
 
@@ -218,9 +218,10 @@ Sampling with `sample` during release benchmark runs showed:
   dropped from `5329.00 ns/op` to `2026.96 ns/op`.
 - `GossipSubProtobuf.decode` was still dominated by `Data(data[offset...])`
   and `Data(data[offset..<fieldEnd])` churn in nested control/message parsing.
-  Rewriting those loops to walk a single raw buffer cut `decode publish RPC`
-  from `2244.71 ns/op` to `1113.80 ns/op` and `decode control RPC` from
-  `12144.65 ns/op` to `5165.76 ns/op`.
+  Rewriting those loops to walk a single raw buffer, then removing top-level
+  nested submessage copies, cut `decode publish RPC` from `2244.71 ns/op` to
+  `1071.67 ns/op` and `decode control RPC` from `12144.65 ns/op` to
+  `4702.72 ns/op`.
 - Sampling during `KademliaProtobuf.decode` showed `Base58.encode(_:)` under
   `PeerID(bytes:)` as a dominant hot path while decoding peer entries. Rewriting
   Base58 encoding to use in-place digit expansion reduced Kademlia decode time
