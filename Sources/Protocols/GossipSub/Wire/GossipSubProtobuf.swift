@@ -72,29 +72,28 @@ public enum GossipSubProtobuf {
     public static func encode(_ rpc: GossipSubRPC, into buffer: inout ByteBuffer) {
         // Estimate: subscriptions + messages + control overhead
         buffer.reserveCapacity(buffer.writerIndex + estimatedSize(of: rpc))
+        let allocator = ByteBufferAllocator()
+        var scratch = allocator.buffer(capacity: 0)
 
         // Field 1: subscriptions (repeated SubOpts)
         for sub in rpc.subscriptions {
-            let subData = encodeSubOpts(sub)
-            buffer.writeInteger(tagRPCSubscriptions)
-            Varint.encode(UInt64(subData.count), into: &buffer)
-            buffer.writeBytes(subData)
+            writeLengthDelimitedField(tagRPCSubscriptions, into: &buffer, scratch: &scratch) {
+                encodeSubOpts(sub, into: &$0)
+            }
         }
 
         // Field 2: publish (repeated Message)
         for message in rpc.messages {
-            let msgData = encodeMessage(message)
-            buffer.writeInteger(tagRPCMessages)
-            Varint.encode(UInt64(msgData.count), into: &buffer)
-            buffer.writeBytes(msgData)
+            writeLengthDelimitedField(tagRPCMessages, into: &buffer, scratch: &scratch) {
+                encodeMessage(message, into: &$0)
+            }
         }
 
         // Field 3: control (optional ControlMessage)
         if let control = rpc.control, !control.isEmpty {
-            let ctrlData = encodeControl(control)
-            buffer.writeInteger(tagRPCControl)
-            Varint.encode(UInt64(ctrlData.count), into: &buffer)
-            buffer.writeBytes(ctrlData)
+            writeLengthDelimitedField(tagRPCControl, into: &buffer, scratch: &scratch) {
+                encodeControl(control, into: &$0)
+            }
         }
     }
 
@@ -102,224 +101,220 @@ public enum GossipSubProtobuf {
         rpc.subscriptions.count * 32 + rpc.messages.count * 128 + 64
     }
 
-    private static func encodeSubOpts(_ sub: GossipSubRPC.SubscriptionOpt) -> Data {
+    private static func encodeSubOpts(_ sub: GossipSubRPC.SubscriptionOpt, into buffer: inout ByteBuffer) {
         let topicBytes = sub.topic.utf8Bytes
-        var result = Data(capacity: 4 + topicBytes.count)
+        buffer.reserveCapacity(buffer.writerIndex + 4 + topicBytes.count)
 
         // Field 1: subscribe (bool as varint)
-        result.append(tagSubOptsSubscribe)
-        result.append(sub.subscribe ? 1 : 0)
+        buffer.writeInteger(tagSubOptsSubscribe)
+        buffer.writeInteger(sub.subscribe ? UInt8(1) : UInt8(0))
 
         // Field 2: topicid (string)
-        result.append(tagSubOptsTopic)
-        Varint.encode(UInt64(topicBytes.count), into: &result)
-        result.append(topicBytes)
-
-        return result
+        buffer.writeInteger(tagSubOptsTopic)
+        Varint.encode(UInt64(topicBytes.count), into: &buffer)
+        buffer.writeBytes(topicBytes)
     }
 
-    private static func encodeMessage(_ message: GossipSubMessage) -> Data {
+    private static func encodeMessage(_ message: GossipSubMessage, into buffer: inout ByteBuffer) {
         let topicBytes = message.topic.utf8Bytes
         // Estimate: tag+varint overhead per field + actual data sizes
         let estimatedSize = 32 + message.data.count + message.sequenceNumber.count
             + topicBytes.count + (message.signature?.count ?? 0) + (message.key?.count ?? 0)
-        var result = Data(capacity: estimatedSize)
+        buffer.reserveCapacity(buffer.writerIndex + estimatedSize)
 
         // Field 1: from (optional bytes)
         if let source = message.source {
             let sourceBytes = source.bytes
-            result.append(tagMessageFrom)
-            Varint.encode(UInt64(sourceBytes.count), into: &result)
-            result.append(sourceBytes)
+            buffer.writeInteger(tagMessageFrom)
+            Varint.encode(UInt64(sourceBytes.count), into: &buffer)
+            buffer.writeBytes(sourceBytes)
         }
 
         // Field 2: data (bytes)
-        result.append(tagMessageData)
-        Varint.encode(UInt64(message.data.count), into: &result)
-        result.append(message.data)
+        buffer.writeInteger(tagMessageData)
+        Varint.encode(UInt64(message.data.count), into: &buffer)
+        buffer.writeBytes(message.data)
 
         // Field 3: seqno (bytes)
         if !message.sequenceNumber.isEmpty {
-            result.append(tagMessageSeqno)
-            Varint.encode(UInt64(message.sequenceNumber.count), into: &result)
-            result.append(message.sequenceNumber)
+            buffer.writeInteger(tagMessageSeqno)
+            Varint.encode(UInt64(message.sequenceNumber.count), into: &buffer)
+            buffer.writeBytes(message.sequenceNumber)
         }
 
         // Field 4: topic (string) - required
-        result.append(tagMessageTopic)
-        Varint.encode(UInt64(topicBytes.count), into: &result)
-        result.append(topicBytes)
+        buffer.writeInteger(tagMessageTopic)
+        Varint.encode(UInt64(topicBytes.count), into: &buffer)
+        buffer.writeBytes(topicBytes)
 
         // Field 5: signature (optional bytes)
         if let sig = message.signature {
-            result.append(tagMessageSignature)
-            Varint.encode(UInt64(sig.count), into: &result)
-            result.append(sig)
+            buffer.writeInteger(tagMessageSignature)
+            Varint.encode(UInt64(sig.count), into: &buffer)
+            buffer.writeBytes(sig)
         }
 
         // Field 6: key (optional bytes)
         if let key = message.key {
-            result.append(tagMessageKey)
-            Varint.encode(UInt64(key.count), into: &result)
-            result.append(key)
+            buffer.writeInteger(tagMessageKey)
+            Varint.encode(UInt64(key.count), into: &buffer)
+            buffer.writeBytes(key)
         }
-
-        return result
     }
 
-    private static func encodeControl(_ control: ControlMessageBatch) -> Data {
+    private static func encodeControl(_ control: ControlMessageBatch, into buffer: inout ByteBuffer) {
         let estimatedSize = control.ihaves.count * 64 + control.iwants.count * 64
             + control.grafts.count * 32 + control.prunes.count * 48
             + control.idontwants.count * 64
-        var result = Data(capacity: estimatedSize)
+        buffer.reserveCapacity(buffer.writerIndex + estimatedSize)
+        let allocator = ByteBufferAllocator()
+        var scratch = allocator.buffer(capacity: 0)
 
         // Field 1: ihave (repeated)
         for ihave in control.ihaves {
-            let ihaveData = encodeIHave(ihave)
-            result.append(tagControlIHave)
-            Varint.encode(UInt64(ihaveData.count), into: &result)
-            result.append(ihaveData)
+            writeLengthDelimitedField(tagControlIHave, into: &buffer, scratch: &scratch) {
+                encodeIHave(ihave, into: &$0)
+            }
         }
 
         // Field 2: iwant (repeated)
         for iwant in control.iwants {
-            let iwantData = encodeIWant(iwant)
-            result.append(tagControlIWant)
-            Varint.encode(UInt64(iwantData.count), into: &result)
-            result.append(iwantData)
+            writeLengthDelimitedField(tagControlIWant, into: &buffer, scratch: &scratch) {
+                encodeIWant(iwant, into: &$0)
+            }
         }
 
         // Field 3: graft (repeated)
         for graft in control.grafts {
-            let graftData = encodeGraft(graft)
-            result.append(tagControlGraft)
-            Varint.encode(UInt64(graftData.count), into: &result)
-            result.append(graftData)
+            writeLengthDelimitedField(tagControlGraft, into: &buffer, scratch: &scratch) {
+                encodeGraft(graft, into: &$0)
+            }
         }
 
         // Field 4: prune (repeated)
         for prune in control.prunes {
-            let pruneData = encodePrune(prune)
-            result.append(tagControlPrune)
-            Varint.encode(UInt64(pruneData.count), into: &result)
-            result.append(pruneData)
+            writeLengthDelimitedField(tagControlPrune, into: &buffer, scratch: &scratch) {
+                encodePrune(prune, into: &$0)
+            }
         }
 
         // Field 5: idontwant (repeated, v1.2)
         for idontwant in control.idontwants {
-            let idontwantData = encodeIDontWant(idontwant)
-            result.append(tagControlIDontWant)
-            Varint.encode(UInt64(idontwantData.count), into: &result)
-            result.append(idontwantData)
+            writeLengthDelimitedField(tagControlIDontWant, into: &buffer, scratch: &scratch) {
+                encodeIDontWant(idontwant, into: &$0)
+            }
         }
-
-        return result
     }
 
-    private static func encodeIHave(_ ihave: ControlMessage.IHave) -> Data {
+    private static func encodeIHave(_ ihave: ControlMessage.IHave, into buffer: inout ByteBuffer) {
         let topicBytes = ihave.topic.utf8Bytes
         // Estimate: tag+varint+topic + per-messageID (tag+varint+~32 bytes)
-        var result = Data(capacity: 4 + topicBytes.count + ihave.messageIDs.count * 36)
+        buffer.reserveCapacity(buffer.writerIndex + 4 + topicBytes.count + ihave.messageIDs.count * 36)
 
         // Field 1: topicID (string)
-        result.append(tagIHaveTopic)
-        Varint.encode(UInt64(topicBytes.count), into: &result)
-        result.append(topicBytes)
+        buffer.writeInteger(tagIHaveTopic)
+        Varint.encode(UInt64(topicBytes.count), into: &buffer)
+        buffer.writeBytes(topicBytes)
 
         // Field 2: messageIDs (repeated bytes)
         for msgID in ihave.messageIDs {
-            result.append(tagIHaveMessageIDs)
-            Varint.encode(UInt64(msgID.bytes.count), into: &result)
-            result.append(msgID.bytes)
+            let bytes = msgID.bytes
+            buffer.writeInteger(tagIHaveMessageIDs)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
-
-        return result
     }
 
-    private static func encodeIWant(_ iwant: ControlMessage.IWant) -> Data {
+    private static func encodeIWant(_ iwant: ControlMessage.IWant, into buffer: inout ByteBuffer) {
         // Estimate: per-messageID (tag+varint+~32 bytes)
-        var result = Data(capacity: iwant.messageIDs.count * 36)
+        buffer.reserveCapacity(buffer.writerIndex + iwant.messageIDs.count * 36)
 
         // Field 1: messageIDs (repeated bytes)
         for msgID in iwant.messageIDs {
-            result.append(tagIWantMessageIDs)
-            Varint.encode(UInt64(msgID.bytes.count), into: &result)
-            result.append(msgID.bytes)
+            let bytes = msgID.bytes
+            buffer.writeInteger(tagIWantMessageIDs)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
-
-        return result
     }
 
-    private static func encodeGraft(_ graft: ControlMessage.Graft) -> Data {
+    private static func encodeGraft(_ graft: ControlMessage.Graft, into buffer: inout ByteBuffer) {
         let topicBytes = graft.topic.utf8Bytes
-        var result = Data(capacity: 4 + topicBytes.count)
+        buffer.reserveCapacity(buffer.writerIndex + 4 + topicBytes.count)
 
         // Field 1: topicID (string)
-        result.append(tagGraftTopic)
-        Varint.encode(UInt64(topicBytes.count), into: &result)
-        result.append(topicBytes)
-
-        return result
+        buffer.writeInteger(tagGraftTopic)
+        Varint.encode(UInt64(topicBytes.count), into: &buffer)
+        buffer.writeBytes(topicBytes)
     }
 
-    private static func encodePrune(_ prune: ControlMessage.Prune) -> Data {
+    private static func encodePrune(_ prune: ControlMessage.Prune, into buffer: inout ByteBuffer) {
         let topicBytes = prune.topic.utf8Bytes
         // Estimate: topic + peers + backoff
-        var result = Data(capacity: 4 + topicBytes.count + prune.peers.count * 48 + 12)
+        buffer.reserveCapacity(buffer.writerIndex + 4 + topicBytes.count + prune.peers.count * 48 + 12)
+        let allocator = ByteBufferAllocator()
+        var scratch = allocator.buffer(capacity: 0)
 
         // Field 1: topicID (string)
-        result.append(tagPruneTopic)
-        Varint.encode(UInt64(topicBytes.count), into: &result)
-        result.append(topicBytes)
+        buffer.writeInteger(tagPruneTopic)
+        Varint.encode(UInt64(topicBytes.count), into: &buffer)
+        buffer.writeBytes(topicBytes)
 
         // Field 2: peers (repeated PeerInfo)
         for peer in prune.peers {
-            let peerData = encodePeerInfo(peer)
-            result.append(tagPrunePeers)
-            Varint.encode(UInt64(peerData.count), into: &result)
-            result.append(peerData)
+            writeLengthDelimitedField(tagPrunePeers, into: &buffer, scratch: &scratch) {
+                encodePeerInfo(peer, into: &$0)
+            }
         }
 
         // Field 3: backoff (optional uint64)
         if let backoff = prune.backoff {
-            result.append(tagPruneBackoff)
-            Varint.encode(backoff, into: &result)
+            buffer.writeInteger(tagPruneBackoff)
+            Varint.encode(backoff, into: &buffer)
         }
-
-        return result
     }
 
-    private static func encodePeerInfo(_ info: ControlMessage.Prune.PeerInfo) -> Data {
-        var result = Data(capacity: 4 + info.peerID.bytes.count + (info.signedPeerRecord?.count ?? 0) + 4)
+    private static func encodePeerInfo(_ info: ControlMessage.Prune.PeerInfo, into buffer: inout ByteBuffer) {
+        let peerIDBytes = info.peerID.bytes
+        buffer.reserveCapacity(buffer.writerIndex + 4 + peerIDBytes.count + (info.signedPeerRecord?.count ?? 0) + 4)
 
         // Field 1: peerID (bytes)
-        result.append(tagPeerInfoPeerID)
-        let peerIDBytes = info.peerID.bytes
-        Varint.encode(UInt64(peerIDBytes.count), into: &result)
-        result.append(peerIDBytes)
+        buffer.writeInteger(tagPeerInfoPeerID)
+        Varint.encode(UInt64(peerIDBytes.count), into: &buffer)
+        buffer.writeBytes(peerIDBytes)
 
         // Field 2: signedPeerRecord (optional bytes)
         if let record = info.signedPeerRecord {
-            result.append(tagPeerInfoRecord)
-            Varint.encode(UInt64(record.count), into: &result)
-            result.append(record)
+            buffer.writeInteger(tagPeerInfoRecord)
+            Varint.encode(UInt64(record.count), into: &buffer)
+            buffer.writeBytes(record)
         }
-
-        return result
     }
 
-    private static func encodeIDontWant(_ idontwant: ControlMessage.IDontWant) -> Data {
+    private static func encodeIDontWant(_ idontwant: ControlMessage.IDontWant, into buffer: inout ByteBuffer) {
         // Estimate: per-messageID (tag+varint+~32 bytes)
-        var result = Data(capacity: idontwant.messageIDs.count * 36)
+        buffer.reserveCapacity(buffer.writerIndex + idontwant.messageIDs.count * 36)
 
         // Field 1: messageIDs (repeated bytes)
         for msgID in idontwant.messageIDs {
-            result.append(tagIDontWantMessageIDs)
-            Varint.encode(UInt64(msgID.bytes.count), into: &result)
-            result.append(msgID.bytes)
+            let bytes = msgID.bytes
+            buffer.writeInteger(tagIDontWantMessageIDs)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
+    }
 
-        return result
+    private static func writeLengthDelimitedField(
+        _ tag: UInt8,
+        into buffer: inout ByteBuffer,
+        scratch: inout ByteBuffer,
+        body: (inout ByteBuffer) -> Void
+    ) {
+        scratch.clear()
+        body(&scratch)
+        buffer.writeInteger(tag)
+        Varint.encode(UInt64(scratch.readableBytes), into: &buffer)
+        buffer.writeBuffer(&scratch)
     }
 
     // MARK: - Decoding
