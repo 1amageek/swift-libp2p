@@ -14,6 +14,7 @@
 
 import Foundation
 import P2PCore
+import Synchronization
 
 /// Errors specific to IPNS record operations.
 public enum IPNSRecordError: Error, Sendable, Equatable {
@@ -79,11 +80,11 @@ public struct IPNSRecord: Sendable, Equatable {
     /// Builds the data that is signed: value + validityType + validity (RFC 3339 string).
     /// This matches the go-ipfs signing scheme for IPNS records.
     static func dataForSigning(value: [UInt8], validityType: ValidityType, validity: Date) -> Data {
-        var signable = Data()
+        let validityBytes = Data(Self.formatDate(validity).utf8)
+        var signable = Data(capacity: value.count + 1 + validityBytes.count)
         signable.append(contentsOf: value)
         signable.append(validityType.rawValue)
-        let validityString = Self.formatDate(validity)
-        signable.append(contentsOf: Data(validityString.utf8))
+        signable.append(validityBytes)
         return signable
     }
 
@@ -91,24 +92,21 @@ public struct IPNSRecord: Sendable, Equatable {
 
     /// Formats a Date to RFC 3339 format matching go-ipfs expectations.
     static func formatDate(_ date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter.string(from: date)
+        DateFormatting.fractional.withLock { formatter in
+            formatter.string(from: date)
+        }
     }
 
     /// Parses an RFC 3339 date string.
     static func parseDate(_ string: String) throws -> Date {
-        // Try with fractional seconds first
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        if let date = formatter.date(from: string) {
+        if let date = DateFormatting.fractional.withLock({ formatter in
+            formatter.date(from: string)
+        }) {
             return date
         }
-        // Fall back to without fractional seconds
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: string) {
+        if let date = DateFormatting.plain.withLock({ formatter in
+            formatter.date(from: string)
+        }) {
             return date
         }
         throw IPNSRecordError.invalidFormat
@@ -126,36 +124,37 @@ public struct IPNSRecord: Sendable, Equatable {
     ///   5 (LEN): signature
     ///   6 (LEN): publicKey (optional)
     public func encode() -> [UInt8] {
-        var result = Data()
+        let validityBytes = Data(Self.formatDate(validity).utf8)
+        let estimatedSize = 24 + value.count + validityBytes.count + signature.count + (publicKey?.count ?? 0)
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: value (wire type 2 = length-delimited)
-        result.append(contentsOf: encodeTag(fieldNumber: 1, wireType: 2))
-        result.append(contentsOf: Varint.encode(UInt64(value.count)))
+        appendTag(fieldNumber: 1, wireType: 2, to: &result)
+        Varint.encode(UInt64(value.count), into: &result)
         result.append(contentsOf: value)
 
         // Field 2: validityType (wire type 0 = varint)
-        result.append(contentsOf: encodeTag(fieldNumber: 2, wireType: 0))
-        result.append(contentsOf: Varint.encode(UInt64(validityType.rawValue)))
+        appendTag(fieldNumber: 2, wireType: 0, to: &result)
+        Varint.encode(UInt64(validityType.rawValue), into: &result)
 
         // Field 3: validity (wire type 2 = length-delimited, RFC 3339 string)
-        let validityBytes = Data(Self.formatDate(validity).utf8)
-        result.append(contentsOf: encodeTag(fieldNumber: 3, wireType: 2))
-        result.append(contentsOf: Varint.encode(UInt64(validityBytes.count)))
+        appendTag(fieldNumber: 3, wireType: 2, to: &result)
+        Varint.encode(UInt64(validityBytes.count), into: &result)
         result.append(contentsOf: validityBytes)
 
         // Field 4: sequence (wire type 0 = varint)
-        result.append(contentsOf: encodeTag(fieldNumber: 4, wireType: 0))
-        result.append(contentsOf: Varint.encode(sequence))
+        appendTag(fieldNumber: 4, wireType: 0, to: &result)
+        Varint.encode(sequence, into: &result)
 
         // Field 5: signature (wire type 2 = length-delimited)
-        result.append(contentsOf: encodeTag(fieldNumber: 5, wireType: 2))
-        result.append(contentsOf: Varint.encode(UInt64(signature.count)))
+        appendTag(fieldNumber: 5, wireType: 2, to: &result)
+        Varint.encode(UInt64(signature.count), into: &result)
         result.append(contentsOf: signature)
 
         // Field 6: publicKey (wire type 2 = length-delimited, optional)
         if let pk = publicKey {
-            result.append(contentsOf: encodeTag(fieldNumber: 6, wireType: 2))
-            result.append(contentsOf: Varint.encode(UInt64(pk.count)))
+            appendTag(fieldNumber: 6, wireType: 2, to: &result)
+            Varint.encode(UInt64(pk.count), into: &result)
             result.append(contentsOf: pk)
         }
 
@@ -341,8 +340,27 @@ public struct IPNSRecord: Sendable, Equatable {
 
     // MARK: - Helpers
 
-    /// Encodes a protobuf field tag.
-    private func encodeTag(fieldNumber: UInt64, wireType: UInt64) -> Data {
-        Varint.encode((fieldNumber << 3) | wireType)
+    /// Appends a protobuf field tag.
+    private func appendTag(fieldNumber: UInt64, wireType: UInt64, to data: inout Data) {
+        Varint.encode((fieldNumber << 3) | wireType, into: &data)
+    }
+}
+
+private enum DateFormatting {
+    static let fractional = Mutex(makeFractionalFormatter())
+    static let plain = Mutex(makePlainFormatter())
+
+    private static func makeFractionalFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }
+
+    private static func makePlainFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
     }
 }

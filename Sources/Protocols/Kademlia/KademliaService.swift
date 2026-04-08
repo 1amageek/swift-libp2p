@@ -618,9 +618,11 @@ public final class KademliaService: EventEmitting, Sendable {
             let response = try await handleMessage(message, from: context.remotePeer)
 
             // Write response with per-peer timeout
-            let responseData = KademliaProtobuf.encode(response)
+            var encodedResponse = ByteBuffer()
+            KademliaProtobuf.encode(response, into: &encodedResponse)
+            let responseData = encodedResponse
             try await withPeerTimeout {
-                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: responseData))
+                try await stream.writeLengthPrefixedMessage(responseData)
             }
 
         } catch {
@@ -1202,8 +1204,10 @@ public final class KademliaService: EventEmitting, Sendable {
         do {
             // Send/receive with timeout (phase 2)
             let response = try await withPeerTimeout { [configuration] in
-                let data = KademliaProtobuf.encode(message)
-                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+                var encodedMessage = ByteBuffer()
+                KademliaProtobuf.encode(message, into: &encodedMessage)
+                let data = encodedMessage
+                try await stream.writeLengthPrefixedMessage(data)
 
                 let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
                 return try KademliaProtobuf.decode(Data(buffer: responseData))

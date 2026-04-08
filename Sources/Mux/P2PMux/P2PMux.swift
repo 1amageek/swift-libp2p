@@ -206,10 +206,9 @@ extension MuxedStream {
     ///
     /// - Parameter data: The message data to write.
     public func writeLengthPrefixedMessage(_ data: ByteBuffer) async throws {
-        let varintData = Varint.encode(UInt64(data.readableBytes))
         var message = ByteBuffer()
-        message.reserveCapacity(varintData.count + data.readableBytes)
-        message.writeBytes(varintData)
+        message.reserveCapacity(10 + data.readableBytes)
+        Varint.encode(UInt64(data.readableBytes), into: &message)
         message.writeImmutableBuffer(data)
         try await write(message)
     }

@@ -32,13 +32,27 @@ enum IdentifyProtobuf {
 
     /// Encodes IdentifyInfo to protobuf wire format.
     static func encode(_ info: IdentifyInfo) throws -> Data {
-        var result = Data()
+        let publicKeyBytes = info.publicKey?.protobufEncoded
+        let protocolBytes = info.protocols.map { Data($0.utf8) }
+        let protocolVersionBytes = info.protocolVersion.map { Data($0.utf8) }
+        let agentVersionBytes = info.agentVersion.map { Data($0.utf8) }
+        let signedPeerRecordBytes = try info.signedPeerRecord?.marshal()
+
+        let estimatedSize =
+            (publicKeyBytes.map { 2 + $0.count } ?? 0)
+            + info.listenAddresses.reduce(0) { $0 + 2 + $1.bytes.count }
+            + protocolBytes.reduce(0) { $0 + 2 + $1.count }
+            + (info.observedAddress.map { 2 + $0.bytes.count } ?? 0)
+            + (protocolVersionBytes.map { 2 + $0.count } ?? 0)
+            + (agentVersionBytes.map { 2 + $0.count } ?? 0)
+            + (signedPeerRecordBytes.map { 2 + $0.count } ?? 0)
+
+        var result = Data(capacity: estimatedSize)
 
         // Field 1: publicKey (optional bytes)
-        if let publicKey = info.publicKey {
-            let bytes = publicKey.protobufEncoded
+        if let bytes = publicKeyBytes {
             result.append(tagPublicKey)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 
@@ -46,15 +60,14 @@ enum IdentifyProtobuf {
         for addr in info.listenAddresses {
             let bytes = addr.bytes
             result.append(tagListenAddrs)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 
         // Field 3: protocols (repeated string)
-        for proto in info.protocols {
-            let bytes = Data(proto.utf8)
+        for bytes in protocolBytes {
             result.append(tagProtocols)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 
@@ -62,31 +75,28 @@ enum IdentifyProtobuf {
         if let observed = info.observedAddress {
             let bytes = observed.bytes
             result.append(tagObservedAddr)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 
         // Field 5: protocolVersion (optional string)
-        if let version = info.protocolVersion {
-            let bytes = Data(version.utf8)
+        if let bytes = protocolVersionBytes {
             result.append(tagProtocolVersion)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 
         // Field 6: agentVersion (optional string)
-        if let agent = info.agentVersion {
-            let bytes = Data(agent.utf8)
+        if let bytes = agentVersionBytes {
             result.append(tagAgentVersion)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 
         // Field 8: signedPeerRecord (optional bytes)
-        if let envelope = info.signedPeerRecord {
-            let bytes = try envelope.marshal()
+        if let bytes = signedPeerRecordBytes {
             result.append(tagSignedPeerRecord)
-            result.append(contentsOf: Varint.encode(UInt64(bytes.count)))
+            Varint.encode(UInt64(bytes.count), into: &result)
             result.append(bytes)
         }
 

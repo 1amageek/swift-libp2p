@@ -6,9 +6,24 @@
 
 import Foundation
 import P2PCore
+import NIOCore
 
 /// Protobuf encoding/decoding for Kademlia messages.
 enum KademliaProtobuf {
+
+    private struct PreparedPeer {
+        let idBytes: Data
+        let addressBytes: [Data]
+        let connectionTypeRawValue: UInt64
+        let encodedSize: Int
+    }
+
+    private struct PreparedRecord {
+        let key: Data
+        let value: Data
+        let timeData: Data?
+        let encodedSize: Int
+    }
 
     // MARK: - Wire Type Constants
 
@@ -45,50 +60,85 @@ enum KademliaProtobuf {
 
     /// Encodes a KademliaMessage to protobuf wire format.
     static func encode(_ message: KademliaMessage) -> Data {
-        // Estimate: type(2) + key(10+key.count) + record(~100) + peers(~100 each)
-        let estimatedSize = 12
+        var data = Data(capacity: estimatedCapacity(of: message))
+        encode(message, into: &data)
+        return data
+    }
+
+    static func encode(_ message: KademliaMessage, into data: inout Data) {
+        data.reserveCapacity(data.count + estimatedCapacity(of: message))
+
+        data.append(MessageTag.type)
+        Varint.encode(UInt64(message.type.rawValue), into: &data)
+
+        if let key = message.key {
+            data.append(MessageTag.key)
+            Varint.encode(UInt64(key.count), into: &data)
+            data.append(key)
+        }
+
+        if let record = message.record {
+            let preparedRecord = prepare(record)
+            data.append(MessageTag.record)
+            Varint.encode(UInt64(preparedRecord.encodedSize), into: &data)
+            encodeRecord(preparedRecord, into: &data)
+        }
+
+        for peer in message.closerPeers {
+            let preparedPeer = prepare(peer)
+            data.append(MessageTag.closerPeers)
+            Varint.encode(UInt64(preparedPeer.encodedSize), into: &data)
+            encodePeer(preparedPeer, into: &data)
+        }
+
+        for peer in message.providerPeers {
+            let preparedPeer = prepare(peer)
+            data.append(MessageTag.providerPeers)
+            Varint.encode(UInt64(preparedPeer.encodedSize), into: &data)
+            encodePeer(preparedPeer, into: &data)
+        }
+    }
+
+    static func encode(_ message: KademliaMessage, into buffer: inout ByteBuffer) {
+        buffer.reserveCapacity(buffer.writerIndex + estimatedCapacity(of: message))
+
+        buffer.writeInteger(MessageTag.type)
+        Varint.encode(UInt64(message.type.rawValue), into: &buffer)
+
+        if let key = message.key {
+            buffer.writeInteger(MessageTag.key)
+            Varint.encode(UInt64(key.count), into: &buffer)
+            buffer.writeBytes(key)
+        }
+
+        if let record = message.record {
+            let preparedRecord = prepare(record)
+            buffer.writeInteger(MessageTag.record)
+            Varint.encode(UInt64(preparedRecord.encodedSize), into: &buffer)
+            encodeRecord(preparedRecord, into: &buffer)
+        }
+
+        for peer in message.closerPeers {
+            let preparedPeer = prepare(peer)
+            buffer.writeInteger(MessageTag.closerPeers)
+            Varint.encode(UInt64(preparedPeer.encodedSize), into: &buffer)
+            encodePeer(preparedPeer, into: &buffer)
+        }
+
+        for peer in message.providerPeers {
+            let preparedPeer = prepare(peer)
+            buffer.writeInteger(MessageTag.providerPeers)
+            Varint.encode(UInt64(preparedPeer.encodedSize), into: &buffer)
+            encodePeer(preparedPeer, into: &buffer)
+        }
+    }
+
+    private static func estimatedCapacity(of message: KademliaMessage) -> Int {
+        12
             + (message.key.map { 10 + $0.count } ?? 0)
             + (message.record.map { 10 + $0.key.count + $0.value.count + 20 } ?? 0)
             + message.closerPeers.count * 100
             + message.providerPeers.count * 100
-        var result = Data(capacity: estimatedSize)
-
-        // Field 1: type (varint)
-        result.append(MessageTag.type)
-        result.append(contentsOf: Varint.encode(UInt64(message.type.rawValue)))
-
-        // Field 10: key (optional bytes)
-        if let key = message.key {
-            result.append(MessageTag.key)
-            result.append(contentsOf: Varint.encode(UInt64(key.count)))
-            result.append(key)
-        }
-
-        // Field 3: record (optional embedded message)
-        if let record = message.record {
-            let recordData = encodeRecord(record)
-            result.append(MessageTag.record)
-            result.append(contentsOf: Varint.encode(UInt64(recordData.count)))
-            result.append(recordData)
-        }
-
-        // Field 8: closerPeers (repeated embedded message)
-        for peer in message.closerPeers {
-            let peerData = encodePeer(peer)
-            result.append(MessageTag.closerPeers)
-            result.append(contentsOf: Varint.encode(UInt64(peerData.count)))
-            result.append(peerData)
-        }
-
-        // Field 9: providerPeers (repeated embedded message)
-        for peer in message.providerPeers {
-            let peerData = encodePeer(peer)
-            result.append(MessageTag.providerPeers)
-            result.append(contentsOf: Varint.encode(UInt64(peerData.count)))
-            result.append(peerData)
-        }
-
-        return result
     }
 
     /// Decodes a KademliaMessage from protobuf wire format.
@@ -207,31 +257,34 @@ enum KademliaProtobuf {
 
     // MARK: - Peer Encoding
 
-    private static func encodePeer(_ peer: KademliaPeer) -> Data {
-        let estimatedSize = 10 + peer.id.bytes.count
-            + peer.addresses.reduce(0) { $0 + 10 + $1.bytes.count }
-            + 5
-        var result = Data(capacity: estimatedSize)
+    private static func encodePeer(_ peer: PreparedPeer, into data: inout Data) {
+        data.append(PeerTag.id)
+        Varint.encode(UInt64(peer.idBytes.count), into: &data)
+        data.append(peer.idBytes)
 
-        // Field 1: id (bytes)
-        let idBytes = peer.id.bytes
-        result.append(PeerTag.id)
-        result.append(contentsOf: Varint.encode(UInt64(idBytes.count)))
-        result.append(idBytes)
-
-        // Field 2: addrs (repeated bytes)
-        for addr in peer.addresses {
-            let addrBytes = addr.bytes
-            result.append(PeerTag.addrs)
-            result.append(contentsOf: Varint.encode(UInt64(addrBytes.count)))
-            result.append(addrBytes)
+        for addrBytes in peer.addressBytes {
+            data.append(PeerTag.addrs)
+            Varint.encode(UInt64(addrBytes.count), into: &data)
+            data.append(addrBytes)
         }
 
-        // Field 3: connection (varint)
-        result.append(PeerTag.connection)
-        result.append(contentsOf: Varint.encode(UInt64(peer.connectionType.rawValue)))
+        data.append(PeerTag.connection)
+        Varint.encode(peer.connectionTypeRawValue, into: &data)
+    }
 
-        return result
+    private static func encodePeer(_ peer: PreparedPeer, into buffer: inout ByteBuffer) {
+        buffer.writeInteger(PeerTag.id)
+        Varint.encode(UInt64(peer.idBytes.count), into: &buffer)
+        buffer.writeBytes(peer.idBytes)
+
+        for addrBytes in peer.addressBytes {
+            buffer.writeInteger(PeerTag.addrs)
+            Varint.encode(UInt64(addrBytes.count), into: &buffer)
+            buffer.writeBytes(addrBytes)
+        }
+
+        buffer.writeInteger(PeerTag.connection)
+        Varint.encode(peer.connectionTypeRawValue, into: &buffer)
     }
 
     private static func decodePeer(_ data: Data) throws -> KademliaPeer {
@@ -289,29 +342,111 @@ enum KademliaProtobuf {
 
     // MARK: - Record Encoding
 
-    private static func encodeRecord(_ record: KademliaRecord) -> Data {
-        let estimatedSize = 10 + record.key.count + 10 + record.value.count + 20
-        var result = Data(capacity: estimatedSize)
+    private static func encodeRecord(_ record: PreparedRecord, into data: inout Data) {
+        data.append(RecordTag.key)
+        Varint.encode(UInt64(record.key.count), into: &data)
+        data.append(record.key)
 
-        // Field 1: key (bytes)
-        result.append(RecordTag.key)
-        result.append(contentsOf: Varint.encode(UInt64(record.key.count)))
-        result.append(record.key)
+        data.append(RecordTag.value)
+        Varint.encode(UInt64(record.value.count), into: &data)
+        data.append(record.value)
 
-        // Field 2: value (bytes)
-        result.append(RecordTag.value)
-        result.append(contentsOf: Varint.encode(UInt64(record.value.count)))
-        result.append(record.value)
+        if let timeData = record.timeData {
+            data.append(RecordTag.timeReceived)
+            Varint.encode(UInt64(timeData.count), into: &data)
+            data.append(timeData)
+        }
+    }
 
-        // Field 5: timeReceived (optional string)
+    private static func encodeRecord(_ record: PreparedRecord, into buffer: inout ByteBuffer) {
+        buffer.writeInteger(RecordTag.key)
+        Varint.encode(UInt64(record.key.count), into: &buffer)
+        buffer.writeBytes(record.key)
+
+        buffer.writeInteger(RecordTag.value)
+        Varint.encode(UInt64(record.value.count), into: &buffer)
+        buffer.writeBytes(record.value)
+
+        if let timeData = record.timeData {
+            buffer.writeInteger(RecordTag.timeReceived)
+            Varint.encode(UInt64(timeData.count), into: &buffer)
+            buffer.writeBytes(timeData)
+        }
+    }
+
+    private static func encodedSize(of message: KademliaMessage) -> Int {
+        2
+            + (message.key.map { 1 + varintSize(of: $0.count) + $0.count } ?? 0)
+            + (message.record.map { 1 + varintSize(of: encodedSize(of: $0)) + encodedSize(of: $0) } ?? 0)
+            + message.closerPeers.reduce(0) { total, peer in
+                let peerSize = encodedSize(of: peer)
+                return total + 1 + varintSize(of: peerSize) + peerSize
+            }
+            + message.providerPeers.reduce(0) { total, peer in
+                let peerSize = encodedSize(of: peer)
+                return total + 1 + varintSize(of: peerSize) + peerSize
+        }
+    }
+
+    private static func prepare(_ peer: KademliaPeer) -> PreparedPeer {
+        let idBytes = peer.id.bytes
+        let addressBytes = peer.addresses.map(\.bytes)
+        let addressSize = addressBytes.reduce(0) { total, addrBytes in
+            total + 1 + varintSize(of: addrBytes.count) + addrBytes.count
+        }
+        return PreparedPeer(
+            idBytes: idBytes,
+            addressBytes: addressBytes,
+            connectionTypeRawValue: UInt64(peer.connectionType.rawValue),
+            encodedSize: 1 + varintSize(of: idBytes.count) + idBytes.count + addressSize + 1 + 1
+        )
+    }
+
+    private static func prepare(_ record: KademliaRecord) -> PreparedRecord {
+        let timeData = record.timeReceived.map { Data($0.utf8) }
+        let timeSize = timeData.map { 1 + varintSize(of: $0.count) + $0.count } ?? 0
+        return PreparedRecord(
+            key: record.key,
+            value: record.value,
+            timeData: timeData,
+            encodedSize: 1 + varintSize(of: record.key.count) + record.key.count
+                + 1 + varintSize(of: record.value.count) + record.value.count
+                + timeSize
+        )
+    }
+
+    private static func encodedSize(of peer: KademliaPeer) -> Int {
+        let idBytes = peer.id.bytes
+        let addressBytes = peer.addresses.reduce(0) { total, addr in
+            total + 1 + varintSize(of: addr.bytes.count) + addr.bytes.count
+        }
+        return 1 + varintSize(of: idBytes.count) + idBytes.count
+            + addressBytes
+            + 1 + 1
+    }
+
+    private static func encodedSize(of record: KademliaRecord) -> Int {
+        let timeSize: Int
         if let timeReceived = record.timeReceived {
-            let timeData = Data(timeReceived.utf8)
-            result.append(RecordTag.timeReceived)
-            result.append(contentsOf: Varint.encode(UInt64(timeData.count)))
-            result.append(timeData)
+            let count = Data(timeReceived.utf8).count
+            timeSize = 1 + varintSize(of: count) + count
+        } else {
+            timeSize = 0
         }
 
-        return result
+        return 1 + varintSize(of: record.key.count) + record.key.count
+            + 1 + varintSize(of: record.value.count) + record.value.count
+            + timeSize
+    }
+
+    private static func varintSize(of count: Int) -> Int {
+        var value = UInt64(count)
+        var size = 1
+        while value >= 0x80 {
+            value >>= 7
+            size += 1
+        }
+        return size
     }
 
     private static func decodeRecord(_ data: Data) throws -> KademliaRecord {
