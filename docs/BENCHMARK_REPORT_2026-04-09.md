@@ -47,6 +47,8 @@ Notes:
   on every access.
 - `Multihash(bytes:)`: switched decode to 0-based offset varint parsing and
   retained consumed bytes directly instead of rebuilding the multihash payload.
+- `Base58`: replaced repeated quotient-array rebuilding with in-place digit
+  expansion during encoding.
 - `Multiaddr`: cached `bytes` and `description`.
 - `PublicKey`: switched protobuf decode to 0-based offset varint parsing.
 - `Envelope`: switched unmarshal to 0-based offset varint parsing and removed
@@ -128,7 +130,7 @@ Compared with earlier baselines from this optimization run:
 
 ### Identify Wire Benchmarks
 
-Measured previously with:
+Measured with:
 
 ```sh
 scripts/run-benchmarks.sh --configuration release --suite IdentifyWireBenchmarks
@@ -149,7 +151,7 @@ Relevant comparison:
 
 ### Kademlia Wire Benchmarks
 
-Measured previously with:
+Measured with:
 
 ```sh
 scripts/run-benchmarks.sh --configuration release --suite KademliaWireBenchmarks
@@ -157,18 +159,21 @@ scripts/run-benchmarks.sh --configuration release --suite KademliaWireBenchmarks
 
 | Benchmark | Result |
 | --- | ---: |
-| `KademliaProtobuf.encode findNodeResponse` | `10010.00 ns/op` |
-| `KademliaProtobuf.encode(into:) findNodeResponse` | `4659.17 ns/op` |
-| `KademliaProtobuf.encode getValueResponse` | `4475.17 ns/op` |
-| `KademliaProtobuf.encode(into:) getValueResponse` | `2180.83 ns/op` |
-| `KademliaProtobuf.decode findNodeResponse` | `243615.39 ns/op` |
-| `KademliaProtobuf.decode getValueResponse` | `95999.60 ns/op` |
+| `KademliaProtobuf.encode findNodeResponse` | `9337.64 ns/op` |
+| `KademliaProtobuf.encode(into:) findNodeResponse` | `4373.48 ns/op` |
+| `KademliaProtobuf.encode getValueResponse` | `4196.33 ns/op` |
+| `KademliaProtobuf.encode(into:) getValueResponse` | `2072.50 ns/op` |
+| `KademliaProtobuf.decode findNodeResponse` | `94526.07 ns/op` |
+| `KademliaProtobuf.decode getValueResponse` | `37043.61 ns/op` |
 
 Relevant comparisons from this run:
 
-- `KademliaProtobuf.encode findNodeResponse`: `57913.19 -> 10010.00 ns/op`
-- `KademliaProtobuf.encode(into:) findNodeResponse`: `27223.75 -> 4659.17 ns/op`
-- `KademliaProtobuf.decode findNodeResponse`: `270158.68 -> 243615.39 ns/op`
+- `KademliaProtobuf.encode findNodeResponse`: `10010.00 -> 9337.64 ns/op`
+- `KademliaProtobuf.encode(into:) findNodeResponse`: `4659.17 -> 4373.48 ns/op`
+- `KademliaProtobuf.encode getValueResponse`: `4475.17 -> 4196.33 ns/op`
+- `KademliaProtobuf.encode(into:) getValueResponse`: `2180.83 -> 2072.50 ns/op`
+- `KademliaProtobuf.decode findNodeResponse`: `243615.39 -> 94526.07 ns/op`
+- `KademliaProtobuf.decode getValueResponse`: `95999.60 -> 37043.61 ns/op`
 
 ### Other Established Baselines
 
@@ -194,6 +199,10 @@ Sampling with `sample` during release benchmark runs showed:
 - The previous `GossipSubProtobuf.encode control RPC` bottleneck was nested
   `Data` assembly. After switching to scratch `ByteBuffer` encoding, this path
   dropped from `5329.00 ns/op` to `2026.96 ns/op`.
+- Sampling during `KademliaProtobuf.decode` showed `Base58.encode(_:)` under
+  `PeerID(bytes:)` as a dominant hot path while decoding peer entries. Rewriting
+  Base58 encoding to use in-place digit expansion reduced Kademlia decode time
+  substantially.
 
 ## Tests Run Alongside the Optimizations
 
@@ -204,6 +213,7 @@ Focused validation performed during this benchmark cycle included:
 - `PeerRecordTests`
 - `IdentifyProtobufTests`
 - `PeerIDTests`
+- `Base58Tests`
 - `MessageSigningTests`
 - `P2PKademliaTests.*(RoutingTable|KademliaQuery)`
 - `P2PMuxYamuxTests.*YamuxFrame`
@@ -225,11 +235,15 @@ At this point:
 - `PublicKey` and `Envelope` decode paths are measurably better
 - Kademlia and Identify wire encoding improved substantially, especially on
   `encode(into:)` paths
+- Kademlia decode is no longer dominated by eager Base58 generation and now
+  runs at roughly 39% of its previous `findNodeResponse` cost and 39% of its
+  previous `getValueResponse` cost
 
 ## Recommended Next Targets
 
 1. `KademliaProtobuf.decode`
-   It improved, but it remains the heaviest decode benchmark by a wide margin.
+   It improved sharply, but it remains the heaviest decode benchmark by a wide
+   margin.
 
 2. `IdentifyProtobuf.decode`
    The full-info decode path improved, but it still does field-by-field slicing

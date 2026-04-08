@@ -33,32 +33,45 @@ public enum Base58 {
             }
         }
 
-        // Convert to base58
-        var bytes = [UInt8](data)
-        var result: [Character] = []
+        // Convert to base58 using the standard in-place digit expansion.
+        // This avoids rebuilding quotient arrays on every division pass.
+        let payload = data.dropFirst(leadingZeros)
+        let capacity = max(1, (payload.count * 138 / 100) + 1)
+        var digits = [UInt8](repeating: 0, count: capacity)
+        var digitCount = 0
 
-        while !bytes.allSatisfy({ $0 == 0 }) {
-            var remainder: UInt = 0
-            var newBytes: [UInt8] = []
+        for byte in payload {
+            var carry = Int(byte)
+            var index = 0
 
-            for byte in bytes {
-                let value = remainder * 256 + UInt(byte)
-                let quotient = value / base
-                remainder = value % base
-
-                if !newBytes.isEmpty || quotient > 0 {
-                    newBytes.append(UInt8(quotient))
-                }
+            while index < digitCount {
+                let value = Int(digits[index]) * 256 + carry
+                digits[index] = UInt8(value % Int(base))
+                carry = value / Int(base)
+                index += 1
             }
 
-            result.append(alphabet[Int(remainder)])
-            bytes = newBytes
+            while carry > 0 {
+                digits[digitCount] = UInt8(carry % Int(base))
+                digitCount += 1
+                carry /= Int(base)
+            }
         }
 
-        // Add leading '1's for each leading zero byte
-        let leadingOnes = String(repeating: "1", count: leadingZeros)
+        var result = String()
+        result.reserveCapacity(leadingZeros + digitCount)
 
-        return leadingOnes + String(result.reversed())
+        if leadingZeros > 0 {
+            result.append(String(repeating: "1", count: leadingZeros))
+        }
+
+        if digitCount > 0 {
+            for index in stride(from: digitCount - 1, through: 0, by: -1) {
+                result.append(alphabet[Int(digits[index])])
+            }
+        }
+
+        return result
     }
 
     /// Decodes a Base58 string to data.

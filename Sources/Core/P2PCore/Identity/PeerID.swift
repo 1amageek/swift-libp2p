@@ -32,7 +32,7 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
         } else {
             self.multihash = Multihash.sha256(encoded)
         }
-        self._description = multihash.bytes.base58EncodedString
+        self._description = self.multihash.bytes.base58EncodedString
     }
 
     /// Creates a PeerID from a key pair.

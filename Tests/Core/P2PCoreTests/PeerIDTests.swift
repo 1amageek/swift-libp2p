@@ -42,6 +42,7 @@ struct PeerIDTests {
         let restored = try PeerID(bytes: bytes)
 
         #expect(peerID == restored)
+        #expect(peerID.description == restored.description)
     }
 
     @Test("PeerID matches public key")
