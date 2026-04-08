@@ -1,5 +1,6 @@
 /// GossipSubProtobuf - Wire format encoding/decoding for GossipSub protocol
 import Foundation
+import NIOCore
 import P2PCore
 
 /// Protobuf encoding/decoding for GossipSub RPC messages.
@@ -63,35 +64,42 @@ public enum GossipSubProtobuf {
 
     /// Encodes a GossipSubRPC to protobuf wire format.
     public static func encode(_ rpc: GossipSubRPC) -> Data {
+        var buffer = ByteBufferAllocator().buffer(capacity: 0)
+        encode(rpc, into: &buffer)
+        return Data(buffer: buffer)
+    }
+
+    public static func encode(_ rpc: GossipSubRPC, into buffer: inout ByteBuffer) {
         // Estimate: subscriptions + messages + control overhead
-        let estimatedSize = rpc.subscriptions.count * 32 + rpc.messages.count * 128 + 64
-        var result = Data(capacity: estimatedSize)
+        buffer.reserveCapacity(buffer.writerIndex + estimatedSize(of: rpc))
 
         // Field 1: subscriptions (repeated SubOpts)
         for sub in rpc.subscriptions {
             let subData = encodeSubOpts(sub)
-            result.append(tagRPCSubscriptions)
-            Varint.encode(UInt64(subData.count), into: &result)
-            result.append(subData)
+            buffer.writeInteger(tagRPCSubscriptions)
+            Varint.encode(UInt64(subData.count), into: &buffer)
+            buffer.writeBytes(subData)
         }
 
         // Field 2: publish (repeated Message)
         for message in rpc.messages {
             let msgData = encodeMessage(message)
-            result.append(tagRPCMessages)
-            Varint.encode(UInt64(msgData.count), into: &result)
-            result.append(msgData)
+            buffer.writeInteger(tagRPCMessages)
+            Varint.encode(UInt64(msgData.count), into: &buffer)
+            buffer.writeBytes(msgData)
         }
 
         // Field 3: control (optional ControlMessage)
         if let control = rpc.control, !control.isEmpty {
             let ctrlData = encodeControl(control)
-            result.append(tagRPCControl)
-            Varint.encode(UInt64(ctrlData.count), into: &result)
-            result.append(ctrlData)
+            buffer.writeInteger(tagRPCControl)
+            Varint.encode(UInt64(ctrlData.count), into: &buffer)
+            buffer.writeBytes(ctrlData)
         }
+    }
 
-        return result
+    private static func estimatedSize(of rpc: GossipSubRPC) -> Int {
+        rpc.subscriptions.count * 32 + rpc.messages.count * 128 + 64
     }
 
     private static func encodeSubOpts(_ sub: GossipSubRPC.SubscriptionOpt) -> Data {

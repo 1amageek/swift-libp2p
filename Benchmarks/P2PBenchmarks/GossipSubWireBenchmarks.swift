@@ -61,6 +61,28 @@ struct GossipSubWireBenchmarks {
         }
     }
 
+    @Test("GossipSubProtobuf.encode(into:) - publish RPC")
+    func encodeIntoPublishRPC() throws {
+        let privateKey = PrivateKey.generateEd25519()
+        let peerID = privateKey.publicKey.peerID
+        let topic = Topic("/meshsub/1.1.0/some-application/blocks/v1/json")
+        let data = Data(repeating: 0x42, count: 256)
+        let seqno = Data([0, 1, 2, 3, 4, 5, 6, 7])
+        let message = try GossipSubMessage.Builder(data: data, topic: topic)
+            .source(peerID)
+            .sequenceNumber(seqno)
+            .sign(with: privateKey)
+            .build()
+        let rpc = GossipSubRPC(messages: [message])
+        let allocator = ByteBufferAllocator()
+
+        benchmark("GossipSubProtobuf.encode(into:) publish RPC", iterations: 250_000) {
+            var buffer = allocator.buffer(capacity: 0)
+            GossipSubProtobuf.encode(rpc, into: &buffer)
+            blackHole(buffer)
+        }
+    }
+
     @Test("GossipSubProtobuf.encode - control RPC")
     func encodeControlRPC() {
         let topic = Topic("/meshsub/1.1.0/some-application/blocks/v1/json")
@@ -76,6 +98,27 @@ struct GossipSubWireBenchmarks {
 
         benchmark("GossipSubProtobuf.encode control RPC", iterations: 250_000) {
             blackHole(GossipSubProtobuf.encode(rpc))
+        }
+    }
+
+    @Test("GossipSubProtobuf.encode(into:) - control RPC")
+    func encodeIntoControlRPC() {
+        let topic = Topic("/meshsub/1.1.0/some-application/blocks/v1/json")
+        let ids = (0..<20).map { index in
+            MessageID(bytes: Data(repeating: UInt8(index), count: 20))
+        }
+        var control = ControlMessageBatch()
+        control.add(.ihave(.init(topic: topic, messageIDs: ids)))
+        control.add(.iwant(.init(messageIDs: Array(ids.prefix(10)))))
+        control.add(.graft(.init(topic: topic)))
+        control.add(.idontwant(.init(messageIDs: Array(ids.suffix(8)))))
+        let rpc = GossipSubRPC(control: control)
+        let allocator = ByteBufferAllocator()
+
+        benchmark("GossipSubProtobuf.encode(into:) control RPC", iterations: 250_000) {
+            var buffer = allocator.buffer(capacity: 0)
+            GossipSubProtobuf.encode(rpc, into: &buffer)
+            blackHole(buffer)
         }
     }
 

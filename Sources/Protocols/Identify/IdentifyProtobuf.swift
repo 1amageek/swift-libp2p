@@ -1,5 +1,6 @@
 /// IdentifyProtobuf - Wire format encoding/decoding for Identify protocol
 import Foundation
+import NIOCore
 import P2PCore
 
 /// Protobuf encoding/decoding for Identify messages.
@@ -32,75 +33,92 @@ enum IdentifyProtobuf {
 
     /// Encodes IdentifyInfo to protobuf wire format.
     static func encode(_ info: IdentifyInfo) throws -> Data {
+        var buffer = ByteBufferAllocator().buffer(capacity: 0)
+        try encode(info, into: &buffer)
+        return Data(buffer: buffer)
+    }
+
+    static func encode(_ info: IdentifyInfo, into buffer: inout ByteBuffer) throws {
         let publicKeyBytes = info.publicKey?.protobufEncoded
         let protocolBytes = info.protocols.map { Data($0.utf8) }
         let protocolVersionBytes = info.protocolVersion.map { Data($0.utf8) }
         let agentVersionBytes = info.agentVersion.map { Data($0.utf8) }
         let signedPeerRecordBytes = try info.signedPeerRecord?.marshal()
 
-        let estimatedSize =
-            (publicKeyBytes.map { 2 + $0.count } ?? 0)
-            + info.listenAddresses.reduce(0) { $0 + 2 + $1.bytes.count }
-            + protocolBytes.reduce(0) { $0 + 2 + $1.count }
-            + (info.observedAddress.map { 2 + $0.bytes.count } ?? 0)
-            + (protocolVersionBytes.map { 2 + $0.count } ?? 0)
-            + (agentVersionBytes.map { 2 + $0.count } ?? 0)
-            + (signedPeerRecordBytes.map { 2 + $0.count } ?? 0)
-
-        var result = Data(capacity: estimatedSize)
+        buffer.reserveCapacity(
+            buffer.writerIndex + estimatedSize(
+                of: info,
+                signedPeerRecordByteCount: signedPeerRecordBytes?.count
+            )
+        )
 
         // Field 1: publicKey (optional bytes)
         if let bytes = publicKeyBytes {
-            result.append(tagPublicKey)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagPublicKey)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
 
         // Field 2: listenAddrs (repeated bytes)
         for addr in info.listenAddresses {
             let bytes = addr.bytes
-            result.append(tagListenAddrs)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagListenAddrs)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
 
         // Field 3: protocols (repeated string)
         for bytes in protocolBytes {
-            result.append(tagProtocols)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagProtocols)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
 
         // Field 4: observedAddr (optional bytes)
         if let observed = info.observedAddress {
             let bytes = observed.bytes
-            result.append(tagObservedAddr)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagObservedAddr)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
 
         // Field 5: protocolVersion (optional string)
         if let bytes = protocolVersionBytes {
-            result.append(tagProtocolVersion)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagProtocolVersion)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
 
         // Field 6: agentVersion (optional string)
         if let bytes = agentVersionBytes {
-            result.append(tagAgentVersion)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagAgentVersion)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
 
         // Field 8: signedPeerRecord (optional bytes)
         if let bytes = signedPeerRecordBytes {
-            result.append(tagSignedPeerRecord)
-            Varint.encode(UInt64(bytes.count), into: &result)
-            result.append(bytes)
+            buffer.writeInteger(tagSignedPeerRecord)
+            Varint.encode(UInt64(bytes.count), into: &buffer)
+            buffer.writeBytes(bytes)
         }
+    }
 
-        return result
+    private static func estimatedSize(
+        of info: IdentifyInfo,
+        signedPeerRecordByteCount: Int? = nil
+    ) -> Int {
+        let publicKeyBytes = info.publicKey?.protobufEncoded
+        let protocolVersionBytes = info.protocolVersion.map { Data($0.utf8) }
+        let agentVersionBytes = info.agentVersion.map { Data($0.utf8) }
+
+        return (publicKeyBytes.map { 2 + $0.count } ?? 0)
+            + info.listenAddresses.reduce(0) { $0 + 2 + $1.bytes.count }
+            + info.protocols.reduce(0) { $0 + 2 + $1.utf8.count }
+            + (info.observedAddress.map { 2 + $0.bytes.count } ?? 0)
+            + (protocolVersionBytes.map { 2 + $0.count } ?? 0)
+            + (agentVersionBytes.map { 2 + $0.count } ?? 0)
+            + (signedPeerRecordByteCount.map { 2 + $0 } ?? 0)
     }
 
     // MARK: - Decoding

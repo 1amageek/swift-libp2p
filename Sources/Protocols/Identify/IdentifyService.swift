@@ -1,5 +1,6 @@
 /// IdentifyService - Identify protocol implementation
 import Foundation
+import NIOCore
 import P2PCore
 import P2PMux
 import P2PProtocols
@@ -297,8 +298,9 @@ public final class IdentifyService: EventEmitting, Sendable {
             signedPeerRecord: nil
         )
 
-        let data = try IdentifyProtobuf.encode(info)
-        try await stream.write(ByteBuffer(bytes: data))
+        var data = ByteBuffer()
+        try IdentifyProtobuf.encode(info, into: &data)
+        try await stream.write(data)
 
         emit(.sent(peer: peer))
     }
@@ -792,8 +794,9 @@ public final class IdentifyService: EventEmitting, Sendable {
                 signedPeerRecord: nil
             )
 
-            let data = try IdentifyProtobuf.encode(info)
-            try await context.stream.write(ByteBuffer(bytes: data))
+            var data = ByteBuffer()
+            try IdentifyProtobuf.encode(info, into: &data)
+            try await context.stream.write(data)
             try await context.stream.close()
 
             self.emit(.sent(peer: context.remotePeer))
