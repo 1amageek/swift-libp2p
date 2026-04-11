@@ -10,9 +10,9 @@ internal final class BufferedMuxedStream: MuxedStream, Sendable {
     var id: UInt64 { stream.id }
     var protocolID: String? { stream.protocolID }
 
-    init(stream: MuxedStream, initialBuffer: Data = Data()) {
+    init(stream: MuxedStream, initialBuffer: ByteBuffer = ByteBuffer()) {
         self.stream = stream
-        self.buffer = Mutex(ByteBuffer(bytes: initialBuffer))
+        self.buffer = Mutex(initialBuffer)
     }
 
     func read() async throws -> ByteBuffer {

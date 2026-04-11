@@ -1,4 +1,3 @@
-import Foundation
 import Synchronization
 import P2PCore
 import P2PMux
@@ -19,21 +18,21 @@ internal final class BufferedStreamReader: Sendable {
     }
 
     /// Returns and clears any bytes buffered beyond consumed negotiation messages.
-    func drainRemainder() -> Data {
+    func drainRemainder() -> ByteBuffer {
         state.withLock { buffer in
-            let data = Data(buffer: buffer)
+            let remainder = buffer
             buffer.clear()
-            return data
+            return remainder
         }
     }
 
     private enum ExtractResult {
-        case message(Data)
+        case message(ByteBuffer)
         case needMoreData
         case invalidData(Error)
     }
 
-    func readMessage() async throws -> Data {
+    func readMessage() async throws -> ByteBuffer {
         while true {
             let result: ExtractResult = state.withLock { buffer in
                 guard buffer.readableBytes > 0 else { return .needMoreData }
@@ -59,7 +58,7 @@ internal final class BufferedStreamReader: Sendable {
                     guard let message = buffer.readSlice(length: totalNeeded) else {
                         return .needMoreData
                     }
-                    return .message(Data(buffer: message))
+                    return .message(message)
                 } catch let error as VarintError {
                     switch error {
                     case .insufficientData:
@@ -73,8 +72,8 @@ internal final class BufferedStreamReader: Sendable {
             }
 
             switch result {
-            case .message(let data):
-                return data
+            case .message(let message):
+                return message
             case .needMoreData:
                 break
             case .invalidData(let error):

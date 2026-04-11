@@ -140,8 +140,9 @@ The payload path is designed around `ByteBuffer`.
 - transports, security wrappers, muxers, and stream I/O exchange `ByteBuffer`
 - control-plane codecs may still use `Data`
 - crypto and native adapter boundaries may still require `Data`
+- `DataPathCopyGuardTests` prevents new `Data(buffer:)` / `ByteBuffer(bytes:)` bridges from re-entering runtime-facing paths
 
-This keeps hot-path payload movement on `ByteBuffer` while isolating unavoidable `Data` conversions to protocol and crypto boundaries.
+This keeps hot-path payload movement on `ByteBuffer` while isolating unavoidable `Data` conversions to protocol and crypto boundaries. The currently allowed exceptions are the Noise decrypt boundary, the plaintext handshake protobuf decode, and legacy `MplexFrame` convenience APIs.
 
 ### Connection Flow
 
@@ -243,24 +244,24 @@ connect(to: Multiaddr)
 
 ## Benchmark Snapshot
 
-Current debug benchmark snapshot from the in-tree benchmark harness:
+Current release benchmark snapshot from the in-tree benchmark harness:
 
 ### Noise Crypto
 
-- encrypt 32B: `2972.96 ns/op`
-- encrypt 256B: `3177.86 ns/op`
-- decrypt 256B: `3464.88 ns/op`
-- roundtrip 1KB: `8256.35 ns/op`
+- encrypt 32B: `1621.39 ns/op`
+- encrypt 256B: `1887.20 ns/op`
+- decrypt 256B: `2316.29 ns/op`
+- roundtrip 1KB: `5886.95 ns/op`
 
 ### Data Path
 
-- `Memory + Plaintext + Yamux connect`: `111135 ns/op`
-- `Memory + Noise + Yamux connect`: `700170 ns/op`
-- `Memory + TLS + Yamux connect`: `2024909 ns/op`
-- `Memory + Plaintext + Yamux roundtrip 1KB`: `73.16 MiB/s`
-- `Memory + Noise + Yamux roundtrip 1KB`: `9.65 MiB/s`
-- `Memory + TLS + Yamux roundtrip 1KB`: `8.47 MiB/s`
-- `Memory + Noise + Yamux roundtrip 32KB`: `112.16 MiB/s`
+- `Memory + Plaintext + Yamux connect`: `47529.85 ns/op`
+- `Memory + Noise + Yamux connect`: `555308.17 ns/op`
+- `Memory + TLS + Yamux connect`: `1365940.33 ns/op`
+- `Memory + Plaintext + Yamux roundtrip 1KB`: `489.97 MiB/s`
+- `Memory + Noise + Yamux roundtrip 1KB`: `94.56 MiB/s`
+- `Memory + TLS + Yamux roundtrip 1KB`: `104.53 MiB/s`
+- `Memory + Noise + Yamux roundtrip 32KB`: `299.24 MiB/s`
 
 ## Configuration
 

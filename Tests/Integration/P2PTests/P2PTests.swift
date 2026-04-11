@@ -263,15 +263,17 @@ struct BufferedStreamNegotiationTests {
     func bufferedReaderDrainRemainder() async throws {
         let encoded = MultistreamSelect.encode("/test/1.0.0")
         let extra = Data([0xDE, 0xAD, 0xBE, 0xEF])
-        let stream = QueueMuxedStream(reads: [ByteBuffer(bytes: encoded + extra)])
+        var coalesced = encoded
+        coalesced.writeBytes(extra)
+        let stream = QueueMuxedStream(reads: [coalesced])
         let reader = BufferedStreamReader(stream: stream)
 
         let message = try await reader.readMessage()
         let remainder = reader.drainRemainder()
 
-        #expect(message == encoded)
-        #expect(remainder == extra)
-        #expect(reader.drainRemainder().isEmpty)
+        #expect(Data(buffer: message) == Data(buffer: encoded))
+        #expect(Data(buffer: remainder) == extra)
+        #expect(reader.drainRemainder().readableBytes == 0)
     }
 
     @Test("BufferedMuxedStream returns initial bytes before underlying stream")
@@ -279,7 +281,7 @@ struct BufferedStreamNegotiationTests {
         let first = Data([0x01, 0x02, 0x03])
         let second = Data([0xAA, 0xBB])
         let underlying = QueueMuxedStream(reads: [ByteBuffer(bytes: second)])
-        let stream = BufferedMuxedStream(stream: underlying, initialBuffer: first)
+        let stream = BufferedMuxedStream(stream: underlying, initialBuffer: ByteBuffer(bytes: first))
 
         let firstRead = try await stream.read()
         let secondRead = try await stream.read()
@@ -295,10 +297,10 @@ struct UpgradeAndNodeErrorTests {
     @Test("NegotiatingUpgrader throws noMuxers after successful security negotiation")
     func upgraderNoMuxers() async throws {
         let securityProtocol = "/mock-security/1.0.0"
-        let handshakeResponse =
-            MultistreamSelect.encode(MultistreamSelect.protocolID)
-            + MultistreamSelect.encode(securityProtocol)
-        let raw = ScriptedRawConnection(reads: [Data(handshakeResponse)])
+        var handshakeResponse = MultistreamSelect.encode(MultistreamSelect.protocolID)
+        var negotiatedSecurity = MultistreamSelect.encode(securityProtocol)
+        handshakeResponse.writeBuffer(&negotiatedSecurity)
+        let raw = ScriptedRawConnection(reads: [Data(buffer: handshakeResponse)])
         let upgrader = NegotiatingUpgrader(
             security: [PassthroughSecurityUpgrader(id: securityProtocol)],
             muxers: []

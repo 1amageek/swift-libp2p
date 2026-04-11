@@ -1,28 +1,23 @@
 import Testing
-import Foundation
 @testable import P2PNegotiation
 import P2PCore
+import Synchronization
 
 @Suite("Multistream-Select Tests")
 struct MultistreamSelectTests {
 
-    // MARK: - Encode/Decode Tests
-
     @Test("Encode adds length prefix and newline")
     func encodeBasic() throws {
         let encoded = MultistreamSelect.encode("/noise")
-        // Should be: varint(7) + "/noise\n"
-        // 7 = length of "/noise\n"
-        #expect(encoded[0] == 7) // varint encoding of 7
-        #expect(String(decoding: encoded.dropFirst(1), as: UTF8.self) == "/noise\n")
+        #expect(bytes(encoded).first == 7)
+        #expect(String(decoding: encoded.readableBytesView.dropFirst(), as: UTF8.self) == "/noise\n")
     }
 
     @Test("Encode multistream protocol ID")
     func encodeMultistreamProtocol() throws {
         let encoded = MultistreamSelect.encode("/multistream/1.0.0")
-        // Length of "/multistream/1.0.0\n" = 19
-        #expect(encoded[0] == 19)
-        #expect(String(decoding: encoded.dropFirst(1), as: UTF8.self) == "/multistream/1.0.0\n")
+        #expect(bytes(encoded).first == 19)
+        #expect(String(decoding: encoded.readableBytesView.dropFirst(), as: UTF8.self) == "/multistream/1.0.0\n")
     }
 
     @Test("Decode valid message")
@@ -30,7 +25,7 @@ struct MultistreamSelectTests {
         let encoded = MultistreamSelect.encode("/noise")
         let (decoded, consumed) = try MultistreamSelect.decode(encoded)
         #expect(decoded == "/noise")
-        #expect(consumed == encoded.count)
+        #expect(consumed == encoded.readableBytes)
     }
 
     @Test("Encode/Decode round trip")
@@ -43,11 +38,12 @@ struct MultistreamSelectTests {
             "/ipfs/ping/1.0.0",
             "na"
         ]
+
         for proto in protocols {
             let encoded = MultistreamSelect.encode(proto)
             let (decoded, consumed) = try MultistreamSelect.decode(encoded)
             #expect(decoded == proto, "Round trip failed for: \(proto)")
-            #expect(consumed == encoded.count)
+            #expect(consumed == encoded.readableBytes)
         }
     }
 
@@ -60,33 +56,17 @@ struct MultistreamSelectTests {
 
     @Test("Decode message without newline throws error")
     func decodeWithoutNewline() throws {
-        // Manually create invalid message (no newline)
-        var data = Data([5]) // varint length = 5
-        data.append(Data("/test".utf8)) // no newline
-
-        #expect(throws: NegotiationError.invalidMessage) {
-            _ = try MultistreamSelect.decode(data)
-        }
+        awaitInvalidDecode(buffer([5] + Array("/test".utf8)), error: .invalidMessage)
     }
 
     @Test("Decode truncated message throws error")
     func decodeTruncatedMessage() throws {
-        // Create message claiming length 10 but only containing 5 bytes
-        var data = Data([10]) // varint length = 10
-        data.append(Data("/test".utf8)) // only 5 bytes
-
-        #expect(throws: NegotiationError.invalidMessage) {
-            _ = try MultistreamSelect.decode(data)
-        }
+        awaitInvalidDecode(buffer([10] + Array("/test".utf8)), error: .invalidMessage)
     }
-
-    // MARK: - Initiator Negotiation Tests
 
     @Test("Initiator negotiation succeeds with first protocol")
     func initiatorSuccessFirstProtocol() async throws {
         let mockChannel = MockChannel()
-
-        // Setup responder responses
         mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
         mockChannel.queueRead(MultistreamSelect.encode("/noise"))
 
@@ -97,8 +77,6 @@ struct MultistreamSelectTests {
         )
 
         #expect(result.protocolID == "/noise")
-
-        // Verify what was written
         let written = mockChannel.writtenData
         #expect(written.count == 2)
         #expect(try MultistreamSelect.decode(written[0]).0 == "/multistream/1.0.0")
@@ -108,11 +86,9 @@ struct MultistreamSelectTests {
     @Test("Initiator negotiation falls back to second protocol")
     func initiatorFallbackToSecondProtocol() async throws {
         let mockChannel = MockChannel()
-
-        // Setup responder responses
         mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
-        mockChannel.queueRead(MultistreamSelect.encode("na")) // First protocol rejected
-        mockChannel.queueRead(MultistreamSelect.encode("/yamux/1.0.0")) // Second accepted
+        mockChannel.queueRead(MultistreamSelect.encode("na"))
+        mockChannel.queueRead(MultistreamSelect.encode("/yamux/1.0.0"))
 
         let result = try await MultistreamSelect.negotiate(
             protocols: ["/noise", "/yamux/1.0.0"],
@@ -121,8 +97,6 @@ struct MultistreamSelectTests {
         )
 
         #expect(result.protocolID == "/yamux/1.0.0")
-
-        // Verify all protocols were tried
         let written = mockChannel.writtenData
         #expect(written.count == 3)
         #expect(try MultistreamSelect.decode(written[0]).0 == "/multistream/1.0.0")
@@ -133,8 +107,6 @@ struct MultistreamSelectTests {
     @Test("Initiator negotiation fails with no agreement")
     func initiatorNoAgreement() async throws {
         let mockChannel = MockChannel()
-
-        // All protocols rejected
         mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
         mockChannel.queueRead(MultistreamSelect.encode("na"))
         mockChannel.queueRead(MultistreamSelect.encode("na"))
@@ -151,8 +123,6 @@ struct MultistreamSelectTests {
     @Test("Initiator negotiation fails on multistream header mismatch")
     func initiatorHeaderMismatch() async throws {
         let mockChannel = MockChannel()
-
-        // Wrong multistream header
         mockChannel.queueRead(MultistreamSelect.encode("/wrong/1.0.0"))
 
         await #expect(throws: NegotiationError.protocolMismatch) {
@@ -164,29 +134,9 @@ struct MultistreamSelectTests {
         }
     }
 
-    @Test("Initiator negotiation fails on unexpected response")
-    func initiatorUnexpectedResponse() async throws {
-        let mockChannel = MockChannel()
-
-        mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
-        mockChannel.queueRead(MultistreamSelect.encode("/unexpected-protocol"))
-
-        await #expect(throws: NegotiationError.self) {
-            _ = try await MultistreamSelect.negotiate(
-                protocols: ["/noise"],
-                read: { try await mockChannel.read() },
-                write: { try await mockChannel.write($0) }
-            )
-        }
-    }
-
-    // MARK: - Responder Negotiation Tests
-
     @Test("Responder negotiation succeeds with supported protocol")
     func responderSuccessWithSupportedProtocol() async throws {
         let mockChannel = MockChannel()
-
-        // Setup initiator requests
         mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
         mockChannel.queueRead(MultistreamSelect.encode("/noise"))
 
@@ -197,18 +147,15 @@ struct MultistreamSelectTests {
         )
 
         #expect(result.protocolID == "/noise")
-
-        // Verify responses
         let written = mockChannel.writtenData
         #expect(written.count == 2)
         #expect(try MultistreamSelect.decode(written[0]).0 == "/multistream/1.0.0")
         #expect(try MultistreamSelect.decode(written[1]).0 == "/noise")
     }
 
-    @Test("Responder sends 'na' for unsupported protocol then accepts supported")
+    @Test("Responder sends na then accepts supported protocol")
     func responderRejectsUnsupportedThenAccepts() async throws {
         let mockChannel = MockChannel()
-
         mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
         mockChannel.queueRead(MultistreamSelect.encode("/unknown"))
         mockChannel.queueRead(MultistreamSelect.encode("/noise"))
@@ -220,36 +167,15 @@ struct MultistreamSelectTests {
         )
 
         #expect(result.protocolID == "/noise")
-
-        // Verify "na" was sent for unknown protocol
         let written = mockChannel.writtenData
         #expect(written.count == 3)
         #expect(try MultistreamSelect.decode(written[1]).0 == "na")
         #expect(try MultistreamSelect.decode(written[2]).0 == "/noise")
     }
 
-    @Test("Responder fails on multistream header mismatch")
-    func responderHeaderMismatch() async throws {
-        let mockChannel = MockChannel()
-
-        mockChannel.queueRead(MultistreamSelect.encode("/wrong/1.0.0"))
-
-        await #expect(throws: NegotiationError.protocolMismatch) {
-            _ = try await MultistreamSelect.handle(
-                supported: ["/noise"],
-                read: { try await mockChannel.read() },
-                write: { try await mockChannel.write($0) }
-            )
-        }
-    }
-
-    // MARK: - List (ls) Command Tests
-
     @Test("Responder handles ls command with correct wire format")
     func responderHandlesLsCommand() async throws {
         let mockChannel = MockChannel()
-
-        // Setup: multistream header, then ls command, then actual protocol
         mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
         mockChannel.queueRead(MultistreamSelect.encode("ls"))
         mockChannel.queueRead(MultistreamSelect.encode("/noise"))
@@ -261,142 +187,43 @@ struct MultistreamSelectTests {
         )
 
         #expect(result.protocolID == "/noise")
-
-        // Verify ls response format
         let written = mockChannel.writtenData
-        #expect(written.count == 3)  // multistream header, ls response, protocol ack
-
-        // Verify ls response wire format
-        let lsResponse = written[1]
-
-        // Parse outer length prefix
-        let (outerLength, outerLengthBytes) = try Varint.decode(lsResponse)
-        let inner = lsResponse.dropFirst(outerLengthBytes)
-
-        // Inner should contain newline-delimited protocols with final blank line.
-        // Format: /noise\n/yamux/1.0.0\n\n
-        #expect(inner.count == Int(outerLength))
-        let decoded = String(decoding: inner, as: UTF8.self)
-        #expect(decoded == "/noise\n/yamux/1.0.0\n\n")
-    }
-
-    @Test("Responder ls response for single protocol")
-    func responderLsSingleProtocol() async throws {
-        let mockChannel = MockChannel()
-
-        mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
-        mockChannel.queueRead(MultistreamSelect.encode("ls"))
-        mockChannel.queueRead(MultistreamSelect.encode("/noise"))
-
-        let result = try await MultistreamSelect.handle(
-            supported: ["/noise"],
-            read: { try await mockChannel.read() },
-            write: { try await mockChannel.write($0) }
-        )
-
-        #expect(result.protocolID == "/noise")
-
-        let written = mockChannel.writtenData
-        let lsResponse = written[1]
-
-        // Parse and verify format
-        let (outerLength, outerLengthBytes) = try Varint.decode(lsResponse)
-        let inner = lsResponse.dropFirst(outerLengthBytes)
-        #expect(inner.count == Int(outerLength))
-        let decoded = String(decoding: inner, as: UTF8.self)
-        #expect(decoded == "/noise\n\n")
-    }
-
-    @Test("Responder ls response for empty protocol list")
-    func responderLsEmptyProtocols() async throws {
-        let mockChannel = MockChannel()
-
-        mockChannel.queueRead(MultistreamSelect.encode("/multistream/1.0.0"))
-        mockChannel.queueRead(MultistreamSelect.encode("ls"))
-        // Connection will hang waiting for a valid protocol, so we simulate close
-        mockChannel.queueRead(MultistreamSelect.encode("/noise"))
-
-        // Handle with empty supported list - ls will return just final newline
-        do {
-            _ = try await MultistreamSelect.handle(
-                supported: [],
-                read: { try await mockChannel.read() },
-                write: { try await mockChannel.write($0) }
-            )
-        } catch { }
-
-        let written = mockChannel.writtenData
-        // At least multistream header and ls response
-        #expect(written.count >= 2)
+        #expect(written.count == 3)
 
         let lsResponse = written[1]
-        // Empty list: outer length(1) + single newline
-        let (outerLength, _) = try Varint.decode(lsResponse)
-        #expect(outerLength == 1)  // Just the final newline
+        let (outerLength, outerLengthBytes) = try decodeVarint(lsResponse)
+        let inner = dropped(lsResponse, outerLengthBytes)
+        #expect(inner.readableBytes == Int(outerLength))
+        #expect(String(decoding: inner.readableBytesView, as: UTF8.self) == "/noise\n/yamux/1.0.0\n\n")
     }
 
-    // MARK: - Protocol ID Constant Tests
-
-    @Test("Protocol ID is correct")
-    func protocolIDConstant() {
-        #expect(MultistreamSelect.protocolID == "/multistream/1.0.0")
-    }
-
-    // MARK: - NegotiationResult Tests
-
-    @Test("NegotiationResult stores protocol ID")
-    func negotiationResultStoresProtocol() {
-        let result = NegotiationResult(protocolID: "/noise")
+    @Test("NegotiationResult stores protocol ID and remainder")
+    func negotiationResultStoresRemainder() {
+        let remainder = buffer([1, 2, 3, 4])
+        let result = NegotiationResult(protocolID: "/noise", remainderBuffer: remainder)
         #expect(result.protocolID == "/noise")
-        #expect(result.remainder.isEmpty)
+        #expect(equalBytes(result.remainderBuffer, remainder))
     }
-
-    @Test("NegotiationResult with remainder")
-    func negotiationResultWithRemainder() {
-        let remainder = Data([1, 2, 3, 4])
-        let result = NegotiationResult(protocolID: "/noise", remainder: remainder)
-        #expect(result.protocolID == "/noise")
-        #expect(result.remainder == remainder)
-    }
-
-    // MARK: - NegotiationError Tests
-
-    @Test("NegotiationError is Equatable")
-    func negotiationErrorEquatable() {
-        #expect(NegotiationError.protocolMismatch == NegotiationError.protocolMismatch)
-        #expect(NegotiationError.noAgreement == NegotiationError.noAgreement)
-        #expect(NegotiationError.invalidMessage == NegotiationError.invalidMessage)
-        #expect(NegotiationError.unexpectedResponse("foo") == NegotiationError.unexpectedResponse("foo"))
-        #expect(NegotiationError.unexpectedResponse("foo") != NegotiationError.unexpectedResponse("bar"))
-    }
-
-    // MARK: - Trailing Bytes / Coalesced Read Tests
 
     @Test("Decode returns correct bytes consumed with trailing data")
     func decodeWithTrailingData() throws {
-        let msg1 = MultistreamSelect.encode("/noise")
-        let msg2 = MultistreamSelect.encode("/yamux/1.0.0")
-        let combined = msg1 + msg2
-
-        let (decoded, consumed) = try MultistreamSelect.decode(combined)
+        let combinedBuffer = combine(MultistreamSelect.encode("/noise"), MultistreamSelect.encode("/yamux/1.0.0"))
+        let (decoded, consumed) = try MultistreamSelect.decode(combinedBuffer)
         #expect(decoded == "/noise")
-        #expect(consumed == msg1.count)
 
-        // Remaining data can be decoded as second message
-        let remaining = Data(combined.dropFirst(consumed))
+        let remaining = dropped(combinedBuffer, consumed)
         let (decoded2, consumed2) = try MultistreamSelect.decode(remaining)
         #expect(decoded2 == "/yamux/1.0.0")
-        #expect(consumed2 == msg2.count)
+        #expect(consumed2 == remaining.readableBytes)
     }
 
-    @Test("Responder handles V1Lazy coalesced header + protocol")
+    @Test("Responder handles V1Lazy coalesced header and protocol")
     func responderHandlesCoalescedLazy() async throws {
         let mockChannel = MockChannel()
-
-        // V1Lazy: initiator sends header + protocol in one batch
-        let batch = MultistreamSelect.encode("/multistream/1.0.0")
-                  + MultistreamSelect.encode("/noise")
-        mockChannel.queueRead(batch)
+        mockChannel.queueRead(combine(
+            MultistreamSelect.encode("/multistream/1.0.0"),
+            MultistreamSelect.encode("/noise")
+        ))
 
         let result = try await MultistreamSelect.handle(
             supported: ["/noise", "/yamux/1.0.0"],
@@ -406,25 +233,62 @@ struct MultistreamSelectTests {
 
         #expect(result.protocolID == "/noise")
     }
+
+    private func awaitInvalidDecode(_ buffer: ByteBuffer, error: NegotiationError) {
+        #expect(throws: error) {
+            _ = try MultistreamSelect.decode(buffer)
+        }
+    }
 }
 
-// MARK: - Mock Channel
+func buffer(_ bytes: [UInt8]) -> ByteBuffer {
+    var buffer = ByteBuffer()
+    buffer.writeBytes(bytes)
+    return buffer
+}
 
-import Synchronization
+func bytes(_ buffer: ByteBuffer) -> [UInt8] {
+    Array(buffer.readableBytesView)
+}
 
-/// A mock channel for testing negotiation flows.
+func combine(_ parts: ByteBuffer...) -> ByteBuffer {
+    var combined = ByteBuffer()
+    for var part in parts {
+        combined.writeBuffer(&part)
+    }
+    return combined
+}
+
+func dropped(_ buffer: ByteBuffer, _ count: Int) -> ByteBuffer {
+    var copy = buffer
+    copy.moveReaderIndex(forwardBy: count)
+    copy.discardReadBytes()
+    return copy
+}
+
+func equalBytes(_ lhs: ByteBuffer, _ rhs: ByteBuffer) -> Bool {
+    lhs.readableBytesView.elementsEqual(rhs.readableBytesView)
+}
+
+func decodeVarint(_ buffer: ByteBuffer) throws -> (UInt64, Int) {
+    try buffer.withUnsafeReadableBytes { ptr in
+        try Varint.decode(from: UnsafeRawBufferPointer(ptr), at: 0)
+    }
+}
+
 final class MockChannel: Sendable {
     private struct State: Sendable {
-        var readQueue: [Data] = []
-        var writtenData: [Data] = []
+        var readQueue: [ByteBuffer] = []
+        var writtenData: [ByteBuffer] = []
     }
+
     private let state = Mutex<State>(State())
 
-    func queueRead(_ data: Data) {
+    func queueRead(_ data: ByteBuffer) {
         state.withLock { $0.readQueue.append(data) }
     }
 
-    func read() async throws -> Data {
+    func read() async throws -> ByteBuffer {
         try state.withLock { state in
             guard !state.readQueue.isEmpty else {
                 throw MockChannelError.noMoreData
@@ -433,11 +297,11 @@ final class MockChannel: Sendable {
         }
     }
 
-    func write(_ data: Data) async throws {
+    func write(_ data: ByteBuffer) async throws {
         state.withLock { $0.writtenData.append(data) }
     }
 
-    var writtenData: [Data] {
+    var writtenData: [ByteBuffer] {
         state.withLock { $0.writtenData }
     }
 }

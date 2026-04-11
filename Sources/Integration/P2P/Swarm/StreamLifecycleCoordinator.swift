@@ -58,7 +58,7 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
             result = try await MultistreamSelect.negotiate(
                 protocols: [protocolID],
                 read: { try await reader.readMessage() },
-                write: { try await stream.write(ByteBuffer(bytes: $0)) }
+                write: { try await stream.write($0) }
             )
         } catch {
             resources?.releaseStream(peer: peer, direction: .outbound)
@@ -76,7 +76,10 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
             throw NodeError.protocolNegotiationFailed
         }
 
-        let negotiatedStream = bufferedStream(base: stream, remainder: result.remainder + reader.drainRemainder())
+        let negotiatedStream = bufferedStream(
+            base: stream,
+            remainder: combined(result.remainderBuffer, reader.drainRemainder())
+        )
         guard let resources else {
             return negotiatedStream
         }
@@ -100,10 +103,13 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
         let result = try await MultistreamSelect.handle(
             supported: supportedProtocols,
             read: { try await reader.readMessage() },
-            write: { try await stream.write(ByteBuffer(bytes: $0)) }
+            write: { try await stream.write($0) }
         )
 
-        let negotiatedStream = bufferedStream(base: stream, remainder: result.remainder + reader.drainRemainder())
+        let negotiatedStream = bufferedStream(
+            base: stream,
+            remainder: combined(result.remainderBuffer, reader.drainRemainder())
+        )
         return StreamContext(
             stream: negotiatedStream,
             remotePeer: remotePeer,
@@ -114,10 +120,24 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
         )
     }
 
-    private func bufferedStream(base: MuxedStream, remainder: Data) -> MuxedStream {
-        if remainder.isEmpty {
+    private func bufferedStream(base: MuxedStream, remainder: ByteBuffer) -> MuxedStream {
+        if remainder.readableBytes == 0 {
             return base
         }
         return BufferedMuxedStream(stream: base, initialBuffer: remainder)
+    }
+
+    private func combined(_ left: ByteBuffer, _ right: ByteBuffer) -> ByteBuffer {
+        if left.readableBytes == 0 {
+            return right
+        }
+        if right.readableBytes == 0 {
+            return left
+        }
+
+        var combined = left
+        var tail = right
+        combined.writeBuffer(&tail)
+        return combined
     }
 }
