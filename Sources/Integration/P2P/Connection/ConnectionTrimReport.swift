@@ -4,6 +4,7 @@
 
 import Foundation
 import P2PCore
+import P2PRuntime
 
 /// A point-in-time report for connection trimming decisions.
 ///

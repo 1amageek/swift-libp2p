@@ -74,7 +74,8 @@ public final class GossipSubService: Sendable {
     ///   - configuration: Configuration parameters
     public init(
         keyPair: KeyPair,
-        configuration: GossipSubConfiguration = .init()
+        configuration: GossipSubConfiguration = .init(),
+        opener: (any StreamOpener)? = nil
     ) {
         self.localPeerID = keyPair.peerID
         self.configuration = configuration
@@ -85,7 +86,7 @@ public final class GossipSubService: Sendable {
             configuration: configuration
         )
         self.heartbeat = Mutex(nil)
-        self.serviceState = Mutex(ServiceState())
+        self.serviceState = Mutex(ServiceState(opener: opener))
     }
 
     /// Creates a new GossipSub service without signing support.
@@ -98,7 +99,8 @@ public final class GossipSubService: Sendable {
     /// - Precondition: `configuration.signMessages` must be `false`
     public init(
         localPeerID: PeerID,
-        configuration: GossipSubConfiguration = .testing
+        configuration: GossipSubConfiguration = .testing,
+        opener: (any StreamOpener)? = nil
     ) {
         precondition(
             !configuration.signMessages,
@@ -112,7 +114,7 @@ public final class GossipSubService: Sendable {
             configuration: configuration
         )
         self.heartbeat = Mutex(nil)
-        self.serviceState = Mutex(ServiceState())
+        self.serviceState = Mutex(ServiceState(opener: opener))
     }
 
     // MARK: - Lifecycle
@@ -430,7 +432,7 @@ public final class GossipSubService: Sendable {
 
     /// Processes incoming RPCs from a stream.
     private func processIncomingRPCs(from peerID: PeerID, stream: MuxedStream) async {
-        var buffer = Data()
+        var buffer = ByteBuffer()
 
         do {
             readLoop: while true {
@@ -438,20 +440,20 @@ public final class GossipSubService: Sendable {
                 if chunk.readableBytes == 0 {
                     break // EOF - normal close
                 }
-                buffer.append(Data(buffer: chunk))
+                var mutableChunk = chunk
+                buffer.writeBuffer(&mutableChunk)
 
                 // Check buffer size limit to prevent DoS
-                if buffer.count > Self.maxBufferSize {
+                if buffer.readableBytes > Self.maxBufferSize {
                     break // Protocol error - buffer overflow
                 }
 
                 // Try to parse RPC (length-prefixed)
                 parseLoop: while true {
                     do {
-                        guard let (rpc, consumed) = try parseLengthPrefixedRPC(from: buffer) else {
+                        guard let rpc = try parseLengthPrefixedRPC(from: &buffer) else {
                             break parseLoop // Need more data
                         }
-                        buffer = Data(buffer.dropFirst(consumed))
 
                         // Handle RPC and get result
                         let result = await router.handleRPC(rpc, from: peerID)
@@ -484,16 +486,18 @@ public final class GossipSubService: Sendable {
 
     /// Parses a length-prefixed RPC from data.
     ///
-    /// - Returns: Tuple of (RPC, consumed bytes) or nil if need more data
+    /// - Returns: RPC or nil if need more data
     /// - Throws: GossipSubError if message is malformed or too large
-    private func parseLengthPrefixedRPC(from data: Data) throws -> (GossipSubRPC, Int)? {
-        guard data.count > 0 else { return nil }
+    private func parseLengthPrefixedRPC(from data: inout ByteBuffer) throws -> GossipSubRPC? {
+        guard data.readableBytes > 0 else { return nil }
 
         // Read varint length prefix - handle partial varints gracefully
         let length: UInt64
         let lengthBytes: Int
         do {
-            (length, lengthBytes) = try Varint.decode(data)
+            (length, lengthBytes) = try data.withUnsafeReadableBytes { ptr in
+                try Varint.decode(from: UnsafeRawBufferPointer(ptr), at: 0)
+            }
         } catch VarintError.insufficientData {
             return nil // Need more data for varint
         }
@@ -511,14 +515,18 @@ public final class GossipSubService: Sendable {
             throw GossipSubError.malformedMessage("Length prefix overflow")
         }
 
-        guard data.count >= totalLength else {
+        guard data.readableBytes >= totalLength else {
             return nil // Need more data for message body
         }
 
-        let rpcData = Data(data[lengthBytes..<totalLength])
-        let rpc = try GossipSubProtobuf.decode(rpcData)
-
-        return (rpc, totalLength)
+        data.moveReaderIndex(forwardBy: lengthBytes)
+        guard let rpcBuffer = data.readSlice(length: messageLength) else {
+            throw GossipSubError.malformedMessage("Failed to read RPC payload")
+        }
+        if data.readerIndex > Self.maxBufferSize {
+            data.discardReadBytes()
+        }
+        return try GossipSubProtobuf.decode(Data(buffer: rpcBuffer))
     }
 
     /// Encodes an RPC with length prefix.
@@ -600,13 +608,17 @@ public final class GossipSubService: Sendable {
 
 // MARK: - StreamService
 
-extension GossipSubService: StreamService, PeerObserver {
+extension GossipSubService: LifecycleService, StreamService, PeerObserver, ActivatableService, StreamOpeningActivatable {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleIncomingStream(context: context, protocolID: context.protocolID)
     }
 
-    public func attach(to context: any NodeContext) async {
-        serviceState.withLock { $0.opener = context }
+    public func activate(using opener: any StreamOpener) async {
+        serviceState.withLock { $0.opener = opener }
+        await activate()
+    }
+
+    public func activate() async {
         if !serviceState.withLock({ $0.isStarted }) {
             start()
         }
@@ -625,6 +637,30 @@ extension GossipSubService: StreamService, PeerObserver {
 
     public func peerDisconnected(_ peer: PeerID) async {
         handlePeerDisconnected(peer)
+    }
+}
+
+public func gossipSubComponent(_ gossipSubService: GossipSubService) -> ServiceComponent {
+    service(gossipSubService) { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.activatesWithStreamOpening()
+    }
+}
+
+public func gossipSubComponent(
+    configuration: GossipSubConfiguration = .init()
+) -> ServiceComponent {
+    service(make: { context in
+        GossipSubService(
+            keyPair: context.localIdentity.localKeyPair,
+            configuration: configuration,
+            opener: context.streamOpener
+        )
+    }) { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.activatesOnStart()
     }
 }
 

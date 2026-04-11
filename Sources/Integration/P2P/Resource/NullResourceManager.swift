@@ -4,6 +4,7 @@
 /// limiting is not needed.
 
 import P2PCore
+import P2PRuntime
 
 /// A no-op resource manager that imposes no limits.
 ///

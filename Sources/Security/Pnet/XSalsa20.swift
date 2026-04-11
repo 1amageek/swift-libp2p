@@ -6,6 +6,7 @@
 ///
 /// Reference: https://cr.yp.to/snuffle/xsalsa-20081128.pdf
 import Foundation
+import NIOCore
 
 // MARK: - Constants
 
@@ -32,6 +33,8 @@ public struct XSalsa20: Sendable {
 
     /// Remaining keystream bytes from current block.
     private var keystreamBuffer: [UInt8]
+    /// Read offset into `keystreamBuffer` to avoid reallocating tail slices.
+    private var keystreamOffset: Int
 
     /// Create cipher with key (32 bytes) and nonce (24 bytes).
     ///
@@ -78,6 +81,7 @@ public struct XSalsa20: Sendable {
         ]
         self.counter = 0
         self.keystreamBuffer = []
+        self.keystreamOffset = 0
     }
 
     /// Encrypt/decrypt data in-place (XOR with keystream).
@@ -87,29 +91,24 @@ public struct XSalsa20: Sendable {
     ///
     /// - Parameter data: Data to encrypt/decrypt in-place.
     public mutating func process(_ data: inout [UInt8]) {
-        var offset = 0
-        while offset < data.count {
-            // Refill keystream buffer if empty
-            if keystreamBuffer.isEmpty {
-                keystreamBuffer = generateBlock()
+        data.withUnsafeMutableBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            self.processBytes(at: baseAddress, count: buffer.count)
+        }
+    }
+
+    /// Encrypt/decrypt a ByteBuffer in-place.
+    ///
+    /// This keeps the payload on the `ByteBuffer` data path and avoids
+    /// round-tripping through `[UInt8]` for pnet-encrypted connections.
+    ///
+    /// - Parameter buffer: Buffer to encrypt/decrypt in-place.
+    public mutating func process(_ buffer: inout ByteBuffer) {
+        buffer.withUnsafeMutableReadableBytes { readableBytes in
+            guard let baseAddress = readableBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return
             }
-
-            let available = keystreamBuffer.count
-            let needed = data.count - offset
-            let toProcess = min(available, needed)
-
-            // XOR data with keystream
-            for i in 0..<toProcess {
-                data[offset + i] ^= keystreamBuffer[i]
-            }
-
-            offset += toProcess
-
-            if toProcess == available {
-                keystreamBuffer = []
-            } else {
-                keystreamBuffer = Array(keystreamBuffer[toProcess...])
-            }
+            self.processBytes(at: baseAddress, count: readableBytes.count)
         }
     }
 
@@ -140,6 +139,26 @@ public struct XSalsa20: Sendable {
 
         counter += 1
         return bytes
+    }
+
+    private mutating func processBytes(at baseAddress: UnsafeMutablePointer<UInt8>, count: Int) {
+        var offset = 0
+        while offset < count {
+            if keystreamOffset == keystreamBuffer.count {
+                keystreamBuffer = generateBlock()
+                keystreamOffset = 0
+            }
+
+            let available = keystreamBuffer.count - keystreamOffset
+            let toProcess = min(available, count - offset)
+
+            for i in 0..<toProcess {
+                baseAddress[offset + i] ^= keystreamBuffer[keystreamOffset + i]
+            }
+
+            offset += toProcess
+            keystreamOffset += toProcess
+        }
     }
 }
 

@@ -18,21 +18,13 @@ private let noiseRecvBufferCompactThreshold = 64 * 1024
 /// Receive-only state for read operations.
 private struct RecvState: Sendable {
     var cipher: NoiseCipherState
-    var buffer: Data = Data()
-    var bufferOffset: Int = 0
+    var buffer: ByteBuffer = ByteBuffer()
     var isClosed: Bool = false
 
-    /// Returns the unprocessed portion of the buffer.
-    var unprocessedBuffer: Data {
-        buffer[bufferOffset...]
-    }
-
     /// Advances the buffer offset and compacts if needed.
-    mutating func advanceBuffer(by n: Int) {
-        bufferOffset += n
-        if bufferOffset > noiseRecvBufferCompactThreshold {
-            buffer = Data(buffer[bufferOffset...])
-            bufferOffset = 0
+    mutating func compactBufferIfNeeded() {
+        if buffer.readerIndex > noiseRecvBufferCompactThreshold {
+            buffer.discardReadBytes()
         }
     }
 }
@@ -71,7 +63,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
         remotePeer: PeerID,
         sendCipher: NoiseCipherState,
         recvCipher: NoiseCipherState,
-        initialBuffer: Data = Data()
+        initialBuffer: ByteBuffer = ByteBuffer()
     ) {
         self.underlying = underlying
         self.localPeer = localPeer
@@ -94,22 +86,24 @@ public final class NoiseConnection: SecuredConnection, Sendable {
         // Try to read a complete frame
         while true {
             // 1. Check closed + buffer atomically (receive lock)
-            let frameResult: Result<Data?, any Error> = recvState.withLock { state in
+            let frameResult: Result<ByteBuffer?, any Error> = recvState.withLock { state in
                 if state.isClosed {
                     return .failure(NoiseError.connectionClosed)
                 }
                 do {
-                    if let (message, consumed) = try readNoiseMessage(from: state.unprocessedBuffer) {
-                        state.advanceBuffer(by: consumed)
+                    if let message = try readLengthPrefixedFrame(
+                        from: &state.buffer,
+                        maxMessageSize: noiseMaxMessageSize
+                    ) {
+                        state.compactBufferIfNeeded()
 
                         // Decrypt the message
-                        let plaintext = try state.cipher.decryptWithAD(Data(), ciphertext: message)
-                        return .success(plaintext)
+                        let plaintext = try state.cipher.decryptWithAD(Data(), ciphertext: message.readableBytesView)
+                        return .success(ByteBuffer(bytes: plaintext))
                     }
                 } catch {
                     // Frame parsing or decryption failed - clear buffer to prevent infinite retry
-                    state.buffer = Data()
-                    state.bufferOffset = 0
+                    state.buffer = ByteBuffer()
                     state.isClosed = true
                     return .failure(error)
                 }
@@ -119,7 +113,7 @@ public final class NoiseConnection: SecuredConnection, Sendable {
             switch frameResult {
             case .success(let data):
                 if let data = data {
-                    return ByteBuffer(bytes: data)
+                    return data
                 }
             case .failure(let error):
                 throw error
@@ -132,43 +126,46 @@ public final class NoiseConnection: SecuredConnection, Sendable {
             }
 
             // 3. Append to buffer (receive lock only)
-            let chunkData = Data(buffer: chunk)
             recvState.withLock { state in
-                state.buffer.append(chunkData)
+                var mutableChunk = chunk
+                state.buffer.writeBuffer(&mutableChunk)
             }
         }
     }
 
     public func write(_ data: ByteBuffer) async throws {
-        let inputData = Data(buffer: data)
-
         // Handle empty data: still send a frame (carries authentication)
-        if inputData.isEmpty {
-            let encrypted = try sendState.withLock { state -> Data in
+        if data.readableBytes == 0 {
+            let encrypted = try sendState.withLock { state -> ByteBuffer in
                 guard !state.isClosed else { throw NoiseError.connectionClosed }
                 let ciphertext = try state.cipher.encryptWithAD(Data(), plaintext: Data())
-                return try encodeNoiseMessage(ciphertext)
+                var buffer = ByteBuffer()
+                try encodeLengthPrefixedFrame(ciphertext, maxMessageSize: noiseMaxMessageSize, into: &buffer)
+                return buffer
             }
-            try await underlying.write(ByteBuffer(bytes: encrypted))
+            try await underlying.write(encrypted)
             return
         }
 
-        var remaining = inputData[inputData.startIndex...]
+        var remaining = data
 
-        while !remaining.isEmpty {
-            let chunkSize = min(remaining.count, noiseMaxPlaintextSize)
-            let chunk = Data(remaining.prefix(chunkSize))
-            remaining = remaining.dropFirst(chunkSize)
+        while remaining.readableBytes > 0 {
+            let chunkSize = min(remaining.readableBytes, noiseMaxPlaintextSize)
+            guard let chunk = remaining.readSlice(length: chunkSize) else {
+                throw NoiseError.connectionClosed
+            }
 
             // Check closed + encrypt atomically (send lock)
-            let encrypted = try sendState.withLock { state -> Data in
+            let encrypted = try sendState.withLock { state -> ByteBuffer in
                 guard !state.isClosed else { throw NoiseError.connectionClosed }
-                let ciphertext = try state.cipher.encryptWithAD(Data(), plaintext: chunk)
-                return try encodeNoiseMessage(ciphertext)
+                let ciphertext = try state.cipher.encryptWithAD(Data(), plaintext: chunk.readableBytesView)
+                var buffer = ByteBuffer()
+                try encodeLengthPrefixedFrame(ciphertext, maxMessageSize: noiseMaxMessageSize, into: &buffer)
+                return buffer
             }
 
             // Write to network (no lock held)
-            try await underlying.write(ByteBuffer(bytes: encrypted))
+            try await underlying.write(encrypted)
         }
     }
 

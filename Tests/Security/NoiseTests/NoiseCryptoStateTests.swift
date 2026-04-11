@@ -2,6 +2,7 @@
 import Testing
 import Foundation
 import Crypto
+import P2PCore
 @testable import P2PSecurityNoise
 
 @Suite("NoiseCryptoState Tests")
@@ -24,6 +25,28 @@ struct NoiseCryptoStateTests {
         #expect(decrypted == plaintext)
         #expect(ciphertext != plaintext)
         #expect(ciphertext.count == plaintext.count + 16) // +16 for auth tag
+    }
+
+    @Test("CipherState accepts ByteBufferView without pre-converting to Data")
+    func testCipherStateByteBufferViewInput() throws {
+        let key = SymmetricKey(size: .bits256)
+        var encryptState = NoiseCipherState(key: key)
+        var decryptState = NoiseCipherState(key: key)
+
+        let plaintextBuffer = ByteBuffer(bytes: Data("Hello, ByteBufferView!".utf8))
+        let associatedDataBuffer = ByteBuffer(bytes: Data("buffer-ad".utf8))
+
+        let ciphertext = try encryptState.encryptWithAD(
+            associatedDataBuffer.readableBytesView,
+            plaintext: plaintextBuffer.readableBytesView
+        )
+        let ciphertextBuffer = ByteBuffer(bytes: ciphertext)
+        let decrypted = try decryptState.decryptWithAD(
+            associatedDataBuffer.readableBytesView,
+            ciphertext: ciphertextBuffer.readableBytesView
+        )
+
+        #expect(decrypted == Data("Hello, ByteBufferView!".utf8))
     }
 
     @Test("CipherState without key passes through plaintext")

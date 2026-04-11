@@ -102,3 +102,23 @@ public func encodeLengthPrefixedFrame(_ message: ByteBuffer, maxMessageSize: Int
     var messageCopy = message
     buffer.writeBuffer(&messageCopy)
 }
+
+/// Encodes a message with a 2-byte big-endian length prefix into a ByteBuffer.
+///
+/// - Parameters:
+///   - message: The message data to encode
+///   - maxMessageSize: Maximum allowed message size
+///   - buffer: Output ByteBuffer (will be mutated)
+/// - Throws: `FramingError.frameTooLarge` if message exceeds maximum
+public func encodeLengthPrefixedFrame<Message: DataProtocol>(
+    _ message: Message,
+    maxMessageSize: Int,
+    into buffer: inout ByteBuffer
+) throws {
+    guard message.count <= maxMessageSize else {
+        throw FramingError.frameTooLarge(size: message.count, max: maxMessageSize)
+    }
+
+    buffer.writeInteger(UInt16(message.count))
+    buffer.writeBytes(message)
+}

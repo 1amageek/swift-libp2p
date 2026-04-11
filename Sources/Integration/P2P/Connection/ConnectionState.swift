@@ -3,6 +3,7 @@
 /// Represents the current state of a connection in its lifecycle.
 
 import Foundation
+import P2PRuntime
 
 /// The state of a connection.
 ///

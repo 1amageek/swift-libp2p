@@ -37,10 +37,13 @@ struct NoiseCipherState: Sendable {
     ///   - ad: Associated data (authenticated but not encrypted)
     ///   - plaintext: Data to encrypt
     /// - Returns: Ciphertext with auth tag appended
-    mutating func encryptWithAD(_ ad: Data, plaintext: Data) throws -> Data {
+    mutating func encryptWithAD<AD: DataProtocol, Plaintext: DataProtocol>(
+        _ ad: AD,
+        plaintext: Plaintext
+    ) throws -> Data {
         guard let key = key else {
             // No key set, return plaintext as-is (per Noise spec)
-            return plaintext
+            return Data(plaintext)
         }
 
         guard nonce < UInt64.max else {
@@ -72,10 +75,13 @@ struct NoiseCipherState: Sendable {
     ///   - ad: Associated data
     ///   - ciphertext: Data to decrypt (ciphertext + auth tag)
     /// - Returns: Decrypted plaintext
-    mutating func decryptWithAD(_ ad: Data, ciphertext: Data) throws -> Data {
+    mutating func decryptWithAD<AD: DataProtocol, Ciphertext: RandomAccessCollection & DataProtocol>(
+        _ ad: AD,
+        ciphertext: Ciphertext
+    ) throws -> Data where Ciphertext.Element == UInt8, Ciphertext.SubSequence: DataProtocol {
         guard let key = key else {
             // No key set, return ciphertext as-is (per Noise spec)
-            return ciphertext
+            return Data(ciphertext)
         }
 
         guard ciphertext.count >= noiseAuthTagSize else {
@@ -89,8 +95,9 @@ struct NoiseCipherState: Sendable {
         let nonceBytes = makeNonce(nonce)
         let chachaNonce = try ChaChaPoly.Nonce(data: nonceBytes)
 
-        let ciphertextOnly = ciphertext.dropLast(noiseAuthTagSize)
-        let tag = ciphertext.suffix(noiseAuthTagSize)
+        let splitIndex = ciphertext.index(ciphertext.endIndex, offsetBy: -noiseAuthTagSize)
+        let ciphertextOnly = ciphertext[..<splitIndex]
+        let tag = ciphertext[splitIndex...]
 
         let sealedBox = try ChaChaPoly.SealedBox(
             nonce: chachaNonce,
@@ -165,7 +172,7 @@ struct NoiseSymmetricState: Sendable {
 
     /// Mixes data into the handshake hash.
     /// h = SHA256(h || data)
-    mutating func mixHash(_ data: Data) {
+    mutating func mixHash<DataBytes: DataProtocol>(_ data: DataBytes) {
         var hasher = SHA256()
         hasher.update(data: handshakeHash)
         hasher.update(data: data)
@@ -201,7 +208,7 @@ struct NoiseSymmetricState: Sendable {
     ///
     /// - Parameter plaintext: Data to encrypt
     /// - Returns: Ciphertext (may be same as plaintext if no key)
-    mutating func encryptAndHash(_ plaintext: Data) throws -> Data {
+    mutating func encryptAndHash<Plaintext: DataProtocol>(_ plaintext: Plaintext) throws -> Data {
         let ciphertext = try cipherState.encryptWithAD(handshakeHash, plaintext: plaintext)
         mixHash(ciphertext)
         return ciphertext
@@ -211,7 +218,9 @@ struct NoiseSymmetricState: Sendable {
     ///
     /// - Parameter ciphertext: Data to decrypt
     /// - Returns: Decrypted plaintext
-    mutating func decryptAndHash(_ ciphertext: Data) throws -> Data {
+    mutating func decryptAndHash<Ciphertext: RandomAccessCollection & DataProtocol>(
+        _ ciphertext: Ciphertext
+    ) throws -> Data where Ciphertext.Element == UInt8, Ciphertext.SubSequence: DataProtocol {
         let plaintext = try cipherState.decryptWithAD(handshakeHash, ciphertext: ciphertext)
         mixHash(ciphertext)
         return plaintext
@@ -379,9 +388,9 @@ private let x25519SmallOrderPoints: Set<Data> = {
 ///
 /// - Parameter publicKey: The raw public key bytes (32 bytes)
 /// - Returns: True if the key is valid (not a small-order point)
-func validateX25519PublicKey(_ publicKey: Data) -> Bool {
+func validateX25519PublicKey<PublicKeyBytes: DataProtocol>(_ publicKey: PublicKeyBytes) -> Bool {
     // Check against known small-order points
-    guard !x25519SmallOrderPoints.contains(publicKey) else {
+    guard !x25519SmallOrderPoints.contains(Data(publicKey)) else {
         return false
     }
     return true

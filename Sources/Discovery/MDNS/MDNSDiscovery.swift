@@ -61,6 +61,7 @@ public actor MDNSDiscovery: DiscoveryService {
     ///
     /// This method is idempotent — calling it when already started is a no-op.
     public func start() async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard !isStarted else { return }
 
         // Create browser configuration
@@ -100,6 +101,7 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Shuts down the mDNS discovery service.
     public func shutdown() async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else { return }
 
         forwardTask?.cancel()
@@ -125,6 +127,7 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Announces our presence with the given addresses.
     public func announce(addresses: [Multiaddr]) async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted, let advertiser = advertiser else {
             throw MDNSDiscoveryError.notStarted
         }
@@ -145,6 +148,7 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Finds candidates for a specific peer.
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         if let service = knownServicesByPeerID[peer] {
             let candidate = try PeerIDServiceCodec.decode(service: service, observer: localPeerID)
             return [candidate]
@@ -160,6 +164,7 @@ public actor MDNSDiscovery: DiscoveryService {
     /// Subscribes to observations about a specific peer.
     /// Pass a peer ID to filter, or use `.any` pattern by subscribing to all.
     nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let targetID = peer.description
         let stream = broadcaster.subscribe()
         return AsyncStream { continuation in
@@ -177,13 +182,15 @@ public actor MDNSDiscovery: DiscoveryService {
 
     /// Returns all known peer IDs.
     public func collectKnownPeers() async -> [PeerID] {
-        Array(knownServicesByPeerID.keys)
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return Array(knownServicesByPeerID.keys)
     }
 
     /// Returns all observations as a stream (for general subscription).
     /// Each call returns an independent stream (multi-consumer safe).
     nonisolated public var observations: AsyncStream<PeerObservation> {
-        broadcaster.subscribe()
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return broadcaster.subscribe()
     }
 
     // MARK: - Private Methods
@@ -318,10 +325,23 @@ public actor MDNSDiscovery: DiscoveryService {
     }
 }
 
-// MARK: - DiscoveryBehaviour
+public func mdns(
+    configuration: MDNSConfiguration = .default,
+    weight: Double = 1.0
+) -> DiscoveryComponent {
+    discovery(weight: weight, { localPeerID in
+        MDNSDiscovery(localPeerID: localPeerID, configuration: configuration)
+    }, startup: { service in
+        do {
+            try await service.start()
+        } catch {
+            // mDNS start failure is non-fatal.
+        }
+    })
+}
 
-extension MDNSDiscovery: DiscoveryBehaviour {
-    public func attach(to context: any NodeContext) async {
+extension MDNSDiscovery {
+    public func activate() async {
         do {
             try await start()
         } catch {
@@ -329,7 +349,6 @@ extension MDNSDiscovery: DiscoveryBehaviour {
         }
     }
 
-    // shutdown(): already defined as async method
 }
 
 // MARK: - Errors

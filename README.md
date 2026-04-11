@@ -79,6 +79,20 @@ let stream = try await node.newStream(to: peer, protocol: "/chat/1.0.0")
 try await stream.write(Data("Hello!".utf8))
 ```
 
+## Current Status
+
+The public surface is now split into two layers:
+
+- `P2P`: batteries-included facade with `Node` and `NodeBuilder`
+- `P2PRuntime`: expert-facing runtime APIs such as `ConnectionProvider` and `RuntimeConfiguration`
+
+Current refactor goals:
+
+- runtime-facing connections are unified behind `ConnectionProvider`
+- service composition is explicit through `ServicePipeline`
+- discovery composition is explicit through `DiscoveryPipeline`
+- payload paths are normalized on `ByteBuffer`
+
 ## Architecture
 
 ### Layer Stack
@@ -88,9 +102,15 @@ try await stream.write(Data("Hello!".utf8))
 │  Application                                                │
 │  (GossipSub, Kademlia, your protocols)                      │
 ├─────────────────────────────────────────────────────────────┤
-│  Node (actor) ── public API, service lifecycle, discovery   │
-│    └─ Swarm (actor) ── connection lifecycle                 │
-│         └─ ConnectionPool (class+Mutex) ── state queries    │
+│  P2P facade                                                 │
+│  Node / NodeBuilder                                         │
+├─────────────────────────────────────────────────────────────┤
+│  P2PRuntime                                                 │
+│  NodeRuntime / Swarm / ConnectionPool / Traversal           │
+│  ServicePipeline / DiscoveryPipeline                        │
+├─────────────────────────────────────────────────────────────┤
+│  Runtime connection contract                                │
+│  ConnectionProvider / ConnectionAcceptor / Candidate        │
 ├─────────────────────────────────────────────────────────────┤
 │  Protocol Negotiation (multistream-select)                  │
 ├─────────────────────────────────────────────────────────────┤
@@ -106,29 +126,22 @@ try await stream.write(Data("Hello!".utf8))
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Node / Swarm Separation
+### Composition Model
 
-Following go-libp2p's Host/Swarm pattern:
+- `NodeBuilder` is the main composition root for the facade layer
+- `NodeRuntime` owns startup ordering, listeners, swarm startup, and discovery auto-connect
+- `ServicePipeline` resolves service components into lifecycle services, inbound handlers, peer observers, discovery sources, and listen-address contributors
+- `DiscoveryPipeline` owns child discovery services and their startup hooks
 
-- **Node** (public actor): API surface, service lifecycle (attach/shutdown), PeerObserver dispatch, discovery integration, traversal coordination
-- **Swarm** (internal actor): dial, accept, upgrade, reconnect, idle cleanup. Emits events via `EventBroadcaster` without awaiting Node (deadlock-free)
-- **ConnectionPool** (class + Mutex): sync state queries (`connectedPeers`, `isConnected`) without actor hop
+### Data Plane
 
-### Service Protocol Hierarchy
+The payload path is designed around `ByteBuffer`.
 
-```
-NodeService              ── attach(to:), shutdown() async
-  ├─ StreamService       ── protocolIDs, handleInboundStream(_:)
-  └─ DiscoveryBehaviour  ── NodeService + DiscoveryService
+- transports, security wrappers, muxers, and stream I/O exchange `ByteBuffer`
+- control-plane codecs may still use `Data`
+- crypto and native adapter boundaries may still require `Data`
 
-PeerObserver             ── peerConnected(_:), peerDisconnected(_:)
-```
-
-Services declare capabilities via protocol conformance. Node detects conformance at startup:
-
-- `StreamService` -> handler registration
-- `PeerObserver` -> peer lifecycle dispatch
-- `DiscoveryBehaviour` -> auto-connect integration
+This keeps hot-path payload movement on `ByteBuffer` while isolating unavoidable `Data` conversions to protocol and crypto boundaries.
 
 ### Connection Flow
 
@@ -141,9 +154,9 @@ connect(to: Multiaddr)
   │    ├─ 3. Hole Punch (AutoNAT + DCUtR)
   │    └─ 4. Relay (Circuit Relay v2)
   │
-  ├─ Transport.dial() -> RawConnection
-  ├─ multistream-select -> SecurityUpgrader.secure()
-  ├─ multistream-select -> Muxer.multiplex()
+  ├─ ConnectionProvider.dial()
+  │    ├─ transport -> security -> mux pipeline
+  │    └─ or native secured provider (QUIC/WebRTC/WebTransport)
   │
   ├─ ConnectionPool.add()
   ├─ Swarm emits .peerConnected (fire-and-forget)
@@ -160,6 +173,7 @@ connect(to: Multiaddr)
 | `P2PCore` | PeerID, Multiaddr, KeyPair, EventBroadcaster, Varint, Multihash |
 | `P2PNegotiation` | multistream-select v1 (+ 0-RTT lazy) |
 | `P2PNAT` | NAT device detection, UPnP + NAT-PMP port mapping |
+| `P2PRuntime` | runtime contracts such as `ConnectionProvider` and `RuntimeConfiguration` |
 
 ### Transport
 
@@ -177,7 +191,7 @@ connect(to: Multiaddr)
 
 | Module | Description |
 |--------|-------------|
-| `P2PSecurity` | SecurityUpgrader protocol |
+| `P2PSecurity` | `SecurityUpgrader`, `SecureChannel` |
 | `P2PSecurityNoise` | Noise XX (X25519 + ChaChaPoly + SHA256) |
 | `P2PSecurityTLS` | TLS 1.3 with libp2p certificate extension |
 | `P2PPnet` | Private Network (PSK + XSalsa20, go-libp2p compatible) |
@@ -188,7 +202,7 @@ connect(to: Multiaddr)
 
 | Module | Description |
 |--------|-------------|
-| `P2PMux` | Muxer / MuxedConnection / MuxedStream protocols |
+| `P2PMux` | Muxer / `StreamSession` / `StreamChannel` protocols |
 | `P2PMuxYamux` | Yamux (256KB window, flow control, keep-alive) |
 | `P2PMuxMplex` | Mplex |
 
@@ -196,7 +210,7 @@ connect(to: Multiaddr)
 
 | Module | Description |
 |--------|-------------|
-| `P2PDiscovery` | DiscoveryService / AddressBook / PeerStore protocols |
+| `P2PDiscovery` | discovery services, address books, peer stores, `DiscoveryPipeline` |
 | `P2PDiscoverySWIM` | SWIM membership (swift-SWIM integration) |
 | `P2PDiscoveryMDNS` | mDNS local network discovery |
 | `P2PDiscoveryCYCLON` | CYCLON random peer sampling |
@@ -208,7 +222,7 @@ connect(to: Multiaddr)
 
 | Module | Description |
 |--------|-------------|
-| `P2PProtocols` | NodeService / StreamService / PeerObserver / NodeContext |
+| `P2PProtocols` | capability protocols, service roles, `ServicePipeline` |
 | `P2PIdentify` | Peer information exchange (+ Push) |
 | `P2PPing` | Connection liveness check |
 | `P2PGossipSub` | Pub/Sub messaging (v1.1 scoring + v1.2 IDONTWANT) |
@@ -224,7 +238,29 @@ connect(to: Multiaddr)
 
 | Module | Description |
 |--------|-------------|
-| `P2P` | Node, Swarm, ConnectionPool, Traversal, Resource Manager |
+| `P2PRuntime` | expert-facing runtime layer |
+| `P2P` | facade layer with `Node` and `NodeBuilder` |
+
+## Benchmark Snapshot
+
+Current debug benchmark snapshot from the in-tree benchmark harness:
+
+### Noise Crypto
+
+- encrypt 32B: `2972.96 ns/op`
+- encrypt 256B: `3177.86 ns/op`
+- decrypt 256B: `3464.88 ns/op`
+- roundtrip 1KB: `8256.35 ns/op`
+
+### Data Path
+
+- `Memory + Plaintext + Yamux connect`: `111135 ns/op`
+- `Memory + Noise + Yamux connect`: `700170 ns/op`
+- `Memory + TLS + Yamux connect`: `2024909 ns/op`
+- `Memory + Plaintext + Yamux roundtrip 1KB`: `73.16 MiB/s`
+- `Memory + Noise + Yamux roundtrip 1KB`: `9.65 MiB/s`
+- `Memory + TLS + Yamux roundtrip 1KB`: `8.47 MiB/s`
+- `Memory + Noise + Yamux roundtrip 32KB`: `112.16 MiB/s`
 
 ## Configuration
 
@@ -241,41 +277,45 @@ let node = Node(configuration: NodeConfiguration(
         limits: .init(maxConnections: 100, maxConnectionsPerPeer: 2),
         reconnectionPolicy: .default,
         idleTimeout: .seconds(300)
-    ),
-    services: [myGossipSub, myKademlia]
+    )
 ))
 ```
 
 ### Services
 
-Services are registered via the `services` array and managed by Node:
+Services are composed explicitly via `ServicePipeline` or `NodeBuilder`:
 
 ```swift
-let gossipsub = GossipSubService(configuration: .init())
-let kademlia = KademliaService(configuration: .init())
-
-let node = Node(configuration: NodeConfiguration(
-    // ...
-    services: [gossipsub, kademlia]
-))
+let node = NodeBuilder(
+    keyPair: .generateEd25519(),
+    listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
+    transports: [TCPTransport()],
+    security: [NoiseUpgrader()],
+    muxers: [YamuxMuxer()]
+) {
+    ServiceRegistration(GossipSubService(configuration: .init())).component()
+    ServiceRegistration(KademliaService(configuration: .init())).component()
+}.build()
 
 try await node.start()
-// Node calls attach(to:) on each service
-// StreamService handlers are auto-registered
-// PeerObserver services receive peerConnected/peerDisconnected
 ```
 
 ### Discovery with Auto-Connect
 
 ```swift
-let swim = SWIMMembership(configuration: .init())
-let mdns = MDNSDiscovery(configuration: .init())
-
-let node = Node(configuration: NodeConfiguration(
-    // ...
-    discoveryConfig: .autoConnectEnabled,
-    services: [swim, mdns]  // DiscoveryBehaviour detected automatically
-))
+let node = NodeBuilder(
+    keyPair: .generateEd25519(),
+    listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
+    transports: [TCPTransport()],
+    security: [NoiseUpgrader()],
+    muxers: [YamuxMuxer()],
+    discoveryConfig: .autoConnectEnabled
+) {
+    ServiceRegistration(IdentifyService()).component()
+} discovery: {
+    mdns()
+    swim()
+}.build()
 ```
 
 ## Events

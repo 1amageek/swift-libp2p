@@ -13,7 +13,7 @@ struct TraversalInteropSmokeTests {
             localPeer: peer,
             targetPeer: peer,
             knownAddresses: [],
-            transports: [],
+            dialCapability: EmptyTraversalDialCapability(),
             connectedPeers: [],
             opener: nil,
             getLocalAddresses: { [] },

@@ -60,7 +60,7 @@ struct NoiseInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Verify handshake completed
@@ -100,7 +100,7 @@ struct NoiseInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Verify the remote peer ID matches the expected peer ID
@@ -146,7 +146,7 @@ struct NoiseInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Step 3: Negotiate mux protocol
@@ -222,7 +222,7 @@ struct NoiseInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Step 3: Negotiate mux protocol

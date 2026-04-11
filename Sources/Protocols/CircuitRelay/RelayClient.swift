@@ -771,7 +771,7 @@ public final class RelayClient: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension RelayClient: StreamService {
+extension RelayClient: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleStop(context: context)
     }

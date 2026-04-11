@@ -68,7 +68,7 @@ struct MplexFrameTests {
         #expect(bytesConsumed == encoded.count)
         #expect(decoded.streamID == 1)
         #expect(decoded.flag == .newStream)
-        #expect(String(data: decoded.data, encoding: .utf8) == "test")
+        #expect(String(buffer: decoded.data) == "test")
     }
 
     @Test("Encode and decode Message frame (initiator)")
@@ -84,7 +84,7 @@ struct MplexFrameTests {
         #expect(decoded == frame)
         #expect(decoded.streamID == 5)
         #expect(decoded.flag == .messageInitiator)
-        #expect(decoded.data == data)
+        #expect(Data(buffer: decoded.data) == data)
     }
 
     @Test("Encode and decode Message frame (receiver)")
@@ -111,8 +111,8 @@ struct MplexFrameTests {
 
         #expect(decodedInit.flag == .closeInitiator)
         #expect(decodedRecv.flag == .closeReceiver)
-        #expect(decodedInit.data.isEmpty)
-        #expect(decodedRecv.data.isEmpty)
+        #expect(decodedInit.data.readableBytes == 0)
+        #expect(decodedRecv.data.readableBytes == 0)
     }
 
     @Test("Encode and decode Reset frame")
@@ -195,7 +195,7 @@ struct MplexFrameTests {
         let encoded = frame.encode()
 
         let (decoded, _) = try MplexFrame.decode(from: encoded)!
-        #expect(decoded.data.isEmpty)
+        #expect(decoded.data.readableBytes == 0)
     }
 
     @Test("Invalid flag throws error")

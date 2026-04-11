@@ -36,6 +36,12 @@ public struct TLSUpgraderConfiguration: Sendable {
 /// - PeerID extraction from the certificate's libp2p extension
 public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendable {
 
+    private static func makeByteBuffer<Bytes: DataProtocol>(from bytes: Bytes) -> ByteBuffer {
+        var buffer = ByteBuffer()
+        buffer.writeBytes(bytes)
+        return buffer
+    }
+
     public var protocolID: String { tlsProtocolID }
 
     private let configuration: TLSUpgraderConfiguration
@@ -151,10 +157,10 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
 
         let initialData = try await tlsConn.startHandshake(isClient: isClient)
         if !initialData.isEmpty {
-            try await connection.write(ByteBuffer(bytes: initialData))
+            try await connection.write(Self.makeByteBuffer(from: initialData))
         }
 
-        var earlyApplicationData = Data()
+        var earlyApplicationData = ByteBuffer()
 
         while !tlsConn.isConnected {
             let received = try await connection.read()
@@ -162,22 +168,21 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
                 throw TLSError.connectionClosed
             }
 
-            let receivedData = Data(buffer: received)
-            let output = try await tlsConn.processReceivedData(receivedData)
+            let output = try await tlsConn.processReceivedData(received.readableBytesView)
 
             if output.alert != nil {
                 throw TLSError.handshakeFailed(reason: "TLS alert received")
             }
 
             if !output.dataToSend.isEmpty {
-                try await connection.write(ByteBuffer(bytes: output.dataToSend))
+                try await connection.write(Self.makeByteBuffer(from: output.dataToSend))
             }
 
             // Capture any application data that arrived alongside handshake messages.
             // This happens when the final handshake record and early application data
             // are delivered in the same TCP segment.
             if !output.applicationData.isEmpty {
-                earlyApplicationData.append(output.applicationData)
+                earlyApplicationData.writeBytes(output.applicationData)
             }
         }
 

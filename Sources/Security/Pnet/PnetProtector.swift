@@ -208,7 +208,9 @@ public final class PnetProtector: Sendable {
         }
 
         // Step 2: Send our nonce
-        try await connection.write(ByteBuffer(bytes: localNonce))
+        var localNonceBuffer = ByteBuffer()
+        localNonceBuffer.writeBytes(localNonce)
+        try await connection.write(localNonceBuffer)
 
         // Step 3: Read remote nonce
         let remoteBuffer = try await connection.read()

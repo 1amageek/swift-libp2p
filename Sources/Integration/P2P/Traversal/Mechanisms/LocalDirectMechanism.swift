@@ -1,5 +1,4 @@
 import P2PCore
-import P2PTransport
 
 /// Non-IP local direct dialing mechanism.
 public struct LocalDirectMechanism: TraversalMechanism, Sendable {
@@ -13,7 +12,7 @@ public struct LocalDirectMechanism: TraversalMechanism, Sendable {
 
     public func collectCandidates(context: TraversalContext) async -> [TraversalCandidate] {
         context.knownAddresses.compactMap { address in
-            guard isDialable(address, in: context.transports, pathKind: .local) else {
+            guard context.dialCapability.canDial(address, via: .local) else {
                 return nil
             }
             return TraversalCandidate(
@@ -39,15 +38,5 @@ public struct LocalDirectMechanism: TraversalMechanism, Sendable {
             selectedAddress: address,
             mechanismID: id
         )
-    }
-
-    private func isDialable(
-        _ address: Multiaddr,
-        in transports: [any Transport],
-        pathKind: TransportPathKind
-    ) -> Bool {
-        transports.contains { transport in
-            transport.pathKind == pathKind && transport.canDial(address)
-        }
     }
 }

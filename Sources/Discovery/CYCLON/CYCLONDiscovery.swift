@@ -54,6 +54,7 @@ public actor CYCLONDiscovery: DiscoveryService {
     ///
     /// - Parameter opener: Stream opener for communicating with peers
     public func start(using opener: any StreamOpener) async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard !isStarted else { return }
         self.streamOpener = opener
         self.isStarted = true
@@ -68,6 +69,7 @@ public actor CYCLONDiscovery: DiscoveryService {
 
     /// Shuts down the shuffle loop and cleans up.
     public func shutdown() async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else { return }
         shuffleTask?.cancel()
         shuffleTask = nil
@@ -80,6 +82,7 @@ public actor CYCLONDiscovery: DiscoveryService {
 
     /// Seeds the partial view with initial peers.
     public func seed(peers: [(PeerID, [Multiaddr])]) {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         for (peerID, addresses) in peers {
             guard peerID != localPeerID else { continue }
             partialView.add(CYCLONEntry(peerID: peerID, addresses: addresses, age: 0))
@@ -90,10 +93,12 @@ public actor CYCLONDiscovery: DiscoveryService {
     // MARK: - DiscoveryService
 
     public func announce(addresses: [Multiaddr]) async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         self.localAddresses = addresses
     }
 
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard let entry = partialView.entry(for: peer) else {
             return []
         }
@@ -102,6 +107,7 @@ public actor CYCLONDiscovery: DiscoveryService {
     }
 
     public nonisolated func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let stream = broadcaster.subscribe()
         return AsyncStream { continuation in
             let task = Task {
@@ -119,11 +125,13 @@ public actor CYCLONDiscovery: DiscoveryService {
     }
 
     public func collectKnownPeers() async -> [PeerID] {
-        partialView.allPeerIDs()
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return partialView.allPeerIDs()
     }
 
     public nonisolated var observations: AsyncStream<PeerObservation> {
-        broadcaster.subscribe()
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return broadcaster.subscribe()
     }
 
     // MARK: - Shuffle Loop
@@ -294,9 +302,19 @@ public actor CYCLONDiscovery: DiscoveryService {
     }
 }
 
-// MARK: - DiscoveryBehaviour
+public func cyclon(
+    configuration: CYCLONConfiguration = .default,
+    weight: Double = 1.0
+) -> DiscoveryComponent {
+    discovery(weight: weight, { localPeerID in
+        CYCLONDiscovery(localPeerID: localPeerID, configuration: configuration)
+    }, configure: { component in
+        component.handlesInboundStreams()
+        component.activatesWithStreamOpening()
+    })
+}
 
-extension CYCLONDiscovery: DiscoveryBehaviour, StreamService {
+extension CYCLONDiscovery: StreamService, StreamOpeningActivatable {
     public nonisolated var protocolIDs: [String] {
         [cyclonProtocolID]
     }
@@ -305,8 +323,8 @@ extension CYCLONDiscovery: DiscoveryBehaviour, StreamService {
         await handleIncomingStream(context: context)
     }
 
-    public func attach(to context: any NodeContext) async {
-        await start(using: context)
+    public func activate(using opener: any StreamOpener) async {
+        await start(using: opener)
     }
 
     // shutdown(): already defined as async method

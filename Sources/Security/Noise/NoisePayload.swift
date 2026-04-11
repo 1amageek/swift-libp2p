@@ -137,6 +137,19 @@ func readNoiseMessage(from data: Data) throws -> (message: Data, bytesConsumed: 
     }
 }
 
+/// Reads a length-prefixed Noise message from a ByteBuffer.
+///
+/// - Parameter buffer: Buffer containing messages. Advances the reader index on success.
+/// - Returns: The message slice, or nil if incomplete
+/// - Throws: `NoiseError.frameTooLarge` if the frame exceeds max size
+func readNoiseMessage(from buffer: inout ByteBuffer) throws -> ByteBuffer? {
+    do {
+        return try readLengthPrefixedFrame(from: &buffer, maxMessageSize: noiseMaxMessageSize)
+    } catch is FramingError {
+        throw NoiseError.frameTooLarge(size: 0, max: noiseMaxMessageSize)
+    }
+}
+
 /// Encodes a Noise message with length prefix.
 ///
 /// - Parameter message: The message to encode
@@ -144,6 +157,32 @@ func readNoiseMessage(from data: Data) throws -> (message: Data, bytesConsumed: 
 func encodeNoiseMessage(_ message: Data) throws -> Data {
     do {
         return try encodeLengthPrefixedFrame(message, maxMessageSize: noiseMaxMessageSize)
+    } catch is FramingError {
+        throw NoiseError.frameTooLarge(size: message.count, max: noiseMaxMessageSize)
+    }
+}
+
+/// Encodes a Noise message with length prefix into a ByteBuffer.
+///
+/// - Parameters:
+///   - message: The message to encode
+///   - buffer: Destination buffer
+func encodeNoiseMessage(_ message: ByteBuffer, into buffer: inout ByteBuffer) throws {
+    do {
+        try encodeLengthPrefixedFrame(message, maxMessageSize: noiseMaxMessageSize, into: &buffer)
+    } catch is FramingError {
+        throw NoiseError.frameTooLarge(size: message.readableBytes, max: noiseMaxMessageSize)
+    }
+}
+
+/// Encodes a Noise message with length prefix into a ByteBuffer.
+///
+/// - Parameters:
+///   - message: The message to encode
+///   - buffer: Destination buffer
+func encodeNoiseMessage<Message: DataProtocol>(_ message: Message, into buffer: inout ByteBuffer) throws {
+    do {
+        try encodeLengthPrefixedFrame(message, maxMessageSize: noiseMaxMessageSize, into: &buffer)
     } catch is FramingError {
         throw NoiseError.frameTooLarge(size: message.count, max: noiseMaxMessageSize)
     }

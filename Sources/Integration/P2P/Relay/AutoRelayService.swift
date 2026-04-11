@@ -52,7 +52,7 @@ public final class AutoRelayService: EventEmitting, Sendable {
     private let serviceState: Mutex<ServiceState>
 
     private struct ServiceState: Sendable {
-        var nodeContext: (any NodeContext)?
+        var opener: (any StreamOpener)?
         var candidateFailures: [PeerID: CandidateFailureInfo] = [:]
         var connectedPeers: Set<PeerID> = []
         var isShutDown: Bool = false
@@ -93,7 +93,8 @@ public final class AutoRelayService: EventEmitting, Sendable {
         autoNAT: AutoNATService,
         relayClient: RelayClient,
         localPeer: PeerID,
-        configuration: AutoRelayServiceConfiguration = .init()
+        configuration: AutoRelayServiceConfiguration = .init(),
+        streamOpener: (any StreamOpener)? = nil
     ) {
         self.autoNAT = autoNAT
         self.relayClient = relayClient
@@ -105,7 +106,7 @@ public final class AutoRelayService: EventEmitting, Sendable {
                 refreshInterval: configuration.monitorInterval
             )
         )
-        self.serviceState = Mutex(ServiceState())
+        self.serviceState = Mutex(ServiceState(opener: streamOpener))
         self.monitorTask = Mutex(nil)
         self.triggerTask = Mutex(nil)
         self.relayAddressCallback = Mutex(nil)
@@ -121,10 +122,16 @@ public final class AutoRelayService: EventEmitting, Sendable {
     /// Sets the callback invoked when relay addresses change.
     ///
     /// The Node uses this to include relay addresses in `listenAddresses()`.
-    public func setRelayAddressCallback(
+    public func setListenAddressCallback(
         _ callback: @escaping @Sendable ([Multiaddr]) async -> Void
     ) {
         relayAddressCallback.withLock { $0 = callback }
+    }
+
+    public func setRelayAddressCallback(
+        _ callback: @escaping @Sendable ([Multiaddr]) async -> Void
+    ) {
+        setListenAddressCallback(callback)
     }
 
     // MARK: - Monitoring
@@ -226,15 +233,15 @@ public final class AutoRelayService: EventEmitting, Sendable {
 
         // 6. Run reservation cycle if needed
         guard autoRelay.needsMoreRelays else { return }
-        guard serviceState.withLock({ $0.nodeContext }) != nil else { return }
+        guard serviceState.withLock({ $0.opener }) != nil else { return }
 
         await autoRelay.performReservationCycle { [relayClient, weak self] peer, _ in
             guard let self else { throw AutoRelayServiceError.serviceShutDown }
-            guard let context = self.serviceState.withLock({ $0.nodeContext }) else {
+            guard let opener = self.serviceState.withLock({ $0.opener }) else {
                 throw AutoRelayServiceError.serviceShutDown
             }
             do {
-                let reservation = try await relayClient.reserve(on: peer, using: context)
+                let reservation = try await relayClient.reserve(on: peer, using: opener)
                 self.emit(.relayReserved(relay: peer, addresses: reservation.addresses))
                 return reservation.addresses
             } catch {
@@ -368,14 +375,20 @@ public final class AutoRelayService: EventEmitting, Sendable {
     }
 }
 
-// MARK: - NodeService
+// MARK: - LifecycleService
 
-extension AutoRelayService: NodeService {
-    public func attach(to context: any NodeContext) async {
-        serviceState.withLock { $0.nodeContext = context }
+extension AutoRelayService: LifecycleService, ActivatableService, StreamOpeningActivatable {
+    public func activate(using opener: any StreamOpener) async {
+        serviceState.withLock { $0.opener = opener }
+        await activate()
+    }
+
+    public func activate() async {
         startMonitoring()
     }
 }
+
+extension AutoRelayService: ListenAddressContributor {}
 
 // MARK: - PeerObserver
 
@@ -394,5 +407,33 @@ extension AutoRelayService: PeerObserver {
             await notifyRelayAddressChange()
             triggerImmediateReservationCycle()
         }
+    }
+}
+
+public func autoRelayComponent(_ autoRelayService: AutoRelayService) -> ServiceComponent {
+    service(autoRelayService) { component in
+        component.contributesListenAddresses()
+        component.observesPeers()
+        component.activatesWithStreamOpening()
+    }
+}
+
+public func autoRelayComponent(
+    autoNAT: AutoNATService,
+    relayClient: RelayClient,
+    configuration: AutoRelayServiceConfiguration = .init()
+) -> ServiceComponent {
+    service(make: { context in
+        AutoRelayService(
+            autoNAT: autoNAT,
+            relayClient: relayClient,
+            localPeer: context.localIdentity.localPeer,
+            configuration: configuration,
+            streamOpener: context.streamOpener
+        )
+    }) { component in
+        component.contributesListenAddresses()
+        component.observesPeers()
+        component.activatesOnStart()
     }
 }

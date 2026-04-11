@@ -32,28 +32,15 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         as role: SecurityRole,
         expectedPeer: PeerID?
     ) async throws -> any SecuredConnection {
-        try await secure(connection, localKeyPair: localKeyPair, as: role, expectedPeer: expectedPeer, initialBuffer: Data())
+        try await secure(connection, localKeyPair: localKeyPair, as: role, expectedPeer: expectedPeer, initialBuffer: ByteBuffer())
     }
 
-    /// Upgrades a raw connection to a secured connection using Noise protocol with initial buffer.
-    ///
-    /// Use this method when you have remainder data from multistream-select negotiation.
-    /// This prevents data loss when go-libp2p sends protocol confirmation and Noise message
-    /// in the same packet.
-    ///
-    /// - Parameters:
-    ///   - connection: The raw connection to upgrade
-    ///   - localKeyPair: The local key pair for authentication
-    ///   - role: Whether we initiated or are responding
-    ///   - expectedPeer: The expected remote peer ID (optional)
-    ///   - initialBuffer: Initial data buffer (e.g., remainder from multistream-select negotiation)
-    /// - Returns: A secured connection
     public func secure(
         _ connection: any RawConnection,
         localKeyPair: KeyPair,
         as role: SecurityRole,
         expectedPeer: PeerID?,
-        initialBuffer: Data
+        initialBuffer: ByteBuffer
     ) async throws -> any SecuredConnection {
         let isInitiator = role == .initiator
         var handshake = NoiseHandshake(localKeyPair: localKeyPair, isInitiator: isInitiator)
@@ -96,12 +83,13 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         handshake: inout NoiseHandshake,
         connection: any RawConnection,
         expectedPeer: PeerID?,
-        readBuffer: inout Data
+        readBuffer: inout ByteBuffer
     ) async throws -> PeerID {
         // Send Message A: -> e
         let messageA = try handshake.writeMessageA()
-        let framedA = try encodeNoiseMessage(messageA)
-        try await connection.write(ByteBuffer(bytes: framedA))
+        var framedA = ByteBuffer()
+        try encodeNoiseMessage(messageA, into: &framedA)
+        try await connection.write(framedA)
 
         // Read Message B: <- e, ee, s, es
         let messageB = try await readNoiseFrame(from: connection, buffer: &readBuffer)
@@ -121,8 +109,9 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
 
         // Send Message C: -> s, se
         let messageC = try handshake.writeMessageC()
-        let framedC = try encodeNoiseMessage(messageC)
-        try await connection.write(ByteBuffer(bytes: framedC))
+        var framedC = ByteBuffer()
+        try encodeNoiseMessage(messageC, into: &framedC)
+        try await connection.write(framedC)
 
         return remotePeer
     }
@@ -133,7 +122,7 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
         handshake: inout NoiseHandshake,
         connection: any RawConnection,
         expectedPeer: PeerID?,
-        readBuffer: inout Data
+        readBuffer: inout ByteBuffer
     ) async throws -> PeerID {
         // Read Message A: -> e
         let messageA = try await readNoiseFrame(from: connection, buffer: &readBuffer)
@@ -141,8 +130,9 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
 
         // Send Message B: <- e, ee, s, es
         let messageB = try handshake.writeMessageB()
-        let framedB = try encodeNoiseMessage(messageB)
-        try await connection.write(ByteBuffer(bytes: framedB))
+        var framedB = ByteBuffer()
+        try encodeNoiseMessage(messageB, into: &framedB)
+        try await connection.write(framedB)
 
         // Read Message C: -> s, se
         let messageC = try await readNoiseFrame(from: connection, buffer: &readBuffer)
@@ -168,12 +158,11 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
     /// Reads a complete Noise frame from the connection with buffering.
     private func readNoiseFrame(
         from connection: any RawConnection,
-        buffer: inout Data
-    ) async throws -> Data {
+        buffer: inout ByteBuffer
+    ) async throws -> ByteBuffer {
         while true {
             // Try to decode a complete frame
-            if let (message, consumed) = try readNoiseMessage(from: buffer) {
-                buffer = Data(buffer.dropFirst(consumed))
+            if let message = try readNoiseMessage(from: &buffer) {
                 return message
             }
 
@@ -182,7 +171,8 @@ public final class NoiseUpgrader: SecurityUpgrader, Sendable {
             if chunk.readableBytes == 0 {
                 throw NoiseError.connectionClosed
             }
-            buffer.append(Data(buffer: chunk))
+            var mutableChunk = chunk
+            buffer.writeBuffer(&mutableChunk)
         }
     }
 }

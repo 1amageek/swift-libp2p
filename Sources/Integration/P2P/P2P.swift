@@ -14,6 +14,7 @@ import Synchronization
 @_exported import P2PNegotiation
 @_exported import P2PDiscovery
 @_exported import P2PProtocols
+@_exported import P2PRuntime
 // Default implementations (batteries-included)
 @_exported import P2PTransportTCP
 @_exported import P2PSecurityNoise
@@ -89,24 +90,20 @@ public struct DiscoveryConfiguration: Sendable {
 
 /// Configuration for a P2P node.
 public struct NodeConfiguration: Sendable {
+    /// Runtime-facing connection and listener configuration.
+    public let runtime: RuntimeConfiguration
 
     /// The key pair for this node.
-    public let keyPair: KeyPair
+    public var keyPair: KeyPair { runtime.keyPair }
 
     /// Addresses to listen on.
-    public let listenAddresses: [Multiaddr]
+    public var listenAddresses: [Multiaddr] { runtime.listenAddresses }
 
-    /// Transports to use (in priority order for dialing).
-    public let transports: [any Transport]
-
-    /// Security upgraders (in priority order for negotiation).
-    public let security: [any SecurityUpgrader]
-
-    /// Muxers (in priority order for negotiation).
-    public let muxers: [any Muxer]
+    /// Precomposed connection providers used directly by the runtime.
+    public var connectionProviders: [any ConnectionProvider] { runtime.connectionProviders }
 
     /// Connection pool configuration.
-    public let pool: PoolConfiguration
+    public var pool: PoolConfiguration { runtime.pool }
 
     /// Health check configuration (nil to disable).
     public let healthCheck: HealthMonitorConfiguration?
@@ -137,14 +134,46 @@ public struct NodeConfiguration: Sendable {
 
     /// Maximum concurrent inbound stream negotiations per connection (C2).
     /// Default: 128 (rust-libp2p default).
-    public let maxNegotiatingInboundStreams: Int
+    public var maxNegotiatingInboundStreams: Int { runtime.maxNegotiatingInboundStreams }
 
-    /// Services registered with this node (unified service lifecycle).
-    public let services: [any NodeService]
+    /// Explicitly registered services.
+    public let services: ServicePipeline
+
+    /// Optional discovery pipeline.
+    public let discovery: DiscoveryPipeline?
+
+    public init(
+        runtime: RuntimeConfiguration = .init(),
+        healthCheck: HealthMonitorConfiguration? = .default,
+        discoveryConfig: DiscoveryConfiguration = .default,
+        peerStore: (any PeerStore)? = nil,
+        addressBookConfig: AddressBookConfiguration? = nil,
+        bootstrap: BootstrapConfiguration? = nil,
+        protoBook: (any ProtoBook)? = nil,
+        keyBook: (any KeyBook)? = nil,
+        resourceManager: (any ResourceManager)? = nil,
+        traversal: TraversalConfiguration? = nil,
+        services: ServicePipeline = .empty,
+        discovery: DiscoveryPipeline? = nil
+    ) {
+        self.runtime = runtime
+        self.healthCheck = healthCheck
+        self.discoveryConfig = discoveryConfig
+        self.peerStore = peerStore
+        self.addressBookConfig = addressBookConfig
+        self.bootstrap = bootstrap
+        self.protoBook = protoBook
+        self.keyBook = keyBook
+        self.resourceManager = resourceManager
+        self.traversal = traversal
+        self.services = services
+        self.discovery = discovery
+    }
 
     public init(
         keyPair: KeyPair = .generateEd25519(),
         listenAddresses: [Multiaddr] = [],
+        connectionProviders: [any ConnectionProvider] = [],
         transports: [any Transport] = [],
         security: [any SecurityUpgrader] = [],
         muxers: [any Muxer] = [],
@@ -159,14 +188,22 @@ public struct NodeConfiguration: Sendable {
         resourceManager: (any ResourceManager)? = nil,
         traversal: TraversalConfiguration? = nil,
         maxNegotiatingInboundStreams: Int = 128,
-        services: [any NodeService] = []
+        services: ServicePipeline = .empty,
+        discovery: DiscoveryPipeline? = nil
     ) {
-        self.keyPair = keyPair
-        self.listenAddresses = listenAddresses
-        self.transports = transports
-        self.security = security
-        self.muxers = muxers
-        self.pool = pool
+        self.runtime = RuntimeConfiguration(
+            keyPair: keyPair,
+            listenAddresses: listenAddresses,
+            connectionProviders: connectionProviders.isEmpty
+                ? ConnectionProviders.compose(
+                    transports: transports,
+                    security: security,
+                    muxers: muxers
+                )
+                : connectionProviders,
+            pool: pool,
+            maxNegotiatingInboundStreams: maxNegotiatingInboundStreams
+        )
         self.healthCheck = healthCheck
         self.discoveryConfig = discoveryConfig
         self.peerStore = peerStore
@@ -176,8 +213,8 @@ public struct NodeConfiguration: Sendable {
         self.keyBook = keyBook
         self.resourceManager = resourceManager
         self.traversal = traversal
-        self.maxNegotiatingInboundStreams = maxNegotiatingInboundStreams
         self.services = services
+        self.discovery = discovery
     }
 }
 
@@ -234,7 +271,13 @@ public enum NodeEvent: Sendable {
 /// - Service lifecycle (register, attach, shutdown)
 /// - Discovery integration
 /// - Delegates connection lifecycle to Swarm
-public actor Node: NodeContext {
+public actor Node:
+    NodeIdentityContext,
+    ListenAddressContext,
+    SupportedProtocolsContext,
+    PeerStoreContext,
+    StreamOpener
+{
 
     /// The configuration for this node.
     public let configuration: NodeConfiguration
@@ -244,44 +287,41 @@ public actor Node: NodeContext {
         configuration.keyPair.peerID
     }
 
-    // MARK: - NodeContext conformance
+    // MARK: - Role Context Conformance
 
-    /// The local peer ID (NodeContext).
+    /// The local peer ID.
     public nonisolated var localPeer: PeerID {
         configuration.keyPair.peerID
     }
 
-    /// The local key pair (NodeContext).
+    /// The local key pair.
     public nonisolated var localKeyPair: KeyPair {
         configuration.keyPair
     }
 
-    /// Returns the current listen addresses (NodeContext).
+    /// Returns the current listen addresses.
     ///
     /// Includes both direct listen addresses from Swarm and relay
     /// addresses populated by `AutoRelayService`.
-    public func listenAddresses() -> [Multiaddr] {
-        swarm.listenAddresses.current + _relayAddresses.current
+    public func listenAddresses() async -> [Multiaddr] {
+        await runtime.listenAddresses()
     }
 
-    /// Returns the list of supported protocol IDs (NodeContext).
-    public func supportedProtocols() -> [String] {
-        Array(localHandlers.keys)
+    /// Returns the list of supported protocol IDs.
+    public func supportedProtocols() async -> [String] {
+        await runtime.supportedProtocols()
     }
 
     // MARK: - Internal components
 
-    /// The swarm manages all connection lifecycle.
-    private let swarm: Swarm
-
-    private var healthMonitor: HealthMonitor?
+    /// The runtime manages lifecycle and connection orchestration.
+    private let runtime: NodeRuntime
 
     // Discovery components
     private let _peerStore: any PeerStore
     private let _addressBook: any AddressBook
     private let _protoBook: any ProtoBook
     private let _keyBook: any KeyBook
-    private var _bootstrap: (any BootstrapService)?
 
     /// The peer store for this node.
     public var peerStore: any PeerStore { _peerStore }
@@ -295,53 +335,21 @@ public actor Node: NodeContext {
     /// The key book for this node.
     public var keyBook: any KeyBook { _keyBook }
 
-    // Protocol handlers (local copy for supportedProtocols query)
-    private var localHandlers: [String: ProtocolHandler] = [:]
-
     // Lifecycle state machine: idle → running → stopped
     private enum NodeLifecycleState {
         case idle      // Created, not yet started. handle/handleStream allowed.
+        case starting  // Start sequence in progress.
         case running   // Started. All operations allowed.
         case stopped   // Shut down. Read-only queries only.
     }
     private var lifecycleState: NodeLifecycleState = .idle
 
-    // Background tasks
-    private var discoveryTasks: [Task<Void, Never>] = []
-    private var eventForwardingTask: Task<Void, Never>?
-
-    // Active services (populated during start())
-    private var activeServices: [any NodeService] = []
-    private var activePeerObservers: [any PeerObserver] = []
-
-    // Relay addresses (populated by AutoRelayService via callback)
-    private let _relayAddresses: ListenAddressStore = ListenAddressStore()
-
-    // Traversal orchestration
-    private var traversalCoordinator: TraversalCoordinator?
-
-    // Events
-    private nonisolated let channel = EventChannel<NodeEvent>()
-
     /// Event stream for monitoring node state changes.
-    public nonisolated var events: AsyncStream<NodeEvent> { channel.stream }
+    public nonisolated var events: AsyncStream<NodeEvent> { runtime.events }
 
     /// Creates a new node with the given configuration.
     public init(configuration: NodeConfiguration) {
         self.configuration = configuration
-
-        // Create Swarm with extracted configuration
-        let swarmConfig = SwarmConfiguration(
-            keyPair: configuration.keyPair,
-            listenAddresses: configuration.listenAddresses,
-            transports: configuration.transports,
-            security: configuration.security,
-            muxers: configuration.muxers,
-            pool: configuration.pool,
-            resourceManager: configuration.resourceManager,
-            maxNegotiatingInboundStreams: configuration.maxNegotiatingInboundStreams
-        )
-        self.swarm = Swarm(configuration: swarmConfig)
 
         // Initialize peer store and address book
         let peerStore = configuration.peerStore ?? MemoryPeerStore()
@@ -352,8 +360,13 @@ public actor Node: NodeContext {
         )
         self._protoBook = configuration.protoBook ?? MemoryProtoBook()
         self._keyBook = configuration.keyBook ?? MemoryKeyBook()
-
-        // EventChannel handles stream lifecycle (lazy creation, safe shutdown)
+        self.runtime = NodeRuntime(
+            configuration: configuration,
+            peerStore: peerStore,
+            addressBook: self._addressBook,
+            protoBook: self._protoBook,
+            keyBook: self._keyBook
+        )
     }
 
     // MARK: - Protocol Handlers
@@ -366,10 +379,9 @@ public actor Node: NodeContext {
     public func handle(
         _ protocolID: String,
         handler: @escaping ProtocolHandler
-    ) {
+    ) async {
         guard lifecycleState != .stopped else { return }
-        localHandlers[protocolID] = handler
-        Task { await swarm.registerHandler(for: protocolID, handler: handler) }
+        await runtime.registerHandler(for: protocolID, handler: handler)
     }
 
     /// Registers a simple protocol handler that only needs the stream.
@@ -380,13 +392,12 @@ public actor Node: NodeContext {
     public func handleStream(
         _ protocolID: String,
         handler: @escaping @Sendable (MuxedStream) async -> Void
-    ) {
+    ) async {
         guard lifecycleState != .stopped else { return }
         let wrappedHandler: ProtocolHandler = { context in
             await handler(context.stream)
         }
-        localHandlers[protocolID] = wrappedHandler
-        Task { await swarm.registerHandler(for: protocolID, handler: wrappedHandler) }
+        await runtime.registerHandler(for: protocolID, handler: wrappedHandler)
     }
 
     // MARK: - Lifecycle
@@ -395,134 +406,18 @@ public actor Node: NodeContext {
     public func start() async throws {
         switch lifecycleState {
         case .running: return
+        case .starting: return
         case .stopped: throw NodeError.nodeNotRunning
         case .idle: break
         }
-        lifecycleState = .running
+        lifecycleState = .starting
 
-        // Initialize health monitor if configured
-        if let healthConfig = configuration.healthCheck {
-            let monitor = HealthMonitor(
-                configuration: healthConfig,
-                pingProvider: NodePingProvider(node: self)
-            )
-            await monitor.setOnHealthCheckFailed { [weak self] peer in
-                await self?.handleHealthCheckFailed(peer: peer)
-            }
-            self.healthMonitor = monitor
-        }
-
-        // --- Register handlers from services (before Swarm start) ---
-        let allServices = configuration.services
-        self.activeServices = allServices
-        self.activePeerObservers = allServices.compactMap { $0 as? any PeerObserver }
-
-        // Register user-registered handlers first (from handle() calls in idle state).
-        // The fire-and-forget Tasks from handle() may not have completed yet,
-        // so this ensures they are registered before Swarm starts.
-        for (protocolID, handler) in localHandlers {
-            await swarm.registerHandler(for: protocolID, handler: handler)
-        }
-
-        // Register service handlers (may override user handlers for the same protocolID).
-        for service in allServices {
-            if let proto = service as? any StreamService {
-                for protocolID in proto.protocolIDs {
-                    let handler: ProtocolHandler = { context in
-                        await proto.handleInboundStream(context)
-                    }
-                    localHandlers[protocolID] = handler
-                    await swarm.registerHandler(for: protocolID, handler: handler)
-                }
-            }
-        }
-
-        // Start Swarm (listeners, accept loops, idle check)
-        try await swarm.start()
-
-        // Start event forwarding from Swarm to Node events
-        startEventForwarding()
-
-        // --- Attach services (listeners are up, addresses resolved) ---
-        for service in allServices {
-            await service.attach(to: self)
-        }
-
-        // --- AutoRelay integration ---
-        let relayStore = _relayAddresses
-        for service in allServices {
-            if let autoRelayService = service as? AutoRelayService {
-                autoRelayService.setRelayAddressCallback { addresses in
-                    relayStore.update(addresses)
-                }
-            }
-        }
-
-        // --- Discovery integration ---
-        let resolved = swarm.advertisedAddresses.current
-        for service in allServices {
-            if let discovery = service as? any DiscoveryBehaviour {
-                if !resolved.isEmpty {
-                    do {
-                        try await discovery.announce(addresses: resolved)
-                    } catch {
-                        logger.warning("[P2P] Discovery announce failed: \(error)")
-                    }
-                }
-                if configuration.discoveryConfig.autoConnect {
-                    startDiscoveryTask(discovery: discovery)
-                }
-            }
-        }
-
-        // Initialize traversal orchestration if configured
-        if let traversalConfig = configuration.traversal {
-            let coordinator = TraversalCoordinator(
-                configuration: traversalConfig,
-                localPeer: peerID,
-                transports: configuration.transports
-            )
-            let addressStore = swarm.listenAddresses
-            let pool = swarm.pool
-            await coordinator.start(
-                opener: self,
-                getLocalAddresses: {
-                    addressStore.current
-                },
-                getPeers: {
-                    pool.connectedPeers
-                },
-                isLimitedConnection: { peer in
-                    pool.isLimitedConnection(to: peer)
-                },
-                dialAddress: { [weak self] (addr: Multiaddr) in
-                    guard let self else { throw NodeError.nodeNotRunning }
-                    return try await self.connect(to: addr)
-                }
-            )
-            self.traversalCoordinator = coordinator
-        }
-
-        // Start PeerStore GC if using MemoryPeerStore
-        if let memoryStore = _peerStore as? MemoryPeerStore {
-            memoryStore.startGC()
-        }
-
-        // Initialize and start bootstrap if configured
-        if let bootstrapConfig = configuration.bootstrap, !bootstrapConfig.seeds.isEmpty {
-            let connectionProvider = NodeConnectionProvider(node: self)
-            let bootstrap = DefaultBootstrap(
-                configuration: bootstrapConfig,
-                connectionProvider: connectionProvider,
-                peerStore: _peerStore
-            )
-            self._bootstrap = bootstrap
-
-            _ = await bootstrap.bootstrap()
-
-            if bootstrapConfig.automaticBootstrap {
-                await bootstrap.startAutoBootstrap()
-            }
+        do {
+            try await runtime.start(capabilities: self)
+            lifecycleState = .running
+        } catch {
+            lifecycleState = .idle
+            throw error
         }
     }
 
@@ -535,51 +430,7 @@ public actor Node: NodeContext {
     public func shutdown() async {
         guard lifecycleState != .stopped else { return }
         lifecycleState = .stopped
-
-        // Shutdown traversal coordinator first
-        await traversalCoordinator?.shutdown()
-        traversalCoordinator = nil
-
-        // Shutdown PeerStore if using MemoryPeerStore
-        if let memoryStore = _peerStore as? MemoryPeerStore {
-            memoryStore.shutdown()
-        }
-
-        // Cancel discovery tasks
-        for task in discoveryTasks { task.cancel() }
-        discoveryTasks.removeAll()
-
-        // Stop bootstrap
-        if let bootstrap = _bootstrap {
-            await bootstrap.stopAutoBootstrap()
-        }
-        _bootstrap = nil
-
-        // Stop health monitor
-        await healthMonitor?.stopAll()
-
-        // Shutdown all active services FIRST (PeerObserver dispatch becomes no-op)
-        for service in activeServices {
-            await service.shutdown()
-        }
-        activeServices = []
-        activePeerObservers = []
-
-        // Clear relay addresses
-        _relayAddresses.clear()
-
-        // Cancel event forwarding (no more behaviour dispatch needed)
-        eventForwardingTask?.cancel()
-
-        // Shutdown swarm (closes connections, emits final events, finishes broadcaster)
-        await swarm.shutdown()
-
-        // Wait for event forwarding task to complete
-        await eventForwardingTask?.value
-        eventForwardingTask = nil
-
-        // Finish event stream
-        channel.finish()
+        await runtime.shutdown()
     }
 
     // MARK: - Connections (delegated to Swarm)
@@ -588,120 +439,90 @@ public actor Node: NodeContext {
     @discardableResult
     public func connect(to address: Multiaddr) async throws -> PeerID {
         guard lifecycleState == .running else { throw NodeError.nodeNotRunning }
-        return try await swarm.dial(to: address)
+        return try await runtime.dial(to: address)
     }
 
     /// Connects to a peer using known addresses and traversal orchestration.
     @discardableResult
     public func connect(to peer: PeerID) async throws -> PeerID {
         guard lifecycleState == .running else { throw NodeError.nodeNotRunning }
-
-        // Already connected?
-        if swarm.pool.isConnected(to: peer) { return peer }
-
-        // Collect addresses from address book.
-        let addresses = await _addressBook.sortedAddresses(for: peer)
-
-        // Use traversal coordinator if configured
-        if let traversalCoordinator {
-            let result = try await traversalCoordinator.connect(
-                to: peer,
-                knownAddresses: addresses
-            )
-            return result.connectedPeer
-        }
-
-        guard !addresses.isEmpty else {
-            throw NodeError.noAddressesKnown(peer)
-        }
-
-        // Fallback: sequential dial
-        var lastError: any Error = NodeError.noSuitableTransport
-        for addr in addresses {
-            do {
-                return try await connect(to: addr)
-            } catch {
-                lastError = error
-            }
-        }
-        throw lastError
+        return try await runtime.connect(to: peer)
     }
 
     /// Returns whether the connection to a peer is limited (relay).
     public func isLimitedConnection(to peer: PeerID) -> Bool {
-        swarm.pool.isLimitedConnection(to: peer)
+        runtime.isLimitedConnection(to: peer)
     }
 
     /// Disconnects from a peer.
     public func disconnect(from peer: PeerID) async {
         guard lifecycleState == .running else { return }
-        await healthMonitor?.stopMonitoring(peer: peer)
-        await swarm.closePeer(peer)
+        await runtime.closePeer(peer)
     }
 
     /// Opens a stream to a peer with the given protocol.
     public func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
         guard lifecycleState == .running else { throw NodeError.nodeNotRunning }
-        return try await swarm.newStream(to: peer, protocol: protocolID)
+        return try await runtime.newStream(to: peer, protocol: protocolID)
     }
 
     /// Returns the connection to a peer if connected.
     public func connection(to peer: PeerID) -> MuxedConnection? {
-        swarm.pool.connection(to: peer)
+        runtime.connection(to: peer)
     }
 
     /// Returns the connection state for a peer.
     public func connectionState(of peer: PeerID) -> ConnectionState? {
-        swarm.pool.connectionState(of: peer)
+        runtime.connectionState(of: peer)
     }
 
     /// Returns all connected peers.
     public var connectedPeers: [PeerID] {
-        swarm.pool.connectedPeers
+        runtime.connectedPeers
     }
 
     /// Returns the resolved addresses suitable for external advertisement.
     public nonisolated var advertisedAddresses: [Multiaddr] {
-        swarm.advertisedAddresses.current
+        runtime.advertisedAddresses
     }
 
     /// Returns the number of active connections.
     public var connectionCount: Int {
-        swarm.pool.connectionCount
+        runtime.connectionCount
     }
 
     /// Returns a point-in-time report of connection trim decisions.
     public func connectionTrimReport() -> ConnectionTrimReport {
-        swarm.pool.trimReport()
+        runtime.connectionTrimReport()
     }
 
     // MARK: - Tagging & Protection
 
     /// Adds a tag to a peer's connections.
     public func tag(_ peer: PeerID, with tag: String) {
-        swarm.pool.tag(peer, with: tag)
+        runtime.tag(peer, with: tag)
     }
 
     /// Removes a tag from a peer's connections.
     public func untag(_ peer: PeerID, tag: String) {
-        swarm.pool.untag(peer, tag: tag)
+        runtime.untag(peer, tag: tag)
     }
 
     /// Protects a peer's connections from trimming.
     public func protect(_ peer: PeerID) {
-        swarm.pool.protect(peer)
+        runtime.protect(peer)
     }
 
     /// Removes protection from a peer's connections.
     public func unprotect(_ peer: PeerID) {
-        swarm.pool.unprotect(peer)
+        runtime.unprotect(peer)
     }
 
     // MARK: - Keep-Alive (C3)
 
     /// Sets the keep-alive flag for all connections to a peer.
     public func setKeepAlive(_ keepAlive: Bool, for peer: PeerID) {
-        swarm.pool.setKeepAlive(keepAlive, for: peer)
+        runtime.setKeepAlive(keepAlive, for: peer)
     }
 
     // MARK: - Address Resolution
@@ -713,300 +534,9 @@ public actor Node: NodeContext {
         Swarm.resolveUnspecifiedAddresses(boundAddresses)
     }
 
-    // MARK: - Private: Event Forwarding
-
-    /// Forwards SwarmEvents to NodeEvents and drives external emission.
-    private func startEventForwarding() {
-        eventForwardingTask = Task { [weak self] in
-            guard let self else { return }
-            for await event in self.swarm.events {
-                guard !Task.isCancelled else { break }
-                await self.handleSwarmEvent(event)
-            }
-        }
-    }
-
-    private func handleSwarmEvent(_ event: SwarmEvent) async {
-        switch event {
-        case .peerConnected(let peer):
-            // Behaviour dispatch FIRST — services (GossipSub, Plumtree) set up
-            // internal mesh before external consumers see the event.
-            // Actor reentrancy allows newStream() callbacks during await.
-            for observer in activePeerObservers {
-                await observer.peerConnected(peer)
-            }
-            emit(.peerConnected(peer))
-            Task { await healthMonitor?.startMonitoring(peer: peer) }
-        case .peerDisconnected(let peer):
-            for observer in activePeerObservers {
-                await observer.peerDisconnected(peer)
-            }
-            emit(.peerDisconnected(peer))
-            Task { await healthMonitor?.stopMonitoring(peer: peer) }
-        case .connection(let connectionEvent):
-            emit(.connection(connectionEvent))
-        case .listenError(let addr, let error):
-            emit(.listenError(addr, error))
-        case .newListenAddr(let addr):
-            emit(.newListenAddr(addr))
-        case .expiredListenAddr(let addr):
-            emit(.expiredListenAddr(addr))
-        case .dialing(let peer):
-            emit(.dialing(peer))
-        case .outgoingConnectionError(let peer, let error):
-            emit(.outgoingConnectionError(peer: peer, error: error))
-        case .connectionError(let peer, let error):
-            emit(.connectionError(peer, error))
-        }
-    }
-
-    // MARK: - Private: Health Check
-
-    private func handleHealthCheckFailed(peer: PeerID) async {
-        emit(.connection(.healthCheckFailed(peer: peer)))
-        await disconnect(from: peer)
-    }
-
-    // MARK: - Private: Discovery
-
-    private func startDiscoveryTask(discovery: any DiscoveryService) {
-        let config = configuration.discoveryConfig
-        let localPeerID = configuration.keyPair.peerID
-
-        let task = Task { [weak self, localPeerID] in
-            let peers = await discovery.knownPeers()
-            for peer in peers {
-                guard !Task.isCancelled else { return }
-                guard peer != localPeerID else { continue }
-                await self?.tryAutoConnect(to: peer, hints: [], config: config)
-            }
-
-            for await observation in discovery.observations {
-                guard !Task.isCancelled else { return }
-                guard let self = self else { return }
-
-                guard observation.subject != localPeerID else { continue }
-
-                let connectionCount = await self.connectionCount
-                guard connectionCount < config.maxAutoConnectPeers else { continue }
-
-                switch observation.kind {
-                case .announcement, .reachable:
-                    await self._peerStore.addObservation(observation)
-                    await self.tryAutoConnect(
-                        to: observation.subject,
-                        hints: observation.hints,
-                        config: config
-                    )
-                case .unreachable:
-                    break
-                }
-            }
-        }
-        discoveryTasks.append(task)
-    }
-
-    private func tryAutoConnect(
-        to peer: PeerID,
-        hints: [Multiaddr],
-        config: DiscoveryConfiguration
-    ) async {
-        let pool = swarm.pool
-        let dialBackoff = swarm.dialBackoff
-
-        guard !dialBackoff.shouldBackOff(from: peer) else { return }
-        guard !pool.isConnected(to: peer) else { return }
-        guard !pool.hasReconnecting(for: peer) else { return }
-        guard !pool.hasPendingDial(to: peer) else { return }
-
-        if !hints.isEmpty {
-            await _peerStore.addAddresses(hints, for: peer)
-        }
-
-        guard let address = await _addressBook.bestAddress(for: peer) else {
-            return
-        }
-
-        do {
-            try await connect(to: address)
-            await _addressBook.recordSuccess(address: address, for: peer)
-        } catch {
-            dialBackoff.recordFailure(for: peer)
-            await _addressBook.recordFailure(address: address, for: peer)
-        }
-    }
-
-    // MARK: - Private: Event Emission
-
-    private func emit(_ event: NodeEvent) {
-        channel.yield(event)
-    }
 }
 
-// MARK: - NodePingProvider
-
-/// Internal adapter to make Node work with HealthMonitor.
-private final class NodePingProvider: PingProvider, @unchecked Sendable {
-    nonisolated(unsafe) private weak var node: Node?
-    private let pingService: PingService
-
-    init(node: Node) {
-        self.node = node
-        self.pingService = PingService()
-    }
-
-    func ping(_ peer: PeerID) async throws -> Duration {
-        guard let node else {
-            throw NodeError.nodeNotRunning
-        }
-        let result = try await pingService.ping(peer, using: node)
-        return result.rtt
-    }
-}
-
-// MARK: - BufferedStreamReader
-
-/// A stream wrapper that returns pre-buffered bytes before reading the underlying stream.
-final class BufferedMuxedStream: MuxedStream, Sendable {
-    private let stream: MuxedStream
-    private let buffer: Mutex<ByteBuffer>
-
-    var id: UInt64 { stream.id }
-    var protocolID: String? { stream.protocolID }
-
-    init(stream: MuxedStream, initialBuffer: Data = Data()) {
-        self.stream = stream
-        self.buffer = Mutex(ByteBuffer(bytes: initialBuffer))
-    }
-
-    func read() async throws -> ByteBuffer {
-        let buffered = buffer.withLock { buffer -> ByteBuffer? in
-            guard buffer.readableBytes > 0 else { return nil }
-            let data = buffer
-            buffer = ByteBuffer()
-            return data
-        }
-
-        if let buffered {
-            return buffered
-        }
-        return try await stream.read()
-    }
-
-    func write(_ data: ByteBuffer) async throws {
-        try await stream.write(data)
-    }
-
-    func closeWrite() async throws {
-        try await stream.closeWrite()
-    }
-
-    func closeRead() async throws {
-        try await stream.closeRead()
-    }
-
-    func close() async throws {
-        try await stream.close()
-    }
-
-    func reset() async throws {
-        try await stream.reset()
-    }
-}
-
-// MARK: - BufferedStreamReader
-
-/// A helper class for reading length-prefixed messages from a stream.
-final class BufferedStreamReader: Sendable {
-    private let stream: MuxedStream
-    private let state: Mutex<Data>
-    private let maxMessageSize: Int
-
-    /// Maximum buffer size to prevent DoS (default 64KB for multistream-select).
-    static let defaultMaxMessageSize = 64 * 1024
-
-    init(stream: MuxedStream, maxMessageSize: Int = defaultMaxMessageSize) {
-        self.stream = stream
-        self.state = Mutex(Data())
-        self.maxMessageSize = maxMessageSize
-    }
-
-    /// Returns and clears any bytes buffered beyond consumed negotiation messages.
-    func drainRemainder() -> Data {
-        state.withLock { buffer in
-            let data = buffer
-            buffer.removeAll(keepingCapacity: false)
-            return data
-        }
-    }
-
-    /// Result of trying to extract a message from the buffer.
-    private enum ExtractResult {
-        case message(Data)
-        case needMoreData
-        case invalidData(Error)
-    }
-
-    /// Reads a complete length-prefixed message from the stream.
-    func readMessage() async throws -> Data {
-        while true {
-            let result: ExtractResult = state.withLock { buffer in
-                guard !buffer.isEmpty else { return .needMoreData }
-
-                do {
-                    let (length, lengthBytes) = try Varint.decode(buffer)
-
-                    guard length <= UInt64(maxMessageSize) else {
-                        return .invalidData(NodeError.messageTooLarge(size: Int(min(length, UInt64(Int.max))), max: maxMessageSize))
-                    }
-                    let messageLength = Int(length)
-
-                    let totalNeeded = lengthBytes + messageLength
-
-                    guard buffer.count >= totalNeeded else {
-                        return .needMoreData
-                    }
-
-                    let message = Data(buffer.prefix(totalNeeded))
-                    buffer = Data(buffer.dropFirst(totalNeeded))
-                    return .message(message)
-                } catch let error as VarintError {
-                    switch error {
-                    case .insufficientData:
-                        return .needMoreData
-                    case .overflow, .valueExceedsIntMax:
-                        return .invalidData(error)
-                    }
-                } catch {
-                    return .invalidData(error)
-                }
-            }
-
-            switch result {
-            case .message(let data):
-                return data
-            case .needMoreData:
-                break
-            case .invalidData(let error):
-                throw error
-            }
-
-            let currentSize = state.withLock { $0.count }
-            if currentSize > maxMessageSize {
-                throw NodeError.messageTooLarge(size: currentSize, max: maxMessageSize)
-            }
-
-            let chunk = try await stream.read()
-            if chunk.readableBytes == 0 {
-                throw NodeError.streamClosed
-            }
-
-            state.withLock { buffer in
-                buffer.append(Data(buffer: chunk))
-            }
-        }
-    }
-}
+extension Node: RuntimeCapabilitySource {}
 
 // MARK: - NodeError
 
@@ -1023,34 +553,6 @@ public enum NodeError: Error, Sendable {
     case noAddressesKnown(PeerID)
     case selfDialNotAllowed
     case noListenersBound
-}
-
-// MARK: - NodeConnectionProvider
-
-/// Internal adapter to make Node work with Bootstrap.
-private final class NodeConnectionProvider: BootstrapConnectionProvider, Sendable {
-    nonisolated(unsafe) private weak var node: Node?
-
-    init(node: Node) {
-        self.node = node
-    }
-
-    func connect(to address: Multiaddr) async throws -> PeerID {
-        guard let node = node else {
-            throw NodeError.nodeNotRunning
-        }
-        return try await node.connect(to: address)
-    }
-
-    func connectedPeerCount() async -> Int {
-        guard let node = node else { return 0 }
-        return await node.connectionCount
-    }
-
-    func connectedPeers() async -> Set<PeerID> {
-        guard let node = node else { return [] }
-        return Set(await node.connectedPeers)
-    }
 }
 
 // MARK: - AsyncSemaphore (C2)

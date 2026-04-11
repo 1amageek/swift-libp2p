@@ -6,6 +6,28 @@ import P2PCore
 
 // MARK: - Test Helpers
 
+private func makeComposite(
+    localPeerID: PeerID,
+    services: [any DiscoveryService]
+) -> DiscoveryPipeline {
+    DiscoveryPipeline(localPeerID: localPeerID) {
+        for service in services {
+            discovery { _ in service }
+        }
+    }
+}
+
+private func makeComposite(
+    localPeerID: PeerID,
+    services: [(service: any DiscoveryService, weight: Double)]
+) -> DiscoveryPipeline {
+    DiscoveryPipeline(localPeerID: localPeerID) {
+        for entry in services {
+            discovery(weight: entry.weight) { _ in entry.service }
+        }
+    }
+}
+
 private func makePeer() -> PeerID {
     PeerID(publicKey: KeyPair.generateEd25519().publicKey)
 }
@@ -941,7 +963,7 @@ struct CompositeDiscoveryAnnounceTests {
         let localPeerID = makePeer()
         let service1 = MockDiscoveryService()
         let failingService = FailingDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, failingService])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service1, failingService])
 
         // Should not throw because service1 succeeds
         try await composite.announce(addresses: [Multiaddr.tcp(host: "1.2.3.4", port: 4001)])
@@ -953,7 +975,7 @@ struct CompositeDiscoveryAnnounceTests {
         let localPeerID = makePeer()
         let failing1 = FailingDiscoveryService()
         let failing2 = FailingDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [failing1, failing2])
+        let composite = makeComposite(localPeerID: localPeerID, services: [failing1, failing2])
 
         do {
             try await composite.announce(addresses: [Multiaddr.tcp(host: "1.2.3.4", port: 4001)])
@@ -968,7 +990,7 @@ struct CompositeDiscoveryAnnounceTests {
         let localPeerID = makePeer()
         let failing1 = FailingDiscoveryService()
         let failing2 = FailingDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [failing1, failing2])
+        let composite = makeComposite(localPeerID: localPeerID, services: [failing1, failing2])
         let peer = makePeer()
 
         do {
@@ -988,7 +1010,7 @@ struct CompositeDiscoveryAnnounceTests {
 
         let service1 = MockDiscoveryService(candidates: [peer: [candidate]])
         let failing = FailingDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, failing])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service1, failing])
 
         let results = try await composite.find(peer: peer)
         #expect(results.count == 1)
@@ -1013,7 +1035,7 @@ struct CompositeDiscoveryMergingTests {
         let service2 = MockDiscoveryService(candidates: [peer: [candidate2]])
 
         let localPeerID = makePeer()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service1, service2])
 
         let results = try await composite.find(peer: peer)
         #expect(results.count == 1)
@@ -1036,7 +1058,7 @@ struct CompositeDiscoveryMergingTests {
         let service2 = MockDiscoveryService(candidates: [peer: [candidate2]])
 
         let localPeerID = makePeer()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service1, service2])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service1, service2])
         let results = try await composite.find(peer: peer)
 
         #expect(results.count == 1)
@@ -1057,7 +1079,7 @@ struct CompositeDiscoveryMergingTests {
 
         let localPeerID = makePeer()
         let service = MockDiscoveryService(candidates: [target: [candidate1, candidate2]])
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service])
 
         let results = try await composite.find(peer: target)
         #expect(results.count == 2)
@@ -1073,7 +1095,7 @@ struct CompositeDiscoveryLifecycleTests {
     func startIdempotent() async {
         let localPeerID = makePeer()
         let service = MockDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service])
 
         await composite.start()
         await composite.start()  // Second start should be no-op
@@ -1089,7 +1111,7 @@ struct CompositeDiscoveryLifecycleTests {
     func operationsWithoutStart() async throws {
         let localPeerID = makePeer()
         let service = MockDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [service])
+        let composite = makeComposite(localPeerID: localPeerID, services: [service])
 
         // These should work even without start()
         try await composite.announce(addresses: [])
@@ -1102,7 +1124,7 @@ struct CompositeDiscoveryLifecycleTests {
     @Test("Empty services list works")
     func emptyServices() async throws {
         let localPeerID = makePeer()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [] as [any DiscoveryService])
+        let composite = makeComposite(localPeerID: localPeerID, services: [] as [any DiscoveryService])
 
         await composite.start()
 
@@ -1129,7 +1151,7 @@ struct CompositeDiscoveryLifecycleTests {
         let service2 = MockDiscoveryService(candidates: [peer: [candidate2]])
 
         let localPeerID = makePeer()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [
+        let composite = makeComposite(localPeerID: localPeerID, services: [
             (service: service1, weight: 3.0),
             (service: service2, weight: 1.0)
         ])
@@ -1150,7 +1172,7 @@ struct CompositeDiscoveryObservationTests {
     func forwardsObservations() async throws {
         let localPeerID = makePeer()
         let mock = MockDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock])
+        let composite = makeComposite(localPeerID: localPeerID, services: [mock])
 
         await composite.start()
 
@@ -1194,7 +1216,7 @@ struct CompositeDiscoveryObservationTests {
     func forwardedSequenceNumbers() async throws {
         let localPeerID = makePeer()
         let mock = MockDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock])
+        let composite = makeComposite(localPeerID: localPeerID, services: [mock])
 
         await composite.start()
 
@@ -1244,7 +1266,7 @@ struct CompositeDiscoveryObservationTests {
     func subscribeFilters() async throws {
         let localPeerID = makePeer()
         let mock = MockDiscoveryService()
-        let composite = CompositeDiscovery(localPeerID: localPeerID, services: [mock])
+        let composite = makeComposite(localPeerID: localPeerID, services: [mock])
 
         await composite.start()
 

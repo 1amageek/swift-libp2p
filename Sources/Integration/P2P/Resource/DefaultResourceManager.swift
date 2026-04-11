@@ -6,6 +6,7 @@
 
 import Synchronization
 import P2PCore
+import P2PRuntime
 
 /// Concrete resource manager with system-wide, per-peer, per-protocol,
 /// and per-service limits.

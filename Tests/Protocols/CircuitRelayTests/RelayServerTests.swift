@@ -29,30 +29,26 @@ func makeStreamContext(
     )
 }
 
-/// A mock NodeContext for testing RelayServer via attach(to:).
-final class MockRelayNodeContext: NodeContext, @unchecked Sendable {
+private struct MockRelayIdentityContext: NodeIdentityContext {
     let localPeer: PeerID
-    let localKeyPair: KeyPair
-    private let _peerStore: any PeerStore
-    private let _listenAddresses: [Multiaddr]
-    private let opener: any StreamOpener
+    let localKeyPair: KeyPair = .generateEd25519()
+}
 
-    init(localPeer: PeerID, opener: any StreamOpener, listenAddresses: [Multiaddr] = []) {
-        let keyPair = KeyPair.generateEd25519()
-        self.localPeer = localPeer
-        self.localKeyPair = keyPair
-        self._peerStore = MemoryPeerStore()
-        self._listenAddresses = listenAddresses
-        self.opener = opener
-    }
+private struct MockRelayListenAddressContext: ListenAddressContext {
+    let addresses: [Multiaddr]
 
-    var peerStore: any PeerStore { _peerStore }
+    func listenAddresses() async -> [Multiaddr] { addresses }
+}
 
-    func listenAddresses() async -> [Multiaddr] { _listenAddresses }
-    func supportedProtocols() async -> [String] { [] }
-    func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
-        try await opener.newStream(to: peer, protocol: protocolID)
-    }
+private func configureRelayServer(
+    _ server: RelayServer,
+    localPeer: PeerID,
+    opener: any StreamOpener,
+    listenAddresses: [Multiaddr] = []
+) async {
+    await server.attachStreamOpening(opener)
+    await server.attachIdentityContext(MockRelayIdentityContext(localPeer: localPeer))
+    await server.attachListenAddressContext(MockRelayListenAddressContext(addresses: listenAddresses))
 }
 
 /// Helper to collect events with timeout.
@@ -99,7 +95,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Set up event collection
         let collector = TestEventCollector()
@@ -153,7 +149,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 0))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Set up event collection BEFORE any operations
         // Access events property first to initialize the stream
@@ -211,7 +207,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10, maxCircuitsPerPeer: 10))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // First, create a reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -292,7 +288,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create stream pair for connect
         let (clientStream, serverStream) = MockMuxedStream.createPair()
@@ -323,7 +319,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10, maxCircuitsPerPeer: 0))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // First, create a reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -385,7 +381,7 @@ struct RelayServerReservationTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         #expect(server.reservationCount == 0)
 
@@ -413,7 +409,7 @@ struct RelayServerReservationTests {
         ))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservation
         let (clientStream, serverStream) = MockMuxedStream.createPair()
@@ -446,7 +442,7 @@ struct RelayServerReservationTests {
         ))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -493,7 +489,7 @@ struct RelayServerCircuitLimitTests {
         ))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservations for both targets
         for targetKey in [target1Key, target2Key] {
@@ -570,7 +566,7 @@ struct RelayServerCircuitLimitTests {
         ))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -672,7 +668,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer()
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -736,7 +732,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer()
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Send an invalid/unexpected message (status response instead of request)
         let (clientStream, serverStream) = MockMuxedStream.createPair()
@@ -758,7 +754,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // First reservation
         let (reserve1ClientStream, reserve1ServerStream) = MockMuxedStream.createPair()
@@ -791,7 +787,7 @@ struct RelayServerErrorScenarioTests {
         let opener = MockStreamOpener()
         // Note: opener has no streams configured - will fail to connect to target
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -819,7 +815,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer()
         let opener = MockStreamOpener()
 
-        await server.attach(to: MockRelayNodeContext(localPeer: serverKey.peerID, opener: opener))
+        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
 
         // Create reservation for client
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()

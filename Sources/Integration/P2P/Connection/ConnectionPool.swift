@@ -7,34 +7,7 @@ import Foundation
 import Synchronization
 import P2PCore
 import P2PMux
-
-/// Configuration for the connection pool.
-public struct PoolConfiguration: Sendable {
-    /// Connection limits.
-    public var limits: ConnectionLimits
-
-    /// Reconnection policy.
-    public var reconnectionPolicy: ReconnectionPolicy
-
-    /// Idle timeout for connections.
-    public var idleTimeout: Duration
-
-    /// Optional connection gater.
-    public var gater: (any ConnectionGater)?
-
-    /// Creates a new pool configuration.
-    public init(
-        limits: ConnectionLimits = .default,
-        reconnectionPolicy: ReconnectionPolicy = .default,
-        idleTimeout: Duration = .seconds(60),
-        gater: (any ConnectionGater)? = nil
-    ) {
-        self.limits = limits
-        self.reconnectionPolicy = reconnectionPolicy
-        self.idleTimeout = idleTimeout
-        self.gater = gater
-    }
-}
+import P2PRuntime
 
 /// Information about a managed connection.
 internal struct ManagedConnection: Sendable {
@@ -216,6 +189,46 @@ internal final class ConnectionPool: Sendable {
         return id
     }
 
+    /// Adds a new connected entry only when the per-peer limit still allows it.
+    ///
+    /// This performs the limit check and insertion atomically under the pool lock.
+    @discardableResult
+    func addIfPermitted(
+        _ connection: any MuxedConnection,
+        for peer: PeerID,
+        address: Multiaddr,
+        direction: ConnectionDirection,
+        isLimited: Bool = false
+    ) -> ConnectionID? {
+        let id = ConnectionID()
+        let now = ContinuousClock.now
+
+        let managed = ManagedConnection(
+            id: id,
+            peer: peer,
+            address: address,
+            direction: direction,
+            connection: connection,
+            state: .connected,
+            retryCount: 0,
+            lastActivity: now,
+            connectedAt: now,
+            tags: [],
+            isProtected: false,
+            isLimited: isLimited
+        )
+
+        return state.withLock { state in
+            guard Self.connectedCount(for: peer, in: state) < configuration.limits.maxConnectionsPerPeer else {
+                return nil
+            }
+            state.connections[id] = managed
+            state.peerConnections[peer, default: []].insert(id)
+            state.connectedPeerCache.insert(peer)
+            return id
+        }
+    }
+
     /// Removes a connection from the pool.
     ///
     /// - Parameter id: The connection ID to remove
@@ -296,6 +309,30 @@ internal final class ConnectionPool: Sendable {
             if let peer = state.connections[id]?.peer {
                 state.connectedPeerCache.insert(peer)
             }
+        }
+    }
+
+    /// Transitions an existing entry to `.connected` only when the per-peer limit still allows it.
+    ///
+    /// The limit check and state mutation are performed atomically under the pool lock.
+    @discardableResult
+    func activateConnectionIfPermitted(_ id: ConnectionID, connection: any MuxedConnection) -> Bool {
+        let now = ContinuousClock.now
+        return state.withLock { state in
+            guard let managed = state.connections[id] else {
+                return false
+            }
+            let peer = managed.peer
+            guard Self.connectedCount(for: peer, excluding: id, in: state) < configuration.limits.maxConnectionsPerPeer else {
+                return false
+            }
+
+            state.connections[id]?.connection = connection
+            state.connections[id]?.state = .connected
+            state.connections[id]?.lastActivity = now
+            state.connections[id]?.connectedAt = now
+            state.connectedPeerCache.insert(peer)
+            return true
         }
     }
 
@@ -883,6 +920,18 @@ internal final class ConnectionPool: Sendable {
     private struct TrimPlan: Sendable {
         let toTrim: [ManagedConnection]
         let report: ConnectionTrimReport
+    }
+
+    private static func connectedCount(
+        for peer: PeerID,
+        excluding excludedID: ConnectionID? = nil,
+        in state: PoolState
+    ) -> Int {
+        guard let ids = state.peerConnections[peer] else { return 0 }
+        return ids.reduce(into: 0) { count, id in
+            guard id != excludedID, state.connections[id]?.state.isConnected == true else { return }
+            count += 1
+        }
     }
 
     private static func makeTrimPlan(

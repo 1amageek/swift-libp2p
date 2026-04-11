@@ -143,7 +143,7 @@ extension Duration {
     /// Converts to seconds as a Double.
     ///
     /// - Note: Minor precision loss may occur for very precise durations.
-    var asSeconds: Double {
+    public var asSeconds: Double {
         Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 
@@ -151,7 +151,7 @@ extension Duration {
     ///
     /// - Parameter factor: The scaling factor
     /// - Returns: A new duration scaled by the factor
-    func scaled(by factor: Double) -> Duration {
+    public func scaled(by factor: Double) -> Duration {
         .seconds(asSeconds * factor)
     }
 
@@ -159,7 +159,7 @@ extension Duration {
     ///
     /// - Parameter minutes: Number of minutes
     /// - Returns: A duration representing the given minutes
-    static func minutes(_ minutes: Int) -> Duration {
+    public static func minutes(_ minutes: Int) -> Duration {
         .seconds(minutes * 60)
     }
 }

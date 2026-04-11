@@ -12,28 +12,26 @@ import Synchronization
 
 // MARK: - Test Helpers
 
-/// A mock NodeContext for testing via attach(to:).
-private final class MockIntegrationNodeContext: NodeContext, @unchecked Sendable {
+private struct MockIntegrationIdentityContext: NodeIdentityContext {
     let localPeer: PeerID
-    let localKeyPair: KeyPair
-    private let _peerStore: any PeerStore
-    private let _listenAddresses: [Multiaddr]
-    private let _opener: any StreamOpener
+    let localKeyPair: KeyPair = .generateEd25519()
+}
 
-    init(localPeer: PeerID, opener: any StreamOpener, listenAddresses: [Multiaddr] = []) {
-        self.localPeer = localPeer
-        self.localKeyPair = KeyPair.generateEd25519()
-        self._peerStore = MemoryPeerStore()
-        self._listenAddresses = listenAddresses
-        self._opener = opener
-    }
+private struct MockIntegrationListenAddressContext: ListenAddressContext {
+    let addresses: [Multiaddr]
 
-    var peerStore: any PeerStore { _peerStore }
-    func listenAddresses() async -> [Multiaddr] { _listenAddresses }
-    func supportedProtocols() async -> [String] { [] }
-    func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
-        try await _opener.newStream(to: peer, protocol: protocolID)
-    }
+    func listenAddresses() async -> [Multiaddr] { addresses }
+}
+
+private func configureRelayServer(
+    _ server: RelayServer,
+    localPeer: PeerID,
+    opener: any StreamOpener,
+    listenAddresses: [Multiaddr] = []
+) async {
+    await server.attachStreamOpening(opener)
+    await server.attachIdentityContext(MockIntegrationIdentityContext(localPeer: localPeer))
+    await server.attachListenAddressContext(MockIntegrationListenAddressContext(addresses: listenAddresses))
 }
 
 /// A mock MuxedStream that allows paired bidirectional communication.
@@ -247,9 +245,9 @@ struct CircuitRelayIntegrationTests {
             protocolID: CircuitRelayProtocol.hopProtocolID
         )
 
-        // Attach server to mock context
+        // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
+        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Setup mock opener for client
         let clientOpener = MockStreamOpener()
@@ -289,9 +287,9 @@ struct CircuitRelayIntegrationTests {
             protocolID: CircuitRelayProtocol.hopProtocolID
         )
 
-        // Attach server to mock context
+        // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener))
+        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener)
 
         let clientOpener = MockStreamOpener()
         clientOpener.setStream(clientStream, for: CircuitRelayProtocol.hopProtocolID)
@@ -334,9 +332,9 @@ struct CircuitRelayIntegrationTests {
         let targetClient = RelayClient()
         let server = RelayServer()
 
-        // Attach server to mock context
+        // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
+        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // First, target makes a reservation
         let (resClientStream, resServerStream) = MockMuxedStream.createPair(
@@ -485,9 +483,9 @@ struct CircuitRelayIntegrationTests {
         let server = RelayServer()
         let client = RelayClient()
 
-        // Attach server to mock context
+        // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener))
+        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener)
 
         let (clientStream, serverStream) = MockMuxedStream.createPair(
             protocolID: CircuitRelayProtocol.hopProtocolID
@@ -539,9 +537,9 @@ struct CircuitRelayIntegrationTests {
         )
         let server = RelayServer(configuration: serverConfig)
 
-        // Attach server to mock context
+        // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
+        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Verify configuration is set
         #expect(serverConfig.maxCircuitsPerPeer == 1)
@@ -606,9 +604,9 @@ struct RelayListenerTests {
         let client = RelayClient()
         let server = RelayServer()
 
-        // Attach server to mock context
+        // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await server.attach(to: MockIntegrationNodeContext(localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)]))
+        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Step 1: Target makes reservation on relay
         let (resClientStream, resServerStream) = MockMuxedStream.createPair(

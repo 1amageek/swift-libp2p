@@ -80,7 +80,8 @@ public final class PlumtreeService: Sendable {
     ///   - configuration: Configuration parameters
     public init(
         localPeerID: PeerID,
-        configuration: PlumtreeConfiguration = .default
+        configuration: PlumtreeConfiguration = .default,
+        opener: (any StreamOpener)? = nil
     ) {
         self.localPeerID = localPeerID
         self.configuration = configuration
@@ -89,7 +90,7 @@ public final class PlumtreeService: Sendable {
             configuration: configuration
         )
         self.lazyBuffer = LazyPushBuffer(maxBatchSize: configuration.maxIHaveBatchSize)
-        self.serviceState = Mutex(ServiceState())
+        self.serviceState = Mutex(ServiceState(opener: opener))
     }
 
     // MARK: - Lifecycle
@@ -485,13 +486,17 @@ public final class PlumtreeService: Sendable {
 
 // MARK: - StreamService
 
-extension PlumtreeService: StreamService, PeerObserver {
+extension PlumtreeService: LifecycleService, StreamService, PeerObserver, ActivatableService, StreamOpeningActivatable {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleIncomingStream(context: context)
     }
 
-    public func attach(to context: any NodeContext) async {
-        serviceState.withLock { $0.opener = context }
+    public func activate(using opener: any StreamOpener) async {
+        serviceState.withLock { $0.opener = opener }
+        await activate()
+    }
+
+    public func activate() async {
         if !serviceState.withLock({ $0.isStarted }) {
             start()
         }
@@ -509,6 +514,30 @@ extension PlumtreeService: StreamService, PeerObserver {
 
     public func peerDisconnected(_ peer: PeerID) async {
         handlePeerDisconnected(peer)
+    }
+}
+
+public func plumtreeComponent(_ plumtreeService: PlumtreeService) -> ServiceComponent {
+    service(plumtreeService) { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.activatesWithStreamOpening()
+    }
+}
+
+public func plumtreeComponent(
+    configuration: PlumtreeConfiguration = .default
+) -> ServiceComponent {
+    service(make: { context in
+        PlumtreeService(
+            localPeerID: context.localIdentity.localPeer,
+            configuration: configuration,
+            opener: context.streamOpener
+        )
+    }) { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.activatesOnStart()
     }
 }
 

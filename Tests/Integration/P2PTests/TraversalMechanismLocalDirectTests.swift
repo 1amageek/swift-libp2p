@@ -35,10 +35,10 @@ struct TraversalMechanismLocalDirectTests {
             localPeer: peer,
             targetPeer: peer,
             knownAddresses: [memoryAddress, ipAddress],
-            transports: [
+            dialCapability: TransportTraversalDialCapability(transports: [
                 LocalMockTransport(pathKind: .local, canDialClosure: { $0 == memoryAddress }),
                 LocalMockTransport(pathKind: .ip, canDialClosure: { $0 == ipAddress }),
-            ],
+            ]),
             connectedPeers: [],
             opener: nil,
             getLocalAddresses: { [] },

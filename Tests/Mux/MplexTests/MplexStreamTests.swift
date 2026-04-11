@@ -179,7 +179,7 @@ struct MplexStreamTests {
             guard let (frame, _) = try? MplexFrame.decode(from: data) else { return false }
             return frame.flag == .messageInitiator &&
                    frame.streamID == 0 &&
-                   String(data: frame.data, encoding: .utf8) == "test data"
+                   String(buffer: frame.data) == "test data"
         }
         #expect(hasMessage)
 

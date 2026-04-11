@@ -4,6 +4,7 @@
 
 import Foundation
 import P2PCore
+import P2PRuntime
 
 /// Events related to connection lifecycle.
 ///

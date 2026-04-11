@@ -13,9 +13,13 @@ struct AutoRelayServiceTests {
         PeerID(publicKey: KeyPair.generateEd25519().publicKey)
     }
 
+    private func startService(_ service: AutoRelayService) async {
+        await service.activate(using: MockStreamOpener())
+    }
+
     // MARK: - Lifecycle
 
-    @Test("Attach stores context and starts monitoring", .timeLimit(.minutes(1)))
+    @Test("Activation starts monitoring after opener attachment", .timeLimit(.minutes(1)))
     func attachStartsMonitoring() async {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
@@ -28,8 +32,7 @@ struct AutoRelayServiceTests {
             configuration: .init(monitorInterval: .seconds(600))
         )
 
-        let context = MockNodeContext(localPeer: localPeer)
-        await service.attach(to: context)
+        await startService(service)
 
         // Should not crash, monitoring task should be running
         await service.shutdown()
@@ -318,8 +321,7 @@ struct AutoRelayServiceTests {
         )
 
         let events = service.events
-        let context = MockNodeContext(localPeer: localPeer)
-        await service.attach(to: context)
+        await startService(service)
 
         // Give a moment for initial monitor cycle
         try await Task.sleep(for: .milliseconds(100))
@@ -353,8 +355,7 @@ struct AutoRelayServiceTests {
             configuration: .init(monitorInterval: .seconds(600))
         )
 
-        let context = MockNodeContext(localPeer: localPeer)
-        await service.attach(to: context)
+        await startService(service)
 
         // Rapid peer connect/disconnect to exercise concurrent paths
         let peer = makePeer()
@@ -390,8 +391,7 @@ struct AutoRelayServiceTests {
             callbackInvoked.withLock { $0 = true }
         }
 
-        let context = MockNodeContext(localPeer: localPeer)
-        await service.attach(to: context)
+        await startService(service)
 
         // Give monitor cycle time to run once
         try await Task.sleep(for: .milliseconds(200))
@@ -408,23 +408,7 @@ struct AutoRelayServiceTests {
 
 // MARK: - Test Helpers
 
-/// Minimal NodeContext for testing.
-private final class MockNodeContext: NodeContext, @unchecked Sendable {
-    let localPeer: PeerID
-    let localKeyPair: KeyPair
-    private let _peerStore = MemoryPeerStore()
-
-    init(localPeer: PeerID) {
-        self.localPeer = localPeer
-        self.localKeyPair = .generateEd25519()
-    }
-
-    func listenAddresses() async -> [Multiaddr] { [] }
-    func supportedProtocols() async -> [String] { [] }
-    var peerStore: any PeerStore {
-        get async { _peerStore }
-    }
-
+private struct MockStreamOpener: StreamOpener {
     func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
         throw MockError.notImplemented
     }

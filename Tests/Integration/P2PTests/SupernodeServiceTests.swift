@@ -15,7 +15,7 @@ struct SupernodeServiceTests {
 
     // MARK: - Lifecycle
 
-    @Test("Attach starts evaluation loop", .timeLimit(.minutes(1)))
+    @Test("Activation starts evaluation loop", .timeLimit(.minutes(1)))
     func attachStartsEvaluation() async {
         let autoNAT = AutoNATService()
         let relayServer = RelayServer()
@@ -26,8 +26,7 @@ struct SupernodeServiceTests {
             configuration: .init(evaluationInterval: .seconds(600))
         )
 
-        let context = MockSupernodeContext(localPeer: makePeer())
-        await service.attach(to: context)
+        await service.activate()
 
         // Should not crash
         await service.shutdown()
@@ -93,8 +92,7 @@ struct SupernodeServiceTests {
             )
         )
 
-        let context = MockSupernodeContext(localPeer: makePeer())
-        await service.attach(to: context)
+        await service.activate()
 
         // AutoNAT status is unknown by default (not public)
         // Wait for evaluation
@@ -127,8 +125,7 @@ struct SupernodeServiceTests {
         await service.peerConnected(makePeer())
         await service.peerConnected(makePeer())
 
-        let context = MockSupernodeContext(localPeer: makePeer())
-        await service.attach(to: context)
+        await service.activate()
 
         try await Task.sleep(for: .milliseconds(200))
 
@@ -159,8 +156,7 @@ struct SupernodeServiceTests {
         await service.peerConnected(makePeer())
         await service.peerConnected(makePeer())
 
-        let context = MockSupernodeContext(localPeer: makePeer())
-        await service.attach(to: context)
+        await service.activate()
 
         try await Task.sleep(for: .milliseconds(200))
 
@@ -225,31 +221,4 @@ struct SupernodeServiceTests {
         #expect(server.isAcceptingReservations == true)
         await server.shutdown()
     }
-}
-
-// MARK: - Test Helpers
-
-private final class MockSupernodeContext: NodeContext, @unchecked Sendable {
-    let localPeer: PeerID
-    let localKeyPair: KeyPair
-    private let _peerStore = MemoryPeerStore()
-
-    init(localPeer: PeerID) {
-        self.localPeer = localPeer
-        self.localKeyPair = .generateEd25519()
-    }
-
-    func listenAddresses() async -> [Multiaddr] { [] }
-    func supportedProtocols() async -> [String] { [] }
-    var peerStore: any PeerStore {
-        get async { _peerStore }
-    }
-
-    func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream {
-        throw MockSupernodeError.notImplemented
-    }
-}
-
-private enum MockSupernodeError: Error {
-    case notImplemented
 }

@@ -294,8 +294,14 @@ public final class PingService: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension PingService: StreamService {
+extension PingService: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handlePing(context: context)
+    }
+}
+
+public func pingComponent(_ pingService: PingService) -> ServiceComponent {
+    service(pingService) { component in
+        component.handlesInboundStreams()
     }
 }

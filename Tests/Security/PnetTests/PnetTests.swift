@@ -375,6 +375,26 @@ struct XSalsa20Tests {
         #expect(decrypted == plaintext)
     }
 
+    @Test("XSalsa20 ByteBuffer processing matches array processing")
+    func testXSalsa20ByteBufferProcessing() throws {
+        let key = [UInt8](repeating: 0xAA, count: 32)
+        let nonce = [UInt8](repeating: 0xBB, count: 24)
+        let plaintext: [UInt8] = (0..<4096).map { UInt8($0 & 0xFF) }
+
+        var arrayCipher = try XSalsa20(key: key, nonce: nonce)
+        var arrayCiphertext = plaintext
+        arrayCipher.process(&arrayCiphertext)
+
+        var bufferCipher = try XSalsa20(key: key, nonce: nonce)
+        var byteBuffer = ByteBuffer(bytes: plaintext)
+        bufferCipher.process(&byteBuffer)
+        #expect(Array(byteBuffer.readableBytesView) == arrayCiphertext)
+
+        var decryptCipher = try XSalsa20(key: key, nonce: nonce)
+        decryptCipher.process(&byteBuffer)
+        #expect(Array(byteBuffer.readableBytesView) == plaintext)
+    }
+
     /// NaCl crypto_stream_xsalsa20 test vector (libsodium compatible).
     /// Key and nonce from the NaCl test suite, verifying first 64 bytes of keystream.
     @Test("XSalsa20 NaCl test vector 2")

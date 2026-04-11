@@ -33,7 +33,7 @@ struct NodeE2ETests {
             idleTimeout: .seconds(300)
         ),
         healthCheck: HealthMonitorConfiguration? = nil,
-        services: [any NodeService] = []
+        services: ServicePipeline = .empty
     ) -> Node {
         var listenAddresses: [Multiaddr] = []
         if let addr = listenAddress {
@@ -300,7 +300,14 @@ struct NodeE2ETests {
         let serverAddr = Multiaddr.memory(id: "server6")
 
         let pingService = PingService()
-        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr, services: [pingService])
+        let server = makeNode(
+            name: "server",
+            hub: hub,
+            listenAddress: serverAddr,
+            services: ServicePipeline {
+                pingComponent(pingService)
+            }
+        )
         let client = makeNode(name: "client", hub: hub)
 
         try await server.start()
@@ -327,7 +334,14 @@ struct NodeE2ETests {
         let serverAddr = Multiaddr.memory(id: "server7")
 
         let pingService = PingService()
-        let server = makeNode(name: "server", hub: hub, listenAddress: serverAddr, services: [pingService])
+        let server = makeNode(
+            name: "server",
+            hub: hub,
+            listenAddress: serverAddr,
+            services: ServicePipeline {
+                pingComponent(pingService)
+            }
+        )
         let client = makeNode(name: "client", hub: hub)
 
         try await server.start()
@@ -777,7 +791,8 @@ struct NodeE2ETests {
 
         var serverSettledToSingleConnection = false
         for _ in 0..<20 {
-            if await server.connectionCount == 1 {
+            let serverCount = await server.connectionCount
+            if serverCount == 1 {
                 serverSettledToSingleConnection = true
                 break
             }

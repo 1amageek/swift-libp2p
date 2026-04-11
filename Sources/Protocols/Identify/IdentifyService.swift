@@ -188,10 +188,29 @@ public final class IdentifyService: EventEmitting, Sendable {
 
     // MARK: - Initialization
 
-    public init(configuration: IdentifyConfiguration = .init()) {
+    public init(
+        configuration: IdentifyConfiguration = .init(),
+        localIdentity: (any NodeIdentityContext)? = nil,
+        listenAddressContext: (any ListenAddressContext)? = nil,
+        supportedProtocolsContext: (any SupportedProtocolsContext)? = nil,
+        streamOpener: (any StreamOpener)? = nil
+    ) {
         self.configuration = configuration
         self.cacheState = Mutex(CacheState())
-        self.autoPushState = Mutex(AutoPushState())
+        var autoPushState = AutoPushState()
+        autoPushState.openerRef = configuration.autoPush ? streamOpener.map(OpenerRef.init) : nil
+        autoPushState.localKeyPair = localIdentity?.localKeyPair
+        if let listenAddressContext {
+            autoPushState.getListenAddresses = { [listenAddressContext] in
+                await listenAddressContext.listenAddresses()
+            }
+        }
+        if let supportedProtocolsContext {
+            autoPushState.getSupportedProtocols = { [supportedProtocolsContext] in
+                await supportedProtocolsContext.supportedProtocols()
+            }
+        }
+        self.autoPushState = Mutex(autoPushState)
         self.cleanupTask = Mutex(nil)
     }
 
@@ -721,7 +740,7 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// - Returns: All data read until EOF
     /// - Throws: `IdentifyError.messageTooLarge` if the message exceeds maxSize
     private func readAll(from stream: MuxedStream, maxSize: Int = 64 * 1024) async throws -> Data {
-        var buffer = Data()
+        var buffer = ByteBuffer()
 
         while true {
             let chunk: ByteBuffer
@@ -732,7 +751,7 @@ public final class IdentifyService: EventEmitting, Sendable {
                 // a stream-closed error when the remote has closed its write side
                 // and no buffered data remains. If we already have data, treat
                 // this as a normal EOF. Otherwise, propagate the error.
-                if !buffer.isEmpty {
+                if buffer.readableBytes > 0 {
                     break
                 }
                 throw error
@@ -740,15 +759,16 @@ public final class IdentifyService: EventEmitting, Sendable {
             if chunk.readableBytes == 0 {
                 break // EOF - normal termination
             }
-            buffer.append(Data(buffer: chunk))
+            var mutableChunk = chunk
+            buffer.writeBuffer(&mutableChunk)
 
             // Check if buffer exceeds maximum allowed size
-            if buffer.count > maxSize {
-                throw IdentifyError.messageTooLarge(size: buffer.count, max: maxSize)
+            if buffer.readableBytes > maxSize {
+                throw IdentifyError.messageTooLarge(size: buffer.readableBytes, max: maxSize)
             }
         }
 
-        return buffer
+        return Data(buffer: buffer)
     }
 
     private func emit(_ event: IdentifyEvent) {
@@ -760,7 +780,7 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// Handles an inbound identify request by building local info and writing it to the stream.
     ///
     /// Reads `localKeyPair`, `getListenAddresses`, and `getSupportedProtocols` from `autoPushState`.
-    /// These are populated by `attach(to:)` (NodeService path).
+    /// These are populated by the explicit role attachments during node startup.
     private func handleIdentifyRequest(context: StreamContext) async {
         let (keyPair, getAddrs, getProtos) = autoPushState.withLock { state in
             (state.localKeyPair, state.getListenAddresses, state.getSupportedProtocols)
@@ -867,7 +887,16 @@ public final class IdentifyService: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension IdentifyService: StreamService, PeerObserver {
+extension IdentifyService:
+    LifecycleService,
+    StreamService,
+    PeerObserver,
+    LocalIdentityConsumer,
+    ListenAddressConsumer,
+    SupportedProtocolsConsumer,
+    ActivatableService,
+    StreamOpeningActivatable
+{
     public func handleInboundStream(_ context: StreamContext) async {
         switch context.protocolID {
         case ProtocolID.identify:
@@ -879,21 +908,67 @@ extension IdentifyService: StreamService, PeerObserver {
         }
     }
 
-    public func attach(to context: any NodeContext) async {
-        // Always populate keyPair/addresses/protocols so handleIdentifyRequest works.
-        // openerRef is only needed for auto-push.
+    public func attachIdentityContext(_ context: any NodeIdentityContext) async {
         autoPushState.withLock { state in
             state.localKeyPair = context.localKeyPair
+        }
+    }
+
+    public func attachListenAddressContext(_ context: any ListenAddressContext) async {
+        autoPushState.withLock { state in
             state.getListenAddresses = { await context.listenAddresses() }
+        }
+    }
+
+    public func attachSupportedProtocolsContext(_ context: any SupportedProtocolsContext) async {
+        autoPushState.withLock { state in
             state.getSupportedProtocols = { await context.supportedProtocols() }
-            if configuration.autoPush {
-                state.openerRef = OpenerRef(context)
+        }
+    }
+
+    public func activate(using opener: any StreamOpener) async {
+        if configuration.autoPush {
+            autoPushState.withLock { state in
+                state.openerRef = OpenerRef(opener)
             }
         }
+        await activate()
+    }
+
+    public func activate() async {
         startMaintenance()
     }
 
     // peerConnected(_:) and peerDisconnected(_:) are defined as sync methods
     // on IdentifyService. A sync method satisfies an async protocol requirement
     // via SE-0296, so no wrapper methods are needed.
+}
+
+public func identifyComponent(_ identifyService: IdentifyService) -> ServiceComponent {
+    service(identifyService) { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.consumesLocalIdentity()
+        component.consumesListenAddresses()
+        component.consumesSupportedProtocols()
+        component.activatesWithStreamOpening()
+    }
+}
+
+public func identifyComponent(
+    configuration: IdentifyConfiguration = .init()
+) -> ServiceComponent {
+    service(make: { context in
+        IdentifyService(
+            configuration: configuration,
+            localIdentity: context.localIdentity,
+            listenAddressContext: context.listenAddresses,
+            supportedProtocolsContext: context.supportedProtocols,
+            streamOpener: context.streamOpener
+        )
+    }) { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.activatesOnStart()
+    }
 }

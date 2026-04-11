@@ -114,9 +114,10 @@ public final class RelayServer: EventEmitting, Sendable {
         var bytesTransferred: UInt64
     }
 
-    /// Node context for stream opening and address resolution.
-    /// Stored as a single reference (replaces separate opener/localPeer/localAddresses refs).
-    private let nodeContextRef: Mutex<(any NodeContext)?> = Mutex(nil)
+    /// Dependencies injected by the service composition root.
+    private let streamOpenerRef: Mutex<(any StreamOpener)?> = Mutex(nil)
+    private let identityContextRef: Mutex<(any NodeIdentityContext)?> = Mutex(nil)
+    private let listenAddressContextRef: Mutex<(any ListenAddressContext)?> = Mutex(nil)
 
     // MARK: - Events
 
@@ -128,9 +129,17 @@ public final class RelayServer: EventEmitting, Sendable {
     /// Creates a new relay server.
     ///
     /// - Parameter configuration: Server configuration.
-    public init(configuration: RelayServerConfiguration = .init()) {
+    public init(
+        configuration: RelayServerConfiguration = .init(),
+        streamOpener: (any StreamOpener)? = nil,
+        identityContext: (any NodeIdentityContext)? = nil,
+        listenAddressContext: (any ListenAddressContext)? = nil
+    ) {
         self.configuration = configuration
         self.serverState = Mutex(ServerState())
+        self.streamOpenerRef.withLock { $0 = streamOpener }
+        self.identityContextRef.withLock { $0 = identityContext }
+        self.listenAddressContextRef.withLock { $0 = listenAddressContext }
     }
 
     // MARK: - Statistics
@@ -322,7 +331,7 @@ public final class RelayServer: EventEmitting, Sendable {
         }
 
         // Get opener
-        guard let opener = nodeContextRef.withLock({ $0 }) else {
+        guard let opener = streamOpenerRef.withLock({ $0 }) else {
             do {
                 try await sendHopStatus(stream: stream, status: .connectionFailed)
             } catch let error {
@@ -498,9 +507,12 @@ public final class RelayServer: EventEmitting, Sendable {
     }
 
     private func buildRelayAddresses(for peer: PeerID, context: StreamContext) async -> [Multiaddr] {
-        guard let ctx = nodeContextRef.withLock({ $0 }) else { return [] }
-        let myPeerID = ctx.localPeer
-        let localAddresses = await ctx.listenAddresses()
+        guard let identity = identityContextRef.withLock({ $0 }),
+              let listenAddressesContext = listenAddressContextRef.withLock({ $0 }) else {
+            return []
+        }
+        let myPeerID = identity.localPeer
+        let localAddresses = await listenAddressesContext.listenAddresses()
 
         // Build addresses: /ip4/.../tcp/.../p2p/{relay}/p2p-circuit/p2p/{peer}
         return localAddresses.compactMap { addr -> Multiaddr? in
@@ -560,7 +572,9 @@ public final class RelayServer: EventEmitting, Sendable {
         for task in tasks {
             task.cancel()
         }
-        nodeContextRef.withLock { $0 = nil }
+        streamOpenerRef.withLock { $0 = nil }
+        identityContextRef.withLock { $0 = nil }
+        listenAddressContextRef.withLock { $0 = nil }
         channel.finish()
     }
 
@@ -598,12 +612,44 @@ public final class RelayServer: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension RelayServer: StreamService {
+extension RelayServer: LifecycleService, StreamService, StreamOpeningConsumer, LocalIdentityConsumer, ListenAddressConsumer {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleHop(context: context)
     }
 
-    public func attach(to context: any NodeContext) async {
-        nodeContextRef.withLock { $0 = context }
+    public func attachStreamOpening(_ opener: any StreamOpener) async {
+        streamOpenerRef.withLock { $0 = opener }
+    }
+
+    public func attachIdentityContext(_ context: any NodeIdentityContext) async {
+        identityContextRef.withLock { $0 = context }
+    }
+
+    public func attachListenAddressContext(_ context: any ListenAddressContext) async {
+        listenAddressContextRef.withLock { $0 = context }
+    }
+}
+
+public func relayServerComponent(_ relayServer: RelayServer) -> ServiceComponent {
+    service(relayServer) { component in
+        component.handlesInboundStreams()
+        component.receivesStreamOpening()
+        component.consumesLocalIdentity()
+        component.consumesListenAddresses()
+    }
+}
+
+public func relayServerComponent(
+    configuration: RelayServerConfiguration = .init()
+) -> ServiceComponent {
+    service(make: { context in
+        RelayServer(
+            configuration: configuration,
+            streamOpener: context.streamOpener,
+            identityContext: context.localIdentity,
+            listenAddressContext: context.listenAddresses
+        )
+    }) { component in
+        component.handlesInboundStreams()
     }
 }

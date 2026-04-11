@@ -23,6 +23,7 @@ import P2PTransport
 import P2PSecurity
 import P2PMux
 import P2PNegotiation
+import P2PRuntime
 
 #if canImport(Darwin)
 import Darwin
@@ -83,13 +84,12 @@ internal actor Swarm {
 
     // MARK: - Internal state
 
-    private let upgrader: ConnectionUpgrader
+    private let providers: [any ConnectionProvider]
     private nonisolated let broadcaster = EventBroadcaster<SwarmEvent>()
     private nonisolated let negotiationSemaphore: AsyncSemaphore
 
     // Listeners
-    private var listeners: [any Listener] = []
-    private var securedListeners: [any SecuredListener] = []
+    private var listeners: [any ConnectionAcceptor] = []
 
     // Protocol handlers
     private var handlers: [String: ProtocolHandler] = [:]
@@ -109,10 +109,7 @@ internal actor Swarm {
 
     init(configuration: SwarmConfiguration) {
         self.configuration = configuration
-        self.upgrader = NegotiatingUpgrader(
-            security: configuration.security,
-            muxers: configuration.muxers
-        )
+        self.providers = configuration.connectionProviders
         self.pool = ConnectionPool(configuration: configuration.pool)
         self.dialBackoff = DialBackoff()
         self.listenAddresses = ListenAddressStore()
@@ -143,34 +140,20 @@ internal actor Swarm {
         startIdleCheckTask()
 
         // Start listeners
+        let identity = configuration.localIdentity
         for address in configuration.listenAddresses {
-            for transport in configuration.transports {
-                if transport.canListen(address) {
+            for provider in providers {
+                if provider.canListen(address) {
                     do {
-                        if let securedTransport = transport as? SecuredTransport {
-                            let listener = try await securedTransport.listenSecured(
-                                address,
-                                localKeyPair: configuration.keyPair
-                            )
-                            securedListeners.append(listener)
-                            emit(.newListenAddr(listener.localAddress))
+                        let listener = try await provider.listen(address, identity: identity)
+                        listeners.append(listener)
+                        emit(.newListenAddr(listener.localAddress))
 
-                            let acceptTask = Task { [weak self] in
-                                guard let self else { return }
-                                await self.securedAcceptLoop(listener: listener, address: listener.localAddress)
-                            }
-                            acceptTasks.append(acceptTask)
-                        } else {
-                            let listener = try await transport.listen(address)
-                            listeners.append(listener)
-                            emit(.newListenAddr(listener.localAddress))
-
-                            let acceptTask = Task { [weak self] in
-                                guard let self else { return }
-                                await self.acceptLoop(listener: listener, address: address)
-                            }
-                            acceptTasks.append(acceptTask)
+                        let acceptTask = Task { [weak self] in
+                            guard let self else { return }
+                            await self.acceptLoop(listener: listener, address: listener.localAddress)
                         }
+                        acceptTasks.append(acceptTask)
                     } catch {
                         emit(.listenError(address, error))
                     }
@@ -179,12 +162,12 @@ internal actor Swarm {
         }
 
         // Fail if no listeners could bind and we had addresses to listen on
-        if listeners.isEmpty && securedListeners.isEmpty && !configuration.listenAddresses.isEmpty {
+        if listeners.isEmpty && !configuration.listenAddresses.isEmpty {
             throw NodeError.noListenersBound
         }
 
         // Update current listen addresses for synchronous access
-        let boundAddresses = listeners.map(\.localAddress) + securedListeners.map(\.localAddress)
+        let boundAddresses = listeners.map(\.localAddress)
         listenAddresses.update(boundAddresses)
 
         // Resolve unspecified addresses (0.0.0.0 / ::) to actual interface IPs
@@ -220,17 +203,6 @@ internal actor Swarm {
         }
         listeners.removeAll()
 
-        // Close all secured listeners (QUIC, etc.)
-        for listener in securedListeners {
-            emit(.expiredListenAddr(listener.localAddress))
-            do {
-                try await listener.close()
-            } catch {
-                swarmLogger.debug("Failed to close secured listener: \(error)")
-            }
-        }
-        securedListeners.removeAll()
-
         // Close all connections
         for peer in pool.connectedPeers {
             let removed = pool.remove(forPeer: peer)
@@ -241,7 +213,7 @@ internal actor Swarm {
                     swarmLogger.debug("Failed to close connection to \(peer): \(error)")
                 }
                 if managed.state.isConnected {
-                    configuration.resourceManager?.releaseConnection(peer: peer, direction: managed.direction)
+                    configuration.connectionResources?.releaseConnection(peer: peer, direction: managed.direction)
                 }
             }
             onPeerDisconnected(peer)
@@ -266,13 +238,13 @@ internal actor Swarm {
         guard isRunning else { throw NodeError.nodeNotRunning }
 
         // Self-connection guard
-        let localPeerID = configuration.keyPair.peerID
+        let localPeerID = configuration.localIdentity.keyPair.peerID
         if let targetPeer = address.peerID, targetPeer == localPeerID {
             throw NodeError.selfDialNotAllowed
         }
 
         // Gating check (dial)
-        if let gater = configuration.pool.gater {
+        if let gater = configuration.connectionGater {
             if !gater.interceptDial(peer: address.peerID, address: address) {
                 emitConnectionEvent(.gated(peer: address.peerID, address: address, stage: .dial))
                 throw NodeError.connectionGated(stage: .dial)
@@ -282,6 +254,12 @@ internal actor Swarm {
         // Check for pending dial to same peer (join existing)
         if let peerID = address.peerID, let pendingTask = pool.pendingDial(to: peerID) {
             return try await pendingTask.value
+        }
+
+        // If the address already identifies the remote peer, enforce the per-peer
+        // limit before opening another transport path.
+        if let peerID = address.peerID, !pool.canConnectTo(peer: peerID) {
+            throw NodeError.connectionLimitReached
         }
 
         // Check outbound limits
@@ -327,7 +305,7 @@ internal actor Swarm {
                 }
             }
             if managed.state.isConnected {
-                configuration.resourceManager?.releaseConnection(peer: peer, direction: managed.direction)
+                configuration.connectionResources?.releaseConnection(peer: peer, direction: managed.direction)
             }
         }
 
@@ -343,72 +321,11 @@ internal actor Swarm {
         guard let connection = pool.connection(to: peer) else {
             throw NodeError.notConnected(peer)
         }
-
-        // Reserve outbound stream resource
-        if let rm = configuration.resourceManager {
-            do {
-                try rm.reserveOutboundStream(to: peer)
-            } catch let error as ResourceError {
-                switch error {
-                case .limitExceeded(let scope, let resource):
-                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
-                }
-            }
-        }
-
-        let stream: MuxedStream
-        do {
-            stream = try await connection.newStream()
-        } catch {
-            configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
-            throw error
-        }
-
-        // Negotiate protocol using multistream-select
-        let reader = BufferedStreamReader(stream: stream)
-        let result: NegotiationResult
-        do {
-            result = try await MultistreamSelect.negotiate(
-                protocols: [protocolID],
-                read: { try await reader.readMessage() },
-                write: { try await stream.write(ByteBuffer(bytes: $0)) }
-            )
-        } catch {
-            configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
-            await runBestEffort("close outbound stream after protocol negotiation failure") {
-                try await stream.close()
-            }
-            throw error
-        }
-
-        if result.protocolID != protocolID {
-            configuration.resourceManager?.releaseStream(peer: peer, direction: .outbound)
-            await runBestEffort("close outbound stream after protocol mismatch") {
-                try await stream.close()
-            }
-            throw NodeError.protocolNegotiationFailed
-        }
-
-        // Preserve bytes that were read ahead during protocol negotiation.
-        let bufferedRemainder = reader.drainRemainder()
-        let negotiationRemainder = result.remainder + bufferedRemainder
-        let negotiatedStream: MuxedStream
-        if negotiationRemainder.isEmpty {
-            negotiatedStream = stream
-        } else {
-            negotiatedStream = BufferedMuxedStream(stream: stream, initialBuffer: negotiationRemainder)
-        }
-
-        // Wrap stream with resource tracking if resource manager is configured
-        if let rm = configuration.resourceManager {
-            return ResourceTrackedStream(
-                stream: negotiatedStream,
-                peer: peer,
-                direction: .outbound,
-                resourceManager: rm
-            )
-        }
-        return negotiatedStream
+        return try await configuration.streamLifecycle.openOutboundStream(
+            on: connection,
+            peer: peer,
+            protocolID: protocolID
+        )
     }
 
     /// Enables auto-reconnect for a peer at the given address.
@@ -429,17 +346,12 @@ internal actor Swarm {
             emit(.dialing(peerID))
         }
 
-        // Find a transport that can dial
-        guard let transport = configuration.transports.first(where: { $0.canDial(address) }) else {
+        // Find a driver that can dial
+        guard let provider = providers.first(where: { $0.canDial(address) }) else {
             throw NodeError.noSuitableTransport
         }
 
-        let isRelay = transport.pathKind == .relay
-
-        // SecuredTransport (e.g., QUIC) bypasses the upgrade pipeline
-        if let securedTransport = transport as? SecuredTransport {
-            return try await performSecuredDial(to: address, using: securedTransport, isLimited: isRelay)
-        }
+        let isRelay = provider.pathKind == .relay
 
         // Track connecting state if peer ID is known from address
         let connectingID: ConnectionID?
@@ -457,171 +369,37 @@ internal actor Swarm {
             }
         }
 
-        // Standard transport: dial then upgrade
-        let rawConnection = try await transport.dial(address)
-
-        // Upgrade connection (security + muxer negotiation)
-        let result: UpgradeResult
-        do {
-            result = try await upgrader.upgrade(
-                rawConnection,
-                localKeyPair: configuration.keyPair,
-                role: .initiator,
-                expectedPeer: address.peerID
-            )
-        } catch {
-            await runBestEffort("close raw connection after upgrade failure") {
-                try await rawConnection.close()
-            }
-            throw error
-        }
-
-        let remotePeer = result.connection.remotePeer
+        let muxedConnection = try await provider.dial(
+            address,
+            identity: configuration.localIdentity
+        )
+        let remotePeer = muxedConnection.remotePeer
 
         // Self-connection guard (post-handshake, for addresses without embedded PeerID)
-        if remotePeer == configuration.keyPair.peerID {
+        if remotePeer == configuration.localIdentity.keyPair.peerID {
             await runBestEffort("close self-connection after handshake") {
-                try await result.connection.close()
+                try await muxedConnection.close()
             }
             throw NodeError.selfDialNotAllowed
         }
 
         // Gating check (secured)
-        if let gater = configuration.pool.gater {
+        if let gater = configuration.connectionGater {
             if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
                 await runBestEffort("close upgraded connection rejected by secured gater") {
-                    try await result.connection.close()
+                    try await muxedConnection.close()
                 }
                 emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                 throw NodeError.connectionGated(stage: .secured)
             }
         }
 
-        // Check per-peer limit
-        if !pool.canConnectTo(peer: remotePeer) {
-            await runBestEffort("close upgraded connection rejected by per-peer limit") {
-                try await result.connection.close()
-            }
-            throw NodeError.connectionLimitReached
-        }
-
         // Reserve outbound connection resource
-        if let rm = configuration.resourceManager {
+        if let rm = configuration.connectionResources {
             do {
-                try rm.reserveOutboundConnection(to: remotePeer)
+                try rm.reserveConnection(peer: remotePeer, direction: .outbound)
             } catch let error as ResourceError {
                 await runBestEffort("close upgraded connection after outbound resource reservation failure") {
-                    try await result.connection.close()
-                }
-                switch error {
-                case .limitExceeded(let scope, let resource):
-                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
-                }
-            }
-        }
-
-        // Transition connecting entry to connected, or create new entry
-        let connID: ConnectionID
-        if let cid = connectingID {
-            pool.updateConnection(cid, connection: result.connection)
-            connID = cid
-        } else {
-            connID = pool.add(
-                result.connection,
-                for: remotePeer,
-                address: address,
-                direction: .outbound,
-                isLimited: isRelay
-            )
-        }
-        didConnect = true
-
-        // Clear dial backoff on successful connection
-        dialBackoff.recordSuccess(for: remotePeer)
-
-        // Enable auto-reconnect if policy allows
-        if configuration.pool.reconnectionPolicy.enabled {
-            pool.enableAutoReconnect(for: remotePeer, address: address)
-        }
-
-        // Resolve simultaneous connect before emitting events.
-        await resolveSimultaneousConnect(for: remotePeer)
-
-        // Start handling inbound streams BEFORE onPeerConnected.
-        Task { [weak self] in
-            await self?.handleInboundStreams(connection: result.connection)
-            await self?.handleConnectionClosed(id: connID, peer: remotePeer)
-        }
-
-        // Emit events (guarded: only fires for first connection to this peer)
-        onPeerConnected(remotePeer)
-        emitConnectionEvent(.connected(peer: remotePeer, address: address, direction: .outbound))
-
-        return remotePeer
-    }
-
-    private func performSecuredDial(
-        to address: Multiaddr,
-        using transport: SecuredTransport,
-        isLimited: Bool = false
-    ) async throws -> PeerID {
-        // Track connecting state if peer ID is known from address
-        let connectingID: ConnectionID?
-        if let peerID = address.peerID {
-            connectingID = pool.addConnecting(for: peerID, address: address, direction: .outbound, isLimited: isLimited)
-        } else {
-            connectingID = nil
-        }
-
-        // Clean up connecting entry on any failure path
-        var didConnect = false
-        defer {
-            if !didConnect, let id = connectingID {
-                pool.remove(id)
-            }
-        }
-
-        // SecuredTransport returns MuxedConnection directly
-        let muxedConnection = try await transport.dialSecured(
-            address,
-            localKeyPair: configuration.keyPair
-        )
-
-        let remotePeer = muxedConnection.remotePeer
-
-        // Self-connection guard (post-handshake)
-        if remotePeer == configuration.keyPair.peerID {
-            await runBestEffort("close self-connection after secured handshake") {
-                try await muxedConnection.close()
-            }
-            throw NodeError.selfDialNotAllowed
-        }
-
-        // Gating check (secured stage)
-        if let gater = configuration.pool.gater {
-            if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                await runBestEffort("close secured dial connection rejected by secured gater") {
-                    try await muxedConnection.close()
-                }
-                emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
-                throw NodeError.connectionGated(stage: .secured)
-            }
-        }
-
-        // Check per-peer limit
-        if !pool.canConnectTo(peer: remotePeer) {
-            await runBestEffort("close secured dial connection rejected by per-peer limit") {
-                try await muxedConnection.close()
-            }
-            throw NodeError.connectionLimitReached
-        }
-
-        // Reserve outbound connection resource
-        if let rm = configuration.resourceManager {
-            do {
-                try rm.reserveOutboundConnection(to: remotePeer)
-            } catch let error as ResourceError {
-                await runBestEffort("close secured dial connection after outbound resource reservation failure") {
                     try await muxedConnection.close()
                 }
                 switch error {
@@ -634,16 +412,29 @@ internal actor Swarm {
         // Transition connecting entry to connected, or create new entry
         let connID: ConnectionID
         if let cid = connectingID {
-            pool.updateConnection(cid, connection: muxedConnection)
+            guard pool.activateConnectionIfPermitted(cid, connection: muxedConnection) else {
+                configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .outbound)
+                await runBestEffort("close upgraded connection rejected by per-peer limit") {
+                    try await muxedConnection.close()
+                }
+                throw NodeError.connectionLimitReached
+            }
             connID = cid
         } else {
-            connID = pool.add(
+            guard let insertedID = pool.addIfPermitted(
                 muxedConnection,
                 for: remotePeer,
                 address: address,
                 direction: .outbound,
-                isLimited: isLimited
-            )
+                isLimited: isRelay
+            ) else {
+                configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .outbound)
+                await runBestEffort("close upgraded connection rejected by per-peer limit") {
+                    try await muxedConnection.close()
+                }
+                throw NodeError.connectionLimitReached
+            }
+            connID = insertedID
         }
         didConnect = true
 
@@ -651,7 +442,7 @@ internal actor Swarm {
         dialBackoff.recordSuccess(for: remotePeer)
 
         // Enable auto-reconnect if policy allows
-        if configuration.pool.reconnectionPolicy.enabled {
+        if configuration.reconnectionPolicy.enabled {
             pool.enableAutoReconnect(for: remotePeer, address: address)
         }
 
@@ -673,15 +464,19 @@ internal actor Swarm {
 
     // MARK: - Private: Accept
 
-    private func acceptLoop(listener: any Listener, address: Multiaddr) async {
+    private func acceptLoop(listener: any ConnectionAcceptor, address: Multiaddr) async {
         while isRunning && !Task.isCancelled {
             do {
-                let rawConnection = try await listener.accept()
+                let candidate = try await listener.accept()
 
                 Task { [weak self] in
-                    await self?.handleInboundConnection(rawConnection)
+                    await self?.handleInboundCandidate(candidate)
                 }
             } catch {
+                if case ConnectionAcceptorError.establishFailed(let underlying) = error {
+                    emit(.connectionError(nil, underlying))
+                    continue
+                }
                 if isRunning && !Task.isCancelled {
                     emit(.listenError(address, error))
                     continue
@@ -691,23 +486,13 @@ internal actor Swarm {
         }
     }
 
-    private func securedAcceptLoop(listener: any SecuredListener, address: Multiaddr) async {
-        for await muxedConnection in listener.connections {
-            guard isRunning && !Task.isCancelled else { break }
-            Task { [weak self] in
-                await self?.handleSecuredInboundConnection(muxedConnection, from: address)
-            }
-        }
-    }
+    private func handleInboundCandidate(_ candidate: any InboundSessionCandidate) async {
+        let remoteAddress = candidate.remoteAddress
 
-    private func handleInboundConnection(_ rawConnection: any RawConnection) async {
         // Gating check (accept)
-        if let gater = configuration.pool.gater {
-            let remoteAddress = rawConnection.remoteAddress
+        if let gater = configuration.connectionGater {
             if !gater.interceptAccept(address: remoteAddress) {
-                await runBestEffort("close inbound raw connection rejected by accept gater") {
-                    try await rawConnection.close()
-                }
+                await candidate.reject()
                 emitConnectionEvent(.gated(peer: nil, address: remoteAddress, stage: .accept))
                 return
             }
@@ -715,140 +500,36 @@ internal actor Swarm {
 
         // Check inbound limits
         if !pool.canAcceptInbound() {
-            await runBestEffort("close inbound raw connection rejected by inbound limit") {
-                try await rawConnection.close()
-            }
+            await candidate.reject()
             return
         }
 
         do {
-            // Upgrade connection (security + muxer negotiation)
-            let result: UpgradeResult
-            do {
-                result = try await upgrader.upgrade(
-                    rawConnection,
-                    localKeyPair: configuration.keyPair,
-                    role: .responder,
-                    expectedPeer: nil
-                )
-            } catch {
-                await runBestEffort("close inbound raw connection after upgrade failure") {
-                    try await rawConnection.close()
-                }
-                throw error
-            }
-
-            let remotePeer = result.connection.remotePeer
-            let remoteAddress = result.connection.remoteAddress
-
-            // Self-connection guard (inbound)
-            if remotePeer == configuration.keyPair.peerID {
-                await runBestEffort("close inbound self-connection") {
-                    try await result.connection.close()
-                }
-                return
-            }
-
-            // Gating check (secured)
-            if let gater = configuration.pool.gater {
-                if !gater.interceptSecured(peer: remotePeer, direction: .inbound) {
-                    await runBestEffort("close inbound upgraded connection rejected by secured gater") {
-                        try await result.connection.close()
-                    }
-                    emitConnectionEvent(.gated(peer: remotePeer, address: remoteAddress, stage: .secured))
-                    return
-                }
-            }
-
-            // Check per-peer limit
-            if !pool.canConnectTo(peer: remotePeer) {
-                await runBestEffort("close inbound upgraded connection rejected by per-peer limit") {
-                    try await result.connection.close()
-                }
-                return
-            }
-
-            // Reserve inbound connection resource
-            if let rm = configuration.resourceManager {
-                do {
-                    try rm.reserveInboundConnection(from: remotePeer)
-                } catch {
-                    await runBestEffort("close inbound upgraded connection after inbound resource reservation failure") {
-                        try await result.connection.close()
-                    }
-                    return
-                }
-            }
-
-            // Add to pool
-            let isRelay = Self.isCircuitRelayAddress(remoteAddress)
-            let connID = pool.add(
-                result.connection,
-                for: remotePeer,
-                address: remoteAddress,
-                direction: .inbound,
-                isLimited: isRelay
-            )
-
-            // Clear dial backoff — peer is reachable (inbound proves connectivity)
-            dialBackoff.recordSuccess(for: remotePeer)
-
-            // Resolve simultaneous connect before emitting events.
-            await resolveSimultaneousConnect(for: remotePeer)
-
-            // Start handling inbound streams BEFORE onPeerConnected.
-            Task { [weak self] in
-                await self?.handleInboundStreams(connection: result.connection)
-                await self?.handleConnectionClosed(id: connID, peer: remotePeer)
-            }
-
-            // Emit events (guarded: only fires for first connection to this peer)
-            onPeerConnected(remotePeer)
-            emitConnectionEvent(.connected(peer: remotePeer, address: remoteAddress, direction: .inbound))
-
+            let muxedConnection = try await candidate.establish()
+            await handleEstablishedInboundConnection(muxedConnection)
+        } catch ConnectionAcceptorError.establishFailed(let underlying) {
+            emit(.connectionError(nil, underlying))
         } catch {
             emit(.connectionError(nil, error))
         }
     }
 
-    private func handleSecuredInboundConnection(
-        _ muxedConnection: any MuxedConnection,
-        from address: Multiaddr
-    ) async {
+    private func handleEstablishedInboundConnection(_ muxedConnection: any MuxedConnection) async {
         let remotePeer = muxedConnection.remotePeer
         let remoteAddress = muxedConnection.remoteAddress
 
-        // Gating check (accept stage)
-        if let gater = configuration.pool.gater {
-            if !gater.interceptAccept(address: remoteAddress) {
-                await runBestEffort("close secured inbound connection rejected by accept gater") {
-                    try await muxedConnection.close()
-                }
-                emitConnectionEvent(.gated(peer: nil, address: remoteAddress, stage: .accept))
-                return
-            }
-        }
-
-        // Check inbound limits
-        if !pool.canAcceptInbound() {
-            await runBestEffort("close secured inbound connection rejected by inbound limit") {
-                try await muxedConnection.close()
-            }
-            return
-        }
-
-        // Self-connection guard (secured inbound)
-        if remotePeer == configuration.keyPair.peerID {
-            await runBestEffort("close secured inbound self-connection") {
+        // Self-connection guard (inbound)
+        if remotePeer == configuration.localIdentity.keyPair.peerID {
+            await runBestEffort("close inbound self-connection") {
                 try await muxedConnection.close()
             }
             return
         }
 
         // Gating check (secured stage)
-        if let gater = configuration.pool.gater {
+        if let gater = configuration.connectionGater {
             if !gater.interceptSecured(peer: remotePeer, direction: .inbound) {
-                await runBestEffort("close secured inbound connection rejected by secured gater") {
+                await runBestEffort("close inbound connection rejected by secured gater") {
                     try await muxedConnection.close()
                 }
                 emitConnectionEvent(.gated(peer: remotePeer, address: remoteAddress, stage: .secured))
@@ -856,20 +537,12 @@ internal actor Swarm {
             }
         }
 
-        // Check per-peer limit
-        if !pool.canConnectTo(peer: remotePeer) {
-            await runBestEffort("close secured inbound connection rejected by per-peer limit") {
-                try await muxedConnection.close()
-            }
-            return
-        }
-
         // Reserve inbound connection resource
-        if let rm = configuration.resourceManager {
+        if let rm = configuration.connectionResources {
             do {
-                try rm.reserveInboundConnection(from: remotePeer)
+                try rm.reserveConnection(peer: remotePeer, direction: .inbound)
             } catch {
-                await runBestEffort("close secured inbound connection after inbound resource reservation failure") {
+                await runBestEffort("close inbound connection after inbound resource reservation failure") {
                     try await muxedConnection.close()
                 }
                 return
@@ -878,13 +551,19 @@ internal actor Swarm {
 
         // Add to pool
         let isRelay = Self.isCircuitRelayAddress(remoteAddress)
-        let connID = pool.add(
+        guard let connID = pool.addIfPermitted(
             muxedConnection,
             for: remotePeer,
             address: remoteAddress,
             direction: .inbound,
             isLimited: isRelay
-        )
+        ) else {
+            configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .inbound)
+            await runBestEffort("close inbound connection rejected by per-peer limit") {
+                try await muxedConnection.close()
+            }
+            return
+        }
 
         // Clear dial backoff — peer is reachable (inbound proves connectivity)
         dialBackoff.recordSuccess(for: remotePeer)
@@ -907,8 +586,8 @@ internal actor Swarm {
 
     private func handleInboundStreams(connection: MuxedConnection) async {
         let supportedProtocols = Array(handlers.keys)
-        let localPeer = configuration.keyPair.peerID
-        let rm = configuration.resourceManager
+        let localPeer = configuration.localIdentity.keyPair.peerID
+        let rm = configuration.streamResources
         let semaphore = negotiationSemaphore
 
         for await stream in connection.inboundStreams {
@@ -925,7 +604,7 @@ internal actor Swarm {
                 // Reserve inbound stream resource
                 if let rm = rm {
                     do {
-                        try rm.reserveInboundStream(from: remotePeer)
+                        try rm.reserveStream(peer: remotePeer, direction: .inbound)
                     } catch {
                         semaphore.signal()
                         await runBestEffort("close inbound stream after inbound stream resource reservation failure") {
@@ -940,35 +619,19 @@ internal actor Swarm {
                 }
 
                 do {
-                    let reader = BufferedStreamReader(stream: stream)
-                    let result = try await MultistreamSelect.handle(
-                        supported: supportedProtocols,
-                        read: { try await reader.readMessage() },
-                        write: { try await stream.write(ByteBuffer(bytes: $0)) }
+                    let context = try await configuration.streamLifecycle.negotiateInboundStream(
+                        stream,
+                        supportedProtocols: supportedProtocols,
+                        remotePeer: remotePeer,
+                        remoteAddress: remoteAddress,
+                        localPeer: localPeer,
+                        localAddress: localAddress
                     )
 
                     // Release semaphore after negotiation completes (before handler runs)
                     semaphore.signal()
 
-                    // Preserve bytes read ahead during protocol negotiation.
-                    let bufferedRemainder = reader.drainRemainder()
-                    let negotiationRemainder = result.remainder + bufferedRemainder
-                    let negotiatedStream: MuxedStream
-                    if negotiationRemainder.isEmpty {
-                        negotiatedStream = stream
-                    } else {
-                        negotiatedStream = BufferedMuxedStream(stream: stream, initialBuffer: negotiationRemainder)
-                    }
-
-                    if let handler = capturedHandlers[result.protocolID] {
-                        let context = StreamContext(
-                            stream: negotiatedStream,
-                            remotePeer: remotePeer,
-                            remoteAddress: remoteAddress,
-                            localPeer: localPeer,
-                            localAddress: localAddress,
-                            protocolID: result.protocolID
-                        )
+                    if let context, let handler = capturedHandlers[context.protocolID] {
                         await handler(context)
                     } else {
                         await runBestEffort("close inbound stream for unsupported protocol") {
@@ -997,7 +660,7 @@ internal actor Swarm {
         }
 
         // Release connection resource
-        configuration.resourceManager?.releaseConnection(peer: peer, direction: managed.direction)
+        configuration.connectionResources?.releaseConnection(peer: peer, direction: managed.direction)
 
         // Update state
         pool.updateState(id, to: .disconnected(reason: .remoteClose))
@@ -1010,23 +673,36 @@ internal actor Swarm {
             pool.resetRetryCountIfStable(id)
 
             // Only the peer with the smaller PeerID initiates reconnection.
-            let localPeerID = configuration.keyPair.peerID
-            if let address = pool.reconnectAddress(for: peer), localPeerID < peer {
-                let retryCount = pool.managedConnection(id)?.retryCount ?? 0
-                let policy = configuration.pool.reconnectionPolicy
+            let retryCount = pool.managedConnection(id)?.retryCount ?? 0
+            let reconnectAddress = pool.reconnectAddress(for: peer)
+            let action = configuration.reconnectPlanner.action(
+                localPeerID: configuration.localIdentity.keyPair.peerID,
+                remotePeerID: peer,
+                retryCount: retryCount,
+                reason: .remoteClose,
+                hasReconnectAddress: reconnectAddress != nil
+            )
 
-                if policy.shouldReconnect(attempt: retryCount, reason: .remoteClose) {
-                    await scheduleReconnect(id: id, peer: peer, address: address, attempt: retryCount + 1)
-                } else if retryCount >= policy.maxRetries {
-                    pool.updateState(id, to: .failed(reason: .remoteClose))
-                    emitConnectionEvent(.reconnectionFailed(peer: peer, attempts: retryCount))
-                }
+            switch action {
+            case .none:
+                break
+            case .fail(let attempts):
+                pool.updateState(id, to: .failed(reason: .remoteClose))
+                emitConnectionEvent(.reconnectionFailed(peer: peer, attempts: attempts))
+            case .schedule(let attempt, let delay):
+                guard let address = reconnectAddress else { break }
+                await scheduleReconnect(id: id, peer: peer, address: address, attempt: attempt, delay: delay)
             }
         }
     }
 
-    private func scheduleReconnect(id: ConnectionID, peer: PeerID, address: Multiaddr, attempt: Int) async {
-        let delay = configuration.pool.reconnectionPolicy.delay(for: attempt - 1)
+    private func scheduleReconnect(
+        id: ConnectionID,
+        peer: PeerID,
+        address: Multiaddr,
+        attempt: Int,
+        delay: Duration
+    ) async {
         let nextAttempt = ContinuousClock.now + delay
 
         pool.updateState(id, to: .reconnecting(attempt: attempt, nextAttempt: nextAttempt))
@@ -1052,101 +728,28 @@ internal actor Swarm {
         guard !pool.isConnected(to: peer) else { return }
 
         do {
-            guard let transport = configuration.transports.first(where: { $0.canDial(address) }) else {
+            guard let provider = providers.first(where: { $0.canDial(address) }) else {
                 throw NodeError.noSuitableTransport
             }
 
-            // SecuredTransport (e.g., QUIC) bypasses the upgrade pipeline
-            if let securedTransport = transport as? SecuredTransport {
-                let muxedConnection = try await securedTransport.dialSecured(
-                    address,
-                    localKeyPair: configuration.keyPair
-                )
-
-                let remotePeer = muxedConnection.remotePeer
-
-                guard remotePeer == peer else {
-                    await runBestEffort("close reconnected secured connection after peer mismatch") {
-                        try await muxedConnection.close()
-                    }
-                    throw NodeError.notConnected(peer)
-                }
-
-                if let gater = configuration.pool.gater {
-                    if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                        await runBestEffort("close reconnected secured connection rejected by secured gater") {
-                            try await muxedConnection.close()
-                        }
-                        emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
-                        throw NodeError.connectionGated(stage: .secured)
-                    }
-                }
-
-                // Reserve outbound connection resource
-                if let rm = configuration.resourceManager {
-                    do {
-                        try rm.reserveOutboundConnection(to: peer)
-                    } catch let error as ResourceError {
-                        await runBestEffort("close reconnected secured connection after outbound resource reservation failure") {
-                            try await muxedConnection.close()
-                        }
-                        switch error {
-                        case .limitExceeded(let scope, let resource):
-                            throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
-                        }
-                    }
-                }
-
-                pool.updateConnection(id, connection: muxedConnection)
-                pool.resetRetryCount(id)
-
-                dialBackoff.recordSuccess(for: remotePeer)
-
-                await resolveSimultaneousConnect(for: remotePeer)
-
-                Task { [weak self] in
-                    await self?.handleInboundStreams(connection: muxedConnection)
-                    await self?.handleConnectionClosed(id: id, peer: remotePeer)
-                }
-
-                onPeerConnected(remotePeer)
-                emitConnectionEvent(.reconnected(peer: peer, attempt: attempt))
-
-                return
-            }
-
-            // Standard transport: dial then upgrade
-            let rawConnection = try await transport.dial(address)
-
-            let result: UpgradeResult
-            do {
-                result = try await upgrader.upgrade(
-                    rawConnection,
-                    localKeyPair: configuration.keyPair,
-                    role: .initiator,
-                    expectedPeer: peer
-                )
-            } catch {
-                await runBestEffort("close raw connection after reconnect upgrade failure") {
-                    try await rawConnection.close()
-                }
-                throw error
-            }
-
-            let remotePeer = result.connection.remotePeer
+            let muxedConnection = try await provider.dial(
+                address,
+                identity: configuration.localIdentity
+            )
+            let remotePeer = muxedConnection.remotePeer
 
             guard remotePeer == peer else {
-                await runBestEffort("close reconnected upgraded connection after peer mismatch") {
-                    try await result.connection.close()
+                await runBestEffort("close reconnected connection after peer mismatch") {
+                    try await muxedConnection.close()
                 }
                 throw NodeError.notConnected(peer)
             }
 
             // Gating check (secured)
-            if let gater = configuration.pool.gater {
+            if let gater = configuration.connectionGater {
                 if !gater.interceptSecured(peer: remotePeer, direction: .outbound) {
-                    await runBestEffort("close reconnected upgraded connection rejected by secured gater") {
-                        try await result.connection.close()
+                    await runBestEffort("close reconnected connection rejected by secured gater") {
+                        try await muxedConnection.close()
                     }
                     emitConnectionEvent(.gated(peer: remotePeer, address: address, stage: .secured))
                     throw NodeError.connectionGated(stage: .secured)
@@ -1154,12 +757,12 @@ internal actor Swarm {
             }
 
             // Reserve outbound connection resource
-            if let rm = configuration.resourceManager {
+            if let rm = configuration.connectionResources {
                 do {
-                    try rm.reserveOutboundConnection(to: peer)
+                    try rm.reserveConnection(peer: peer, direction: .outbound)
                 } catch let error as ResourceError {
-                    await runBestEffort("close reconnected upgraded connection after outbound resource reservation failure") {
-                        try await result.connection.close()
+                    await runBestEffort("close reconnected connection after outbound resource reservation failure") {
+                        try await muxedConnection.close()
                     }
                     switch error {
                     case .limitExceeded(let scope, let resource):
@@ -1168,7 +771,13 @@ internal actor Swarm {
                 }
             }
 
-            pool.updateConnection(id, connection: result.connection)
+            guard pool.activateConnectionIfPermitted(id, connection: muxedConnection) else {
+                configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .outbound)
+                await runBestEffort("close reconnected connection rejected by per-peer limit") {
+                    try await muxedConnection.close()
+                }
+                throw NodeError.connectionLimitReached
+            }
             pool.resetRetryCount(id)
 
             dialBackoff.recordSuccess(for: remotePeer)
@@ -1176,7 +785,7 @@ internal actor Swarm {
             await resolveSimultaneousConnect(for: remotePeer)
 
             Task { [weak self] in
-                await self?.handleInboundStreams(connection: result.connection)
+                await self?.handleInboundStreams(connection: muxedConnection)
                 await self?.handleConnectionClosed(id: id, peer: remotePeer)
             }
 
@@ -1194,11 +803,21 @@ internal actor Swarm {
             let reason: DisconnectReason = .error(code: errorCode, message: error.localizedDescription)
 
             let retryCount = pool.managedConnection(id)?.retryCount ?? attempt
-            let policy = configuration.pool.reconnectionPolicy
+            let action = configuration.reconnectPlanner.action(
+                localPeerID: configuration.localIdentity.keyPair.peerID,
+                remotePeerID: peer,
+                retryCount: retryCount,
+                reason: reason,
+                hasReconnectAddress: true
+            )
 
-            if policy.shouldReconnect(attempt: retryCount, reason: reason) {
-                await scheduleReconnect(id: id, peer: peer, address: address, attempt: retryCount + 1)
-            } else {
+            switch action {
+            case .schedule(let nextAttempt, let delay):
+                await scheduleReconnect(id: id, peer: peer, address: address, attempt: nextAttempt, delay: delay)
+            case .fail(let attempts):
+                pool.updateState(id, to: .failed(reason: reason))
+                emitConnectionEvent(.reconnectionFailed(peer: peer, attempts: attempts))
+            case .none:
                 pool.updateState(id, to: .failed(reason: reason))
                 emitConnectionEvent(.reconnectionFailed(peer: peer, attempts: retryCount))
             }
@@ -1209,31 +828,17 @@ internal actor Swarm {
 
     private func resolveSimultaneousConnect(for peer: PeerID) async {
         let connections = pool.connectedManagedConnections(for: peer)
-        guard connections.count >= 2 else { return }
-
-        let localPeerID = configuration.keyPair.peerID
-        let winningDirection: ConnectionDirection = localPeerID < peer ? .outbound : .inbound
-
-        var winner: ManagedConnection?
-        var losers: [ManagedConnection] = []
-
-        for conn in connections {
-            if conn.direction == winningDirection && winner == nil {
-                winner = conn
-            } else {
-                losers.append(conn)
-            }
-        }
-
-        // If no clear winner (all same direction), keep the oldest
-        if winner == nil, !losers.isEmpty {
-            losers.sort { ($0.connectedAt ?? .now) < ($1.connectedAt ?? .now) }
-            _ = losers.removeFirst()
-        }
+        let losers = configuration.conflictResolver.duplicateConnections(
+            from: connections,
+            localPeerID: configuration.localIdentity.keyPair.peerID,
+            remotePeerID: peer
+        )
+        guard !losers.isEmpty else { return }
 
         // Close and remove losers
         for loser in losers {
             _ = pool.remove(loser.id)
+            configuration.connectionResources?.releaseConnection(peer: loser.peer, direction: loser.direction)
             if let conn = loser.connection {
                 await runBestEffort("close duplicate connection in simultaneous connect resolution") {
                     try await conn.close()
@@ -1245,7 +850,7 @@ internal actor Swarm {
     // MARK: - Private: Idle Check
 
     private func startIdleCheckTask() {
-        let idleTimeout = configuration.pool.idleTimeout
+        let idleTimeout = configuration.idleTimeout
         guard idleTimeout > .zero else { return }
 
         idleCheckTask = Task { [weak self] in
@@ -1261,12 +866,12 @@ internal actor Swarm {
     }
 
     private func performIdleCheck() async {
-        let idleTimeout = configuration.pool.idleTimeout
+        let idleTimeout = configuration.idleTimeout
 
         // 1. Close idle connections
         let idleConnections = pool.idleConnections(threshold: idleTimeout)
         for managed in idleConnections {
-            configuration.resourceManager?.releaseConnection(peer: managed.peer, direction: managed.direction)
+            configuration.connectionResources?.releaseConnection(peer: managed.peer, direction: managed.direction)
             if let connection = managed.connection {
                 await runBestEffort("close idle connection during idle check") {
                     try await connection.close()
@@ -1307,7 +912,7 @@ internal actor Swarm {
 
         let trimmed = pool.trimIfNeeded()
         for managed in trimmed {
-            configuration.resourceManager?.releaseConnection(peer: managed.peer, direction: managed.direction)
+            configuration.connectionResources?.releaseConnection(peer: managed.peer, direction: managed.direction)
             if let connection = managed.connection {
                 await runBestEffort("close trimmed connection during idle check") {
                     try await connection.close()

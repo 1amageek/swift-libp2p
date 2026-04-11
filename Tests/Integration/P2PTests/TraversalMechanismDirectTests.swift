@@ -1,5 +1,6 @@
 import Testing
 import P2PCore
+import P2PRuntime
 import P2PTransport
 @testable import P2P
 
@@ -22,6 +23,23 @@ private struct MechanismMockTransport: Transport {
     func canListen(_: Multiaddr) -> Bool { false }
 }
 
+private struct MechanismMockProvider: ConnectionProvider {
+    let pathKind: TransportPathKind
+    let canDialClosure: @Sendable (Multiaddr) -> Bool
+
+    func canDial(_ address: Multiaddr) -> Bool { canDialClosure(address) }
+
+    func canListen(_ address: Multiaddr) -> Bool { false }
+
+    func dial(_ address: Multiaddr, identity _: LocalIdentity) async throws -> any StreamSession {
+        throw TransportError.unsupportedAddress(address)
+    }
+
+    func listen(_ address: Multiaddr, identity _: LocalIdentity) async throws -> any ConnectionAcceptor {
+        throw TransportError.unsupportedAddress(address)
+    }
+}
+
 @Suite("TraversalMechanism Direct")
 struct TraversalMechanismDirectTests {
     @Test("collects only IP dialable addresses", .timeLimit(.minutes(1)))
@@ -35,10 +53,10 @@ struct TraversalMechanismDirectTests {
             localPeer: peer,
             targetPeer: peer,
             knownAddresses: [direct, relay],
-            transports: [
+            dialCapability: TransportTraversalDialCapability(transports: [
                 MechanismMockTransport(pathKind: .ip, canDialClosure: { $0 == direct }),
                 MechanismMockTransport(pathKind: .relay, canDialClosure: { _ in true }),
-            ],
+            ]),
             connectedPeers: [],
             opener: nil,
             getLocalAddresses: { [] },
@@ -61,7 +79,7 @@ struct TraversalMechanismDirectTests {
             localPeer: peer,
             targetPeer: peer,
             knownAddresses: [address],
-            transports: [],
+            dialCapability: EmptyTraversalDialCapability(),
             connectedPeers: [],
             opener: nil,
             getLocalAddresses: { [] },
@@ -84,5 +102,32 @@ struct TraversalMechanismDirectTests {
 
         #expect(result.connectedPeer == peer)
         #expect(result.selectedAddress == address)
+    }
+
+    @Test("collects only IP dialable addresses from providers", .timeLimit(.minutes(1)))
+    func collectsIPDialableFromProviders() async throws {
+        let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let direct = try Multiaddr("/ip4/1.2.3.4/tcp/4001")
+        let relay = try Multiaddr("/ip4/1.2.3.4/tcp/4001/p2p-circuit")
+
+        let mechanism = DirectMechanism()
+        let context = TraversalContext(
+            localPeer: peer,
+            targetPeer: peer,
+            knownAddresses: [direct, relay],
+            dialCapability: ConnectionProviderTraversalDialCapability(providers: [
+                MechanismMockProvider(pathKind: .ip, canDialClosure: { $0 == direct }),
+                MechanismMockProvider(pathKind: .relay, canDialClosure: { _ in true }),
+            ]),
+            connectedPeers: [],
+            opener: nil,
+            getLocalAddresses: { [] },
+            isLimitedConnection: { _ in false },
+            dialAddress: { _ in peer }
+        )
+
+        let candidates = await mechanism.collectCandidates(context: context)
+        #expect(candidates.count == 1)
+        #expect(candidates.first?.address == direct)
     }
 }

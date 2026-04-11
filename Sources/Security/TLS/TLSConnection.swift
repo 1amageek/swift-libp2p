@@ -17,6 +17,12 @@ import TLSRecord
 /// The handshake is already complete when this object is created.
 public final class TLSSecuredConnection: SecuredConnection, Sendable {
 
+    private static func makeByteBuffer<Bytes: DataProtocol>(from bytes: Bytes) -> ByteBuffer {
+        var buffer = ByteBuffer()
+        buffer.writeBytes(bytes)
+        return buffer
+    }
+
     public let localPeer: PeerID
     public let remotePeer: PeerID
 
@@ -33,7 +39,7 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
     private let state: Mutex<ConnectionState>
 
     private struct ConnectionState: Sendable {
-        var applicationDataBuffer: Data
+        var applicationDataBuffer: ByteBuffer
         var isClosed: Bool = false
     }
 
@@ -51,7 +57,7 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
         tlsConnection: TLSConnection,
         localPeer: PeerID,
         remotePeer: PeerID,
-        initialApplicationData: Data = Data()
+        initialApplicationData: ByteBuffer = ByteBuffer()
     ) {
         self.underlying = underlying
         self.tlsConnection = tlsConnection
@@ -64,16 +70,16 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
 
     public func read() async throws -> ByteBuffer {
         // Drain buffered application data first (from handshake overlap)
-        let buffered = state.withLock { state -> Data? in
+        let buffered = state.withLock { state -> ByteBuffer? in
             guard !state.isClosed else { return nil }
-            guard !state.applicationDataBuffer.isEmpty else { return nil }
+            guard state.applicationDataBuffer.readableBytes > 0 else { return nil }
             let data = state.applicationDataBuffer
-            state.applicationDataBuffer = Data()
+            state.applicationDataBuffer = ByteBuffer()
             return data
         }
 
         if let buffered {
-            return ByteBuffer(bytes: buffered)
+            return buffered
         }
 
         let isClosed = state.withLock { $0.isClosed }
@@ -86,16 +92,15 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
                 throw TLSError.connectionClosed
             }
 
-            let receivedData = Data(buffer: received)
-            let output = try await tlsConnection.processReceivedData(receivedData)
+            let output = try await tlsConnection.processReceivedData(received.readableBytesView)
 
             // Send any post-handshake response data (e.g. NewSessionTicket ack)
             if !output.dataToSend.isEmpty {
-                try await underlying.write(ByteBuffer(bytes: output.dataToSend))
+                try await underlying.write(Self.makeByteBuffer(from: output.dataToSend))
             }
 
             if !output.applicationData.isEmpty {
-                return ByteBuffer(bytes: output.applicationData)
+                return Self.makeByteBuffer(from: output.applicationData)
             }
 
             // No application data in this batch (e.g. post-handshake messages only),
@@ -107,16 +112,15 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
         let isClosed = state.withLock { $0.isClosed }
         guard !isClosed else { throw TLSError.connectionClosed }
 
-        let plainData = Data(buffer: data)
-        let encrypted = try tlsConnection.writeApplicationData(plainData)
-        try await underlying.write(ByteBuffer(bytes: encrypted))
+        let encrypted = try tlsConnection.writeApplicationData(data.readableBytesView)
+        try await underlying.write(Self.makeByteBuffer(from: encrypted))
     }
 
     public func close() async throws {
         state.withLock { $0.isClosed = true }
         do {
             let closeData = try tlsConnection.close()
-            try await underlying.write(ByteBuffer(bytes: closeData))
+            try await underlying.write(Self.makeByteBuffer(from: closeData))
         } catch {
             // Best effort to send close_notify
         }

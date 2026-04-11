@@ -746,7 +746,7 @@ public final class AutoNATService: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension AutoNATService: StreamService {
+extension AutoNATService: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleAutoNAT(context: context)
     }

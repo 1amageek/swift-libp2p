@@ -164,10 +164,10 @@ public final class SupernodeService: EventEmitting, Sendable {
     }
 }
 
-// MARK: - NodeService
+// MARK: - LifecycleService
 
-extension SupernodeService: NodeService {
-    public func attach(to context: any NodeContext) async {
+extension SupernodeService: LifecycleService, ActivatableService {
+    public func activate() async {
         startEvaluation()
     }
 }
@@ -181,5 +181,12 @@ extension SupernodeService: PeerObserver {
 
     public func peerDisconnected(_ peer: PeerID) async {
         _ = serviceState.withLock { $0.connectedPeers.remove(peer) }
+    }
+}
+
+public func supernodeComponent(_ supernodeService: SupernodeService) -> ServiceComponent {
+    service(supernodeService) { component in
+        component.observesPeers()
+        component.activatesOnStart()
     }
 }

@@ -42,15 +42,8 @@ private struct MplexConnectionState: Sendable {
     var readBuffer = ByteBuffer()
     var inboundContinuation: AsyncStream<MuxedStream>.Continuation?
 
-    /// Returns a slice of the unprocessed portion of the read buffer as Data.
-    var unprocessedBuffer: Data {
-        Data(buffer: readBuffer)
-    }
-
-    /// Advances the read offset and compacts the buffer if needed.
-    mutating func advanceReadBuffer(by bytesRead: Int) {
-        readBuffer.moveReaderIndex(forwardBy: bytesRead)
-        // Compact when consumed portion exceeds threshold
+    /// Compacts the read buffer if the consumed prefix is large enough.
+    mutating func compactReadBufferIfNeeded() {
         if readBuffer.readerIndex > mplexReadBufferCompactThreshold {
             readBuffer.discardReadBytes()
         }
@@ -226,7 +219,9 @@ public final class MplexConnection: MuxedConnection, Sendable {
         if isClosed {
             throw MplexError.connectionClosed
         }
-        try await frameWriter.write(ByteBuffer(bytes: frame.encode()))
+        var buffer = ByteBuffer()
+        frame.encode(into: &buffer)
+        try await frameWriter.write(buffer)
     }
 
     func removeStream(id: UInt64, initiatedLocally: Bool) {
@@ -261,13 +256,12 @@ public final class MplexConnection: MuxedConnection, Sendable {
                 // Process all complete frames
                 let maxFrameSize = UInt64(configuration.maxFrameSize)
                 while true {
-                    let frameResult: (frame: MplexFrame, bytesConsumed: Int)? = try state.withLock { state in
-                        try MplexFrame.decode(from: state.unprocessedBuffer, maxFrameSize: maxFrameSize)
+                    let frame: MplexFrame? = try state.withLock { state in
+                        let decoded = try MplexFrame.decode(from: &state.readBuffer, maxFrameSize: maxFrameSize)
+                        state.compactReadBufferIfNeeded()
+                        return decoded
                     }
-                    guard let (frame, bytesConsumed) = frameResult else { break }
-                    state.withLock { state in
-                        state.advanceReadBuffer(by: bytesConsumed)
-                    }
+                    guard let frame else { break }
                     try await handleFrame(frame)
                 }
             }

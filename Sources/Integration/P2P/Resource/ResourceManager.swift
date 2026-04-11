@@ -4,6 +4,7 @@
 /// with hierarchical scopes (System -> Peer).
 
 import P2PCore
+import P2PRuntime
 
 /// System-wide resource manager for accounting connections, streams, and memory.
 ///

@@ -6,7 +6,9 @@
 /// - Membership protocols (SWIM, HyParView)
 /// - Peer sampling (CYCLON)
 
+import Foundation
 import P2PCore
+import Synchronization
 
 /// An observation about a peer's reachability.
 public struct PeerObservation: Sendable, Hashable {
@@ -76,7 +78,7 @@ public struct ScoredCandidate: Sendable {
 }
 
 /// Discovery service protocol.
-public protocol DiscoveryService: Sendable {
+public protocol DiscoveryService: AnyObject, Sendable {
 
     /// The local peer's ID. Used by the protocol extension to filter self from results.
     var localPeerID: PeerID { get }
@@ -109,5 +111,62 @@ extension DiscoveryService {
     /// Returns known peers, excluding self.
     public func knownPeers() async -> [PeerID] {
         await collectKnownPeers().filter { $0 != localPeerID }
+    }
+}
+
+package enum DiscoveryServiceOwnershipContext {
+    @TaskLocal package static var ownerID: UUID?
+}
+
+package enum DiscoveryServiceOwnershipRegistry {
+    private static let claims = Mutex<[ObjectIdentifier: UUID]>([:])
+
+    package static func claim(_ service: any DiscoveryService, ownerID: UUID) {
+        let identifier = ObjectIdentifier(service)
+        let existing = claims.withLock { claims in
+            claims.updateValue(ownerID, forKey: identifier)
+        }
+        precondition(
+            existing == nil || existing == ownerID,
+            "DiscoveryService instance cannot be transferred to multiple DiscoveryPipeline owners"
+        )
+    }
+
+    package static func preconditionAccessible(_ service: any DiscoveryService) {
+        let identifier = ObjectIdentifier(service)
+        let ownerID = claims.withLock { claims in
+            claims[identifier]
+        }
+        guard let ownerID else { return }
+        precondition(
+            DiscoveryServiceOwnershipContext.ownerID == ownerID,
+            "DiscoveryService instance was transferred to DiscoveryPipeline and is no longer directly accessible"
+        )
+    }
+
+    package static func release(_ service: any DiscoveryService, ownerID: UUID) {
+        let identifier = ObjectIdentifier(service)
+        claims.withLock { claims in
+            guard claims[identifier] == ownerID else { return }
+            claims.removeValue(forKey: identifier)
+        }
+    }
+
+    package static func withOwnerAccess<R>(
+        ownerID: UUID,
+        _ operation: () throws -> R
+    ) rethrows -> R {
+        try DiscoveryServiceOwnershipContext.$ownerID.withValue(ownerID) {
+            try operation()
+        }
+    }
+
+    package static func withOwnerAccess<R>(
+        ownerID: UUID,
+        _ operation: () async throws -> R
+    ) async rethrows -> R {
+        try await DiscoveryServiceOwnershipContext.$ownerID.withValue(ownerID) {
+            try await operation()
+        }
     }
 }

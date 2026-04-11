@@ -17,7 +17,7 @@ struct TraversalEventStreamTests {
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(
@@ -46,7 +46,7 @@ struct TraversalEventStreamTests {
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
         await coordinator.shutdown()
         await coordinator.shutdown()

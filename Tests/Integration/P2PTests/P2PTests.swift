@@ -17,9 +17,8 @@ struct P2PTests {
         let config = NodeConfiguration()
 
         #expect(config.listenAddresses.isEmpty)
-        #expect(config.transports.isEmpty)
-        #expect(config.security.isEmpty)
-        #expect(config.muxers.isEmpty)
+        #expect(config.runtime.listenAddresses.isEmpty)
+        #expect(config.connectionProviders.isEmpty)
         #expect(config.pool.limits.highWatermark == 100)
         #expect(config.pool.limits.maxConnectionsPerPeer == 2)
         #expect(config.pool.idleTimeout == .seconds(60))
@@ -42,6 +41,24 @@ struct P2PTests {
         #expect(config.pool.limits.highWatermark == 50)
         #expect(config.pool.limits.maxConnectionsPerPeer == 1)
         #expect(config.pool.idleTimeout == .seconds(30))
+    }
+
+    @Test("NodeConfiguration accepts runtime configuration")
+    func testNodeConfigurationRuntime() {
+        let keyPair = KeyPair.generateEd25519()
+        let runtime = RuntimeConfiguration(
+            keyPair: keyPair,
+            listenAddresses: [Multiaddr.memory(id: "runtime-config")]
+        )
+        let config = NodeConfiguration(
+            runtime: runtime,
+            healthCheck: nil
+        )
+
+        #expect(config.runtime.keyPair.peerID == keyPair.peerID)
+        #expect(config.keyPair.peerID == keyPair.peerID)
+        #expect(config.listenAddresses.count == 1)
+        #expect(config.healthCheck == nil)
     }
 
     // MARK: - Node Initialization Tests

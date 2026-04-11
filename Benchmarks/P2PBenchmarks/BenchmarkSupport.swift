@@ -71,3 +71,62 @@ func benchmark(_ name: String, iterations: Int, block: () throws -> Void) throws
     let perIter = totalNs / Double(iterations)
     print("  \(name): \(perIter) ns/op (\(iterations) iters)")
 }
+
+/// Runs an async benchmark with warmup and measurement phases.
+///
+/// - Parameters:
+///   - name: Display name for the benchmark
+///   - iterations: Number of measured iterations
+///   - block: The async code to benchmark
+func benchmark(
+    _ name: String,
+    iterations: Int,
+    block: () async throws -> Void
+) async throws {
+    let warmup = min(iterations / 10, 1000)
+    for _ in 0..<warmup {
+        try await block()
+    }
+
+    let clock = ContinuousClock()
+    let start = clock.now
+    for _ in 0..<iterations {
+        try await block()
+    }
+    let elapsed = clock.now - start
+
+    let totalNs = durationNanoseconds(elapsed)
+    let perIter = totalNs / Double(iterations)
+    print("  \(name): \(perIter) ns/op (\(iterations) iters)")
+}
+
+/// Runs an async throughput benchmark and prints MiB/s alongside ns/op.
+///
+/// - Parameters:
+///   - name: Display name for the benchmark
+///   - iterations: Number of measured iterations
+///   - bytesPerIteration: Application payload bytes processed per iteration
+///   - block: The async code to benchmark
+func benchmarkThroughput(
+    _ name: String,
+    iterations: Int,
+    bytesPerIteration: Int,
+    block: () async throws -> Void
+) async throws {
+    let warmup = min(iterations / 10, 1000)
+    for _ in 0..<warmup {
+        try await block()
+    }
+
+    let clock = ContinuousClock()
+    let start = clock.now
+    for _ in 0..<iterations {
+        try await block()
+    }
+    let elapsed = clock.now - start
+
+    let totalNs = durationNanoseconds(elapsed)
+    let perIter = totalNs / Double(iterations)
+    let mibPerSecond = (Double(bytesPerIteration * iterations) / durationSeconds(elapsed)) / (1024 * 1024)
+    print("  \(name): \(perIter) ns/op (\(iterations) iters, \(mibPerSecond) MiB/s)")
+}

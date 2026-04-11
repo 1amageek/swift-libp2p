@@ -39,7 +39,7 @@ struct TraversalTimeoutTests {
                 timeouts: .init(attemptTimeout: .milliseconds(100), overallTimeout: .seconds(1))
             ),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(

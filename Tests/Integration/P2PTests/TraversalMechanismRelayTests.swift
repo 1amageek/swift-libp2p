@@ -35,10 +35,10 @@ struct TraversalMechanismRelayTests {
             localPeer: peer,
             targetPeer: peer,
             knownAddresses: [relayAddress, directAddress],
-            transports: [
+            dialCapability: TransportTraversalDialCapability(transports: [
                 RelayMockTransport(pathKind: .relay, canDialClosure: { $0 == relayAddress }),
                 RelayMockTransport(pathKind: .ip, canDialClosure: { $0 == directAddress }),
-            ],
+            ]),
             connectedPeers: [],
             opener: nil,
             getLocalAddresses: { [] },

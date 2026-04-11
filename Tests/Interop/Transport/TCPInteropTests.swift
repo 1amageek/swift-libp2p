@@ -63,7 +63,7 @@ struct TCPInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         print("[TCP] Noise handshake completed")
@@ -105,7 +105,7 @@ struct TCPInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
         print("[TCP+Yamux] Noise handshake completed")
 
@@ -166,7 +166,7 @@ struct TCPInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Step 3: Negotiate mux protocol
@@ -252,7 +252,7 @@ struct TCPInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Step 3: Negotiate mux protocol

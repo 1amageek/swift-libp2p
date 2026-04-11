@@ -2,13 +2,13 @@ import Foundation
 import Synchronization
 import P2PCore
 import P2PProtocols
-import P2PTransport
+import P2PRuntime
 
 /// Orchestrates candidate collection and connectivity attempts across traversal mechanisms.
 public final class TraversalCoordinator: EventEmitting, Sendable {
     public let configuration: TraversalConfiguration
     public let localPeer: PeerID
-    private let transports: [any Transport]
+    private let dialCapability: any TraversalDialCapability
 
     private let channel: EventChannel<TraversalEvent>
     private let runtimeState: Mutex<RuntimeState>
@@ -44,11 +44,27 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
     public init(
         configuration: TraversalConfiguration,
         localPeer: PeerID,
-        transports: [any Transport]
+        dialCapability: any TraversalDialCapability = EmptyTraversalDialCapability()
     ) {
         self.configuration = configuration
         self.localPeer = localPeer
-        self.transports = transports
+        self.dialCapability = dialCapability
+        self.channel = EventChannel<TraversalEvent>(
+            bufferingPolicy: .bufferingNewest(configuration.eventBufferSize)
+        )
+        self.runtimeState = Mutex(RuntimeState())
+    }
+
+    public init(
+        configuration: TraversalConfiguration,
+        localPeer: PeerID,
+        connectionProviders: [any ConnectionProvider]
+    ) {
+        self.configuration = configuration
+        self.localPeer = localPeer
+        self.dialCapability = ConnectionProviderTraversalDialCapability(
+            providers: connectionProviders
+        )
         self.channel = EventChannel<TraversalEvent>(
             bufferingPolicy: .bufferingNewest(configuration.eventBufferSize)
         )
@@ -81,7 +97,7 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
             localPeer: localPeer,
             targetPeer: localPeer,
             knownAddresses: [],
-            transports: transports,
+            dialCapability: dialCapability,
             connectedPeers: getPeers(),
             opener: opener,
             getLocalAddresses: getLocalAddresses,
@@ -114,7 +130,7 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
             localPeer: localPeer,
             targetPeer: peer,
             knownAddresses: knownAddresses,
-            transports: transports,
+            dialCapability: dialCapability,
             connectedPeers: getPeers(),
             opener: runtime.opener,
             getLocalAddresses: getLocalAddresses,
@@ -362,20 +378,6 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
     }
 }
 
-// MARK: - NodeService
+// MARK: - LifecycleService
 
-extension TraversalCoordinator: NodeService {
-    /// Adapts NodeContext into the parameters required by start().
-    ///
-    /// NodeContext provides listenAddresses and StreamOpener but lacks
-    /// getPeers, isLimitedConnection, and dialAddress. A full implementation
-    /// requires extending NodeContext (Phase 3). For now, this is a guard
-    /// against double-initialization: if start() was already called, this is a no-op.
-    public func attach(to context: any NodeContext) async {
-        // If already running (start() was called via the legacy path), skip.
-        // Phase 3 will replace the explicit start() call in Node with this method
-        // after NodeContext is extended with connection pool capabilities.
-        let alreadyRunning = runtimeState.withLock { $0.isRunning }
-        guard !alreadyRunning else { return }
-    }
-}
+extension TraversalCoordinator: LifecycleService {}

@@ -188,19 +188,19 @@ public struct BootstrapConfiguration: Sendable {
 ### CompositeDiscovery
 複数の発見サービスを組み合わせる:
 ```swift
-let composite = CompositeDiscovery(localPeerID: localPeerID, services: [
-    (swimService, weight: 1.0),
-    (mdnsService, weight: 0.8)
-])
+let composite = CompositeDiscovery.build(localPeerID: localPeerID) { builder in
+    builder.addSWIM(configuration: .default, weight: 1.0)
+    builder.addMDNS(configuration: .default, weight: 0.8)
+}
 await composite.start()
 // ... 使用 ...
 await composite.shutdown()  // 必須: 内部サービスも停止
 ```
 
 **重要な制約**:
-- CompositeDiscoveryは提供されたサービスの所有権を取得する
-- 各サービスインスタンスは1つのCompositeDiscoveryのみが使用すること
-- CompositeDiscoveryに追加後は、サービスを直接使用しないこと
+- CompositeDiscoveryは factory から child service を生成して所有する
+- child service はその CompositeDiscovery 専用に生成すること
+- 既存インスタンスを closure で再利用すると ownership 境界が崩れる
 - `shutdown()`は必ず呼び出すこと（内部サービスも停止される）
 
 ### SWIMの追加型

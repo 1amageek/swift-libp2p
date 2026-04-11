@@ -1,13 +1,77 @@
 import P2PCore
 import P2PProtocols
+import P2PRuntime
 import P2PTransport
+
+public protocol TraversalDialCapability: Sendable {
+    func canDial(_ address: Multiaddr, via pathKind: TraversalPathKind) -> Bool
+}
+
+public struct EmptyTraversalDialCapability: TraversalDialCapability {
+    public init() {}
+
+    public func canDial(_ address: Multiaddr, via pathKind: TraversalPathKind) -> Bool {
+        false
+    }
+}
+
+public struct TransportTraversalDialCapability: TraversalDialCapability {
+    public let transports: [any Transport]
+
+    public init(transports: [any Transport]) {
+        self.transports = transports
+    }
+
+    public func canDial(_ address: Multiaddr, via pathKind: TraversalPathKind) -> Bool {
+        guard let transportPathKind = pathKind.transportPathKind else {
+            return false
+        }
+
+        return transports.contains { transport in
+            transport.pathKind == transportPathKind && transport.canDial(address)
+        }
+    }
+}
+
+public struct ConnectionProviderTraversalDialCapability: TraversalDialCapability {
+    public let providers: [any ConnectionProvider]
+
+    public init(providers: [any ConnectionProvider]) {
+        self.providers = providers
+    }
+
+    public func canDial(_ address: Multiaddr, via pathKind: TraversalPathKind) -> Bool {
+        guard let transportPathKind = pathKind.transportPathKind else {
+            return false
+        }
+
+        return providers.contains { provider in
+            provider.pathKind == transportPathKind && provider.canDial(address)
+        }
+    }
+}
+
+public extension TraversalPathKind {
+    var transportPathKind: TransportPathKind? {
+        switch self {
+        case .local:
+            .local
+        case .ip, .holePunch:
+            .ip
+        case .relay:
+            .relay
+        case .unknown:
+            nil
+        }
+    }
+}
 
 /// Runtime context shared across traversal mechanisms.
 public struct TraversalContext: Sendable {
     public let localPeer: PeerID
     public let targetPeer: PeerID
     public let knownAddresses: [Multiaddr]
-    public let transports: [any Transport]
+    public let dialCapability: any TraversalDialCapability
     public let connectedPeers: [PeerID]
     public let opener: (any StreamOpener)?
     public let getLocalAddresses: @Sendable () -> [Multiaddr]
@@ -18,7 +82,7 @@ public struct TraversalContext: Sendable {
         localPeer: PeerID,
         targetPeer: PeerID,
         knownAddresses: [Multiaddr],
-        transports: [any Transport],
+        dialCapability: any TraversalDialCapability,
         connectedPeers: [PeerID],
         opener: (any StreamOpener)?,
         getLocalAddresses: @escaping @Sendable () -> [Multiaddr],
@@ -28,7 +92,7 @@ public struct TraversalContext: Sendable {
         self.localPeer = localPeer
         self.targetPeer = targetPeer
         self.knownAddresses = knownAddresses
-        self.transports = transports
+        self.dialCapability = dialCapability
         self.connectedPeers = connectedPeers
         self.opener = opener
         self.getLocalAddresses = getLocalAddresses

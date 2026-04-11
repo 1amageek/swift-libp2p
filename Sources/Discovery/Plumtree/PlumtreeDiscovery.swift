@@ -62,8 +62,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
 
     // MARK: - Lifecycle
 
-    /// Starts the internal forwarding loop.
-    /// Prefer `attach(to:)` which also sets the opener for peer stream management.
+    /// Starts the internal forwarding loop after the stream opener has been attached.
     private func startForwarding() {
         guard !isStarted else { return }
 
@@ -81,6 +80,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
     }
 
     public func shutdown() async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         forwardTask?.cancel()
         forwardTask = nil
         opener = nil
@@ -99,10 +99,12 @@ public actor PlumtreeDiscovery: DiscoveryService {
     // MARK: - Plumbing for node integration
 
     public func handlePeerConnected(_ peerID: PeerID, stream: MuxedStream) async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         plumtreeService.handlePeerConnected(peerID, stream: stream)
     }
 
     public func handlePeerDisconnected(_ peerID: PeerID) async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         plumtreeService.handlePeerDisconnected(peerID)
         if let state = knownPeersByID.removeValue(forKey: peerID) {
             emitObservation(subject: peerID, kind: .unreachable, hints: state.addresses)
@@ -112,6 +114,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
     // MARK: - DiscoveryService
 
     public func announce(addresses: [Multiaddr]) async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else {
             throw PlumtreeDiscoveryError.notStarted
         }
@@ -134,6 +137,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
     }
 
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         evictExpiredPeers()
         guard let known = knownPeersByID[peer] else {
             return []
@@ -142,15 +146,18 @@ public actor PlumtreeDiscovery: DiscoveryService {
     }
 
     public func collectKnownPeers() async -> [PeerID] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         evictExpiredPeers()
         return Array(knownPeersByID.keys)
     }
 
     public nonisolated var observations: AsyncStream<PeerObservation> {
-        broadcaster.subscribe()
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return broadcaster.subscribe()
     }
 
     public nonisolated func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let stream = broadcaster.subscribe()
         return AsyncStream { continuation in
             let task = Task {
@@ -299,9 +306,24 @@ public actor PlumtreeDiscovery: DiscoveryService {
     }
 }
 
-// MARK: - DiscoveryBehaviour
+public func plumtreeDiscovery(
+    configuration: PlumtreeDiscoveryConfiguration = .default,
+    weight: Double = 1.0
+) -> DiscoveryComponent {
+    discovery(weight: weight, { localPeerID in
+        PlumtreeDiscovery(localPeerID: localPeerID, configuration: configuration)
+    }, configure: { component in
+        component.handlesInboundStreams()
+        component.observesPeers()
+        component.activatesWithStreamOpening()
+    })
+}
 
-extension PlumtreeDiscovery: DiscoveryBehaviour, StreamService, PeerObserver {
+extension PlumtreeDiscovery:
+    StreamService,
+    PeerObserver,
+    StreamOpeningActivatable
+{
     public nonisolated var protocolIDs: [String] {
         [plumtreeProtocolID]
     }
@@ -310,8 +332,8 @@ extension PlumtreeDiscovery: DiscoveryBehaviour, StreamService, PeerObserver {
         plumtreeService.handlePeerConnected(context.remotePeer, stream: context.stream)
     }
 
-    public func attach(to context: any NodeContext) async {
-        self.opener = context
+    public func activate(using opener: any StreamOpener) async {
+        self.opener = opener
         startForwarding()
     }
 

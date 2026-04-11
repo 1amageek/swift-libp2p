@@ -69,6 +69,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
 
     /// Starts the beacon discovery service and begins forwarding aggregation events.
     public func start() {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let shouldStart = state.withLock { s -> Bool in
             guard !s.isRunning else { return false }
             s.isRunning = true
@@ -91,6 +92,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     /// After calling `shutdown()`, the service will not emit new observations.
     /// This method is idempotent and safe to call multiple times.
     public func shutdown() async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let task = state.withLock { s -> Task<Void, Never>? in
             guard s.isRunning else { return nil }
             s.isRunning = false
@@ -110,6 +112,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     ///
     /// Stores addresses for inclusion in Tier 3 beacons.
     public func announce(addresses: [Multiaddr]) async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         state.withLock { s in
             s.announcedAddresses = addresses
         }
@@ -119,6 +122,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     ///
     /// Searches the confirmed peer store for records matching the requested peer.
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard let record = configuration.store.get(peer) else {
             return []
         }
@@ -136,6 +140,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     /// Returns a filtered stream that only emits observations where the subject
     /// matches the requested peer.
     public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let targetPeer = peer
         let observationStream = self.observations
 
@@ -156,13 +161,15 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
 
     /// Returns all known confirmed peers.
     public func collectKnownPeers() async -> [PeerID] {
-        configuration.store.allConfirmed().map(\.peerID)
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return configuration.store.allConfirmed().map(\.peerID)
     }
 
     /// Returns an independent stream of all observations.
     /// Each call returns a new stream (multi-consumer safe via EventBroadcaster).
     public var observations: AsyncStream<PeerObservation> {
-        broadcaster.subscribe()
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return broadcaster.subscribe()
     }
 
     // MARK: - Beacon Processing
@@ -175,6 +182,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     ///
     /// - Parameter discovery: The raw discovery event from the transport layer.
     public func processDiscovery(_ discovery: RawDiscovery) {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard let decoded = encoder.decode(payload: discovery.payload) else {
             return
         }
@@ -341,4 +349,19 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
             return nil
         }
     }
+}
+
+public func beaconDiscovery(
+    configuration: BeaconDiscoveryConfiguration,
+    weight: Double = 1.0
+) -> DiscoveryComponent {
+    discovery(weight: weight, { localPeerID in
+        precondition(
+            configuration.keyPair.peerID == localPeerID,
+            "BeaconDiscovery configuration keyPair must match DiscoveryPipeline localPeerID"
+        )
+        return BeaconDiscovery(configuration: configuration)
+    }, startup: { service in
+        service.start()
+    })
 }

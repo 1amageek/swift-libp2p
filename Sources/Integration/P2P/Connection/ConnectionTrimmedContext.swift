@@ -3,6 +3,7 @@
 /// Carries machine-readable trim decision details for monitoring.
 
 import Foundation
+import P2PRuntime
 
 /// Structured context for a trimmed connection event.
 public struct ConnectionTrimmedContext: Sendable {

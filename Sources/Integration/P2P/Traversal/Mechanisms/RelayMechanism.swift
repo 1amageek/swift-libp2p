@@ -1,5 +1,4 @@
 import P2PCore
-import P2PTransport
 
 /// Relay dialing mechanism.
 public struct RelayMechanism: TraversalMechanism, Sendable {
@@ -13,7 +12,7 @@ public struct RelayMechanism: TraversalMechanism, Sendable {
 
     public func collectCandidates(context: TraversalContext) async -> [TraversalCandidate] {
         context.knownAddresses.compactMap { address in
-            guard isDialable(address, in: context.transports, pathKind: .relay) else {
+            guard context.dialCapability.canDial(address, via: .relay) else {
                 return nil
             }
             return TraversalCandidate(
@@ -39,15 +38,5 @@ public struct RelayMechanism: TraversalMechanism, Sendable {
             selectedAddress: address,
             mechanismID: id
         )
-    }
-
-    private func isDialable(
-        _ address: Multiaddr,
-        in transports: [any Transport],
-        pathKind: TransportPathKind
-    ) -> Bool {
-        transports.contains { transport in
-            transport.pathKind == pathKind && transport.canDial(address)
-        }
     }
 }

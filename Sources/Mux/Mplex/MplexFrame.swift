@@ -8,6 +8,7 @@
 /// ```
 import Foundation
 import P2PCore
+import NIOCore
 
 /// Mplex protocol identifier.
 public let mplexProtocolID = "/mplex/6.7.0"
@@ -51,13 +52,18 @@ public struct MplexFrame: Sendable, Equatable {
     public let flag: MplexFlag
 
     /// The frame data (optional).
-    public let data: Data
+    public let data: ByteBuffer
 
     /// Creates a new Mplex frame.
-    public init(streamID: UInt64, flag: MplexFlag, data: Data = Data()) {
+    public init(streamID: UInt64, flag: MplexFlag, data: ByteBuffer = ByteBuffer()) {
         self.streamID = streamID
         self.flag = flag
         self.data = data
+    }
+
+    /// Convenience initializer for legacy Data-based callers.
+    public init(streamID: UInt64, flag: MplexFlag, data: Data) {
+        self.init(streamID: streamID, flag: flag, data: ByteBuffer(bytes: data))
     }
 
     // MARK: - Factory Methods
@@ -68,7 +74,7 @@ public struct MplexFrame: Sendable, Equatable {
     ///   - id: The stream ID
     ///   - name: Optional stream name (typically empty)
     public static func newStream(id: UInt64, name: String = "") -> MplexFrame {
-        MplexFrame(streamID: id, flag: .newStream, data: Data(name.utf8))
+        MplexFrame(streamID: id, flag: .newStream, data: ByteBuffer(string: name))
     }
 
     /// Creates a message frame.
@@ -77,12 +83,16 @@ public struct MplexFrame: Sendable, Equatable {
     ///   - id: The stream ID
     ///   - isInitiator: Whether the sender is the stream initiator
     ///   - data: The message data
-    public static func message(id: UInt64, isInitiator: Bool, data: Data) -> MplexFrame {
+    public static func message(id: UInt64, isInitiator: Bool, data: ByteBuffer) -> MplexFrame {
         MplexFrame(
             streamID: id,
             flag: isInitiator ? .messageInitiator : .messageReceiver,
             data: data
         )
+    }
+
+    public static func message(id: UInt64, isInitiator: Bool, data: Data) -> MplexFrame {
+        message(id: id, isInitiator: isInitiator, data: ByteBuffer(bytes: data))
     }
 
     /// Creates a close frame (half-close).
@@ -113,20 +123,17 @@ public struct MplexFrame: Sendable, Equatable {
 
     /// Encodes the frame to bytes.
     public func encode() -> Data {
-        // Estimate: 2 varints (max 10 bytes each) + data
-        var result = Data(capacity: 20 + data.count)
+        var buffer = ByteBuffer()
+        encode(into: &buffer)
+        return Data(buffer: buffer)
+    }
 
-        // Encode header: (streamID << 3) | flag
-        let header = (streamID << 3) | UInt64(flag.rawValue)
-        result.append(Varint.encode(header))
-
-        // Encode length
-        result.append(Varint.encode(UInt64(data.count)))
-
-        // Append data
-        result.append(data)
-
-        return result
+    /// Encodes the frame into an existing ByteBuffer.
+    public func encode(into buffer: inout ByteBuffer) {
+        Varint.encode((streamID << 3) | UInt64(flag.rawValue), into: &buffer)
+        Varint.encode(UInt64(data.readableBytes), into: &buffer)
+        var payload = data
+        buffer.writeBuffer(&payload)
     }
 
     // MARK: - Decoding
@@ -142,44 +149,60 @@ public struct MplexFrame: Sendable, Equatable {
         from buffer: Data,
         maxFrameSize: UInt64 = mplexMaxFrameSize
     ) throws -> (frame: MplexFrame, bytesConsumed: Int)? {
-        var offset = 0
-
-        // Decode header
-        guard let (header, headerSize) = try decodeVarintAt(buffer, offset: offset) else {
+        var byteBuffer = ByteBuffer(bytes: buffer)
+        let start = byteBuffer.readerIndex
+        guard let frame = try decode(from: &byteBuffer, maxFrameSize: maxFrameSize) else {
             return nil
         }
-        offset += headerSize
+        return (frame, byteBuffer.readerIndex - start)
+    }
 
-        // Decode length
-        guard let (length, lengthSize) = try decodeVarintAt(buffer, offset: offset) else {
+    /// Decodes a frame from a ByteBuffer, advancing the reader index on success.
+    public static func decode(
+        from buffer: inout ByteBuffer,
+        maxFrameSize: UInt64 = mplexMaxFrameSize
+    ) throws -> MplexFrame? {
+        let readableBytes = buffer.readableBytes
+        guard readableBytes > 0 else { return nil }
+
+        let headerAndLength = try buffer.withUnsafeReadableBytes { ptr -> ((UInt64, Int)?, (UInt64, Int)?) in
+            let raw = UnsafeRawBufferPointer(ptr)
+            let header = try decodeVarintAt(raw, offset: 0)
+            guard let (_, headerBytes) = header else {
+                return (nil, nil)
+            }
+            let length = try decodeVarintAt(raw, offset: headerBytes)
+            return (header, length)
+        }
+
+        guard
+            let (header, headerSize) = headerAndLength.0,
+            let (length, lengthSize) = headerAndLength.1
+        else {
             return nil
         }
-        offset += lengthSize
 
-        // Validate frame size
         if length > maxFrameSize {
             throw MplexError.frameTooLarge(size: length, max: maxFrameSize)
         }
 
-        // Check if we have enough data
-        guard buffer.count >= offset + Int(length) else {
+        let totalHeaderBytes = headerSize + lengthSize
+        guard readableBytes >= totalHeaderBytes + Int(length) else {
             return nil
         }
 
-        // Extract stream ID and flag from header
         let streamID = header >> 3
         let flagValue = UInt8(header & 0x07)
         guard let flag = MplexFlag(rawValue: flagValue) else {
             throw MplexError.invalidFlag(flagValue)
         }
 
-        // Extract data (use startIndex-relative addressing for Data slices)
-        let dataStart = buffer.startIndex + offset
-        let data = Data(buffer[dataStart..<dataStart + Int(length)])
-        offset += Int(length)
+        buffer.moveReaderIndex(forwardBy: totalHeaderBytes)
+        guard let payload = buffer.readSlice(length: Int(length)) else {
+            return nil
+        }
 
-        let frame = MplexFrame(streamID: streamID, flag: flag, data: data)
-        return (frame, offset)
+        return MplexFrame(streamID: streamID, flag: flag, data: payload)
     }
 
     /// Decodes a varint from data at the given offset using P2PCore.Varint.
@@ -194,6 +217,16 @@ public struct MplexFrame: Sendable, Equatable {
             return nil
         }
         // VarintError.overflow propagates → readLoop shuts down connection
+    }
+
+    private static func decodeVarintAt(_ data: UnsafeRawBufferPointer, offset: Int) throws -> (value: UInt64, size: Int)? {
+        guard offset < data.count else { return nil }
+        do {
+            let (value, bytesRead) = try Varint.decode(from: data, at: offset)
+            return (value, bytesRead)
+        } catch VarintError.insufficientData {
+            return nil
+        }
     }
 }
 

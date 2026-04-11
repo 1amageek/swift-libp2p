@@ -11,13 +11,27 @@ import Testing
 
 @Suite("Discovery Integration Tests", .serialized)
 struct DiscoveryIntegrationTests {
+    private func discoveryServices(
+        _ discoveryService: MockNodeIntegratedDiscovery
+    ) -> ServicePipeline {
+        ServicePipeline {
+            service(discoveryService) { component in
+                component.observesPeers()
+                component.participatesInDiscovery()
+                component.onStart { _, discovery in
+                    await discovery.activate()
+                }
+            }
+        }
+    }
+
     @Test("Node start/shutdown drives discovery lifecycle hooks", .timeLimit(.minutes(1)))
     func discoveryLifecycleHooks() async throws {
         let keyPair = KeyPair.generateEd25519()
         let discovery = MockNodeIntegratedDiscovery()
         let node = Node(configuration: NodeConfiguration(
             keyPair: keyPair,
-            services: [discovery]
+            services: discoveryServices(discovery)
         ))
 
         try await node.start()
@@ -52,7 +66,7 @@ struct DiscoveryIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            services: [serverDiscovery]
+            services: discoveryServices(serverDiscovery)
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -61,7 +75,7 @@ struct DiscoveryIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            services: [clientDiscovery]
+            services: discoveryServices(clientDiscovery)
         ))
 
         try await server.start()
@@ -96,7 +110,7 @@ struct DiscoveryIntegrationTests {
     }
 }
 
-private actor MockNodeIntegratedDiscovery: DiscoveryBehaviour, PeerObserver {
+private actor MockNodeIntegratedDiscovery: DiscoveryService, PeerObserver, LifecycleService {
     struct State: Sendable {
         var attachCalls: Int
         var shutdownCalls: Int
@@ -135,7 +149,7 @@ private actor MockNodeIntegratedDiscovery: DiscoveryBehaviour, PeerObserver {
         }
     }
 
-    func attach(to context: any NodeContext) async {
+    func activate() async {
         attachCalls += 1
     }
 

@@ -92,22 +92,24 @@ struct NoiseHandshake: Sendable {
     /// - Decrypts responder's static
     /// - Performs es DH
     /// - Decrypts and verifies payload
-    mutating func readMessageB(_ message: Data) throws -> NoisePayload {
-        var offset = 0
+    mutating func readMessageB<Message: RandomAccessCollection & DataProtocol>(
+        _ message: Message
+    ) throws -> NoisePayload where Message.Element == UInt8, Message.SubSequence: DataProtocol {
+        let messageStart = message.startIndex
+        let afterEphemeral = message.index(messageStart, offsetBy: noisePublicKeySize, limitedBy: message.endIndex)
 
         // Read remote ephemeral (32 bytes, unencrypted)
-        guard message.count >= noisePublicKeySize else {
+        guard let afterEphemeral else {
             throw NoiseError.handshakeFailed("Message B too short for ephemeral key")
         }
-        let remoteEphemeralData = Data(message[offset..<offset + noisePublicKeySize])
-        offset += noisePublicKeySize
+        let remoteEphemeralData = message[messageStart..<afterEphemeral]
 
         // Validate that the ephemeral key is not a small-order point
         guard validateX25519PublicKey(remoteEphemeralData) else {
             throw NoiseError.invalidKey
         }
 
-        let remoteEphemeral = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: remoteEphemeralData)
+        let remoteEphemeral = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(remoteEphemeralData))
         _remoteEphemeralKey = remoteEphemeral
 
         // Mix remote ephemeral into hash
@@ -119,11 +121,15 @@ struct NoiseHandshake: Sendable {
 
         // Decrypt remote static (32 bytes + 16 tag)
         let encryptedStaticSize = noisePublicKeySize + noiseAuthTagSize
-        guard message.count >= offset + encryptedStaticSize else {
+        let afterEncryptedStatic = message.index(
+            afterEphemeral,
+            offsetBy: encryptedStaticSize,
+            limitedBy: message.endIndex
+        )
+        guard let afterEncryptedStatic else {
             throw NoiseError.handshakeFailed("Message B too short for static key")
         }
-        let encryptedStatic = Data(message[offset..<offset + encryptedStaticSize])
-        offset += encryptedStaticSize
+        let encryptedStatic = message[afterEphemeral..<afterEncryptedStatic]
 
         let remoteStaticData = try symmetricState.decryptAndHash(encryptedStatic)
 
@@ -140,12 +146,16 @@ struct NoiseHandshake: Sendable {
         symmetricState.mixKey(es)
 
         // Decrypt payload
-        let encryptedPayload = Data(message[offset...])
+        let encryptedPayload = message[afterEncryptedStatic...]
         let payloadData = try symmetricState.decryptAndHash(encryptedPayload)
 
         // Decode and verify payload
         let payload = try NoisePayload.decode(from: payloadData)
         return payload
+    }
+
+    mutating func readMessageB(_ message: ByteBuffer) throws -> NoisePayload {
+        try readMessageB(message.readableBytesView)
     }
 
     /// Writes Message C (initiator's final message).
@@ -185,19 +195,23 @@ struct NoiseHandshake: Sendable {
     /// Pattern: `-> e`
     /// - Receives initiator's ephemeral public key
     /// - Per Noise spec, calls decryptAndHash on remaining bytes (empty payload)
-    mutating func readMessageA(_ message: Data) throws {
-        guard message.count >= noisePublicKeySize else {
+    mutating func readMessageA<Message: RandomAccessCollection & DataProtocol>(
+        _ message: Message
+    ) throws where Message.Element == UInt8, Message.SubSequence: DataProtocol {
+        let messageStart = message.startIndex
+        let afterEphemeral = message.index(messageStart, offsetBy: noisePublicKeySize, limitedBy: message.endIndex)
+        guard let afterEphemeral else {
             throw NoiseError.handshakeFailed("Message A too short")
         }
 
-        let remoteEphemeralData = Data(message.prefix(noisePublicKeySize))
+        let remoteEphemeralData = message[messageStart..<afterEphemeral]
 
         // Validate that the ephemeral key is not a small-order point
         guard validateX25519PublicKey(remoteEphemeralData) else {
             throw NoiseError.invalidKey
         }
 
-        let remoteEphemeral = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: remoteEphemeralData)
+        let remoteEphemeral = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(remoteEphemeralData))
         _remoteEphemeralKey = remoteEphemeral
 
         // Mix remote ephemeral into hash
@@ -208,8 +222,12 @@ struct NoiseHandshake: Sendable {
         // to call decryptAndHash(empty) which does mixHash(empty ciphertext).
         // Since no key is set yet, decryptAndHash returns empty but still does mixHash(empty).
         // This is required for compatibility with go-libp2p/flynn-noise.
-        let remainingBytes = Data(message.dropFirst(noisePublicKeySize))
+        let remainingBytes = message[afterEphemeral...]
         _ = try symmetricState.decryptAndHash(remainingBytes)
+    }
+
+    mutating func readMessageA(_ message: ByteBuffer) throws {
+        try readMessageA(message.readableBytesView)
     }
 
     /// Writes Message B (responder's response).
@@ -260,16 +278,21 @@ struct NoiseHandshake: Sendable {
     /// - Decrypts initiator's static public key
     /// - Performs se DH
     /// - Decrypts and verifies payload
-    mutating func readMessageC(_ message: Data) throws -> NoisePayload {
-        var offset = 0
-
+    mutating func readMessageC<Message: RandomAccessCollection & DataProtocol>(
+        _ message: Message
+    ) throws -> NoisePayload where Message.Element == UInt8, Message.SubSequence: DataProtocol {
         // Decrypt remote static (32 bytes + 16 tag)
         let encryptedStaticSize = noisePublicKeySize + noiseAuthTagSize
-        guard message.count >= encryptedStaticSize else {
+        let messageStart = message.startIndex
+        let afterEncryptedStatic = message.index(
+            messageStart,
+            offsetBy: encryptedStaticSize,
+            limitedBy: message.endIndex
+        )
+        guard let afterEncryptedStatic else {
             throw NoiseError.handshakeFailed("Message C too short for static key")
         }
-        let encryptedStatic = Data(message[offset..<offset + encryptedStaticSize])
-        offset += encryptedStaticSize
+        let encryptedStatic = message[messageStart..<afterEncryptedStatic]
 
         let remoteStaticData = try symmetricState.decryptAndHash(encryptedStatic)
 
@@ -287,12 +310,16 @@ struct NoiseHandshake: Sendable {
         symmetricState.mixKey(se)
 
         // Decrypt payload
-        let encryptedPayload = Data(message[offset...])
+        let encryptedPayload = message[afterEncryptedStatic...]
         let payloadData = try symmetricState.decryptAndHash(encryptedPayload)
 
         // Decode and verify payload
         let payload = try NoisePayload.decode(from: payloadData)
         return payload
+    }
+
+    mutating func readMessageC(_ message: ByteBuffer) throws -> NoisePayload {
+        try readMessageC(message.readableBytesView)
     }
 
     // MARK: - Finalization

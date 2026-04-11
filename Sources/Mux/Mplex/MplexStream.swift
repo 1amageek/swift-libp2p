@@ -113,8 +113,7 @@ public final class MplexStream: MuxedStream, Sendable {
         }
 
         // Mplex has no flow control, send data directly
-        let frameData = Data(buffer: data)
-        let frame = MplexFrame.message(id: id, isInitiator: isInitiator, data: frameData)
+        let frame = MplexFrame.message(id: id, isInitiator: isInitiator, data: data)
         try await connection.sendFrame(frame)
     }
 
@@ -192,7 +191,7 @@ public final class MplexStream: MuxedStream, Sendable {
     // MARK: - Internal
 
     /// Called when data is received for this stream.
-    func dataReceived(_ data: Data) {
+    func dataReceived(_ data: ByteBuffer) {
         let shouldReset: Bool = state.withLock { state in
             // Ignore if reset or read-closed
             if state.isReset || state.localReadClosed {
@@ -202,12 +201,12 @@ public final class MplexStream: MuxedStream, Sendable {
             // Deliver to waiting reader or buffer
             if !state.readContinuations.isEmpty {
                 let cont = state.readContinuations.removeFirst()
-                cont.resume(returning: ByteBuffer(bytes: data))
+                cont.resume(returning: data)
                 return false
             } else {
                 // Check buffer size limit (DoS protection)
                 // Mplex has no flow control, so reset is the only safe response
-                if state.readBuffer.readableBytes + data.count > maxReadBufferSize {
+                if state.readBuffer.readableBytes + data.readableBytes > maxReadBufferSize {
                     state.isReset = true
                     state.localWriteClosed = true
                     state.localReadClosed = true
@@ -220,7 +219,7 @@ public final class MplexStream: MuxedStream, Sendable {
                     }
                     return true
                 }
-                state.readBuffer.writeData(data)
+                state.readBuffer.writeImmutableBuffer(data)
                 return false
             }
         }

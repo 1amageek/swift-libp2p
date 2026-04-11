@@ -7,6 +7,7 @@ import Foundation
 import Synchronization
 import P2PCore
 import P2PMux
+import P2PRuntime
 
 /// A MuxedStream wrapper that releases stream resources on close/reset.
 ///
@@ -20,7 +21,7 @@ internal final class ResourceTrackedStream: MuxedStream, Sendable {
     private let underlying: MuxedStream
     private let peer: PeerID
     private let direction: ConnectionDirection
-    private let resourceManager: any ResourceManager
+    private let resourceManager: any StreamResourceAccounting
     private let negotiatedProtocolID: String?
     private let released: Mutex<Bool>
 
@@ -28,7 +29,7 @@ internal final class ResourceTrackedStream: MuxedStream, Sendable {
         stream: MuxedStream,
         peer: PeerID,
         direction: ConnectionDirection,
-        resourceManager: any ResourceManager,
+        resourceManager: any StreamResourceAccounting,
         negotiatedProtocolID: String? = nil
     ) {
         self.underlying = stream
@@ -37,6 +38,22 @@ internal final class ResourceTrackedStream: MuxedStream, Sendable {
         self.resourceManager = resourceManager
         self.negotiatedProtocolID = negotiatedProtocolID
         self.released = Mutex(false)
+    }
+
+    convenience init(
+        stream: MuxedStream,
+        peer: PeerID,
+        direction: ConnectionDirection,
+        resourceManager: any ResourceManager,
+        negotiatedProtocolID: String? = nil
+    ) {
+        self.init(
+            stream: stream,
+            peer: peer,
+            direction: direction,
+            resourceManager: ResourceManagerStreamAccounting(base: resourceManager),
+            negotiatedProtocolID: negotiatedProtocolID
+        )
     }
 
     deinit {

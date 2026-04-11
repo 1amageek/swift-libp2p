@@ -397,7 +397,7 @@ public final class HTTPService: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension HTTPService: StreamService {
+extension HTTPService: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleIncoming(context: context)
     }

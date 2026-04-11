@@ -11,6 +11,11 @@ import Testing
 
 @Suite("Identify Integration Tests", .serialized)
 struct IdentifyIntegrationTests {
+    private func identifyServices(_ identifyService: IdentifyService) -> ServicePipeline {
+        ServicePipeline {
+            identifyComponent(identifyService)
+        }
+    }
 
     @Test("IdentifyService handlers registered on Node start", .timeLimit(.minutes(1)))
     func identifyHandlersRegistered() async throws {
@@ -35,7 +40,7 @@ struct IdentifyIntegrationTests {
                 idleTimeout: .seconds(300)
             ),
             healthCheck: nil,
-            services: [identifyService]
+            services: identifyServices(identifyService)
         ))
 
         try await node.start()
@@ -76,7 +81,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            services: [serverIdentify]
+            services: identifyServices(serverIdentify)
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -131,7 +136,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            services: [serverIdentify]
+            services: identifyServices(serverIdentify)
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -156,7 +161,9 @@ struct IdentifyIntegrationTests {
         await client.disconnect(from: serverKeyPair.peerID)
         await server.disconnect(from: clientKeyPair.peerID)
 
-        #expect(!serverIdentify.connectedPeers.contains(clientKeyPair.peerID))
+        try await waitUntil(timeout: .seconds(2)) {
+            !serverIdentify.connectedPeers.contains(clientKeyPair.peerID)
+        }
 
         await client.shutdown()
         await server.shutdown()
@@ -186,7 +193,7 @@ struct IdentifyIntegrationTests {
                 idleTimeout: .seconds(300)
             ),
             healthCheck: nil,
-            services: [identifyService]
+            services: identifyServices(identifyService)
         ))
 
         try await node.start()
@@ -244,7 +251,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            services: [serverIdentify]
+            services: identifyServices(serverIdentify)
         ))
         let client = Node(configuration: NodeConfiguration(
             keyPair: clientKeyPair,
@@ -253,7 +260,7 @@ struct IdentifyIntegrationTests {
             muxers: [YamuxMuxer()],
             pool: pool,
             healthCheck: nil,
-            services: [clientIdentify]
+            services: identifyServices(clientIdentify)
         ))
 
         try await server.start()

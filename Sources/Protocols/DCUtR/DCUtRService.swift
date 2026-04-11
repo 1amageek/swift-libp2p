@@ -497,15 +497,38 @@ public final class DCUtRService: EventEmitting, Sendable {
 
 // MARK: - StreamService
 
-extension DCUtRService: StreamService {
+extension DCUtRService: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleDCUtR(context: context)
     }
+}
 
-    public func attach(to context: any NodeContext) async {
-        // Resolve listen addresses once (attach is called after listeners start,
-        // so addresses are valid). The sync closure captures the snapshot.
-        let addresses = await context.listenAddresses()
-        setLocalAddressProvider { addresses }
+public func dcutrComponent(_ dcutrService: DCUtRService) -> ServiceComponent {
+    service(dcutrService) { component in
+        component.handlesInboundStreams()
+        component.postStart { context, service in
+            let addresses = await context.listenAddresses.listenAddresses()
+            service.setLocalAddressProvider { addresses }
+            service.setDialer { address in
+                _ = try await context.addressDialer.connect(to: address)
+            }
+        }
+    }
+}
+
+public func dcutrComponent(
+    configuration: DCUtRConfiguration = .init()
+) -> ServiceComponent {
+    service(make: { _ in
+        DCUtRService(configuration: configuration)
+    }) { component in
+        component.handlesInboundStreams()
+        component.postStart { context, service in
+            let addresses = await context.listenAddresses.listenAddresses()
+            service.setLocalAddressProvider { addresses }
+            service.setDialer { address in
+                _ = try await context.addressDialer.connect(to: address)
+            }
+        }
     }
 }

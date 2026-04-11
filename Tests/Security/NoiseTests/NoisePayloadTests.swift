@@ -192,6 +192,22 @@ struct NoisePayloadTests {
         #expect(result?.bytesConsumed == framed.count)
     }
 
+    @Test("ByteBuffer framing roundtrip")
+    func testByteBufferFramingEncodeDecode() throws {
+        let message = ByteBuffer(bytes: Data("Hello, ByteBuffer Noise!".utf8))
+        var framed = ByteBuffer()
+        try encodeNoiseMessage(message, into: &framed)
+
+        #expect(framed.readableBytes == message.readableBytes + 2)
+        #expect(framed.getInteger(at: framed.readerIndex, as: UInt8.self) == 0x00)
+        #expect(framed.getInteger(at: framed.readerIndex + 1, as: UInt8.self) == UInt8(message.readableBytes))
+
+        let decoded = try readNoiseMessage(from: &framed)
+        #expect(decoded != nil)
+        #expect(decoded?.readableBytesView.elementsEqual(message.readableBytesView) == true)
+        #expect(framed.readableBytes == 0)
+    }
+
     @Test("encodeNoiseMessage with larger message")
     func testFramingLargerMessage() throws {
         let message = Data(repeating: 0x42, count: 1000)

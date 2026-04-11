@@ -12,6 +12,12 @@ import P2PSecurity
 /// peer IDs and public keys without encryption.
 public final class PlaintextUpgrader: SecurityUpgrader, Sendable {
 
+    private static func makeByteBuffer<Bytes: DataProtocol>(from bytes: Bytes) -> ByteBuffer {
+        var buffer = ByteBuffer()
+        buffer.writeBytes(bytes)
+        return buffer
+    }
+
     public var protocolID: String { "/plaintext/2.0.0" }
 
     public init() {}
@@ -30,7 +36,7 @@ public final class PlaintextUpgrader: SecurityUpgrader, Sendable {
 
         // Send our exchange message
         let localMessage = localExchange.encode()
-        try await connection.write(ByteBuffer(bytes: localMessage))
+        try await connection.write(Self.makeByteBuffer(from: localMessage))
 
         // Read remote exchange message with proper buffering
         let (remoteData, remainder) = try await readLengthPrefixedMessage(from: connection)
@@ -59,7 +65,7 @@ public final class PlaintextUpgrader: SecurityUpgrader, Sendable {
             underlying: connection,
             localPeer: localPeer,
             remotePeer: remoteExchange.peerID,
-            initialBuffer: ByteBuffer(bytes: remainder)
+            initialBuffer: remainder
         )
     }
 }
@@ -128,6 +134,11 @@ public struct Exchange: Sendable {
             publicKey: try PublicKey(protobufEncoded: keyBytes)
         )
     }
+
+    /// Decodes an exchange message from a ByteBuffer.
+    public static func decode(from buffer: ByteBuffer) throws -> Exchange {
+        try decode(from: Data(buffer: buffer))
+    }
 }
 
 // MARK: - PlaintextError
@@ -152,8 +163,8 @@ private let maxPlaintextHandshakeSize = 64 * 1024
 /// complete message is received. Returns both the message and any
 /// remaining data that was read but not part of the message.
 ///
-/// - Returns: A tuple of (message data, remainder data)
-private func readLengthPrefixedMessage(from connection: any RawConnection) async throws -> (message: Data, remainder: Data) {
+/// - Returns: A tuple of (message buffer, remainder buffer)
+private func readLengthPrefixedMessage(from connection: any RawConnection) async throws -> (message: ByteBuffer, remainder: ByteBuffer) {
     var buffer = ByteBuffer()
 
     // Read until we have the complete message
@@ -161,21 +172,22 @@ private func readLengthPrefixedMessage(from connection: any RawConnection) async
         // Try to decode varint length
         if buffer.readableBytes > 0 {
             do {
-                let data = Data(buffer: buffer)
-                let (length, lengthBytes) = try Varint.decode(data)
+                var probe = buffer
+                let length = try Varint.decode(from: &probe)
 
                 // Validate message size to prevent memory exhaustion
                 guard length <= UInt64(maxPlaintextHandshakeSize) else {
                     throw PlaintextError.messageTooLarge
                 }
 
-                let totalNeeded = lengthBytes + Int(length)
+                let totalNeeded = probe.readerIndex + Int(length)
 
                 // Check if we have enough data
                 if buffer.readableBytes >= totalNeeded {
-                    let message = Data(data.prefix(totalNeeded))
-                    let remainder = Data(data.dropFirst(totalNeeded))
-                    return (message, remainder)
+                    guard let message = buffer.readSlice(length: totalNeeded) else {
+                        throw PlaintextError.insufficientData
+                    }
+                    return (message, buffer)
                 }
             } catch VarintError.insufficientData {
                 // Need more data for varint

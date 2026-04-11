@@ -90,22 +90,21 @@ public final class PnetConnection: RawConnection, Sendable {
         }
 
         // Read encrypted data from the underlying connection
-        let encryptedBuffer = try await inner.read()
+        var encryptedBuffer = try await inner.read()
 
         // Decrypt the data — safe because isReading guarantees exclusive access
-        var data = Array(encryptedBuffer.readableBytesView)
         recvState.withLock { state in
-            state.cipher.process(&data)
+            state.cipher.process(&encryptedBuffer)
         }
 
-        return ByteBuffer(bytes: data)
+        return encryptedBuffer
     }
 
     public func write(_ data: ByteBuffer) async throws {
         // Atomically check closed state, set isWriting flag, and encrypt.
         // Encryption happens inside the lock because it is synchronous and fast,
         // and must occur in the same serial order as the writes to the wire.
-        let encrypted: [UInt8] = try sendState.withLock { state in
+        let encrypted: ByteBuffer = try sendState.withLock { state in
             guard !state.isClosed else {
                 throw PnetError.connectionFailed("Connection is closed")
             }
@@ -113,9 +112,9 @@ public final class PnetConnection: RawConnection, Sendable {
                 throw PnetError.concurrentAccess("Concurrent write() calls are not supported on PnetConnection")
             }
             state.isWriting = true
-            var bytes = Array(data.readableBytesView)
-            state.cipher.process(&bytes)
-            return bytes
+            var encrypted = data
+            state.cipher.process(&encrypted)
+            return encrypted
         }
 
         defer {
@@ -123,7 +122,7 @@ public final class PnetConnection: RawConnection, Sendable {
         }
 
         // Write to network (no cipher lock held)
-        try await inner.write(ByteBuffer(bytes: encrypted))
+        try await inner.write(encrypted)
     }
 
     public func close() async throws {

@@ -97,6 +97,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Starts the SWIM membership service.
     public func start() async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard !isStarted else {
             throw SWIMMembershipError.alreadyStarted
         }
@@ -221,6 +222,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Shuts down the SWIM membership service.
     public func shutdown() async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else { return }
 
         forwardTask?.cancel()
@@ -243,6 +245,7 @@ public actor SWIMMembership: DiscoveryService {
     ///
     /// - Parameter seeds: Peer IDs of seed nodes to contact.
     public func join(seeds: [(PeerID, Multiaddr)]) async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted, let swim = swim else {
             throw SWIMMembershipError.notStarted
         }
@@ -256,20 +259,23 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Gracefully leaves the cluster.
     public func leave() async {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         await swim?.leave()
     }
 
     /// Returns all current members.
     public var members: [Member] {
         get async {
-            await swim?.members ?? []
+            DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+            return await swim?.members ?? []
         }
     }
 
     /// Returns the count of alive members.
     public var aliveCount: Int {
         get async {
-            await swim?.aliveCount ?? 0
+            DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+            return await swim?.aliveCount ?? 0
         }
     }
 
@@ -277,6 +283,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Announces our presence (SWIM uses join instead).
     public func announce(addresses: [Multiaddr]) async throws {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         // SWIM doesn't use explicit announcements - membership is managed through join
         // Store the addresses for reference
         if let first = addresses.first {
@@ -286,6 +293,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Finds candidates for a specific peer.
     public func find(peer: PeerID) async throws -> [ScoredCandidate] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard let swim = swim else {
             return []
         }
@@ -301,6 +309,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Subscribes to observations about a specific peer.
     nonisolated public func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation> {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let targetID = peer.description
         let observationStream = self.observations
         return AsyncStream { continuation in
@@ -318,6 +327,7 @@ public actor SWIMMembership: DiscoveryService {
 
     /// Returns all known peer IDs.
     public func collectKnownPeers() async -> [PeerID] {
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard let swim = swim else { return [] }
 
         let members = await swim.members
@@ -329,7 +339,8 @@ public actor SWIMMembership: DiscoveryService {
     /// Returns all observations as a stream.
     /// Each call returns an independent stream (multi-consumer safe).
     public nonisolated var observations: AsyncStream<PeerObservation> {
-        broadcaster.subscribe()
+        DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
+        return broadcaster.subscribe()
     }
 
     // MARK: - Private Methods
@@ -352,10 +363,23 @@ public actor SWIMMembership: DiscoveryService {
     }
 }
 
-// MARK: - DiscoveryBehaviour
+public func swim(
+    configuration: SWIMMembershipConfiguration = .default,
+    weight: Double = 1.0
+) -> DiscoveryComponent {
+    discovery(weight: weight, { localPeerID in
+        SWIMMembership(localPeerID: localPeerID, configuration: configuration)
+    }, startup: { service in
+        do {
+            try await service.start()
+        } catch {
+            // SWIM start failure is non-fatal.
+        }
+    })
+}
 
-extension SWIMMembership: DiscoveryBehaviour {
-    public func attach(to context: any NodeContext) async {
+extension SWIMMembership {
+    public func activate() async {
         do {
             try await start()
         } catch {
@@ -363,7 +387,6 @@ extension SWIMMembership: DiscoveryBehaviour {
         }
     }
 
-    // shutdown(): already defined as async method
 }
 
 // MARK: - Errors

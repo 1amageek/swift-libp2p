@@ -233,14 +233,15 @@ public final class KademliaService: EventEmitting, Sendable {
     ///   - configuration: Service configuration.
     public init(
         localPeerID: PeerID,
-        configuration: KademliaConfiguration = .default
+        configuration: KademliaConfiguration = .default,
+        opener: (any StreamOpener)? = nil
     ) {
         self.localPeerID = localPeerID
         self.configuration = configuration
         self.routingTable = RoutingTable(localPeerID: localPeerID, kValue: configuration.kValue)
         self.recordStore = RecordStore(defaultTTL: configuration.recordTTL)
         self.providerStore = ProviderStore(defaultTTL: configuration.providerTTL)
-        self.serviceState = Mutex(ServiceState(mode: configuration.mode))
+        self.serviceState = Mutex(ServiceState(mode: configuration.mode, opener: opener))
         self.cleanupTask = Mutex(nil)
         self.refreshTask = Mutex(nil)
         self.republishTask = Mutex(nil)
@@ -1289,15 +1290,42 @@ private final class QueryDelegateImpl: KademliaQueryDelegate, Sendable {
 
 // MARK: - StreamService
 
-extension KademliaService: StreamService {
+extension KademliaService: LifecycleService, StreamService, ActivatableService, StreamOpeningActivatable {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleStream(context)
     }
 
-    public func attach(to context: any NodeContext) async {
-        serviceState.withLock { $0.opener = context }
+    public func activate(using opener: any StreamOpener) async {
+        serviceState.withLock { $0.opener = opener }
+        await activate()
+    }
+
+    public func activate() async {
+        guard let opener = serviceState.withLock({ $0.opener }) else { return }
         startMaintenance()
-        startRefresh(using: context)
-        startRepublish(using: context)
+        startRefresh(using: opener)
+        startRepublish(using: opener)
+    }
+}
+
+public func kademliaComponent(_ kademliaService: KademliaService) -> ServiceComponent {
+    service(kademliaService) { component in
+        component.handlesInboundStreams()
+        component.activatesWithStreamOpening()
+    }
+}
+
+public func kademliaComponent(
+    configuration: KademliaConfiguration = .default
+) -> ServiceComponent {
+    service(make: { context in
+        KademliaService(
+            localPeerID: context.localIdentity.localPeer,
+            configuration: configuration,
+            opener: context.streamOpener
+        )
+    }) { component in
+        component.handlesInboundStreams()
+        component.activatesOnStart()
     }
 }

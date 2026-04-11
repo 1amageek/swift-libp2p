@@ -9,6 +9,7 @@
 import Foundation
 import Synchronization
 import P2PCore
+import P2PRuntime
 
 /// Centralized per-peer dial backoff tracker.
 ///

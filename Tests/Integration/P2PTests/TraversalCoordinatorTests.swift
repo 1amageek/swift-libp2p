@@ -161,7 +161,7 @@ struct TraversalCoordinatorTests {
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(mechanisms: [local, relay]),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(
@@ -207,7 +207,7 @@ struct TraversalCoordinatorTests {
                 hintProviders: [StaticHintProvider(hintsToReturn: [hint])]
             ),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(
@@ -249,7 +249,7 @@ struct TraversalCoordinatorTests {
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(mechanisms: [direct, relay]),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(
@@ -288,7 +288,7 @@ struct TraversalCoordinatorTests {
                 )
             ),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(
@@ -336,7 +336,7 @@ struct TraversalCoordinatorTests {
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(mechanisms: [holePunch, relay]),
             localPeer: localPeer,
-            transports: []
+            dialCapability: EmptyTraversalDialCapability()
         )
 
         await coordinator.start(

@@ -89,7 +89,7 @@ struct WSSInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         print("[WSS] Noise handshake completed")
@@ -139,7 +139,7 @@ struct WSSInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
         print("[WSS+Yamux] Noise handshake completed")
 
@@ -208,7 +208,7 @@ struct WSSInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Step 3: Negotiate mux protocol
@@ -302,7 +302,7 @@ struct WSSInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
 
         // Step 3: Negotiate mux protocol

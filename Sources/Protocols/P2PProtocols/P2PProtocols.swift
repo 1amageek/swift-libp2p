@@ -6,25 +6,15 @@ import P2PCore
 import P2PMux
 import P2PDiscovery
 
-// MARK: - NodeService (Service Lifecycle)
+// MARK: - LifecycleService
 
-/// Lifecycle interface for services managed by Node.
+/// Lifecycle interface for runtime-managed services.
 ///
-/// Base protocol for all services (protocol handlers, discovery, etc.).
-/// Stream handling and peer event observation are separated into dedicated protocols.
-public protocol NodeService: Sendable {
-    /// Called during Node.start(). Store the NodeContext for later use.
-    /// Called after listeners are up and addresses are resolved,
-    /// so listenAddresses() returns valid values.
-    func attach(to context: any NodeContext) async
-
-    /// Called during Node.shutdown(). Clean up resources.
-    /// All implementations must be async.
+/// Shutdown is a separate role from stream handling, peer observation, or
+/// listen-address contribution. Services opt into lifecycle management
+/// explicitly instead of inheriting it through unrelated capability protocols.
+public protocol LifecycleService: Sendable {
     func shutdown() async
-}
-
-extension NodeService {
-    public func attach(to context: any NodeContext) async {}
 }
 
 // MARK: - StreamService (Inbound Stream Handling)
@@ -33,7 +23,7 @@ extension NodeService {
 ///
 /// Streams negotiated with any of the declared `protocolIDs` are
 /// automatically routed to this service by Node.
-public protocol StreamService: NodeService {
+public protocol StreamService: Sendable {
     /// The protocol IDs this service handles.
     var protocolIDs: [String] { get }
 
@@ -59,36 +49,47 @@ extension PeerObserver {
     public func peerDisconnected(_ peer: PeerID) async {}
 }
 
-// MARK: - DiscoveryBehaviour
-
-/// A NodeService with discovery capabilities.
+/// A service that contributes additional listen addresses to Node.
 ///
-/// Node detects DiscoveryBehaviour conformance from the services array
-/// and automatically configures auto-connect.
-public protocol DiscoveryBehaviour: NodeService, DiscoveryService {}
+/// This is used for features such as relays that can advertise derived or
+/// externally reachable addresses in addition to the underlying transport
+/// listener addresses.
+public protocol ListenAddressContributor: Sendable {
+    func setListenAddressCallback(
+        _ callback: @escaping @Sendable ([Multiaddr]) async -> Void
+    )
+}
 
-// MARK: - NodeContext
-
-/// Context provided to services by Node.
-///
-/// サービスが必要とする Node の機能を抽象化する。
-/// IdentifyService が必要とする keyPair/listenAddresses/supportedProtocols も
-/// GossipSub が必要とする StreamOpener も、この 1 つのインターフェースで提供する。
-public protocol NodeContext: StreamOpener, Sendable {
+/// Identity information exposed to services.
+public protocol NodeIdentityContext: Sendable {
     /// ローカルピアの ID。
     var localPeer: PeerID { get }
 
     /// ローカルピアの鍵ペア。
     var localKeyPair: KeyPair { get }
+}
 
+/// Listen address access exposed to services.
+public protocol ListenAddressContext: Sendable {
     /// 現在のリッスンアドレス（解決済み）。
     func listenAddresses() async -> [Multiaddr]
+}
 
+/// Supported protocol catalog exposed to services.
+public protocol SupportedProtocolsContext: Sendable {
     /// サポートしているプロトコル ID 一覧。
     func supportedProtocols() async -> [String]
+}
 
+/// Peer store access exposed to services.
+public protocol PeerStoreContext: Sendable {
     /// ピアストア（アドレス管理、観測アドレス更新等）。
     var peerStore: any PeerStore { get async }
+}
+
+/// Address dialing capability exposed to services that need direct outbound dials.
+public protocol AddressDialer: Sendable {
+    func connect(to address: Multiaddr) async throws -> PeerID
 }
 
 // MARK: - StreamOpener
@@ -104,6 +105,43 @@ public protocol StreamOpener: Sendable {
     ///   - protocolID: The protocol to negotiate
     /// - Returns: The negotiated stream
     func newStream(to peer: PeerID, protocol protocolID: String) async throws -> MuxedStream
+}
+
+/// Capability protocol for services that receive stream opening capability at startup.
+///
+/// This is the pure injection role used by components that need a `StreamOpener`
+/// but do not have a distinct activation phase.
+public protocol StreamOpeningConsumer: Sendable {
+    func attachStreamOpening(_ opener: any StreamOpener) async
+}
+
+/// Capability protocol for services that need local identity injected at startup.
+public protocol LocalIdentityConsumer: Sendable {
+    func attachIdentityContext(_ context: any NodeIdentityContext) async
+}
+
+/// Capability protocol for services that need listen addresses injected at startup.
+public protocol ListenAddressConsumer: Sendable {
+    func attachListenAddressContext(_ context: any ListenAddressContext) async
+}
+
+/// Capability protocol for services that need supported protocol metadata at startup.
+public protocol SupportedProtocolsConsumer: Sendable {
+    func attachSupportedProtocolsContext(_ context: any SupportedProtocolsContext) async
+}
+
+/// Capability protocol for services that expose a start-up activation phase.
+public protocol ActivatableService: Sendable {
+    func activate() async
+}
+
+/// Capability protocol for components that need a stream opener at activation time.
+///
+/// This is more specific than a two-step `attach` + `activate` sequence and lets
+/// the composition root express "start this runtime role with stream opening"
+/// as a single operation.
+public protocol StreamOpeningActivatable: Sendable {
+    func activate(using opener: any StreamOpener) async
 }
 
 /// Context provided to protocol handlers.

@@ -64,6 +64,7 @@ let package = Package(
         .library(name: "P2PRendezvous", targets: ["P2PRendezvous"]),
         .library(name: "P2PHTTP", targets: ["P2PHTTP"]),
         .library(name: "P2PTransportWebTransport", targets: ["P2PTransportWebTransport"]),
+        .library(name: "P2PRuntime", targets: ["P2PRuntime"]),
 
         // MARK: - Integration
         .library(name: "P2P", targets: ["P2P"]),
@@ -602,6 +603,21 @@ let package = Package(
             path: "Tests/Transport/WebTransportTests"
         ),
 
+        // MARK: - Runtime
+        .target(
+            name: "P2PRuntime",
+            dependencies: [
+                "P2PCore",
+                "P2PTransport",
+                "P2PSecurity",
+                "P2PMux",
+                "P2PNegotiation",
+                "P2PDiscovery",
+                "P2PProtocols",
+            ],
+            path: "Sources/Runtime/P2PRuntime"
+        ),
+
         // MARK: - Integration
         .target(
             name: "P2P",
@@ -614,6 +630,7 @@ let package = Package(
                 "P2PNegotiation",
                 "P2PDiscovery",
                 "P2PProtocols",
+                "P2PRuntime",
                 // Default implementations (@_exported — batteries-included)
                 "P2PTransportTCP",
                 "P2PSecurityNoise",
@@ -681,8 +698,13 @@ let package = Package(
                 "P2PCore",
                 "P2PKademlia",
                 "P2PGossipSub",
+                "P2PRuntime",
+                "P2PTransportMemory",
+                "P2PMux",
                 "P2PMuxYamux",
                 "P2PSecurityNoise",
+                "P2PSecurityPlaintext",
+                "P2PSecurityTLS",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],

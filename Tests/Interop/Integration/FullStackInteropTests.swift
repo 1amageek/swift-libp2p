@@ -59,7 +59,7 @@ struct FullStackInteropTests {
             localKeyPair: keyPair,
             as: .initiator,
             expectedPeer: nil,
-            initialBuffer: securityNegotiation.remainder
+            initialBuffer: ByteBuffer(bytes: securityNegotiation.remainder)
         )
         print("[FullStack] Noise handshake completed")
 

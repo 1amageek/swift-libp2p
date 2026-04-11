@@ -63,6 +63,32 @@ struct NoiseHandshakeTests {
         #expect(decrypted2 == testData2)
     }
 
+    @Test("Handshake read APIs accept ByteBuffer input")
+    func testHandshakeByteBufferInput() throws {
+        let initiatorKeyPair = KeyPair.generateEd25519()
+        let responderKeyPair = KeyPair.generateEd25519()
+
+        var initiator = NoiseHandshake(localKeyPair: initiatorKeyPair, isInitiator: true)
+        var responder = NoiseHandshake(localKeyPair: responderKeyPair, isInitiator: false)
+
+        let messageA = try initiator.writeMessageA()
+        try responder.readMessageA(ByteBuffer(bytes: messageA))
+
+        let messageB = try responder.writeMessageB()
+        let payloadB = try initiator.readMessageB(ByteBuffer(bytes: messageB))
+
+        let responderStaticPub = Data(responder.localStaticKey.publicKey.rawRepresentation)
+        let verifiedResponderPeerID = try payloadB.verify(noiseStaticPublicKey: responderStaticPub)
+        #expect(verifiedResponderPeerID == responderKeyPair.peerID)
+
+        let messageC = try initiator.writeMessageC()
+        let payloadC = try responder.readMessageC(ByteBuffer(bytes: messageC))
+
+        let initiatorStaticPub = Data(initiator.localStaticKey.publicKey.rawRepresentation)
+        let verifiedInitiatorPeerID = try payloadC.verify(noiseStaticPublicKey: initiatorStaticPub)
+        #expect(verifiedInitiatorPeerID == initiatorKeyPair.peerID)
+    }
+
     // MARK: - Message A Tests
 
     @Test("Message A has correct format")
