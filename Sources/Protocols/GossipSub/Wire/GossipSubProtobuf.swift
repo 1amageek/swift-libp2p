@@ -324,6 +324,10 @@ public enum GossipSubProtobuf {
         try decode(data, offset: 0, end: data.count)
     }
 
+    public static func decode(_ buffer: ByteBuffer) throws -> GossipSubRPC {
+        try decode(Data(buffer: buffer))
+    }
+
     private static func decodeSubOpts(_ data: Data) throws -> GossipSubRPC.SubscriptionOpt {
         try decodeSubOpts(data, offset: 0, end: data.count)
     }

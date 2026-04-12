@@ -526,7 +526,7 @@ public final class GossipSubService: Sendable {
         if data.readerIndex > Self.maxBufferSize {
             data.discardReadBytes()
         }
-        return try GossipSubProtobuf.decode(Data(buffer: rpcBuffer))
+        return try GossipSubProtobuf.decode(rpcBuffer)
     }
 
     /// Encodes an RPC with length prefix.
@@ -637,30 +637,6 @@ extension GossipSubService: LifecycleService, StreamService, PeerObserver, Activ
 
     public func peerDisconnected(_ peer: PeerID) async {
         handlePeerDisconnected(peer)
-    }
-}
-
-public func gossipSubComponent(_ gossipSubService: GossipSubService) -> ServiceComponent {
-    service(gossipSubService) { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.activatesWithStreamOpening()
-    }
-}
-
-public func gossipSubComponent(
-    configuration: GossipSubConfiguration = .init()
-) -> ServiceComponent {
-    service(make: { context in
-        GossipSubService(
-            keyPair: context.localIdentity.localKeyPair,
-            configuration: configuration,
-            opener: context.streamOpener
-        )
-    }) { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.activatesOnStart()
     }
 }
 

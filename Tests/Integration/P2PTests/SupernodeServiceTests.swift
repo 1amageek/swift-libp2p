@@ -18,7 +18,7 @@ struct SupernodeServiceTests {
     @Test("Activation starts evaluation loop", .timeLimit(.minutes(1)))
     func attachStartsEvaluation() async {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -37,7 +37,7 @@ struct SupernodeServiceTests {
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
     func shutdownIdempotent() async {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -56,7 +56,7 @@ struct SupernodeServiceTests {
     @Test("Events stream terminates on shutdown", .timeLimit(.minutes(1)))
     func eventsTerminateOnShutdown() async {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -80,7 +80,7 @@ struct SupernodeServiceTests {
     @Test("Private NAT deactivates relay", .timeLimit(.minutes(1)))
     func privateNATDeactivates() async throws {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -109,7 +109,7 @@ struct SupernodeServiceTests {
     @Test("Insufficient peers deactivates relay", .timeLimit(.minutes(1)))
     func insufficientPeersDeactivates() async throws {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -139,7 +139,7 @@ struct SupernodeServiceTests {
     @Test("Sufficient peers with no NAT requirement activates relay", .timeLimit(.minutes(1)))
     func sufficientPeersActivates() async throws {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -172,7 +172,7 @@ struct SupernodeServiceTests {
     @Test("PeerConnected increments and PeerDisconnected decrements", .timeLimit(.minutes(1)))
     func peerCountTracking() async {
         let autoNAT = AutoNATService()
-        let relayServer = RelayServer()
+        let relayServer = P2PCircuitRelay.RelayServer()
 
         let service = SupernodeService(
             autoNAT: autoNAT,
@@ -207,14 +207,14 @@ struct SupernodeServiceTests {
 
     @Test("RelayServer isAcceptingReservations defaults to true", .timeLimit(.minutes(1)))
     func relayServerDefaultAccepting() async {
-        let server = RelayServer()
+        let server = P2PCircuitRelay.RelayServer()
         #expect(server.isAcceptingReservations == true)
         await server.shutdown()
     }
 
     @Test("RelayServer isAcceptingReservations can be toggled", .timeLimit(.minutes(1)))
     func relayServerToggleAccepting() async {
-        let server = RelayServer()
+        let server = P2PCircuitRelay.RelayServer()
         server.isAcceptingReservations = false
         #expect(server.isAcceptingReservations == false)
         server.isAcceptingReservations = true

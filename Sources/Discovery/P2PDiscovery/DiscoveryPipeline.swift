@@ -267,6 +267,39 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
     }
 }
 
+package extension DiscoveryRegistration {
+    mutating func onStart(
+        _ startupHook: @escaping @Sendable (Source) async -> Void
+    ) {
+        let combinedStartup: (@Sendable (Source) async -> Void)?
+        if let startup {
+            combinedStartup = { source in
+                await startup(source)
+                await startupHook(source)
+            }
+        } else {
+            combinedStartup = startupHook
+        }
+        self = DiscoveryRegistration(
+            weight: weight,
+            makeSource: makeSource,
+            startup: combinedStartup,
+            inboundProtocolIDs: inboundProtocolIDs,
+            runtimeRequirements: runtimeRequirements
+        )
+    }
+
+    mutating func setWeight(_ newWeight: Double) {
+        self = DiscoveryRegistration(
+            weight: newWeight,
+            makeSource: makeSource,
+            startup: startup,
+            inboundProtocolIDs: inboundProtocolIDs,
+            runtimeRequirements: runtimeRequirements
+        )
+    }
+}
+
 @resultBuilder
 public enum DiscoveryPipelineBuilder {
     public static func buildBlock() -> [DiscoveryComponent] {
@@ -302,7 +335,7 @@ public enum DiscoveryPipelineBuilder {
     }
 }
 
-public func discovery<Source: DiscoveryService>(
+package func discovery<Source: DiscoveryService>(
     _ source: Source,
     weight: Double = 1.0,
     startup: (@Sendable (Source) async -> Void)? = nil
@@ -314,7 +347,7 @@ public func discovery<Source: DiscoveryService>(
     ).component()
 }
 
-public func discovery<Source: DiscoveryService>(
+package func discovery<Source: DiscoveryService>(
     _ source: Source,
     weight: Double = 1.0,
     startup: (@Sendable (Source) async -> Void)? = nil,
@@ -329,7 +362,7 @@ public func discovery<Source: DiscoveryService>(
     return registration.component()
 }
 
-public func discovery(
+package func discovery(
     _ source: any DiscoveryService,
     weight: Double = 1.0,
     startup: (@Sendable (any DiscoveryService) async -> Void)? = nil
@@ -350,7 +383,7 @@ public func discovery(
     }
 }
 
-public func discovery<Source: DiscoveryService>(
+package func discovery<Source: DiscoveryService>(
     weight: Double = 1.0,
     _ makeSource: @escaping @Sendable (PeerID) -> Source,
     startup: (@Sendable (Source) async -> Void)? = nil
@@ -362,7 +395,7 @@ public func discovery<Source: DiscoveryService>(
     ).component()
 }
 
-public func discovery<Source: DiscoveryService>(
+package func discovery<Source: DiscoveryService>(
     weight: Double = 1.0,
     _ makeSource: @escaping @Sendable (PeerID) -> Source,
     startup: (@Sendable (Source) async -> Void)? = nil,
@@ -377,7 +410,7 @@ public func discovery<Source: DiscoveryService>(
     return registration.component()
 }
 
-public func discovery(
+package func discovery(
     weight: Double = 1.0,
     _ makeSource: @escaping @Sendable (PeerID) -> any DiscoveryService,
     startup: (@Sendable (any DiscoveryService) async -> Void)? = nil

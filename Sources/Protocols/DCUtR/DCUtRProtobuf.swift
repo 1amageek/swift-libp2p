@@ -3,6 +3,7 @@
 /// See: https://github.com/libp2p/specs/blob/master/relay/DCUtR.md
 
 import Foundation
+import NIOCore
 import P2PCore
 
 /// Protobuf encoding/decoding for DCUtR messages.
@@ -55,6 +56,10 @@ enum DCUtRProtobuf {
         return result
     }
 
+    static func encode(_ message: DCUtRMessage, into buffer: inout ByteBuffer) {
+        buffer.writeBytes(encode(message))
+    }
+
     // MARK: - Decoding
 
     /// Decodes a DCUtRMessage from protobuf wire format.
@@ -103,6 +108,10 @@ enum DCUtRProtobuf {
         }
 
         return DCUtRMessage(type: type, observedAddresses: addresses)
+    }
+
+    static func decode(_ buffer: ByteBuffer) throws -> DCUtRMessage {
+        try decode(Data(buffer: buffer))
     }
 
     // MARK: - Helpers

@@ -40,7 +40,7 @@ public final class AutoRelayService: EventEmitting, Sendable {
 
     private let autoNAT: AutoNATService
     private let relayClient: RelayClient
-    private let autoRelay: AutoRelay
+    private let autoRelay: P2PCircuitRelay.AutoRelay
     private let configuration: AutoRelayServiceConfiguration
 
     // MARK: - EventEmitting State
@@ -99,7 +99,7 @@ public final class AutoRelayService: EventEmitting, Sendable {
         self.autoNAT = autoNAT
         self.relayClient = relayClient
         self.configuration = configuration
-        self.autoRelay = AutoRelay(
+        self.autoRelay = P2PCircuitRelay.AutoRelay(
             localPeer: localPeer,
             configuration: AutoRelayConfiguration(
                 maxRelays: configuration.desiredRelays,
@@ -407,33 +407,5 @@ extension AutoRelayService: PeerObserver {
             await notifyRelayAddressChange()
             triggerImmediateReservationCycle()
         }
-    }
-}
-
-public func autoRelayComponent(_ autoRelayService: AutoRelayService) -> ServiceComponent {
-    service(autoRelayService) { component in
-        component.contributesListenAddresses()
-        component.observesPeers()
-        component.activatesWithStreamOpening()
-    }
-}
-
-public func autoRelayComponent(
-    autoNAT: AutoNATService,
-    relayClient: RelayClient,
-    configuration: AutoRelayServiceConfiguration = .init()
-) -> ServiceComponent {
-    service(make: { context in
-        AutoRelayService(
-            autoNAT: autoNAT,
-            relayClient: relayClient,
-            localPeer: context.localIdentity.localPeer,
-            configuration: configuration,
-            streamOpener: context.streamOpener
-        )
-    }) { component in
-        component.contributesListenAddresses()
-        component.observesPeers()
-        component.activatesOnStart()
     }
 }

@@ -257,6 +257,10 @@ enum KademliaProtobuf {
         }
     }
 
+    static func decode(_ buffer: ByteBuffer) throws -> KademliaMessage {
+        try decode(Data(buffer: buffer))
+    }
+
     // MARK: - Peer Encoding
 
     private static func encodePeer(_ peer: PreparedPeer, into data: inout Data) {

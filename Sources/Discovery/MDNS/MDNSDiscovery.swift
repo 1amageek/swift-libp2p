@@ -325,21 +325,6 @@ public actor MDNSDiscovery: DiscoveryService {
     }
 }
 
-public func mdns(
-    configuration: MDNSConfiguration = .default,
-    weight: Double = 1.0
-) -> DiscoveryComponent {
-    discovery(weight: weight, { localPeerID in
-        MDNSDiscovery(localPeerID: localPeerID, configuration: configuration)
-    }, startup: { service in
-        do {
-            try await service.start()
-        } catch {
-            // mDNS start failure is non-fatal.
-        }
-    })
-}
-
 extension MDNSDiscovery {
     public func activate() async {
         do {

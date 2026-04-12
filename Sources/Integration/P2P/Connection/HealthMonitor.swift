@@ -75,6 +75,22 @@ public struct HealthMonitorConfiguration: Sendable {
         checkImmediately: false
     )
 
+    /// Production-oriented monitoring.
+    ///
+    /// Uses the stable default cadence while enabling an initial probe so
+    /// dead peers are detected sooner after startup or reconnect.
+    public static let production = HealthMonitorConfiguration(
+        interval: .seconds(30),
+        timeout: .seconds(10),
+        maxFailures: 3,
+        checkImmediately: true
+    )
+
+    /// Development-oriented monitoring.
+    ///
+    /// Uses a more relaxed cadence to reduce local noise while iterating.
+    public static let development = relaxed
+
     /// Creates a new health monitor configuration.
     ///
     /// - Parameters:
@@ -97,6 +113,8 @@ public struct HealthMonitorConfiguration: Sendable {
         self.checkImmediately = checkImmediately
     }
 }
+
+extension HealthMonitorConfiguration: Equatable {}
 
 /// Internal error for health check timeout.
 enum HealthCheckError: Error {

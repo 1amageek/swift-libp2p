@@ -363,21 +363,6 @@ public actor SWIMMembership: DiscoveryService {
     }
 }
 
-public func swim(
-    configuration: SWIMMembershipConfiguration = .default,
-    weight: Double = 1.0
-) -> DiscoveryComponent {
-    discovery(weight: weight, { localPeerID in
-        SWIMMembership(localPeerID: localPeerID, configuration: configuration)
-    }, startup: { service in
-        do {
-            try await service.start()
-        } catch {
-            // SWIM start failure is non-fatal.
-        }
-    })
-}
-
 extension SWIMMembership {
     public func activate() async {
         do {

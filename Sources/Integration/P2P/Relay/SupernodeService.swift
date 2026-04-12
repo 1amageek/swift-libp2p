@@ -39,7 +39,7 @@ public final class SupernodeService: EventEmitting, Sendable {
     // MARK: - Dependencies
 
     private let autoNAT: AutoNATService
-    private let relayServer: RelayServer
+    private let relayServer: P2PCircuitRelay.RelayServer
     private let configuration: SupernodeServiceConfiguration
 
     // MARK: - EventEmitting State
@@ -75,7 +75,7 @@ public final class SupernodeService: EventEmitting, Sendable {
     ///   - configuration: Service configuration.
     public init(
         autoNAT: AutoNATService,
-        relayServer: RelayServer,
+        relayServer: P2PCircuitRelay.RelayServer,
         configuration: SupernodeServiceConfiguration = .init()
     ) {
         self.autoNAT = autoNAT
@@ -181,12 +181,5 @@ extension SupernodeService: PeerObserver {
 
     public func peerDisconnected(_ peer: PeerID) async {
         _ = serviceState.withLock { $0.connectedPeers.remove(peer) }
-    }
-}
-
-public func supernodeComponent(_ supernodeService: SupernodeService) -> ServiceComponent {
-    service(supernodeService) { component in
-        component.observesPeers()
-        component.activatesOnStart()
     }
 }

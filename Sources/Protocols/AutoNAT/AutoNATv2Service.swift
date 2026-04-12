@@ -218,14 +218,15 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
                     let request = AutoNATv2Message.dialRequest(
                         .init(address: address, nonce: nonce)
                     )
-                    let requestData = AutoNATv2Codec.encode(request)
-                    try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
+                    var requestData = ByteBuffer()
+                    AutoNATv2Codec.encode(request, into: &requestData)
+                    try await stream.writeLengthPrefixedMessage(requestData)
 
                     // Read response
                     let responseBuffer = try await stream.readLengthPrefixedMessage(
                         maxSize: UInt64(AutoNATProtocol.maxMessageSize)
                     )
-                    let response = try AutoNATv2Codec.decode(Data(buffer: responseBuffer))
+                    let response = try AutoNATv2Codec.decode(responseBuffer)
 
                     guard case .dialResponse(let dialResp) = response else {
                         throw AutoNATv2Error.protocolViolation("Expected DialResponse, got different message type")
@@ -298,14 +299,15 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
             let requestBuffer = try await stream.readLengthPrefixedMessage(
                 maxSize: UInt64(AutoNATProtocol.maxMessageSize)
             )
-            let message = try AutoNATv2Codec.decode(Data(buffer: requestBuffer))
+            let message = try AutoNATv2Codec.decode(requestBuffer)
 
             guard case .dialRequest(let request) = message else {
                 let errorResponse = AutoNATv2Message.dialResponse(
                     .init(status: .badRequest)
                 )
-                let data = AutoNATv2Codec.encode(errorResponse)
-                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+                var data = ByteBuffer()
+                AutoNATv2Codec.encode(errorResponse, into: &data)
+                try await stream.writeLengthPrefixedMessage(data)
                 return
             }
 
@@ -317,15 +319,17 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
                 let response = AutoNATv2Message.dialResponse(
                     .init(status: .ok, address: request.address)
                 )
-                let data = AutoNATv2Codec.encode(response)
-                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+                var data = ByteBuffer()
+                AutoNATv2Codec.encode(response, into: &data)
+                try await stream.writeLengthPrefixedMessage(data)
             } catch {
                 // Dial-back failed
                 let response = AutoNATv2Message.dialResponse(
                     .init(status: .dialError, address: request.address)
                 )
-                let data = AutoNATv2Codec.encode(response)
-                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+                var data = ByteBuffer()
+                AutoNATv2Codec.encode(response, into: &data)
+                try await stream.writeLengthPrefixedMessage(data)
             }
 
         } catch let handleError {
@@ -334,8 +338,9 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
                 let errorResponse = AutoNATv2Message.dialResponse(
                     .init(status: .internalError)
                 )
-                let data = AutoNATv2Codec.encode(errorResponse)
-                try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+                var data = ByteBuffer()
+                AutoNATv2Codec.encode(errorResponse, into: &data)
+                try await stream.writeLengthPrefixedMessage(data)
             } catch {
                 logger.debug("Failed to send AutoNAT v2 error response: \(error)")
             }

@@ -88,6 +88,67 @@ public struct DiscoveryConfiguration: Sendable {
     )
 }
 
+/// High-level operating profile for a node.
+///
+/// This controls recommended defaults for pool behavior, health checks,
+/// and resource accounting. Use explicit initializers when you need to
+/// override individual knobs.
+public enum NodeOperationalProfile: Sendable {
+    case development
+    case production
+}
+
+public enum NodeConnectionProviderAuditMode: Sendable, Equatable {
+    case transparentComposition
+    case opaqueProviders
+}
+
+public enum NodeProductionAuditPolicy: Sendable, Equatable {
+    case permissive
+    case strict
+}
+
+public enum NodeStartValidationBehavior: Sendable {
+    case disabled
+    case warn
+    case strict
+}
+
+public enum NodeConfigurationValidationIssue: String, Sendable, Equatable {
+    case plaintextSecurityInProduction
+    case missingSecurityForTransportCompositionInProduction
+    case opaqueConnectionProvidersRequireManualSecurityAudit
+    case disabledHealthChecksInProduction
+    case disabledResourceManagerInProduction
+}
+
+public struct NodeStartValidationError: Error, Sendable {
+    public let profile: NodeOperationalProfile
+    public let validation: NodeConfigurationValidation
+
+    public init(profile: NodeOperationalProfile, validation: NodeConfigurationValidation) {
+        self.profile = profile
+        self.validation = validation
+    }
+}
+
+public struct NodeConfigurationValidation: Sendable, Equatable {
+    public let errors: [NodeConfigurationValidationIssue]
+    public let warnings: [NodeConfigurationValidationIssue]
+
+    public var isValid: Bool {
+        errors.isEmpty
+    }
+
+    public init(
+        errors: [NodeConfigurationValidationIssue],
+        warnings: [NodeConfigurationValidationIssue]
+    ) {
+        self.errors = errors
+        self.warnings = warnings
+    }
+}
+
 /// Configuration for a P2P node.
 public struct NodeConfiguration: Sendable {
     /// Runtime-facing connection and listener configuration.
@@ -142,6 +203,15 @@ public struct NodeConfiguration: Sendable {
     /// Optional discovery pipeline.
     public let discovery: DiscoveryPipeline?
 
+    /// Whether the runtime connection providers are transparent facade-managed
+    /// compositions or opaque expert-provided implementations.
+    public let connectionProviderAuditMode: NodeConnectionProviderAuditMode
+
+    /// How strictly production validation should treat opaque providers.
+    public let productionAuditPolicy: NodeProductionAuditPolicy
+
+    private static let plaintextSecurityProtocolID = "/plaintext/2.0.0"
+
     public init(
         runtime: RuntimeConfiguration = .init(),
         healthCheck: HealthMonitorConfiguration? = .default,
@@ -153,6 +223,8 @@ public struct NodeConfiguration: Sendable {
         keyBook: (any KeyBook)? = nil,
         resourceManager: (any ResourceManager)? = nil,
         traversal: TraversalConfiguration? = nil,
+        connectionProviderAuditMode: NodeConnectionProviderAuditMode = .opaqueProviders,
+        productionAuditPolicy: NodeProductionAuditPolicy = .permissive,
         services: ServicePipeline = .empty,
         discovery: DiscoveryPipeline? = nil
     ) {
@@ -166,6 +238,73 @@ public struct NodeConfiguration: Sendable {
         self.keyBook = keyBook
         self.resourceManager = resourceManager
         self.traversal = traversal
+        self.connectionProviderAuditMode = connectionProviderAuditMode
+        self.productionAuditPolicy = productionAuditPolicy
+        self.services = services
+        self.discovery = discovery
+    }
+
+    public init(
+        profile: NodeOperationalProfile,
+        auditPolicy: NodeProductionAuditPolicy = .strict,
+        keyPair: KeyPair = .generateEd25519(),
+        listenAddresses: [Multiaddr] = [],
+        connectionProviders: [any ConnectionProvider] = [],
+        transports: [any Transport] = [],
+        security: [any SecurityUpgrader] = [],
+        muxers: [any Muxer] = [],
+        discoveryConfig: DiscoveryConfiguration = .default,
+        peerStore: (any PeerStore)? = nil,
+        addressBookConfig: AddressBookConfiguration? = nil,
+        bootstrap: BootstrapConfiguration? = nil,
+        protoBook: (any ProtoBook)? = nil,
+        keyBook: (any KeyBook)? = nil,
+        traversal: TraversalConfiguration? = nil,
+        maxNegotiatingInboundStreams: Int = 128,
+        services: ServicePipeline = .empty,
+        discovery: DiscoveryPipeline? = nil
+    ) {
+        let connectionProviderAuditMode: NodeConnectionProviderAuditMode = connectionProviders.isEmpty
+            ? .transparentComposition
+            : .opaqueProviders
+        let validation = Self.validateProfileInputs(
+            profile: profile,
+            connectionProviderAuditMode: connectionProviderAuditMode,
+            auditPolicy: auditPolicy,
+            connectionProviders: connectionProviders,
+            transports: transports,
+            security: security,
+            healthCheck: Self.defaultHealthCheck(for: profile),
+            resourceManager: Self.defaultResourceManager(for: profile)
+        )
+        guard validation.errors.isEmpty else {
+            preconditionFailure("Invalid node configuration for \(profile): \(validation.errors)")
+        }
+
+        self.runtime = RuntimeConfiguration(
+            keyPair: keyPair,
+            listenAddresses: listenAddresses,
+            connectionProviders: connectionProviders.isEmpty
+                ? ConnectionProviders.compose(
+                    transports: transports,
+                    security: security,
+                    muxers: muxers
+                )
+                : connectionProviders,
+            pool: Self.defaultPool(for: profile),
+            maxNegotiatingInboundStreams: maxNegotiatingInboundStreams
+        )
+        self.healthCheck = Self.defaultHealthCheck(for: profile)
+        self.discoveryConfig = discoveryConfig
+        self.peerStore = peerStore
+        self.addressBookConfig = addressBookConfig
+        self.bootstrap = bootstrap
+        self.protoBook = protoBook
+        self.keyBook = keyBook
+        self.resourceManager = Self.defaultResourceManager(for: profile)
+        self.traversal = traversal
+        self.connectionProviderAuditMode = connectionProviderAuditMode
+        self.productionAuditPolicy = auditPolicy
         self.services = services
         self.discovery = discovery
     }
@@ -187,10 +326,14 @@ public struct NodeConfiguration: Sendable {
         keyBook: (any KeyBook)? = nil,
         resourceManager: (any ResourceManager)? = nil,
         traversal: TraversalConfiguration? = nil,
+        productionAuditPolicy: NodeProductionAuditPolicy = .permissive,
         maxNegotiatingInboundStreams: Int = 128,
         services: ServicePipeline = .empty,
         discovery: DiscoveryPipeline? = nil
     ) {
+        let connectionProviderAuditMode: NodeConnectionProviderAuditMode = connectionProviders.isEmpty
+            ? .transparentComposition
+            : .opaqueProviders
         self.runtime = RuntimeConfiguration(
             keyPair: keyPair,
             listenAddresses: listenAddresses,
@@ -213,8 +356,107 @@ public struct NodeConfiguration: Sendable {
         self.keyBook = keyBook
         self.resourceManager = resourceManager
         self.traversal = traversal
+        self.connectionProviderAuditMode = connectionProviderAuditMode
+        self.productionAuditPolicy = productionAuditPolicy
         self.services = services
         self.discovery = discovery
+    }
+
+    private static func defaultPool(for profile: NodeOperationalProfile) -> PoolConfiguration {
+        switch profile {
+        case .development:
+            .development
+        case .production:
+            .production
+        }
+    }
+
+    private static func defaultHealthCheck(
+        for profile: NodeOperationalProfile
+    ) -> HealthMonitorConfiguration? {
+        switch profile {
+        case .development:
+            .development
+        case .production:
+            .production
+        }
+    }
+
+    private static func defaultResourceManager(
+        for profile: NodeOperationalProfile
+    ) -> (any ResourceManager)? {
+        switch profile {
+        case .development:
+            nil
+        case .production:
+            DefaultResourceManager(configuration: .default)
+        }
+    }
+
+    public func validationReport(for profile: NodeOperationalProfile) -> NodeConfigurationValidation {
+        guard profile == .production else {
+            return NodeConfigurationValidation(errors: [], warnings: [])
+        }
+
+        var errors: [NodeConfigurationValidationIssue] = []
+        var warnings: [NodeConfigurationValidationIssue] = []
+        if connectionProviderAuditMode == .opaqueProviders {
+            switch productionAuditPolicy {
+            case .strict:
+                errors.append(.opaqueConnectionProvidersRequireManualSecurityAudit)
+            case .permissive:
+                warnings.append(.opaqueConnectionProvidersRequireManualSecurityAudit)
+            }
+        }
+        if healthCheck == nil {
+            warnings.append(.disabledHealthChecksInProduction)
+        }
+        if resourceManager == nil {
+            warnings.append(.disabledResourceManagerInProduction)
+        }
+
+        return NodeConfigurationValidation(errors: errors, warnings: warnings)
+    }
+
+    public static func validateProfileInputs(
+        profile: NodeOperationalProfile,
+        connectionProviderAuditMode: NodeConnectionProviderAuditMode,
+        auditPolicy: NodeProductionAuditPolicy = .permissive,
+        connectionProviders: [any ConnectionProvider],
+        transports: [any Transport],
+        security: [any SecurityUpgrader],
+        healthCheck: HealthMonitorConfiguration? = nil,
+        resourceManager: (any ResourceManager)? = nil
+    ) -> NodeConfigurationValidation {
+        guard profile == .production else {
+            return NodeConfigurationValidation(errors: [], warnings: [])
+        }
+
+        var errors: [NodeConfigurationValidationIssue] = []
+        var warnings: [NodeConfigurationValidationIssue] = []
+
+        if security.contains(where: { $0.protocolID == plaintextSecurityProtocolID }) {
+            errors.append(.plaintextSecurityInProduction)
+        }
+        if connectionProviders.isEmpty && !transports.isEmpty && security.isEmpty {
+            errors.append(.missingSecurityForTransportCompositionInProduction)
+        }
+        if connectionProviderAuditMode == .opaqueProviders {
+            switch auditPolicy {
+            case .strict:
+                errors.append(.opaqueConnectionProvidersRequireManualSecurityAudit)
+            case .permissive:
+                warnings.append(.opaqueConnectionProvidersRequireManualSecurityAudit)
+            }
+        }
+        if healthCheck == nil {
+            warnings.append(.disabledHealthChecksInProduction)
+        }
+        if resourceManager == nil {
+            warnings.append(.disabledResourceManagerInProduction)
+        }
+
+        return NodeConfigurationValidation(errors: errors, warnings: warnings)
     }
 }
 
@@ -369,6 +611,125 @@ public actor Node:
         )
     }
 
+    public init(
+        profile: NodeOperationalProfile,
+        auditPolicy: NodeProductionAuditPolicy = .strict,
+        keyPair: KeyPair = .generateEd25519(),
+        listenAddresses: [Multiaddr] = [],
+        connectionProviders: [any ConnectionProvider] = [],
+        transports: [any Transport] = [],
+        security: [any SecurityUpgrader] = [],
+        muxers: [any Muxer] = [],
+        discoveryConfig: DiscoveryConfiguration = .default,
+        peerStore: (any PeerStore)? = nil,
+        addressBookConfig: AddressBookConfiguration? = nil,
+        bootstrap: BootstrapConfiguration? = nil,
+        protoBook: (any ProtoBook)? = nil,
+        keyBook: (any KeyBook)? = nil,
+        traversal: TraversalConfiguration? = nil,
+        maxNegotiatingInboundStreams: Int = 128,
+        @P2PComponentBuilder _ content: () -> NodeGroup = { NodeGroup() }
+    ) {
+        let components = content().resolveNodeComponents()
+        self.init(configuration: NodeConfiguration(
+            profile: profile,
+            auditPolicy: auditPolicy,
+            keyPair: keyPair,
+            listenAddresses: listenAddresses,
+            connectionProviders: connectionProviders,
+            transports: transports,
+            security: security,
+            muxers: muxers,
+            discoveryConfig: discoveryConfig,
+            peerStore: peerStore,
+            addressBookConfig: addressBookConfig,
+            bootstrap: bootstrap,
+            protoBook: protoBook,
+            keyBook: keyBook,
+            traversal: traversal,
+            maxNegotiatingInboundStreams: maxNegotiatingInboundStreams,
+            services: components.servicePipeline(),
+            discovery: components.discoveryPipeline(localPeerID: keyPair.peerID)
+        ))
+    }
+
+    public init(
+        runtime: RuntimeConfiguration = .init(),
+        healthCheck: HealthMonitorConfiguration? = .default,
+        discoveryConfig: DiscoveryConfiguration = .default,
+        peerStore: (any PeerStore)? = nil,
+        addressBookConfig: AddressBookConfiguration? = nil,
+        bootstrap: BootstrapConfiguration? = nil,
+        protoBook: (any ProtoBook)? = nil,
+        keyBook: (any KeyBook)? = nil,
+        resourceManager: (any ResourceManager)? = nil,
+        traversal: TraversalConfiguration? = nil,
+        @P2PComponentBuilder _ content: () -> NodeGroup = { NodeGroup() }
+    ) {
+        let components = content().resolveNodeComponents()
+        self.init(configuration: NodeConfiguration(
+            runtime: runtime,
+            healthCheck: healthCheck,
+            discoveryConfig: discoveryConfig,
+            peerStore: peerStore,
+            addressBookConfig: addressBookConfig,
+            bootstrap: bootstrap,
+            protoBook: protoBook,
+            keyBook: keyBook,
+            resourceManager: resourceManager,
+            traversal: traversal,
+            services: components.servicePipeline(),
+            discovery: components.discoveryPipeline(localPeerID: runtime.keyPair.peerID)
+        ))
+    }
+
+    public init(
+        keyPair: KeyPair = .generateEd25519(),
+        listenAddresses: [Multiaddr] = [],
+        connectionProviders: [any ConnectionProvider] = [],
+        transports: [any Transport] = [],
+        security: [any SecurityUpgrader] = [],
+        muxers: [any Muxer] = [],
+        pool: PoolConfiguration = .init(),
+        healthCheck: HealthMonitorConfiguration? = .default,
+        discoveryConfig: DiscoveryConfiguration = .default,
+        peerStore: (any PeerStore)? = nil,
+        addressBookConfig: AddressBookConfiguration? = nil,
+        bootstrap: BootstrapConfiguration? = nil,
+        protoBook: (any ProtoBook)? = nil,
+        keyBook: (any KeyBook)? = nil,
+        resourceManager: (any ResourceManager)? = nil,
+        traversal: TraversalConfiguration? = nil,
+        maxNegotiatingInboundStreams: Int = 128,
+        @P2PComponentBuilder _ content: () -> NodeGroup = { NodeGroup() }
+    ) {
+        self.init(
+            runtime: RuntimeConfiguration(
+                keyPair: keyPair,
+                listenAddresses: listenAddresses,
+                connectionProviders: connectionProviders.isEmpty
+                    ? ConnectionProviders.compose(
+                        transports: transports,
+                        security: security,
+                        muxers: muxers
+                    )
+                    : connectionProviders,
+                pool: pool,
+                maxNegotiatingInboundStreams: maxNegotiatingInboundStreams
+            ),
+            healthCheck: healthCheck,
+            discoveryConfig: discoveryConfig,
+            peerStore: peerStore,
+            addressBookConfig: addressBookConfig,
+            bootstrap: bootstrap,
+            protoBook: protoBook,
+            keyBook: keyBook,
+            resourceManager: resourceManager,
+            traversal: traversal,
+            content
+        )
+    }
+
     // MARK: - Protocol Handlers
 
     /// Registers a protocol handler.
@@ -404,6 +765,36 @@ public actor Node:
 
     /// Starts the node.
     public func start() async throws {
+        try await start(validating: nil, behavior: .disabled)
+    }
+
+    /// Starts the node with optional validation against an operating profile.
+    public func start(
+        validating profile: NodeOperationalProfile?,
+        behavior: NodeStartValidationBehavior = .strict
+    ) async throws {
+        if let profile {
+            let validation = configuration.validationReport(for: profile)
+            switch behavior {
+            case .disabled:
+                break
+            case .warn:
+                for error in validation.errors {
+                    logger.warning("Node start validation error: \(error.rawValue)")
+                }
+                for warning in validation.warnings {
+                    logger.warning("Node start validation warning: \(warning.rawValue)")
+                }
+                if !validation.errors.isEmpty {
+                    throw NodeStartValidationError(profile: profile, validation: validation)
+                }
+            case .strict:
+                if !validation.errors.isEmpty || !validation.warnings.isEmpty {
+                    throw NodeStartValidationError(profile: profile, validation: validation)
+                }
+            }
+        }
+
         switch lifecycleState {
         case .running: return
         case .starting: return

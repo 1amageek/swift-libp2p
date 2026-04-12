@@ -5,6 +5,7 @@
 /// dials back to that address and sends the nonce to prove it connected.
 
 import Foundation
+import NIOCore
 import P2PCore
 
 // MARK: - Message Types
@@ -186,6 +187,10 @@ public enum AutoNATv2Codec {
         return result
     }
 
+    public static func encode(_ message: AutoNATv2Message, into buffer: inout ByteBuffer) {
+        buffer.writeBytes(encode(message))
+    }
+
     private static func encodeDialRequest(_ req: AutoNATv2Message.DialRequest) -> Data {
         var result = Data()
 
@@ -311,6 +316,10 @@ public enum AutoNATv2Codec {
             }
             return .dialBack(back)
         }
+    }
+
+    public static func decode(_ buffer: ByteBuffer) throws -> AutoNATv2Message {
+        try decode(Data(buffer: buffer))
     }
 
     // MARK: - Sub-message Decoding

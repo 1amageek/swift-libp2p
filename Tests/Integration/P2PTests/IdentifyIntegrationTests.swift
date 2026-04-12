@@ -13,7 +13,14 @@ import Testing
 struct IdentifyIntegrationTests {
     private func identifyServices(_ identifyService: IdentifyService) -> ServicePipeline {
         ServicePipeline {
-            identifyComponent(identifyService)
+            service(identifyService) { component in
+                component.handlesInboundStreams()
+                component.observesPeers()
+                component.consumesLocalIdentity()
+                component.consumesListenAddresses()
+                component.consumesSupportedProtocols()
+                component.activatesWithStreamOpening()
+            }
         }
     }
 

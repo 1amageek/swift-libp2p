@@ -239,7 +239,7 @@ public final class IdentifyService: EventEmitting, Sendable {
         }
 
         // Read the identify response with timeout
-        let data = try await withThrowingTaskGroup(of: Data.self) { group in
+        let data = try await withThrowingTaskGroup(of: ByteBuffer.self) { group in
             group.addTask {
                 try await self.readAll(from: stream)
             }
@@ -739,7 +739,7 @@ public final class IdentifyService: EventEmitting, Sendable {
     ///   - maxSize: Maximum bytes to read (default 64KB)
     /// - Returns: All data read until EOF
     /// - Throws: `IdentifyError.messageTooLarge` if the message exceeds maxSize
-    private func readAll(from stream: MuxedStream, maxSize: Int = 64 * 1024) async throws -> Data {
+    private func readAll(from stream: MuxedStream, maxSize: Int = 64 * 1024) async throws -> ByteBuffer {
         var buffer = ByteBuffer()
 
         while true {
@@ -768,7 +768,7 @@ public final class IdentifyService: EventEmitting, Sendable {
             }
         }
 
-        return Data(buffer: buffer)
+        return buffer
     }
 
     private func emit(_ event: IdentifyEvent) {
@@ -942,33 +942,4 @@ extension IdentifyService:
     // peerConnected(_:) and peerDisconnected(_:) are defined as sync methods
     // on IdentifyService. A sync method satisfies an async protocol requirement
     // via SE-0296, so no wrapper methods are needed.
-}
-
-public func identifyComponent(_ identifyService: IdentifyService) -> ServiceComponent {
-    service(identifyService) { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.consumesLocalIdentity()
-        component.consumesListenAddresses()
-        component.consumesSupportedProtocols()
-        component.activatesWithStreamOpening()
-    }
-}
-
-public func identifyComponent(
-    configuration: IdentifyConfiguration = .init()
-) -> ServiceComponent {
-    service(make: { context in
-        IdentifyService(
-            configuration: configuration,
-            localIdentity: context.localIdentity,
-            listenAddressContext: context.listenAddresses,
-            supportedProtocolsContext: context.supportedProtocols,
-            streamOpener: context.streamOpener
-        )
-    }) { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.activatesOnStart()
-    }
 }

@@ -316,15 +316,16 @@ public final class AutoNATService: EventEmitting, Sendable {
             // Send DIAL request
             let limitedAddresses = Array(addresses.prefix(configuration.maxAddresses))
             let request = AutoNATMessage.dial(addresses: limitedAddresses)
-            let requestData = AutoNATProtobuf.encode(request)
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
+            var requestData = ByteBuffer()
+            AutoNATProtobuf.encode(request, into: &requestData)
+            try await stream.writeLengthPrefixedMessage(requestData)
 
             // Read response with timeout
             let responseData = try await withTimeout(configuration.dialTimeout) {
                 try await stream.readLengthPrefixedMessage(maxSize: UInt64(AutoNATProtocol.maxMessageSize))
             }
 
-            let response = try AutoNATProtobuf.decode(Data(buffer: responseData))
+            let response = try AutoNATProtobuf.decode(responseData)
 
             guard response.type == .dialResponse,
                   let dialResponse = response.dialResponse else {
@@ -377,7 +378,7 @@ public final class AutoNATService: EventEmitting, Sendable {
 
             // Read request
             let requestBuffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(AutoNATProtocol.maxMessageSize))
-            let request = try AutoNATProtobuf.decode(Data(buffer: requestBuffer))
+            let request = try AutoNATProtobuf.decode(requestBuffer)
 
             guard request.type == .dial,
                   let dial = request.dial else {
@@ -456,8 +457,9 @@ public final class AutoNATService: EventEmitting, Sendable {
     /// Sends a dial response.
     private func sendResponse(stream: MuxedStream, response: AutoNATDialResponse) async throws {
         let message = AutoNATMessage.dialResponse(response)
-        let data = AutoNATProtobuf.encode(message)
-        try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+        var data = ByteBuffer()
+        AutoNATProtobuf.encode(message, into: &data)
+        try await stream.writeLengthPrefixedMessage(data)
         try await stream.close()
     }
 

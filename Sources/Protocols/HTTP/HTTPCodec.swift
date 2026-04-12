@@ -1,3 +1,5 @@
+import NIOCore
+
 /// HTTPCodec - Simple HTTP/1.1 text format encoder/decoder for libp2p streams.
 
 /// Encodes and decodes HTTP/1.1 messages for transmission over libp2p streams.
@@ -72,6 +74,15 @@ public struct HTTPCodec: Sendable {
         }
 
         return result
+    }
+
+    /// Encodes an HTTP request into a ByteBuffer.
+    public static func encodeRequestBuffer(_ request: HTTPRequest) -> ByteBuffer {
+        var buffer = ByteBuffer()
+        let encoded = encodeRequest(request)
+        buffer.reserveCapacity(encoded.count)
+        buffer.writeBytes(encoded)
+        return buffer
     }
 
     // MARK: - Request Decoding
@@ -154,6 +165,11 @@ public struct HTTPCodec: Sendable {
         return HTTPRequest(method: method, path: path, headers: headers, body: body)
     }
 
+    /// Decodes an HTTP request from a ByteBuffer.
+    public static func decodeRequest(from buffer: ByteBuffer) throws -> HTTPRequest {
+        try decodeRequest(from: Array(buffer.readableBytesView))
+    }
+
     // MARK: - Response Encoding
 
     /// Encodes an HTTP response into bytes.
@@ -197,6 +213,15 @@ public struct HTTPCodec: Sendable {
         }
 
         return result
+    }
+
+    /// Encodes an HTTP response into a ByteBuffer.
+    public static func encodeResponseBuffer(_ response: HTTPResponse) -> ByteBuffer {
+        var buffer = ByteBuffer()
+        let encoded = encodeResponse(response)
+        buffer.reserveCapacity(encoded.count)
+        buffer.writeBytes(encoded)
+        return buffer
     }
 
     // MARK: - Response Decoding
@@ -280,6 +305,11 @@ public struct HTTPCodec: Sendable {
         }
 
         return HTTPResponse(statusCode: statusCode, statusMessage: statusMessage, headers: headers, body: body)
+    }
+
+    /// Decodes an HTTP response from a ByteBuffer.
+    public static func decodeResponse(from buffer: ByteBuffer) throws -> HTTPResponse {
+        try decodeResponse(from: Array(buffer.readableBytesView))
     }
 
     // MARK: - Private Helpers

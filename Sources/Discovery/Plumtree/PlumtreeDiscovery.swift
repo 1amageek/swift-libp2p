@@ -306,19 +306,6 @@ public actor PlumtreeDiscovery: DiscoveryService {
     }
 }
 
-public func plumtreeDiscovery(
-    configuration: PlumtreeDiscoveryConfiguration = .default,
-    weight: Double = 1.0
-) -> DiscoveryComponent {
-    discovery(weight: weight, { localPeerID in
-        PlumtreeDiscovery(localPeerID: localPeerID, configuration: configuration)
-    }, configure: { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.activatesWithStreamOpening()
-    })
-}
-
 extension PlumtreeDiscovery:
     StreamService,
     PeerObserver,

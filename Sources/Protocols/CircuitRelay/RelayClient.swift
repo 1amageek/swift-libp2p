@@ -200,7 +200,8 @@ public final class RelayClient: EventEmitting, Sendable {
         do {
             // Send RESERVE message
             let request = HopMessage.reserve()
-            let requestData = CircuitRelayProtobuf.encode(request)
+            var requestData = ByteBuffer()
+            CircuitRelayProtobuf.encode(request, into: &requestData)
             try await writeMessage(requestData, to: stream)
 
             // Read response
@@ -276,7 +277,8 @@ public final class RelayClient: EventEmitting, Sendable {
         do {
             // Send CONNECT message
             let request = HopMessage.connect(to: target)
-            let requestData = CircuitRelayProtobuf.encode(request)
+            var requestData = ByteBuffer()
+            CircuitRelayProtobuf.encode(request, into: &requestData)
             try await writeMessage(requestData, to: stream)
 
             // Read response
@@ -450,7 +452,8 @@ public final class RelayClient: EventEmitting, Sendable {
 
             // Send STATUS OK
             let response = StopMessage.statusResponse(.ok)
-            let responseData = CircuitRelayProtobuf.encode(response)
+            var responseData = ByteBuffer()
+            CircuitRelayProtobuf.encode(response, into: &responseData)
             try await writeMessage(responseData, to: stream)
 
             // Create relayed connection
@@ -496,7 +499,8 @@ public final class RelayClient: EventEmitting, Sendable {
             logger.debug("Error handling STOP message: \(handleError)")
             // Send error status
             let response = StopMessage.statusResponse(.connectionFailed)
-            let responseData = CircuitRelayProtobuf.encode(response)
+            var responseData = ByteBuffer()
+            CircuitRelayProtobuf.encode(response, into: &responseData)
             do {
                 try await writeMessage(responseData, to: stream)
             } catch let writeError {
@@ -541,10 +545,10 @@ public final class RelayClient: EventEmitting, Sendable {
         }
     }
 
-    private func readMessage(from stream: MuxedStream) async throws -> Data {
+    private func readMessage(from stream: MuxedStream) async throws -> ByteBuffer {
         do {
             let buffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
-            return Data(buffer: buffer)
+            return buffer
         } catch let error as StreamMessageError {
             switch error {
             case .streamClosed, .emptyMessage:
@@ -555,8 +559,8 @@ public final class RelayClient: EventEmitting, Sendable {
         }
     }
 
-    private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
-        try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+    private func writeMessage(_ data: ByteBuffer, to stream: MuxedStream) async throws {
+        try await stream.writeLengthPrefixedMessage(data)
     }
 
     // MARK: - Event Emission
@@ -689,7 +693,8 @@ public final class RelayClient: EventEmitting, Sendable {
         do {
             // Send RESERVE message
             let request = HopMessage.reserve()
-            let requestData = CircuitRelayProtobuf.encode(request)
+            var requestData = ByteBuffer()
+            CircuitRelayProtobuf.encode(request, into: &requestData)
             try await writeMessage(requestData, to: stream)
 
             // Read response

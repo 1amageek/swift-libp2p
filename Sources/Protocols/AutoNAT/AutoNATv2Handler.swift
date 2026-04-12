@@ -44,15 +44,16 @@ public final class AutoNATv2Handler: Sendable {
         let requestBuffer = try await stream.readLengthPrefixedMessage(
             maxSize: UInt64(AutoNATProtocol.maxMessageSize)
         )
-        let message = try AutoNATv2Codec.decode(Data(buffer: requestBuffer))
+        let message = try AutoNATv2Codec.decode(requestBuffer)
 
         guard case .dialRequest(let request) = message else {
             // Send bad request response
             let errorResponse = AutoNATv2Message.dialResponse(
                 .init(status: .badRequest)
             )
-            let data = AutoNATv2Codec.encode(errorResponse)
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+            var data = ByteBuffer()
+            AutoNATv2Codec.encode(errorResponse, into: &data)
+            try await stream.writeLengthPrefixedMessage(data)
             throw AutoNATv2Error.protocolViolation("Expected DialRequest")
         }
 
@@ -64,16 +65,18 @@ public final class AutoNATv2Handler: Sendable {
             let response = AutoNATv2Message.dialResponse(
                 .init(status: .ok, address: request.address)
             )
-            let data = AutoNATv2Codec.encode(response)
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+            var data = ByteBuffer()
+            AutoNATv2Codec.encode(response, into: &data)
+            try await stream.writeLengthPrefixedMessage(data)
 
         } catch {
             // Dial-back failed, send error response
             let response = AutoNATv2Message.dialResponse(
                 .init(status: .dialError, address: request.address)
             )
-            let data = AutoNATv2Codec.encode(response)
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+            var data = ByteBuffer()
+            AutoNATv2Codec.encode(response, into: &data)
+            try await stream.writeLengthPrefixedMessage(data)
         }
     }
 
@@ -101,14 +104,15 @@ public final class AutoNATv2Handler: Sendable {
             let request = AutoNATv2Message.dialRequest(
                 .init(address: address, nonce: nonce)
             )
-            let requestData = AutoNATv2Codec.encode(request)
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
+            var requestData = ByteBuffer()
+            AutoNATv2Codec.encode(request, into: &requestData)
+            try await stream.writeLengthPrefixedMessage(requestData)
 
             // Read response
             let responseBuffer = try await stream.readLengthPrefixedMessage(
                 maxSize: UInt64(AutoNATProtocol.maxMessageSize)
             )
-            let response = try AutoNATv2Codec.decode(Data(buffer: responseBuffer))
+            let response = try AutoNATv2Codec.decode(responseBuffer)
 
             // Clean up pending check
             service.removePendingCheck(nonce: nonce)

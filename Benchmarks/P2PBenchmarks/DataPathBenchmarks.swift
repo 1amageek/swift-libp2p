@@ -239,15 +239,29 @@ struct DataPathBenchmarks {
         }
     }
 
-    private struct StreamPair {
+    private actor StreamPair {
         let clientStream: any StreamChannel
         let serverStream: any StreamChannel
+        private var clientReadBuffer = ByteBuffer()
+        private var serverReadBuffer = ByteBuffer()
+
+        init(
+            clientStream: any StreamChannel,
+            serverStream: any StreamChannel
+        ) {
+            self.clientStream = clientStream
+            self.serverStream = serverStream
+        }
 
         func roundTrip(_ payload: ByteBuffer) async throws {
             try await clientStream.writeLengthPrefixedMessage(payload)
-            let received = try await serverStream.readLengthPrefixedMessage()
+            var serverReadBuffer = self.serverReadBuffer
+            let received = try await serverStream.readLengthPrefixedMessage(buffer: &serverReadBuffer)
+            self.serverReadBuffer = serverReadBuffer
             try await serverStream.writeLengthPrefixedMessage(received)
-            let echoed = try await clientStream.readLengthPrefixedMessage()
+            var clientReadBuffer = self.clientReadBuffer
+            let echoed = try await clientStream.readLengthPrefixedMessage(buffer: &clientReadBuffer)
+            self.clientReadBuffer = clientReadBuffer
             blackHole(echoed)
 
             if echoed.readableBytes != payload.readableBytes {

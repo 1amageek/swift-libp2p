@@ -615,7 +615,7 @@ public final class KademliaService: EventEmitting, Sendable {
                 return
             }
 
-            let message = try KademliaProtobuf.decode(Data(buffer: data))
+            let message = try KademliaProtobuf.decode(data)
             let response = try await handleMessage(message, from: context.remotePeer)
 
             // Write response with per-peer timeout
@@ -1211,7 +1211,7 @@ public final class KademliaService: EventEmitting, Sendable {
                 try await stream.writeLengthPrefixedMessage(data)
 
                 let responseData = try await stream.readLengthPrefixedMessage(maxSize: UInt64(configuration.maxMessageSize))
-                return try KademliaProtobuf.decode(Data(buffer: responseData))
+                return try KademliaProtobuf.decode(responseData)
             }
             do {
                 try await stream.close()
@@ -1305,27 +1305,5 @@ extension KademliaService: LifecycleService, StreamService, ActivatableService, 
         startMaintenance()
         startRefresh(using: opener)
         startRepublish(using: opener)
-    }
-}
-
-public func kademliaComponent(_ kademliaService: KademliaService) -> ServiceComponent {
-    service(kademliaService) { component in
-        component.handlesInboundStreams()
-        component.activatesWithStreamOpening()
-    }
-}
-
-public func kademliaComponent(
-    configuration: KademliaConfiguration = .default
-) -> ServiceComponent {
-    service(make: { context in
-        KademliaService(
-            localPeerID: context.localIdentity.localPeer,
-            configuration: configuration,
-            opener: context.streamOpener
-        )
-    }) { component in
-        component.handlesInboundStreams()
-        component.activatesOnStart()
     }
 }

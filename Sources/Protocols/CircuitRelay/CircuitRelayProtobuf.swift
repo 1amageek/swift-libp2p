@@ -5,6 +5,7 @@
 /// See: https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md
 
 import Foundation
+import NIOCore
 import P2PCore
 
 /// Protobuf encoding/decoding for Circuit Relay v2 messages.
@@ -106,6 +107,10 @@ enum CircuitRelayProtobuf {
         return result
     }
 
+    static func encode(_ message: HopMessage, into buffer: inout ByteBuffer) {
+        buffer.writeBytes(encode(message))
+    }
+
     /// Decodes a HopMessage from protobuf wire format.
     static func decodeHop(_ data: Data) throws -> HopMessage {
         var type: HopMessageType = .reserve
@@ -173,6 +178,10 @@ enum CircuitRelayProtobuf {
         return HopMessage(type: type, peer: peer, reservation: reservation, limit: limit, status: status)
     }
 
+    static func decodeHop(_ buffer: ByteBuffer) throws -> HopMessage {
+        try decodeHop(Data(buffer: buffer))
+    }
+
     // MARK: - StopMessage Encoding
 
     /// Encodes a StopMessage to protobuf wire format.
@@ -208,6 +217,10 @@ enum CircuitRelayProtobuf {
         }
 
         return result
+    }
+
+    static func encode(_ message: StopMessage, into buffer: inout ByteBuffer) {
+        buffer.writeBytes(encode(message))
     }
 
     /// Decodes a StopMessage from protobuf wire format.
@@ -264,6 +277,10 @@ enum CircuitRelayProtobuf {
         }
 
         return StopMessage(type: type, peer: peer, limit: limit, status: status)
+    }
+
+    static func decodeStop(_ buffer: ByteBuffer) throws -> StopMessage {
+        try decodeStop(Data(buffer: buffer))
     }
 
     // MARK: - Peer Encoding

@@ -19,11 +19,11 @@ private let pingPayloadSize = 32
 /// so we need to buffer and extract exactly 32 bytes at a time.
 private final class PingStreamReader: Sendable {
     private let stream: MuxedStream
-    private let buffer: Mutex<Data>
+    private let buffer: Mutex<ByteBuffer>
 
     init(stream: MuxedStream) {
         self.stream = stream
-        self.buffer = Mutex(Data())
+        self.buffer = Mutex(ByteBuffer())
     }
 
     /// Reads exactly `count` bytes from the stream.
@@ -31,16 +31,13 @@ private final class PingStreamReader: Sendable {
     /// - Parameter count: Number of bytes to read
     /// - Returns: Exactly `count` bytes of data
     /// - Throws: PingError if stream closes before enough data is available
-    func readExact(_ count: Int) async throws -> Data {
+    func readExact(_ count: Int) async throws -> ByteBuffer {
         while true {
-            // Check if we have enough data in buffer
-            let extracted: Data? = buffer.withLock { buf in
-                if buf.count >= count {
-                    let data = Data(buf.prefix(count))
-                    buf = Data(buf.dropFirst(count))
-                    return data
+            let extracted: ByteBuffer? = buffer.withLock { buf in
+                guard buf.readableBytes >= count else {
+                    return nil
                 }
-                return nil
+                return buf.readSlice(length: count)
             }
 
             if let data = extracted {
@@ -53,7 +50,10 @@ private final class PingStreamReader: Sendable {
                 throw PingError.streamError("Stream closed before receiving complete ping response")
             }
 
-            buffer.withLock { $0.append(Data(buffer: chunk)) }
+            buffer.withLock { buf in
+                var chunk = chunk
+                buf.writeBuffer(&chunk)
+            }
         }
     }
 }
@@ -116,10 +116,10 @@ public final class PingService: EventEmitting, Sendable {
     /// - Returns: The ping result with RTT
     @discardableResult
     public func ping(_ peer: PeerID, using opener: any StreamOpener) async throws -> PingResult {
-        // Generate random payload
-        var payload = Data(count: pingPayloadSize)
-        for i in 0..<pingPayloadSize {
-            payload[i] = UInt8.random(in: 0...255)
+        var payload = ByteBuffer()
+        payload.reserveCapacity(pingPayloadSize)
+        for _ in 0..<pingPayloadSize {
+            payload.writeInteger(UInt8.random(in: 0...255))
         }
 
         // Open ping stream
@@ -147,13 +147,13 @@ public final class PingService: EventEmitting, Sendable {
             let startTime = ContinuousClock.now
 
             // Send payload
-            try await stream.write(ByteBuffer(bytes: payload))
+            try await stream.write(payload)
 
             // Create buffered reader for exact byte reading
             let reader = PingStreamReader(stream: stream)
 
             // Read response with timeout - exactly 32 bytes
-            let response = try await withThrowingTaskGroup(of: Data.self) { group in
+            let response = try await withThrowingTaskGroup(of: ByteBuffer.self) { group in
                 group.addTask {
                     try await reader.readExact(pingPayloadSize)
                 }
@@ -173,7 +173,7 @@ public final class PingService: EventEmitting, Sendable {
             let rtt = endTime - startTime
 
             // Verify response matches payload
-            guard response == payload else {
+            guard response.readableBytesView.elementsEqual(payload.readableBytesView) else {
                 let error = PingError.mismatch
                 emit(.failure(peer: peer, error: error))
                 throw error
@@ -264,7 +264,7 @@ public final class PingService: EventEmitting, Sendable {
                 let payload = try await reader.readExact(pingPayloadSize)
 
                 // Echo back
-                try await stream.write(ByteBuffer(bytes: payload))
+                try await stream.write(payload)
             }
         } catch {
             // Stream closed or error - normal termination
@@ -297,11 +297,5 @@ public final class PingService: EventEmitting, Sendable {
 extension PingService: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handlePing(context: context)
-    }
-}
-
-public func pingComponent(_ pingService: PingService) -> ServiceComponent {
-    service(pingService) { component in
-        component.handlesInboundStreams()
     }
 }

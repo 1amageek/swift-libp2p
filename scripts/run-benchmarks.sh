@@ -2,6 +2,7 @@
 set -euo pipefail
 
 suites=(
+  DataPathBenchmarks
   KademliaKeyBenchmarks
   MessageIDBenchmarks
   NoiseCryptoBenchmarks
@@ -11,8 +12,8 @@ suites=(
   YamuxFrameBenchmarks
 )
 configuration="debug"
-timeout_seconds=120
-build_timeout_seconds=240
+timeout_seconds=600
+build_timeout_seconds=600
 extra_args=()
 
 usage() {

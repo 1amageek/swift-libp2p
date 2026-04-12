@@ -12,7 +12,7 @@ public typealias SupportedProtocolProviding = SupportedProtocolsContext
 public typealias PeerStoreProviding = PeerStoreContext
 public typealias AddressDialing = AddressDialer
 
-package struct ServiceContext: Sendable {
+public struct ServiceContext: Sendable {
     public let localIdentity: any LocalIdentityProviding
     public let listenAddresses: any ListenAddressProviding
     public let supportedProtocols: any SupportedProtocolProviding
@@ -361,7 +361,7 @@ private func requireServiceCapability<Capability>(
     return capability
 }
 
-public func service<Service: LifecycleService>(
+package func service<Service: LifecycleService>(
     _ service: Service,
     configure: (inout ServiceRegistration<Service>) -> Void = { _ in }
 ) -> ServiceComponent {

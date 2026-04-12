@@ -25,4 +25,26 @@ public struct PoolConfiguration: Sendable {
         self.idleTimeout = idleTimeout
         self.gater = gater
     }
+
+    /// Development-oriented defaults with looser limits and no auto-reconnect.
+    public static let development = PoolConfiguration(
+        limits: .development,
+        reconnectionPolicy: .disabled,
+        idleTimeout: .seconds(300)
+    )
+
+    /// Production-oriented defaults.
+    public static let production = PoolConfiguration(
+        limits: .default,
+        reconnectionPolicy: .default,
+        idleTimeout: .seconds(60)
+    )
+}
+
+extension PoolConfiguration: Equatable {
+    public static func == (lhs: PoolConfiguration, rhs: PoolConfiguration) -> Bool {
+        lhs.limits == rhs.limits &&
+        lhs.reconnectionPolicy == rhs.reconnectionPolicy &&
+        lhs.idleTimeout == rhs.idleTimeout
+    }
 }

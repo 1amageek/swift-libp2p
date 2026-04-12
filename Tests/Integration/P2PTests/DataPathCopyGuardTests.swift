@@ -11,6 +11,18 @@ struct DataPathCopyGuardTests {
             "Sources/Integration/P2P/Swarm",
             "Sources/Security",
             "Sources/Mux",
+            "Sources/Protocols/Ping/PingService.swift",
+            "Sources/Protocols/HTTP/HTTPService.swift",
+            "Sources/Protocols/Kademlia/KademliaService.swift",
+            "Sources/Protocols/GossipSub/GossipSubService.swift",
+            "Sources/Protocols/Plumtree/PlumtreeService.swift",
+            "Sources/Protocols/Identify/IdentifyService.swift",
+            "Sources/Protocols/DCUtR/DCUtRService.swift",
+            "Sources/Protocols/CircuitRelay/RelayClient.swift",
+            "Sources/Protocols/CircuitRelay/RelayServer.swift",
+            "Sources/Protocols/AutoNAT/AutoNATService.swift",
+            "Sources/Protocols/AutoNAT/AutoNATv2Service.swift",
+            "Sources/Protocols/AutoNAT/AutoNATv2Handler.swift",
         ]
 
         let bannedPatterns = [
@@ -23,6 +35,24 @@ struct DataPathCopyGuardTests {
 
         for scanRoot in scanRoots {
             let baseURL = root.appendingPathComponent(scanRoot)
+            if FileManager.default.fileExists(atPath: baseURL.path), baseURL.pathExtension == "swift" {
+                let relativePath = baseURL.path.replacingOccurrences(of: root.path + "/", with: "")
+                let lines = try String(contentsOf: baseURL, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false)
+
+                for (index, line) in lines.enumerated() {
+                    let lineNumber = index + 1
+                    let lineString = String(line)
+                    guard bannedPatterns.contains(where: lineString.contains) else { continue }
+
+                    if consumeAllowance(path: relativePath, line: lineString, allowances: &allowances) {
+                        continue
+                    }
+
+                    violations.append("\(relativePath):\(lineNumber): \(lineString.trimmingCharacters(in: .whitespaces))")
+                }
+                continue
+            }
+
             let enumerator = FileManager.default.enumerator(
                 at: baseURL,
                 includingPropertiesForKeys: nil

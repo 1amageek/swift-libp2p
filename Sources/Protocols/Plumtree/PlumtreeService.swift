@@ -304,7 +304,7 @@ public final class PlumtreeService: Sendable {
                 let data = try await stream.readLengthPrefixedMessage(
                     maxSize: UInt64(configuration.maxMessageSize) + 4096
                 )
-                let rpc = try PlumtreeProtobuf.decode(Data(buffer: data))
+                let rpc = try PlumtreeProtobuf.decode(data)
                 await processRPC(rpc, from: peerID)
             }
         } catch {
@@ -468,8 +468,9 @@ public final class PlumtreeService: Sendable {
         }
 
         do {
-            let encoded = PlumtreeProtobuf.encode(rpc)
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: encoded))
+            var encoded = ByteBuffer()
+            PlumtreeProtobuf.encode(rpc, into: &encoded)
+            try await stream.writeLengthPrefixedMessage(encoded)
         } catch {
             logger.debug("Plumtree sendRPC failed to \(peerID): \(error)")
         }
@@ -514,30 +515,6 @@ extension PlumtreeService: LifecycleService, StreamService, PeerObserver, Activa
 
     public func peerDisconnected(_ peer: PeerID) async {
         handlePeerDisconnected(peer)
-    }
-}
-
-public func plumtreeComponent(_ plumtreeService: PlumtreeService) -> ServiceComponent {
-    service(plumtreeService) { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.activatesWithStreamOpening()
-    }
-}
-
-public func plumtreeComponent(
-    configuration: PlumtreeConfiguration = .default
-) -> ServiceComponent {
-    service(make: { context in
-        PlumtreeService(
-            localPeerID: context.localIdentity.localPeer,
-            configuration: configuration,
-            opener: context.streamOpener
-        )
-    }) { component in
-        component.handlesInboundStreams()
-        component.observesPeers()
-        component.activatesOnStart()
     }
 }
 

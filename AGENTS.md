@@ -24,6 +24,7 @@
 
 ### Benchmark Commands
 - `swift test --filter P2PBenchmarks` — run all benchmarks.
+- `swift test --filter P2PBenchmarks/DataPathBenchmarks` — runtime data-path throughput and connect costs.
 - `swift test --filter P2PBenchmarks/KademliaKeyBenchmarks` — KademliaKey benchmarks.
 - `swift test --filter P2PBenchmarks/VarintBenchmarks` — Varint benchmarks.
 - `swift test --filter P2PBenchmarks/MessageIDBenchmarks` — MessageID benchmarks.
@@ -72,6 +73,7 @@
   `SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 -- --disable-sandbox --filter <SuiteOrTestName>`
 - `scripts/swift-test-hang-guard.sh` is intentionally serialized (single active run). Do not run multiple hang-guard jobs concurrently.
 - Hang-guard logs and diagnostics are stored under `.test-artifacts/hang-guard/<timestamp>/`.
+- For production-readiness checks, use `scripts/production-gate.sh`; add `--include-benchmarks` before cutting a release candidate.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects with a subsystem hint (e.g., `Transport: handle half-close`).
@@ -81,3 +83,28 @@
 - Before reading code in any module directory, open its `CONTEXT.md` first (e.g., `Sources/Transport/CONTEXT.md`).
 - Keep protocol definitions separated from implementations, matching the module layout in `Package.swift`.
 - Each component directory may have a `README.md` with performance benchmarks and optimization details.
+
+## P2P Facade DSL Design Policy
+- The public Node DSL belongs to the `P2P` facade only. Lower-level modules must not expose public DSL helpers such as `service(...)` or `discovery(...)`.
+- Prefer a minimal public DSL surface. Reuse should be modeled with `NodeGroup` first; do not add new public protocol layers unless they remove real complexity.
+- `init` and modifiers have different responsibilities and must stay separated:
+  - `init` is for intrinsic construction of a valid value: required dependencies, immutable configuration, and domain-specific options.
+  - modifiers are for composition semantics inside a `Node`: runtime roles, lifecycle participation, capability requirements, weighting, and startup hooks.
+- Do not hide composition semantics inside `init` unless the value cannot exist meaningfully without them. If a built-in primitive has default runtime roles, treat those defaults as a separate descriptor-level concern, not as an ad hoc side effect of initialization.
+- Built-in primitives in the facade should remain noun-only (`Ping`, `Identify`, `MDNS`, etc.) and should stay thin wrappers over the generic `Service(...)` / `Discovery(...)` primitives.
+- Custom composition examples in docs and tests should prefer:
+  - `Node { ... }` for direct composition
+  - `NodeGroup { ... }` for reusable grouped composition
+  - `Service(...)` / `Discovery(...)` for custom expert-level components
+- Public custom component authoring should not require callers to understand internal runtime arrays or lower-level resolver plumbing. If a public API exposes `ServiceComponent` / `DiscoveryComponent` details directly, treat that as a design smell and simplify it.
+
+## Production Readiness Policy
+- A production composition should be representable as `Node(profile: .production) { ... }` without extra façade-only escape hatches.
+- The release path is explicit: strict startup validation first, then the production gate, then benchmark comparison against the checked-in snapshot.
+- Runtime-facing copy guards are part of the release contract. Do not relax `DataPathCopyGuardTests` allowances without documenting the adapter boundary and benchmark impact.
+
+## Data Path Policy
+- The runtime-facing payload path is `ByteBuffer` only. In `Sources/Protocols/`, `Sources/Integration/`, and `Sources/Transport/` business logic, do not introduce `Data(buffer:)` or `ByteBuffer(bytes:)` on hot paths.
+- If a protobuf or wire codec still needs `Data`, keep that conversion inside the codec boundary, not in services, runtime orchestration, or stream handlers.
+- Native transport and crypto adapters are the only acceptable boundary for `Data`-based APIs. When a dependency accepts generic byte views (`DataProtocol`, `Collection<UInt8>`, `UnsafeRawBufferPointer>`), pass `ByteBuffer.readableBytesView` or an equivalent zero-copy view instead of materializing `Data`.
+- When a dependency returns `Data` and no zero-copy API exists, convert once at the adapter boundary and document that boundary in tests or comments if it affects benchmark-sensitive paths.

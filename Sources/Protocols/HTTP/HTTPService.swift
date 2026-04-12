@@ -173,8 +173,8 @@ public final class HTTPService: EventEmitting, Sendable {
 
         do {
             // Encode and send request
-            let encoded = HTTPCodec.encodeRequest(request)
-            try await stream.write(ByteBuffer(bytes: encoded))
+            let encoded = HTTPCodec.encodeRequestBuffer(request)
+            try await stream.write(encoded)
 
             // Read response with timeout
             let response = try await withThrowingTaskGroup(of: HTTPResponse.self) { group in
@@ -234,8 +234,8 @@ public final class HTTPService: EventEmitting, Sendable {
             }
 
             // Encode and send response
-            let encoded = HTTPCodec.encodeResponse(response)
-            try await stream.write(ByteBuffer(bytes: encoded))
+            let encoded = HTTPCodec.encodeResponseBuffer(response)
+            try await stream.write(encoded)
 
             emit(.responseSent(remotePeer, response.statusCode))
         } catch let error as HTTPError {
@@ -309,21 +309,21 @@ public final class HTTPService: EventEmitting, Sendable {
     /// - Parameter stream: The stream to read from
     /// - Returns: The complete message bytes
     /// - Throws: `HTTPError` if the stream closes prematurely or limits are exceeded
-    private func readHTTPMessage(from stream: MuxedStream) async throws -> [UInt8] {
-        var buffer: [UInt8] = []
+    private func readHTTPMessage(from stream: MuxedStream) async throws -> ByteBuffer {
+        var buffer = ByteBuffer()
 
         // Read until we find the header/body separator
         while true {
-            let chunk = try await stream.read()
+            var chunk = try await stream.read()
             if chunk.readableBytes == 0 {
                 throw HTTPError.streamClosed
             }
 
-            buffer.append(contentsOf: Data(buffer: chunk))
+            buffer.writeBuffer(&chunk)
 
             // Check for header size limit during accumulation
-            if buffer.count > HTTPProtocol.maxHeaderSize + HTTPProtocol.maxBodySize {
-                throw HTTPError.bodyTooLarge(buffer.count)
+            if buffer.readableBytes > HTTPProtocol.maxHeaderSize + HTTPProtocol.maxBodySize {
+                throw HTTPError.bodyTooLarge(buffer.readableBytes)
             }
 
             // Check if we have the complete headers
@@ -335,15 +335,18 @@ public final class HTTPService: EventEmitting, Sendable {
                 if let contentLength = contentLength {
                     // Read until we have the full body
                     let totalExpected = bodyStart + contentLength
-                    while buffer.count < totalExpected {
-                        let moreData = try await stream.read()
+                    while buffer.readableBytes < totalExpected {
+                        var moreData = try await stream.read()
                         if moreData.readableBytes == 0 {
                             throw HTTPError.streamClosed
                         }
-                        buffer.append(contentsOf: Data(buffer: moreData))
+                        buffer.writeBuffer(&moreData)
                     }
                     // Return exactly the expected amount
-                    return Array(buffer[0..<totalExpected])
+                    guard let message = buffer.readSlice(length: totalExpected) else {
+                        throw HTTPError.streamClosed
+                    }
+                    return message
                 } else {
                     // No Content-Length: return what we have (headers only, no body)
                     return buffer
@@ -353,11 +356,17 @@ public final class HTTPService: EventEmitting, Sendable {
     }
 
     /// Finds the index of the first \r\n\r\n in the buffer.
-    private func findDoubleCrlf(in data: [UInt8]) -> Int? {
-        guard data.count >= 4 else { return nil }
-        for i in 0...(data.count - 4) {
-            if data[i] == 0x0D && data[i + 1] == 0x0A &&
-               data[i + 2] == 0x0D && data[i + 3] == 0x0A {
+    private func findDoubleCrlf(in data: ByteBuffer) -> Int? {
+        let bytes = data.readableBytesView
+        guard bytes.count >= 4 else { return nil }
+        let lastStart = bytes.count - 4
+        for i in 0...lastStart {
+            let index0 = bytes.index(bytes.startIndex, offsetBy: i)
+            let index1 = bytes.index(after: index0)
+            let index2 = bytes.index(after: index1)
+            let index3 = bytes.index(after: index2)
+            if bytes[index0] == 0x0D && bytes[index1] == 0x0A &&
+               bytes[index2] == 0x0D && bytes[index3] == 0x0A {
                 return i
             }
         }
@@ -365,10 +374,10 @@ public final class HTTPService: EventEmitting, Sendable {
     }
 
     /// Parses the Content-Length header value from raw header bytes.
-    private func parseContentLength(from data: [UInt8], headerEnd: Int) -> Int? {
-        guard let headerString = String(bytes: data[0..<headerEnd], encoding: .utf8) else {
-            return nil
-        }
+    private func parseContentLength(from data: ByteBuffer, headerEnd: Int) -> Int? {
+        var headerBuffer = data
+        headerBuffer.moveWriterIndex(to: headerBuffer.readerIndex + headerEnd)
+        let headerString = String(decoding: headerBuffer.readableBytesView, as: UTF8.self)
 
         let lines = headerString.components(separatedBy: "\r\n")
         for line in lines {

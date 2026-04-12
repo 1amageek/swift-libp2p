@@ -350,18 +350,3 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
         }
     }
 }
-
-public func beaconDiscovery(
-    configuration: BeaconDiscoveryConfiguration,
-    weight: Double = 1.0
-) -> DiscoveryComponent {
-    discovery(weight: weight, { localPeerID in
-        precondition(
-            configuration.keyPair.peerID == localPeerID,
-            "BeaconDiscovery configuration keyPair must match DiscoveryPipeline localPeerID"
-        )
-        return BeaconDiscovery(configuration: configuration)
-    }, startup: { service in
-        service.start()
-    })
-}

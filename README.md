@@ -83,7 +83,7 @@ try await stream.write(Data("Hello!".utf8))
 
 The public surface is now split into two layers:
 
-- `P2P`: batteries-included facade with `Node` and `NodeBuilder`
+- `P2P`: batteries-included facade with `Node`, `Service`, `Discovery`, and the `P2PComponentBuilder` result builder
 - `P2PRuntime`: expert-facing runtime APIs such as `ConnectionProvider` and `RuntimeConfiguration`
 
 Current refactor goals:
@@ -103,7 +103,7 @@ Current refactor goals:
 │  (GossipSub, Kademlia, your protocols)                      │
 ├─────────────────────────────────────────────────────────────┤
 │  P2P facade                                                 │
-│  Node / NodeBuilder                                         │
+│  Node / P2PComponentBuilder(result builder)                 │
 ├─────────────────────────────────────────────────────────────┤
 │  P2PRuntime                                                 │
 │  NodeRuntime / Swarm / ConnectionPool / Traversal           │
@@ -128,7 +128,7 @@ Current refactor goals:
 
 ### Composition Model
 
-- `NodeBuilder` is the main composition root for the facade layer
+- `Node` is the facade composition root
 - `NodeRuntime` owns startup ordering, listeners, swarm startup, and discovery auto-connect
 - `ServicePipeline` resolves service components into lifecycle services, inbound handlers, peer observers, discovery sources, and listen-address contributors
 - `DiscoveryPipeline` owns child discovery services and their startup hooks
@@ -240,7 +240,7 @@ connect(to: Multiaddr)
 | Module | Description |
 |--------|-------------|
 | `P2PRuntime` | expert-facing runtime layer |
-| `P2P` | facade layer with `Node` and `NodeBuilder` |
+| `P2P` | facade layer with `Node` and the `P2PComponentBuilder` result builder |
 
 ## Benchmark Snapshot
 
@@ -248,20 +248,31 @@ Current release benchmark snapshot from the in-tree benchmark harness:
 
 ### Noise Crypto
 
-- encrypt 32B: `1621.39 ns/op`
-- encrypt 256B: `1887.20 ns/op`
-- decrypt 256B: `2316.29 ns/op`
-- roundtrip 1KB: `5886.95 ns/op`
+- encrypt 32B: `1621.57 ns/op`
+- encrypt 256B: `1896.24 ns/op`
+- decrypt 256B: `2317.60 ns/op`
+- roundtrip 1KB: `5877.08 ns/op`
 
 ### Data Path
 
-- `Memory + Plaintext + Yamux connect`: `47529.85 ns/op`
-- `Memory + Noise + Yamux connect`: `555308.17 ns/op`
-- `Memory + TLS + Yamux connect`: `1365940.33 ns/op`
-- `Memory + Plaintext + Yamux roundtrip 1KB`: `489.97 MiB/s`
-- `Memory + Noise + Yamux roundtrip 1KB`: `94.56 MiB/s`
-- `Memory + TLS + Yamux roundtrip 1KB`: `104.53 MiB/s`
-- `Memory + Noise + Yamux roundtrip 32KB`: `299.24 MiB/s`
+- `Memory + Plaintext + Yamux connect`: `49644.06 ns/op`
+- `Memory + Noise + Yamux connect`: `569969.08 ns/op`
+- `Memory + TLS + Yamux connect`: `1429667.75 ns/op`
+- `Memory + Plaintext + Yamux roundtrip 1KB`: `12.00 MiB/s`
+- `Memory + Noise + Yamux roundtrip 1KB`: `23.18 MiB/s`
+- `Memory + TLS + Yamux roundtrip 1KB`: `36.28 MiB/s`
+- `Memory + Noise + Yamux roundtrip 32KB`: `86.04 MiB/s`
+
+Production-readiness gate:
+
+```bash
+scripts/production-gate.sh
+scripts/production-gate.sh --include-benchmarks
+```
+
+This gate runs the runtime-facing copy guard, the public `Node` DSL tests,
+and the Node end-to-end suite. With `--include-benchmarks`, it also runs the
+release benchmark snapshot for `DataPathBenchmarks` and `NoiseCryptoBenchmarks`.
 
 ## Configuration
 
@@ -284,27 +295,94 @@ let node = Node(configuration: NodeConfiguration(
 
 ### Services
 
-Services are composed explicitly via `ServicePipeline` or `NodeBuilder`:
+Services are composed explicitly via `ServicePipeline` or `Node { ... }`:
 
 ```swift
-let node = NodeBuilder(
+let node = Node(
     keyPair: .generateEd25519(),
     listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
     transports: [TCPTransport()],
     security: [NoiseUpgrader()],
     muxers: [YamuxMuxer()]
 ) {
-    ServiceRegistration(GossipSubService(configuration: .init())).component()
-    ServiceRegistration(KademliaService(configuration: .init())).component()
-}.build()
+    GossipSub()
+    Kademlia()
+}
 
 try await node.start()
+```
+
+### Production Profile
+
+For a safer default operating profile, use `.production`:
+
+```swift
+let node = Node(
+    profile: .production,
+    keyPair: .generateEd25519(),
+    listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
+    transports: [TCPTransport()],
+    security: [NoiseUpgrader()],
+    muxers: [YamuxMuxer()]
+) {
+    Identify()
+    GossipSub()
+}
+```
+
+The production profile enables resource accounting and production-oriented
+pool and health-check defaults. It also rejects `PlaintextUpgrader`.
+
+You can also validate a node before startup:
+
+```swift
+do {
+    try await node.start(validating: .production, behavior: .strict)
+} catch let error as NodeStartValidationError {
+    print("validation errors:", error.validation.errors)
+    print("validation warnings:", error.validation.warnings)
+}
+```
+
+The intended release path is:
+
+1. compose with `Node(profile: .production) { ... }`
+2. start with `try await node.start(validating: .production, behavior: .strict)`
+3. run `scripts/production-gate.sh --include-benchmarks` before shipping
+
+Reusable groups can be modeled directly as `NodeGroup` values:
+
+```swift
+let chatStack = NodeGroup {
+    Identify()
+    GossipSub()
+    MDNS()
+}
+
+let node = Node {
+    chatStack
+}
+```
+
+If you want a custom type, conform to `NodeComponent` and forward to `NodeGroup`:
+
+```swift
+struct MetricsStack: NodeComponent {
+    let ping = PingService()
+
+    var nodeGroup: NodeGroup {
+        NodeGroup {
+            Service(ping)
+                .handlesInboundStreams()
+        }
+    }
+}
 ```
 
 ### Discovery with Auto-Connect
 
 ```swift
-let node = NodeBuilder(
+let node = Node(
     keyPair: .generateEd25519(),
     listenAddresses: [Multiaddr("/ip4/0.0.0.0/tcp/4001")!],
     transports: [TCPTransport()],
@@ -312,11 +390,10 @@ let node = NodeBuilder(
     muxers: [YamuxMuxer()],
     discoveryConfig: .autoConnectEnabled
 ) {
-    ServiceRegistration(IdentifyService()).component()
-} discovery: {
-    mdns()
-    swim()
-}.build()
+    Identify()
+    MDNS()
+    SWIM()
+}
 ```
 
 ## Events

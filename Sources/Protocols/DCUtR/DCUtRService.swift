@@ -244,7 +244,9 @@ public final class DCUtRService: EventEmitting, Sendable {
 
             // Send CONNECT with our observed addresses
             let connectMsg = DCUtRMessage.connect(addresses: ourAddresses)
-            try await writeMessage(DCUtRProtobuf.encode(connectMsg), to: stream)
+            var connectData = ByteBuffer()
+            DCUtRProtobuf.encode(connectMsg, into: &connectData)
+            try await writeMessage(connectData, to: stream)
 
             // Receive CONNECT response with their observed addresses
             let responseData = try await readMessage(from: stream)
@@ -266,7 +268,9 @@ public final class DCUtRService: EventEmitting, Sendable {
 
             // Send SYNC to coordinate timing
             let syncMsg = DCUtRMessage.sync()
-            try await writeMessage(DCUtRProtobuf.encode(syncMsg), to: stream)
+            var syncData = ByteBuffer()
+            DCUtRProtobuf.encode(syncMsg, into: &syncData)
+            try await writeMessage(syncData, to: stream)
 
             // Wait RTT/2 before dialing so both sides start at approximately the same time
             try await Task.sleep(for: estimatedRTT / 2)
@@ -321,7 +325,9 @@ public final class DCUtRService: EventEmitting, Sendable {
 
             // Send our CONNECT response
             let response = DCUtRMessage.connect(addresses: ourAddresses)
-            try await writeMessage(DCUtRProtobuf.encode(response), to: stream)
+            var responseData = ByteBuffer()
+            DCUtRProtobuf.encode(response, into: &responseData)
+            try await writeMessage(responseData, to: stream)
 
             emit(.addressExchangeCompleted(peer: peer, theirAddresses: theirAddresses))
 
@@ -364,7 +370,7 @@ public final class DCUtRService: EventEmitting, Sendable {
 
     // MARK: - Message I/O
 
-    private func readMessage(from stream: MuxedStream) async throws -> Data {
+    private func readMessage(from stream: MuxedStream) async throws -> ByteBuffer {
         // Apply timeout to prevent indefinite blocking on malicious/stalled peers
         let buffer: ByteBuffer = try await withTimeout(configuration.timeout) {
             do {
@@ -378,7 +384,7 @@ public final class DCUtRService: EventEmitting, Sendable {
                 }
             }
         }
-        return Data(buffer: buffer)
+        return buffer
     }
 
     /// Executes an async operation with a timeout.
@@ -402,10 +408,10 @@ public final class DCUtRService: EventEmitting, Sendable {
         }
     }
 
-    private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
+    private func writeMessage(_ data: ByteBuffer, to stream: MuxedStream) async throws {
         // Apply timeout to prevent indefinite blocking
         try await withTimeout(configuration.timeout) {
-            try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+            try await stream.writeLengthPrefixedMessage(data)
         }
     }
 
@@ -500,35 +506,5 @@ public final class DCUtRService: EventEmitting, Sendable {
 extension DCUtRService: LifecycleService, StreamService {
     public func handleInboundStream(_ context: StreamContext) async {
         await handleDCUtR(context: context)
-    }
-}
-
-public func dcutrComponent(_ dcutrService: DCUtRService) -> ServiceComponent {
-    service(dcutrService) { component in
-        component.handlesInboundStreams()
-        component.postStart { context, service in
-            let addresses = await context.listenAddresses.listenAddresses()
-            service.setLocalAddressProvider { addresses }
-            service.setDialer { address in
-                _ = try await context.addressDialer.connect(to: address)
-            }
-        }
-    }
-}
-
-public func dcutrComponent(
-    configuration: DCUtRConfiguration = .init()
-) -> ServiceComponent {
-    service(make: { _ in
-        DCUtRService(configuration: configuration)
-    }) { component in
-        component.handlesInboundStreams()
-        component.postStart { context, service in
-            let addresses = await context.listenAddresses.listenAddresses()
-            service.setLocalAddressProvider { addresses }
-            service.setDialer { address in
-                _ = try await context.addressDialer.connect(to: address)
-            }
-        }
     }
 }

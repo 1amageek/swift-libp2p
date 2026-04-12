@@ -5,6 +5,7 @@
 /// See: https://github.com/libp2p/specs/blob/master/autonat/README.md
 
 import Foundation
+import NIOCore
 import P2PCore
 
 /// Protobuf encoding/decoding for AutoNAT messages.
@@ -77,6 +78,10 @@ enum AutoNATProtobuf {
         return result
     }
 
+    static func encode(_ message: AutoNATMessage, into buffer: inout ByteBuffer) {
+        buffer.writeBytes(encode(message))
+    }
+
     /// Decodes an AutoNATMessage from protobuf wire format.
     static func decode(_ data: Data) throws -> AutoNATMessage {
         var type: AutoNATMessageType = .dial
@@ -138,6 +143,10 @@ enum AutoNATProtobuf {
             }
             return .dialResponse(response)
         }
+    }
+
+    static func decode(_ buffer: ByteBuffer) throws -> AutoNATMessage {
+        try decode(Data(buffer: buffer))
     }
 
     // MARK: - Dial Encoding

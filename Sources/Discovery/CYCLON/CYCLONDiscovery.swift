@@ -302,18 +302,6 @@ public actor CYCLONDiscovery: DiscoveryService {
     }
 }
 
-public func cyclon(
-    configuration: CYCLONConfiguration = .default,
-    weight: Double = 1.0
-) -> DiscoveryComponent {
-    discovery(weight: weight, { localPeerID in
-        CYCLONDiscovery(localPeerID: localPeerID, configuration: configuration)
-    }, configure: { component in
-        component.handlesInboundStreams()
-        component.activatesWithStreamOpening()
-    })
-}
-
 extension CYCLONDiscovery: StreamService, StreamOpeningActivatable {
     public nonisolated var protocolIDs: [String] {
         [cyclonProtocolID]

@@ -11,6 +11,7 @@ import Synchronization
 @testable import P2PTransport
 @testable import P2PTransportMemory
 @testable import P2PSecurity
+@testable import P2PSecurityNoise
 @testable import P2PSecurityPlaintext
 @testable import P2PMux
 @testable import P2PMuxYamux
@@ -305,7 +306,9 @@ struct NodeE2ETests {
             hub: hub,
             listenAddress: serverAddr,
             services: ServicePipeline {
-                pingComponent(pingService)
+                service(pingService) { component in
+                    component.handlesInboundStreams()
+                }
             }
         )
         let client = makeNode(name: "client", hub: hub)
@@ -339,7 +342,9 @@ struct NodeE2ETests {
             hub: hub,
             listenAddress: serverAddr,
             services: ServicePipeline {
-                pingComponent(pingService)
+                service(pingService) { component in
+                    component.handlesInboundStreams()
+                }
             }
         )
         let client = makeNode(name: "client", hub: hub)
@@ -1105,5 +1110,64 @@ struct NodeE2ETests {
 
         await server.shutdown()
         hub.reset()
+    }
+
+    @Test("Production profile starts with strict validation and connects over Noise", .timeLimit(.minutes(1)))
+    func productionProfileSupportsStrictValidatedConnection() async throws {
+        let hub = MemoryHub()
+        let serverAddress = Multiaddr.memory(id: "production-noise-server")
+
+        let server = Node(
+            profile: .production,
+            keyPair: .generateEd25519(),
+            listenAddresses: [serverAddress],
+            transports: [MemoryTransport(hub: hub)],
+            security: [NoiseUpgrader()],
+            muxers: [YamuxMuxer()]
+        ) {
+            Ping()
+        }
+
+        let client = Node(
+            profile: .production,
+            keyPair: .generateEd25519(),
+            transports: [MemoryTransport(hub: hub)],
+            security: [NoiseUpgrader()],
+            muxers: [YamuxMuxer()]
+        ) {
+            Ping()
+        }
+
+        try await server.start(validating: .production, behavior: .strict)
+        try await client.start(validating: .production, behavior: .strict)
+
+        let serverPeerID = await server.peerID
+        let connectedPeer = try await client.connect(to: serverAddress)
+
+        #expect(connectedPeer == serverPeerID)
+        #expect(await client.connectionCount == 1)
+        #expect(await server.connectionCount == 1)
+
+        await client.shutdown()
+        await server.shutdown()
+        hub.reset()
+    }
+
+    @Test("Production profile keeps validation report clean for transparent Noise composition", .timeLimit(.minutes(1)))
+    func productionProfileValidationReportIsClean() {
+        let configuration = NodeConfiguration(
+            profile: .production,
+            keyPair: .generateEd25519(),
+            listenAddresses: [.memory(id: "production-validation")],
+            transports: [MemoryTransport(hub: MemoryHub())],
+            security: [NoiseUpgrader()],
+            muxers: [YamuxMuxer()]
+        )
+
+        let validation = configuration.validationReport(for: .production)
+
+        #expect(validation.errors.isEmpty)
+        #expect(validation.warnings.isEmpty)
+        #expect(validation.isValid)
     }
 }

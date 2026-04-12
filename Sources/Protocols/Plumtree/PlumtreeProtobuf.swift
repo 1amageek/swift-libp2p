@@ -2,6 +2,7 @@
 ///
 /// Hand-written protobuf following the same pattern as GossipSubProtobuf.
 import Foundation
+import NIOCore
 import P2PCore
 
 /// Protobuf encoding/decoding for Plumtree RPC messages.
@@ -97,6 +98,10 @@ public enum PlumtreeProtobuf {
         }
 
         return result
+    }
+
+    public static func encode(_ rpc: PlumtreeRPC, into buffer: inout ByteBuffer) {
+        buffer.writeBytes(encode(rpc))
     }
 
     private static func encodeGossip(_ gossip: PlumtreeGossip) -> Data {
@@ -219,6 +224,10 @@ public enum PlumtreeProtobuf {
             graftRequests: graftRequests,
             pruneRequests: pruneRequests
         )
+    }
+
+    public static func decode(_ buffer: ByteBuffer) throws -> PlumtreeRPC {
+        try decode(Data(buffer: buffer))
     }
 
     private static func decodeGossip(_ data: Data, from start: Int, to end: Int) throws -> PlumtreeGossip {

@@ -223,6 +223,10 @@ enum IdentifyProtobuf {
         }
     }
 
+    static func decode(_ buffer: ByteBuffer) throws -> IdentifyInfo {
+        try decode(Data(buffer: buffer))
+    }
+
     private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
         let startIndex = data.index(data.startIndex, offsetBy: offset)
         let endIndex = data.index(data.startIndex, offsetBy: end)

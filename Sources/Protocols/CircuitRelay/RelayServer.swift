@@ -261,7 +261,8 @@ public final class RelayServer: EventEmitting, Sendable {
 
         // Send response
         let response = HopMessage.statusResponse(.ok, reservation: resInfo, limit: configuration.circuitLimit)
-        let responseData = CircuitRelayProtobuf.encode(response)
+        var responseData = ByteBuffer()
+        CircuitRelayProtobuf.encode(response, into: &responseData)
 
         do {
             try await writeMessage(responseData, to: stream)
@@ -349,7 +350,8 @@ public final class RelayServer: EventEmitting, Sendable {
 
             // Send CONNECT to target
             let stopConnect = StopMessage.connect(from: source, limit: configuration.circuitLimit)
-            let stopConnectData = CircuitRelayProtobuf.encode(stopConnect)
+            var stopConnectData = ByteBuffer()
+            CircuitRelayProtobuf.encode(stopConnect, into: &stopConnectData)
             try await writeMessage(stopConnectData, to: targetStream)
 
             // Read target response
@@ -373,7 +375,8 @@ public final class RelayServer: EventEmitting, Sendable {
 
             // Send OK to source
             let hopResponse = HopMessage.statusResponse(.ok, limit: configuration.circuitLimit)
-            let hopResponseData = CircuitRelayProtobuf.encode(hopResponse)
+            var hopResponseData = ByteBuffer()
+            CircuitRelayProtobuf.encode(hopResponse, into: &hopResponseData)
             try await writeMessage(hopResponseData, to: stream)
 
             // Register circuit
@@ -501,7 +504,8 @@ public final class RelayServer: EventEmitting, Sendable {
 
     private func sendHopStatus(stream: MuxedStream, status: HopStatus) async throws {
         let response = HopMessage.statusResponse(status)
-        let responseData = CircuitRelayProtobuf.encode(response)
+        var responseData = ByteBuffer()
+        CircuitRelayProtobuf.encode(response, into: &responseData)
         try await writeMessage(responseData, to: stream)
         try await stream.close()
     }
@@ -535,10 +539,10 @@ public final class RelayServer: EventEmitting, Sendable {
         }
     }
 
-    private func readMessage(from stream: MuxedStream) async throws -> Data {
+    private func readMessage(from stream: MuxedStream) async throws -> ByteBuffer {
         do {
             let buffer = try await stream.readLengthPrefixedMessage(maxSize: UInt64(CircuitRelayProtocol.maxMessageSize))
-            return Data(buffer: buffer)
+            return buffer
         } catch let error as StreamMessageError {
             switch error {
             case .streamClosed, .emptyMessage:
@@ -549,8 +553,8 @@ public final class RelayServer: EventEmitting, Sendable {
         }
     }
 
-    private func writeMessage(_ data: Data, to stream: MuxedStream) async throws {
-        try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: data))
+    private func writeMessage(_ data: ByteBuffer, to stream: MuxedStream) async throws {
+        try await stream.writeLengthPrefixedMessage(data)
     }
 
     private func emit(_ event: CircuitRelayEvent) {
@@ -627,29 +631,5 @@ extension RelayServer: LifecycleService, StreamService, StreamOpeningConsumer, L
 
     public func attachListenAddressContext(_ context: any ListenAddressContext) async {
         listenAddressContextRef.withLock { $0 = context }
-    }
-}
-
-public func relayServerComponent(_ relayServer: RelayServer) -> ServiceComponent {
-    service(relayServer) { component in
-        component.handlesInboundStreams()
-        component.receivesStreamOpening()
-        component.consumesLocalIdentity()
-        component.consumesListenAddresses()
-    }
-}
-
-public func relayServerComponent(
-    configuration: RelayServerConfiguration = .init()
-) -> ServiceComponent {
-    service(make: { context in
-        RelayServer(
-            configuration: configuration,
-            streamOpener: context.streamOpener,
-            identityContext: context.localIdentity,
-            listenAddressContext: context.listenAddresses
-        )
-    }) { component in
-        component.handlesInboundStreams()
     }
 }

@@ -13,9 +13,71 @@ import Testing
 @testable import P2PSecurityPlaintext
 @testable import P2PTransportMemory
 
-@Suite("NodeBuilder Tests", .serialized)
-struct NodeBuilderTests {
-    @Test("NodeBuilder composes service and discovery DSL", .timeLimit(.minutes(1)))
+@Suite("Node DSL Tests", .serialized)
+struct NodeDSLTests {
+    private struct CompositeTestComponent: NodeComponent {
+        let pingService: PingService
+        let discoverySource: MockDiscoverySource
+
+        var nodeGroup: NodeGroup {
+            NodeGroup {
+                Service(pingService)
+                    .handlesInboundStreams()
+                Discovery(discoverySource)
+                    .onStart { source in
+                        source.markStarted()
+                    }
+            }
+        }
+    }
+
+    @Test("Node supports bare trailing-closure DSL", .timeLimit(.minutes(1)))
+    func supportsBareTrailingClosureDSL() async throws {
+        let node = Node {
+            Ping()
+        }
+
+        try await node.start()
+
+        #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
+
+        await node.shutdown()
+    }
+
+    @Test("Custom NodeComponent can compose primitive groups", .timeLimit(.minutes(1)))
+    func customNodeComponentComposesPrimitiveGroups() async throws {
+        let hub = MemoryHub()
+        let address = Multiaddr.memory(id: "node-component-group")
+        let keyPair = KeyPair.generateEd25519()
+        let pingService = PingService()
+        let mockDiscovery = MockDiscoverySource(localPeerID: keyPair.peerID)
+
+        let node = Node(
+            keyPair: keyPair,
+            listenAddresses: [address],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            CompositeTestComponent(
+                pingService: pingService,
+                discoverySource: mockDiscovery
+            )
+        }
+
+        try await node.start()
+
+        #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
+        #expect(mockDiscovery.state().started)
+
+        await node.shutdown()
+
+        #expect(mockDiscovery.state().shutdown)
+        hub.reset()
+    }
+
+    @Test("Node composes service and discovery DSL", .timeLimit(.minutes(1)))
     func composesServicesAndDiscovery() async throws {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder")
@@ -23,24 +85,20 @@ struct NodeBuilderTests {
         let pingService = PingService()
         let mockDiscovery = MockDiscoverySource(localPeerID: keyPair.peerID)
 
-        let builder = NodeBuilder(
+        let node = Node(
             keyPair: keyPair,
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
-            healthCheck: nil,
-            services: {
-                pingComponent(pingService)
-            },
-            discovery: {
-                discovery(mockDiscovery) { source in
+            healthCheck: nil
+        ) {
+            Ping(pingService)
+            Discovery(mockDiscovery)
+                .onStart { source in
                     source.markStarted()
                 }
-            }
-        )
-
-        let node = builder.build()
+        }
 
         try await node.start()
 
@@ -59,17 +117,16 @@ struct NodeBuilderTests {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-factory-services")
 
-        let node = NodeBuilder(
+        let node = Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
-            healthCheck: nil,
-            services: {
-                identifyComponent()
-                relayServerComponent()
-            }
-        ).build()
+            healthCheck: nil
+        ) {
+            Identify()
+            RelayServer()
+        }
 
         try await node.start()
 
@@ -88,19 +145,17 @@ struct NodeBuilderTests {
         let address = Multiaddr.memory(id: "node-builder-stream-opening-activation")
         let mockService = MockStreamOpeningActivationService()
 
-        let node = NodeBuilder(
+        let node = Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
-            healthCheck: nil,
-            services: {
-                service(mockService) { component in
-                    component.handlesInboundStreams()
-                    component.activatesWithStreamOpening()
-                }
-            }
-        ).build()
+            healthCheck: nil
+        ) {
+            Service(mockService)
+                .handlesInboundStreams()
+                .activatesWithStreamOpening()
+        }
 
         try await node.start()
 
@@ -118,16 +173,15 @@ struct NodeBuilderTests {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-dcutr")
 
-        let node = NodeBuilder(
+        let node = Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
-            healthCheck: nil,
-            services: {
-                dcutrComponent()
-            }
-        ).build()
+            healthCheck: nil
+        ) {
+            DCUtR()
+        }
 
         try await node.start()
 
@@ -138,7 +192,7 @@ struct NodeBuilderTests {
         hub.reset()
     }
 
-    @Test("NodeBuilder accepts direct connection providers", .timeLimit(.minutes(1)))
+    @Test("Node accepts direct connection providers", .timeLimit(.minutes(1)))
     func acceptsDirectConnectionProviders() async throws {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-provider")
@@ -150,17 +204,14 @@ struct NodeBuilderTests {
             muxers: [YamuxMuxer()]
         )
 
-        let builder = NodeBuilder(
+        let node = Node(
             keyPair: keyPair,
             listenAddresses: [address],
             connectionProviders: [provider],
-            healthCheck: nil,
-            services: {
-                pingComponent(PingService())
-            }
-        )
-
-        let node = builder.build()
+            healthCheck: nil
+        ) {
+            Ping()
+        }
         try await node.start()
 
         let protocols = await node.supportedProtocols()
@@ -173,7 +224,7 @@ struct NodeBuilderTests {
         hub.reset()
     }
 
-    @Test("NodeBuilder accepts runtime configuration", .timeLimit(.minutes(1)))
+    @Test("Node accepts runtime configuration", .timeLimit(.minutes(1)))
     func acceptsRuntimeConfiguration() async throws {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-runtime")
@@ -189,15 +240,12 @@ struct NodeBuilderTests {
             ]
         )
 
-        let builder = NodeBuilder(
+        let node = Node(
             runtime: runtime,
-            healthCheck: nil,
-            services: {
-                pingComponent(PingService())
-            }
-        )
-
-        let node = builder.build()
+            healthCheck: nil
+        ) {
+            Ping()
+        }
         try await node.start()
 
         let listenAddresses = await node.listenAddresses()
@@ -207,6 +255,122 @@ struct NodeBuilderTests {
         hub.reset()
     }
 
+    @Test("Production profile applies production-oriented defaults", .timeLimit(.minutes(1)))
+    func productionProfileAppliesProductionDefaults() async throws {
+        let configuration = NodeConfiguration(
+            profile: .production,
+            connectionProviders: [],
+            transports: [],
+            security: [],
+            muxers: []
+        )
+
+        #expect(configuration.runtime.pool == .production)
+        #expect(configuration.healthCheck == .production)
+        #expect(configuration.resourceManager != nil)
+    }
+
+    @Test("Development profile applies development-oriented defaults", .timeLimit(.minutes(1)))
+    func developmentProfileAppliesDevelopmentDefaults() async throws {
+        let configuration = NodeConfiguration(
+            profile: .development,
+            connectionProviders: [],
+            transports: [],
+            security: [],
+            muxers: []
+        )
+
+        #expect(configuration.runtime.pool == .development)
+        #expect(configuration.healthCheck == .development)
+        #expect(configuration.resourceManager == nil)
+    }
+
+    @Test("Production validation reports disabled operational safeguards", .timeLimit(.minutes(1)))
+    func productionValidationReportsDisabledOperationalSafeguards() async throws {
+        let configuration = NodeConfiguration(
+            keyPair: .generateEd25519(),
+            healthCheck: nil,
+            resourceManager: nil
+        )
+
+        let report = configuration.validationReport(for: .production)
+
+        #expect(report.errors.isEmpty)
+        #expect(report.warnings.contains(.disabledHealthChecksInProduction))
+        #expect(report.warnings.contains(.disabledResourceManagerInProduction))
+    }
+
+    @Test("Production input validation rejects plaintext security", .timeLimit(.minutes(1)))
+    func productionInputValidationRejectsPlaintextSecurity() async throws {
+        let hub = MemoryHub()
+        let report = NodeConfiguration.validateProfileInputs(
+            profile: .production,
+            connectionProviderAuditMode: .transparentComposition,
+            connectionProviders: [],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            healthCheck: .production,
+            resourceManager: NullResourceManager()
+        )
+
+        #expect(report.errors.contains(.plaintextSecurityInProduction))
+    }
+
+    @Test("Production validation treats opaque providers as errors under strict audit", .timeLimit(.minutes(1)))
+    func productionValidationTreatsOpaqueProvidersAsErrorsUnderStrictAudit() async throws {
+        let report = NodeConfiguration.validateProfileInputs(
+            profile: .production,
+            connectionProviderAuditMode: .opaqueProviders,
+            auditPolicy: .strict,
+            connectionProviders: [],
+            transports: [],
+            security: [],
+            healthCheck: .production,
+            resourceManager: NullResourceManager()
+        )
+
+        #expect(report.errors.contains(.opaqueConnectionProvidersRequireManualSecurityAudit))
+    }
+
+    @Test("Production validation treats opaque providers as warnings under permissive audit", .timeLimit(.minutes(1)))
+    func productionValidationTreatsOpaqueProvidersAsWarningsUnderPermissiveAudit() async throws {
+        let report = NodeConfiguration.validateProfileInputs(
+            profile: .production,
+            connectionProviderAuditMode: .opaqueProviders,
+            auditPolicy: .permissive,
+            connectionProviders: [],
+            transports: [],
+            security: [],
+            healthCheck: .production,
+            resourceManager: NullResourceManager()
+        )
+
+        #expect(report.errors.isEmpty)
+        #expect(report.warnings.contains(.opaqueConnectionProvidersRequireManualSecurityAudit))
+    }
+
+    @Test("Strict production start validation rejects warning-only configurations", .timeLimit(.minutes(1)))
+    func strictProductionStartValidationRejectsWarningOnlyConfigurations() async throws {
+        let node = Node(
+            keyPair: .generateEd25519(),
+            healthCheck: nil,
+            resourceManager: nil
+        ) {
+            Ping()
+        }
+
+        do {
+            try await node.start(validating: .production, behavior: .strict)
+            Issue.record("Expected strict production validation to fail before startup")
+        } catch let error as NodeStartValidationError {
+            #expect(error.profile == .production)
+            #expect(error.validation.warnings.contains(.disabledHealthChecksInProduction))
+            #expect(error.validation.warnings.contains(.disabledResourceManagerInProduction))
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test("Discovery DSL wires owned discovery roles into runtime", .timeLimit(.minutes(1)))
     func discoveryDSLWiresOwnedRoles() async throws {
         let hub = MemoryHub()
@@ -214,29 +378,28 @@ struct NodeBuilderTests {
         let keyPair = KeyPair.generateEd25519()
         let mockDiscovery = OwnedDiscoveryRoleSource(localPeerID: keyPair.peerID)
 
-        let server = NodeBuilder(
+        let server = Node(
             keyPair: keyPair,
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
-            healthCheck: nil,
-            discovery: {
-                discovery(mockDiscovery, configure: { component in
-                    component.handlesInboundStreams()
-                    component.observesPeers()
-                    component.activatesWithStreamOpening()
-                })
-            }
-        ).build()
+            healthCheck: nil
+        ) {
+            Discovery(mockDiscovery)
+                .handlesInboundStreams()
+                .observesPeers()
+                .receivesStreamOpening()
+                .activatesOnStart()
+        }
 
-        let client = NodeBuilder(
+        let client = Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-discovery-client")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
             healthCheck: nil
-        ).build()
+        )
 
         try await server.start()
         try await client.start()
@@ -265,17 +428,16 @@ struct NodeBuilderTests {
     @Test("Built-in discovery helpers register runtime stream roles", .timeLimit(.minutes(1)))
     func builtInDiscoveryHelpersRegisterRuntimeRoles() async throws {
         let hub = MemoryHub()
-        let node = NodeBuilder(
+        let node = Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-real-discovery")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             muxers: [YamuxMuxer()],
-            healthCheck: nil,
-            discovery: {
-                cyclon()
-                plumtreeDiscovery()
-            }
-        ).build()
+            healthCheck: nil
+        ) {
+            CYCLON()
+            PlumtreeDiscovery()
+        }
 
         try await node.start()
 
@@ -298,12 +460,12 @@ struct NodeBuilderTests {
         )
         let flakyProvider = FlakyListenConnectionProvider(delegate: baseProvider)
 
-        let node = NodeBuilder(
+        let node = Node(
             keyPair: .generateEd25519(),
             listenAddresses: [address],
             connectionProviders: [flakyProvider],
             healthCheck: nil
-        ).build()
+        )
 
         do {
             try await node.start()
