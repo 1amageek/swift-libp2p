@@ -46,9 +46,41 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
 
     private let configuration: TLSUpgraderConfiguration
 
+    /// Per-identity cache of generated self-signed certificates. The libp2p-tls
+    /// spec explicitly permits reusing a single certificate across multiple
+    /// connections for the same identity, so we avoid regenerating the P-256
+    /// keypair and self-signed certificate on every handshake.
+    private struct CachedCertificate: Sendable {
+        let certChain: [Data]
+        let signingKey: TLSCore.SigningKey
+    }
+    private let certificateCache: Mutex<[PeerID: CachedCertificate]> = Mutex([:])
+
     /// Creates a TLS upgrader.
     public init(configuration: TLSUpgraderConfiguration = .default) {
         self.configuration = configuration
+    }
+
+    private func cachedCertificate(for keyPair: KeyPair) throws -> (certChain: [Data], signingKey: TLSCore.SigningKey) {
+        let peerID = keyPair.peerID
+        if let cached = certificateCache.withLock({ $0[peerID] }) {
+            return (cached.certChain, cached.signingKey)
+        }
+        let fresh = try TLSCertificateHelper.generate(keyPair: keyPair)
+        let finalEntry = certificateCache.withLock { storage -> CachedCertificate in
+            if let existing = storage[peerID] {
+                // Lost the race; keep the existing entry so every handshake
+                // for this identity shares a single cert.
+                return existing
+            }
+            let entry = CachedCertificate(
+                certChain: fresh.certificateChain,
+                signingKey: fresh.signingKey
+            )
+            storage[peerID] = entry
+            return entry
+        }
+        return (finalEntry.certChain, finalEntry.signingKey)
     }
 
     public func secure(
@@ -133,8 +165,8 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
         expectedPeer: PeerID?,
         muxerProtocols: [String]
     ) async throws -> (connection: any SecuredConnection, negotiatedMuxer: String?) {
-        // 1. Generate self-signed certificate with libp2p extension
-        let (certChain, signingKey) = try TLSCertificateHelper.generate(keyPair: localKeyPair)
+        // 1. Load (or generate and cache) self-signed certificate with libp2p extension
+        let (certChain, signingKey) = try cachedCertificate(for: localKeyPair)
 
         // 2. Build ALPN list with optional muxer hints
         let alpnProtocols = Self.buildALPNProtocols(muxerProtocols: muxerProtocols)
