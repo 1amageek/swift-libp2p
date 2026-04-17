@@ -157,7 +157,7 @@ public final class SupernodeService: EventEmitting, Sendable {
 
     // MARK: - Shutdown (EventEmitting)
 
-    public func shutdown() async {
+    public func shutdown() async throws {
         evaluationTask.withLock { t in t?.cancel(); t = nil }
         serviceState.withLock { $0.isShutDown = true }
         channel.finish()

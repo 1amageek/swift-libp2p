@@ -104,7 +104,7 @@ public protocol DiscoveryService: AnyObject, Sendable {
     /// After calling `shutdown()`, the service should not emit new observations.
     /// This method is idempotent and safe to call multiple times.
     /// Restart after `shutdown()` is not currently supported.
-    func shutdown() async
+    func shutdown() async throws
 }
 
 extension DiscoveryService {

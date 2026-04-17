@@ -122,7 +122,10 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
                 localAddress: localAddress,
                 remoteCertificateHashes: components.certificateHashes,
                 onClose: { [endpoint] in
-                    await endpoint.shutdown()
+                    do {
+                        try await endpoint.shutdown()
+                    } catch {
+                    }
                 }
             )
             connection.startForwarding()
@@ -132,7 +135,7 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
                 applicationError: 0x100,
                 reason: "webtransport dial failed"
             )
-            await endpoint.shutdown()
+            try await endpoint.shutdown()
             throw error
         }
     }

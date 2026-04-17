@@ -4,6 +4,10 @@ import Synchronization
 @testable import P2PDiscovery
 @testable import P2PCore
 
+private enum DiscoveryPipelineStartupError: Error {
+    case startupFailed
+}
+
 private func makeComposite(
     localPeerID: PeerID,
     services: [any DiscoveryService]
@@ -11,6 +15,23 @@ private func makeComposite(
     DiscoveryPipeline(localPeerID: localPeerID) {
         for service in services {
             discovery { _ in service }
+        }
+    }
+}
+
+private final class FlakyStartupController: Sendable {
+    private let shouldFail = Mutex(true)
+
+    func run() async throws {
+        let failThisAttempt = shouldFail.withLock { shouldFail -> Bool in
+            if shouldFail {
+                shouldFail = false
+                return true
+            }
+            return false
+        }
+        if failThisAttempt {
+            throw DiscoveryPipelineStartupError.startupFailed
         }
     }
 }
@@ -116,7 +137,7 @@ final class MockDiscoveryService: DiscoveryService, Sendable {
         eventStream
     }
 
-    func shutdown() async {
+    func shutdown() async throws {
         state.withLock { $0.stopCalled = true }
         eventContinuation.finish()
     }
@@ -263,6 +284,30 @@ struct ObservationTests {
     }
 }
 
+@Suite("Discovery Pipeline Startup Tests", .serialized)
+struct DiscoveryPipelineStartupTests {
+    @Test("DiscoveryPipeline start propagates startup failures and can retry", .timeLimit(.minutes(1)))
+    func pipelineStartPropagatesFailureAndCanRetry() async throws {
+        let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let service = MockDiscoveryService(localPeerID: localPeerID)
+        let startup = FlakyStartupController()
+        let pipeline = DiscoveryPipeline(localPeerID: localPeerID) {
+            discovery(service) { service in
+                try await startup.run()
+                _ = service
+            }
+        }
+
+        await #expect(throws: DiscoveryPipelineStartupError.self) {
+            try await pipeline.start()
+        }
+
+        try await pipeline.start()
+        try await pipeline.shutdown()
+        try await pipeline.shutdown()
+    }
+}
+
 // MARK: - ScoredCandidate Tests
 
 @Suite("ScoredCandidate Tests")
@@ -362,7 +407,7 @@ struct DiscoveryPipelineTests {
     }
 
     @Test("Initializes with weighted services")
-    func initWithWeights() async {
+    func initWithWeights() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService()
         let service2 = MockDiscoveryService()
@@ -378,7 +423,7 @@ struct DiscoveryPipelineTests {
     }
 
     @Test("Initializes with equal weights")
-    func initWithEqualWeights() async {
+    func initWithEqualWeights() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService()
         let service2 = MockDiscoveryService()
@@ -501,7 +546,7 @@ struct DiscoveryPipelineTests {
     }
 
     @Test("KnownPeers deduplicates across services")
-    func knownPeersDeduplicates() async {
+    func knownPeersDeduplicates() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let peer1 = PeerID.test(1)
         let peer2 = PeerID.test(2)
@@ -522,7 +567,7 @@ struct DiscoveryPipelineTests {
     }
 
     @Test("KnownPeers returns empty when no services have peers")
-    func knownPeersEmpty() async {
+    func knownPeersEmpty() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service1 = MockDiscoveryService(knownPeers: [])
         let service2 = MockDiscoveryService(knownPeers: [])
@@ -567,32 +612,32 @@ struct DiscoveryPipelineTests {
     }
 
     @Test("CompositeDiscovery shuts down child services")
-    func compositeShutdownsChildServices() async {
+    func compositeShutdownsChildServices() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let mock1 = MockDiscoveryService()
         let mock2 = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [mock1, mock2])
 
-        await composite.start()
-        await composite.shutdown()
+        try await composite.start()
+        try await composite.shutdown()
 
         #expect(mock1.stopCalled == true)
         #expect(mock2.stopCalled == true)
     }
 
     @Test("Shutdown is idempotent (double shutdown does not crash)")
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [service])
 
         // Start to initialize state
-        await composite.start()
+        try await composite.start()
 
         // Multiple shutdowns should not crash
-        await composite.shutdown()
-        await composite.shutdown()
-        await composite.shutdown()
+        try await composite.shutdown()
+        try await composite.shutdown()
+        try await composite.shutdown()
 
         // Service should still be usable for read operations
         let peers = await composite.knownPeers()
@@ -600,13 +645,13 @@ struct DiscoveryPipelineTests {
     }
 
     @Test("Shutdown terminates observation stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesObservationStream() async {
+    func shutdownTerminatesObservationStream() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [service])
 
         // Start the composite
-        await composite.start()
+        try await composite.start()
 
         // Get the observation stream
         let observations = composite.observations
@@ -624,7 +669,7 @@ struct DiscoveryPipelineTests {
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
-        await composite.shutdown()
+        try await composite.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value
@@ -666,7 +711,7 @@ struct DiscoveryServiceProtocolTests {
 struct DiscoveryServiceSelfFilteringTests {
 
     @Test("knownPeers() excludes localPeerID from collectKnownPeers() results")
-    func knownPeersExcludesSelf() async {
+    func knownPeersExcludesSelf() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let otherPeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
 
@@ -689,7 +734,7 @@ struct DiscoveryServiceSelfFilteringTests {
     }
 
     @Test("knownPeers() returns empty when only self is known")
-    func knownPeersEmptyWhenOnlySelf() async {
+    func knownPeersEmptyWhenOnlySelf() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
 
         let service = MockDiscoveryService(
@@ -705,7 +750,7 @@ struct DiscoveryServiceSelfFilteringTests {
     }
 
     @Test("knownPeers() passes through when self is not present")
-    func knownPeersPassesThroughWhenNoSelf() async {
+    func knownPeersPassesThroughWhenNoSelf() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let peer1 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let peer2 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
@@ -724,7 +769,7 @@ struct DiscoveryServiceSelfFilteringTests {
     }
 
     @Test("CompositeDiscovery knownPeers() excludes composite's localPeerID")
-    func compositeKnownPeersExcludesSelf() async {
+    func compositeKnownPeersExcludesSelf() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let otherPeer1 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let otherPeer2 = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
@@ -743,7 +788,7 @@ struct DiscoveryServiceSelfFilteringTests {
     }
 
     @Test("CompositeDiscovery collectKnownPeers vs knownPeers difference")
-    func compositeCollectVsKnown() async {
+    func compositeCollectVsKnown() async throws {
         let localPeerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
 
         // Child service returns the composite's localPeerID as a "known peer"

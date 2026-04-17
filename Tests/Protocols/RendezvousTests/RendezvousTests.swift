@@ -274,7 +274,7 @@ struct RendezvousServiceRegistrationTests {
         #expect(registration.namespace == "test-app")
         #expect(registration.ttl == RendezvousProtocol.defaultTTL)
         #expect(!registration.isExpired)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register with custom TTL")
@@ -287,7 +287,7 @@ struct RendezvousServiceRegistrationTests {
         )
 
         #expect(registration.ttl == .seconds(1800))
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register clamps TTL to maximum")
@@ -301,28 +301,28 @@ struct RendezvousServiceRegistrationTests {
         )
 
         #expect(registration.ttl == RendezvousProtocol.maxTTL)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register rejects empty namespace")
-    func registerRejectsEmptyNamespace() async {
+    func registerRejectsEmptyNamespace() async throws {
         let service = RendezvousService()
 
         #expect(throws: RendezvousError.self) {
             try service.register(namespace: "")
         }
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register rejects namespace exceeding max length")
-    func registerRejectsLongNamespace() async {
+    func registerRejectsLongNamespace() async throws {
         let service = RendezvousService()
 
         let longNamespace = String(repeating: "a", count: 256)
         #expect(throws: RendezvousError.self) {
             try service.register(namespace: longNamespace)
         }
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register accepts namespace at max length")
@@ -332,17 +332,17 @@ struct RendezvousServiceRegistrationTests {
         let maxNamespace = String(repeating: "a", count: 255)
         let registration = try service.register(namespace: maxNamespace)
         #expect(registration.namespace == maxNamespace)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register rejects zero TTL")
-    func registerRejectsZeroTTL() async {
+    func registerRejectsZeroTTL() async throws {
         let service = RendezvousService()
 
         #expect(throws: RendezvousError.self) {
             try service.register(namespace: "test", ttl: .zero)
         }
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register replaces existing registration for same namespace")
@@ -358,7 +358,7 @@ struct RendezvousServiceRegistrationTests {
         let active = service.activeRegistrations()
         #expect(active.count == 1)
         #expect(active["test"]?.ttl == .seconds(200))
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Unregister removes a registration")
@@ -370,16 +370,16 @@ struct RendezvousServiceRegistrationTests {
 
         service.unregister(namespace: "test")
         #expect(service.activeRegistrations().isEmpty)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Unregister for non-existent namespace is no-op")
-    func unregisterNonExistent() async {
+    func unregisterNonExistent() async throws {
         let service = RendezvousService()
 
         // Should not crash or throw
         service.unregister(namespace: "nonexistent")
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Active registrations excludes expired entries")
@@ -393,7 +393,7 @@ struct RendezvousServiceRegistrationTests {
         let active = service.activeRegistrations()
         #expect(active.count == 1)
         #expect(active["active"] != nil)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Multiple registrations under different namespaces")
@@ -406,7 +406,7 @@ struct RendezvousServiceRegistrationTests {
 
         let active = service.activeRegistrations()
         #expect(active.count == 3)
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -416,16 +416,16 @@ struct RendezvousServiceRegistrationTests {
 struct RendezvousServiceDiscoveryTests {
 
     @Test("Discover returns empty for unknown namespace")
-    func discoverEmptyNamespace() async {
+    func discoverEmptyNamespace() async throws {
         let service = RendezvousService()
 
         let peers = service.discover(namespace: "unknown")
         #expect(peers.isEmpty)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Discover returns cached peers")
-    func discoverReturnsCached() async {
+    func discoverReturnsCached() async throws {
         let service = RendezvousService()
 
         let keyPair = KeyPair.generateEd25519()
@@ -440,11 +440,11 @@ struct RendezvousServiceDiscoveryTests {
 
         #expect(discovered.count == 1)
         #expect(discovered[0].peer == keyPair.peerID)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Discover respects limit")
-    func discoverRespectsLimit() async {
+    func discoverRespectsLimit() async throws {
         let service = RendezvousService()
 
         var peers: [RendezvousService.DiscoveredPeer] = []
@@ -461,11 +461,11 @@ struct RendezvousServiceDiscoveryTests {
         let discovered = service.discover(namespace: "test", limit: 3)
 
         #expect(discovered.count == 3)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Discover without limit returns all peers")
-    func discoverWithoutLimitReturnsAll() async {
+    func discoverWithoutLimitReturnsAll() async throws {
         let service = RendezvousService()
 
         var peers: [RendezvousService.DiscoveredPeer] = []
@@ -482,11 +482,11 @@ struct RendezvousServiceDiscoveryTests {
         let discovered = service.discover(namespace: "test")
 
         #expect(discovered.count == 5)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Clear discovery cache removes namespace")
-    func clearDiscoveryCacheNamespace() async {
+    func clearDiscoveryCacheNamespace() async throws {
         let service = RendezvousService()
 
         let kp = KeyPair.generateEd25519()
@@ -503,11 +503,11 @@ struct RendezvousServiceDiscoveryTests {
 
         #expect(service.discover(namespace: "ns1").isEmpty)
         #expect(service.discover(namespace: "ns2").count == 1)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Clear all discovery cache")
-    func clearAllDiscoveryCache() async {
+    func clearAllDiscoveryCache() async throws {
         let service = RendezvousService()
 
         let kp = KeyPair.generateEd25519()
@@ -524,7 +524,7 @@ struct RendezvousServiceDiscoveryTests {
 
         #expect(service.discover(namespace: "ns1").isEmpty)
         #expect(service.discover(namespace: "ns2").isEmpty)
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -534,16 +534,16 @@ struct RendezvousServiceDiscoveryTests {
 struct RendezvousServiceEventTests {
 
     @Test("Events stream is available")
-    func eventsStreamAvailable() async {
+    func eventsStreamAvailable() async throws {
         let service = RendezvousService()
 
         _ = service.events
         _ = service.events // Accessing twice returns same stream
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let service = RendezvousService()
 
         let events = service.events
@@ -558,19 +558,19 @@ struct RendezvousServiceEventTests {
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
-        await service.shutdown()
+        try await service.shutdown()
 
         let count = await consumeTask.value
         #expect(count == 0)
     }
 
     @Test("Shutdown is idempotent")
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let service = RendezvousService()
 
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Register emits registered event", .timeLimit(.minutes(1)))
@@ -591,7 +591,7 @@ struct RendezvousServiceEventTests {
         _ = try service.register(namespace: "test-ns")
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-        await service.shutdown()
+        try await service.shutdown()
 
         let event = await eventTask.value
         if case .registered(let ns, _) = event {
@@ -621,7 +621,7 @@ struct RendezvousServiceEventTests {
         service.unregister(namespace: "test-ns")
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-        await service.shutdown()
+        try await service.shutdown()
 
         let event = await eventTask.value
         if case .unregistered(let ns) = event {
@@ -682,7 +682,7 @@ struct RendezvousPointRegistrationTests {
         #expect(reg.addresses.count == 1)
         #expect(reg.ttl == .seconds(3600))
         #expect(!reg.isExpired)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Register clamps TTL to maximum")
@@ -700,11 +700,11 @@ struct RendezvousPointRegistrationTests {
         )
 
         #expect(reg.ttl == RendezvousProtocol.maxTTL)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Register rejects empty namespace")
-    func registerRejectsEmptyNamespace() async {
+    func registerRejectsEmptyNamespace() async throws {
         let point = RendezvousPoint()
 
         let keyPair = KeyPair.generateEd25519()
@@ -717,11 +717,11 @@ struct RendezvousPointRegistrationTests {
                 ttl: .seconds(3600)
             )
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Register rejects namespace exceeding max length")
-    func registerRejectsLongNamespace() async {
+    func registerRejectsLongNamespace() async throws {
         let point = RendezvousPoint()
 
         let keyPair = KeyPair.generateEd25519()
@@ -735,11 +735,11 @@ struct RendezvousPointRegistrationTests {
                 ttl: .seconds(3600)
             )
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Register rejects zero TTL")
-    func registerRejectsZeroTTL() async {
+    func registerRejectsZeroTTL() async throws {
         let point = RendezvousPoint()
 
         let keyPair = KeyPair.generateEd25519()
@@ -752,7 +752,7 @@ struct RendezvousPointRegistrationTests {
                 ttl: .zero
             )
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Register replaces existing registration for same peer")
@@ -780,7 +780,7 @@ struct RendezvousPointRegistrationTests {
         // Should have replaced, not added
         #expect(point.registrationCount(namespace: "test") == 1)
         #expect(reg2.ttl == .seconds(200))
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Multiple peers can register in same namespace")
@@ -796,7 +796,7 @@ struct RendezvousPointRegistrationTests {
         _ = try point.register(peer: peer3, namespace: "test", addresses: [], ttl: .seconds(3600))
 
         #expect(point.registrationCount(namespace: "test") == 3)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Per-peer registration limit is enforced")
@@ -817,7 +817,7 @@ struct RendezvousPointRegistrationTests {
         #expect(throws: RendezvousError.self) {
             try point.register(peer: peer, namespace: "ns4", addresses: [], ttl: .seconds(3600))
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Per-namespace registration limit is enforced")
@@ -841,7 +841,7 @@ struct RendezvousPointRegistrationTests {
         #expect(throws: RendezvousError.self) {
             try point.register(peer: peer4, namespace: "test", addresses: [], ttl: .seconds(3600))
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Max namespaces limit is enforced")
@@ -863,7 +863,7 @@ struct RendezvousPointRegistrationTests {
         #expect(throws: RendezvousError.self) {
             try point.register(peer: peer2, namespace: "ns4", addresses: [], ttl: .seconds(3600))
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Re-registering same peer in same namespace does not increase count")
@@ -884,7 +884,7 @@ struct RendezvousPointRegistrationTests {
         _ = try point.register(peer: peer, namespace: "ns1", addresses: [], ttl: .seconds(7200))
 
         #expect(point.registrationCount(namespace: "ns1") == 1)
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 
@@ -904,7 +904,7 @@ struct RendezvousPointUnregisterTests {
 
         point.unregister(peer: peer, namespace: "test")
         #expect(point.registrationCount(namespace: "test") == 0)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Unregister removes namespace when empty")
@@ -918,16 +918,16 @@ struct RendezvousPointUnregisterTests {
 
         point.unregister(peer: peer, namespace: "test")
         #expect(!point.allNamespaces().contains("test"))
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Unregister is no-op for non-existent peer")
-    func unregisterNonExistentPeer() async {
+    func unregisterNonExistentPeer() async throws {
         let point = RendezvousPoint()
 
         let peer = KeyPair.generateEd25519().peerID
         point.unregister(peer: peer, namespace: "test")
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Unregister is no-op for non-existent namespace")
@@ -939,7 +939,7 @@ struct RendezvousPointUnregisterTests {
 
         point.unregister(peer: peer, namespace: "other")
         #expect(point.registrationCount(namespace: "test") == 1)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Unregister only removes specified peer")
@@ -955,7 +955,7 @@ struct RendezvousPointUnregisterTests {
         point.unregister(peer: peer1, namespace: "test")
 
         #expect(point.registrationCount(namespace: "test") == 1)
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 
@@ -979,17 +979,17 @@ struct RendezvousPointDiscoveryTests {
 
         #expect(regs.count == 2)
         #expect(cookie == nil) // All results returned, no more pages
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Discover returns empty for unknown namespace")
-    func discoverEmptyNamespace() async {
+    func discoverEmptyNamespace() async throws {
         let point = RendezvousPoint()
 
         let (regs, cookie) = point.discover(namespace: "unknown")
         #expect(regs.isEmpty)
         #expect(cookie == nil)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Discover respects limit")
@@ -1005,7 +1005,7 @@ struct RendezvousPointDiscoveryTests {
 
         #expect(regs.count == 3)
         #expect(cookie != nil) // More results available
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Cookie-based pagination works correctly")
@@ -1036,7 +1036,7 @@ struct RendezvousPointDiscoveryTests {
         let allPeers = page1.map(\.peer) + page2.map(\.peer) + page3.map(\.peer)
         let uniquePeers = Set(allPeers)
         #expect(uniquePeers.count == 5)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Cookie from wrong namespace returns empty")
@@ -1058,7 +1058,7 @@ struct RendezvousPointDiscoveryTests {
         // Try using it for ns2
         let (regs, _) = point.discover(namespace: "ns2", limit: 10, cookie: cookie)
         #expect(regs.isEmpty)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Invalid cookie returns empty")
@@ -1075,7 +1075,7 @@ struct RendezvousPointDiscoveryTests {
         // Since we don't find the cookie, startOffset defaults to 0
         #expect(regs.count == 1)
         #expect(cookie == nil)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Discover without limit returns all registrations")
@@ -1091,7 +1091,7 @@ struct RendezvousPointDiscoveryTests {
 
         #expect(regs.count == 10)
         #expect(cookie == nil)
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 
@@ -1120,7 +1120,7 @@ struct RendezvousPointExpiryTests {
         // Run cleanup - active registration should remain
         point.removeExpiredRegistrations()
         #expect(point.registrationCount(namespace: "test") == 1)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Registration count excludes expired entries")
@@ -1138,7 +1138,7 @@ struct RendezvousPointExpiryTests {
 
         // Active registration should be counted
         #expect(point.registrationCount(namespace: "test") == 1)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("All namespaces returns tracked namespaces")
@@ -1154,7 +1154,7 @@ struct RendezvousPointExpiryTests {
         let namespaces = point.allNamespaces()
         #expect(namespaces.count == 3)
         #expect(Set(namespaces) == Set(["ns1", "ns2", "ns3"]))
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 
@@ -1164,15 +1164,15 @@ struct RendezvousPointExpiryTests {
 struct RendezvousPointEventTests {
 
     @Test("Events stream is available")
-    func eventsStreamAvailable() async {
+    func eventsStreamAvailable() async throws {
         let point = RendezvousPoint()
 
         _ = point.events
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let point = RendezvousPoint()
 
         let events = point.events
@@ -1187,19 +1187,19 @@ struct RendezvousPointEventTests {
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
-        await point.shutdown()
+        try await point.shutdown()
 
         let count = await consumeTask.value
         #expect(count == 0)
     }
 
     @Test("Shutdown is idempotent")
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let point = RendezvousPoint()
 
-        await point.shutdown()
-        await point.shutdown()
-        await point.shutdown()
+        try await point.shutdown()
+        try await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Register emits peerRegistered event", .timeLimit(.minutes(1)))
@@ -1228,7 +1228,7 @@ struct RendezvousPointEventTests {
         )
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-        await point.shutdown()
+        try await point.shutdown()
 
         let collected = await eventTask.value
 
@@ -1274,7 +1274,7 @@ struct RendezvousPointEventTests {
         point.unregister(peer: peer, namespace: "test")
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
-        await point.shutdown()
+        try await point.shutdown()
 
         let event = await eventTask.value
 
@@ -1307,7 +1307,7 @@ struct NamespaceValidationTests {
         for ns in validNamespaces {
             _ = try service.register(namespace: ns)
         }
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Point accepts valid namespaces")
@@ -1326,7 +1326,7 @@ struct NamespaceValidationTests {
         for ns in validNamespaces {
             _ = try point.register(peer: peer, namespace: ns, addresses: [], ttl: .seconds(3600))
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 
@@ -1336,17 +1336,17 @@ struct NamespaceValidationTests {
 struct TTLEnforcementTests {
 
     @Test("Service enforces positive TTL")
-    func serviceEnforcesPositiveTTL() async {
+    func serviceEnforcesPositiveTTL() async throws {
         let service = RendezvousService()
 
         #expect(throws: RendezvousError.self) {
             try service.register(namespace: "test", ttl: .zero)
         }
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Point enforces positive TTL")
-    func pointEnforcesPositiveTTL() async {
+    func pointEnforcesPositiveTTL() async throws {
         let point = RendezvousPoint()
 
         let peer = KeyPair.generateEd25519().peerID
@@ -1354,7 +1354,7 @@ struct TTLEnforcementTests {
         #expect(throws: RendezvousError.self) {
             try point.register(peer: peer, namespace: "test", addresses: [], ttl: .zero)
         }
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Service clamps excessive TTL")
@@ -1367,7 +1367,7 @@ struct TTLEnforcementTests {
         )
 
         #expect(reg.ttl == RendezvousProtocol.maxTTL)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Point clamps excessive TTL")
@@ -1384,7 +1384,7 @@ struct TTLEnforcementTests {
         )
 
         #expect(reg.ttl == RendezvousProtocol.maxTTL)
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 
@@ -1411,7 +1411,7 @@ struct ConcurrentSafetyTests {
 
         let active = service.activeRegistrations()
         #expect(active.count == 100)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Concurrent registrations on point are safe", .timeLimit(.minutes(1)))
@@ -1419,7 +1419,7 @@ struct ConcurrentSafetyTests {
         let point = RendezvousPoint()
 
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<100 {
+            for _ in 0..<100 {
                 group.addTask {
                     let peer = KeyPair.generateEd25519().peerID
                     do {
@@ -1439,7 +1439,7 @@ struct ConcurrentSafetyTests {
         let count = point.registrationCount(namespace: "test")
         #expect(count <= 1000) // Should not exceed default limit
         #expect(count > 0) // At least some registrations should succeed
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Concurrent register and discover on point are safe", .timeLimit(.minutes(1)))
@@ -1483,7 +1483,7 @@ struct ConcurrentSafetyTests {
         // Just verify we can still query after concurrent access
         let count = point.registrationCount(namespace: "test")
         #expect(count > 0)
-        await point.shutdown()
+        try await point.shutdown()
     }
 
     @Test("Concurrent register and unregister are safe", .timeLimit(.minutes(1)))
@@ -1527,7 +1527,7 @@ struct ConcurrentSafetyTests {
         // Verify consistent state
         let count = point.registrationCount(namespace: "test")
         #expect(count >= 0)
-        await point.shutdown()
+        try await point.shutdown()
     }
 }
 

@@ -134,7 +134,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
     }
 
     /// Shuts down the mapper and cancels all renewal tasks.
-    public func shutdown() async {
+    public func shutdown() async throws {
         let tasks = state.withLock { state -> [Task<Void, Never>] in
             guard !state.isShutdown else { return [] }
             state.isShutdown = true

@@ -332,7 +332,7 @@ public final class RendezvousService: EventEmitting, Sendable {
     ///
     /// This terminates any consumers waiting on the `events` stream.
     /// This method is idempotent and safe to call multiple times.
-    public func shutdown() async {
+    public func shutdown() async throws {
         channel.finish()
     }
 

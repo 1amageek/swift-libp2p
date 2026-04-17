@@ -7,7 +7,7 @@ import Testing
 struct AggregationIngestTests {
 
     @Test("ingest tier1 creates new sighting", .timeLimit(.minutes(1)))
-    func ingestTier1CreatesNewSighting() async {
+    func ingestTier1CreatesNewSighting() async throws {
         let store = InMemoryBeaconPeerStore()
         let ingest = AggregationIngest(store: store)
         let events = ingest.aggregationEvents
@@ -35,7 +35,7 @@ struct AggregationIngestTests {
     }
 
     @Test("ingest tier1 updates existing", .timeLimit(.minutes(1)))
-    func ingestTier1UpdatesExisting() async {
+    func ingestTier1UpdatesExisting() async throws {
         let store = InMemoryBeaconPeerStore()
         let ingest = AggregationIngest(store: store)
         let events = ingest.aggregationEvents
@@ -247,7 +247,7 @@ struct AggregationIngestTests {
     }
 
     @Test("shutdown finishes stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesStream() async {
+    func shutdownFinishesStream() async throws {
         let store = InMemoryBeaconPeerStore()
         let ingest = AggregationIngest(store: store)
         let events = ingest.aggregationEvents

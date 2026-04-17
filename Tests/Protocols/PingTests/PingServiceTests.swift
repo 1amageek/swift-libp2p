@@ -94,7 +94,7 @@ struct PingServiceTests {
     }
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let service = PingService()
 
         // Get the event stream
@@ -113,7 +113,7 @@ struct PingServiceTests {
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
-        await service.shutdown()
+        try await service.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value
@@ -121,13 +121,13 @@ struct PingServiceTests {
     }
 
     @Test("Shutdown is idempotent")
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let service = PingService()
 
         // Multiple shutdowns should not crash
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
 
         // Service should still report correct protocol IDs
         #expect(service.protocolIDs == ["/ipfs/ping/1.0.0"])

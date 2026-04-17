@@ -22,19 +22,19 @@ struct WiFiBeaconAdapterTests {
     }
 
     @Test("startBeacon too large throws", .timeLimit(.minutes(1)))
-    func startBeaconTooLargeThrows() async {
+    func startBeaconTooLargeThrows() async throws {
         let adapter = WiFiBeaconAdapter()
         let oversized = Data(repeating: 0xAA, count: 513)
         await #expect(throws: TransportAdapterError.self) {
             try await adapter.startBeacon(oversized)
         }
-        await adapter.shutdown()
+        try await adapter.shutdown()
     }
 
     @Test("startBeacon after shutdown throws", .timeLimit(.minutes(1)))
-    func startBeaconAfterShutdownThrows() async {
+    func startBeaconAfterShutdownThrows() async throws {
         let adapter = WiFiBeaconAdapter()
-        await adapter.shutdown()
+        try await adapter.shutdown()
         let payload = Data([0xD0, 0x12, 0x34, 0xAA, 0xBB, 0xCC, 0x00, 0x00, 0x01, 0x02])
         await #expect(throws: TransportAdapterError.self) {
             try await adapter.startBeacon(payload)
@@ -42,17 +42,17 @@ struct WiFiBeaconAdapterTests {
     }
 
     @Test("shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let adapter = WiFiBeaconAdapter()
-        await adapter.shutdown()
-        await adapter.shutdown()  // second call should not crash
+        try await adapter.shutdown()
+        try await adapter.shutdown()  // second call should not crash
     }
 
     @Test("shutdown finishes discovery stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesDiscoveryStream() async {
+    func shutdownFinishesDiscoveryStream() async throws {
         let adapter = WiFiBeaconAdapter()
         let stream = adapter.discoveries
-        await adapter.shutdown()
+        try await adapter.shutdown()
 
         var count = 0
         for await _ in stream {
@@ -62,9 +62,9 @@ struct WiFiBeaconAdapterTests {
     }
 
     @Test("discoveries after shutdown returns finished stream", .timeLimit(.minutes(1)))
-    func discoveriesAfterShutdownReturnsFinishedStream() async {
+    func discoveriesAfterShutdownReturnsFinishedStream() async throws {
         let adapter = WiFiBeaconAdapter()
-        await adapter.shutdown()
+        try await adapter.shutdown()
 
         // This should return an immediately-finished stream, not hang
         var count = 0
@@ -102,7 +102,7 @@ struct WiFiBeaconAdapterTests {
         #expect(received?.sourceAddress.mediumID == "wifi-direct")
         #expect((received?.sourceAddress.raw.count ?? 0) > 0)
 
-        await adapter.shutdown()
+        try await adapter.shutdown()
     }
 
     @Test("stopBeacon clears payload", .timeLimit(.minutes(1)))
@@ -121,6 +121,6 @@ struct WiFiBeaconAdapterTests {
         // After stopping, transmit loop should exit.
         try await Task.sleep(for: .milliseconds(300))
 
-        await adapter.shutdown()
+        try await adapter.shutdown()
     }
 }

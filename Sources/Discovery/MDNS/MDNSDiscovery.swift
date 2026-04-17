@@ -24,6 +24,7 @@ public actor MDNSDiscovery: DiscoveryService {
     private var peerIDByServiceName: [String: PeerID] = [:]
     private var serviceNameByPeerID: [PeerID: String] = [:]
     private var lastBrowserError: DNSError?
+    private var lastShutdownError: DNSError?
     private var sequenceNumber: UInt64 = 0
     private var isStarted = false
     private var forwardTask: Task<Void, Never>?
@@ -100,15 +101,26 @@ public actor MDNSDiscovery: DiscoveryService {
     }
 
     /// Shuts down the mDNS discovery service.
-    public func shutdown() async {
+    public func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else { return }
 
         forwardTask?.cancel()
         forwardTask = nil
 
-        await browser?.shutdown()
-        await advertiser?.shutdown()
+        do {
+            if let browser {
+                try await browser.shutdown()
+            }
+            if let advertiser {
+                try await advertiser.shutdown()
+            }
+            lastShutdownError = nil
+        } catch let dnsError as DNSError {
+            lastShutdownError = dnsError
+        } catch {
+            lastShutdownError = .networkError("mDNS shutdown failed: \(error)")
+        }
 
         // Clear references to allow new instances on next start()
         browser = nil

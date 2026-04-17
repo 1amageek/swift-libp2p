@@ -172,11 +172,11 @@ struct PingEdgeCaseTests {
     // MARK: - Service Lifecycle
 
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesEvents() async {
+    func shutdownFinishesEvents() async throws {
         let service = PingService()
         let events = service.events
 
-        await service.shutdown()
+        try await service.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
@@ -184,11 +184,11 @@ struct PingEdgeCaseTests {
     }
 
     @Test("Multiple shutdown calls are idempotent")
-    func shutdownIdempotent() async {
+    func shutdownIdempotent() async throws {
         let service = PingService()
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
         // No crash = success
     }
 
@@ -199,7 +199,7 @@ struct PingEdgeCaseTests {
     }
 
     @Test("Events stream returns same stream on repeated access")
-    func eventsStreamSameInstance() async {
+    func eventsStreamSameInstance() async throws {
         let service = PingService()
         // Access events twice - EventEmitting pattern returns the same stream
         let stream1 = service.events
@@ -207,15 +207,15 @@ struct PingEdgeCaseTests {
         // Both should be valid AsyncStreams (same backing continuation)
         _ = stream1
         _ = stream2
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Service created with custom configuration retains it")
-    func serviceRetainsConfiguration() async {
+    func serviceRetainsConfiguration() async throws {
         let config = PingConfiguration(timeout: .seconds(15))
         let service = PingService(configuration: config)
         #expect(service.configuration.timeout == .seconds(15))
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Statistics with large RTT values")

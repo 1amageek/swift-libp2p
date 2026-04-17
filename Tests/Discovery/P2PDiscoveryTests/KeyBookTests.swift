@@ -21,7 +21,7 @@ struct KeyBookTests {
     }
 
     @Test("setPublicKey throws peerIDMismatch for wrong key")
-    func setPublicKeyMismatch() async {
+    func setPublicKeyMismatch() async throws {
         let book = MemoryKeyBook()
         let keyPair1 = KeyPair.generateEd25519()
         let keyPair2 = KeyPair.generateEd25519()
@@ -33,7 +33,7 @@ struct KeyBookTests {
     }
 
     @Test("publicKey extracts from identity-encoded PeerID")
-    func publicKeyFromIdentityPeerID() async {
+    func publicKeyFromIdentityPeerID() async throws {
         let book = MemoryKeyBook()
         let keyPair = KeyPair.generateEd25519()
         let peer = keyPair.peerID
@@ -106,7 +106,7 @@ struct KeyBookTests {
     }
 
     @Test("publicKey returns nil for unknown non-identity peer")
-    func publicKeyNilForUnknown() async {
+    func publicKeyNilForUnknown() async throws {
         let book = MemoryKeyBook()
         // Create a PeerID that is NOT identity-encoded (RSA keys are too large)
         // We can't easily create a non-identity PeerID with just Ed25519,

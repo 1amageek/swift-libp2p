@@ -57,7 +57,7 @@ struct IdentifyIntegrationTests {
         #expect(protocols.contains(ProtocolID.identify))
         #expect(protocols.contains(ProtocolID.identifyPush))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -111,8 +111,8 @@ struct IdentifyIntegrationTests {
 
         #expect(serverIdentify.connectedPeers.contains(clientKeyPair.peerID))
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -172,8 +172,8 @@ struct IdentifyIntegrationTests {
             !serverIdentify.connectedPeers.contains(clientKeyPair.peerID)
         }
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -219,7 +219,7 @@ struct IdentifyIntegrationTests {
             for: PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         )
 
-        await node.shutdown()
+        try await node.shutdown()
 
         // After shutdown, event stream should be finished (connectedPeers cleared)
         #expect(identifyService.connectedPeers.isEmpty)
@@ -281,8 +281,8 @@ struct IdentifyIntegrationTests {
         #expect(info.agentVersion == "server/1.0.0")
         #expect(info.publicKey == serverKeyPair.publicKey)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 }

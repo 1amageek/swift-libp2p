@@ -248,7 +248,7 @@ struct IdentifyServiceTests {
     }
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let service = IdentifyService()
 
         // Get the event stream
@@ -267,7 +267,7 @@ struct IdentifyServiceTests {
         do { try await Task.sleep(for: .milliseconds(50)) } catch { }
 
         // Shutdown should terminate the stream
-        await service.shutdown()
+        try await service.shutdown()
 
         // Consumer should complete without timing out
         let count = await consumeTask.value
@@ -275,13 +275,13 @@ struct IdentifyServiceTests {
     }
 
     @Test("Shutdown is idempotent")
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let service = IdentifyService()
 
         // Multiple shutdowns should not crash
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
 
         // Service should still be usable for cached data
         #expect(service.allCachedInfo.isEmpty)
@@ -308,11 +308,11 @@ struct IdentifyServiceTests {
         // Entry should be cleaned up
         #expect(service.cachedInfo(for: peer) == nil)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("startMaintenance is idempotent")
-    func startMaintenanceIdempotent() async {
+    func startMaintenanceIdempotent() async throws {
         let service = IdentifyService()
 
         // Multiple starts should not crash or create multiple tasks
@@ -320,7 +320,7 @@ struct IdentifyServiceTests {
         service.startMaintenance()
         service.startMaintenance()
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("stopMaintenance is idempotent")
@@ -355,7 +355,7 @@ struct IdentifyServiceTests {
         // Note: It's expired but not cleaned up until accessed
         #expect(service.allCachedInfo.isEmpty)  // allCachedInfo filters expired
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     // MARK: - IdentifyEvent Tests
@@ -446,7 +446,11 @@ struct IdentifyServiceTests {
                 } catch {
                     return false
                 }
-                await service.shutdown()
+                do {
+                    try await service.shutdown()
+                } catch {
+                    return false
+                }
                 return false
             }
 
@@ -455,7 +459,7 @@ struct IdentifyServiceTests {
             return result
         }
 
-        await service.shutdown()
+        try await service.shutdown()
         #expect(receivedMaintenanceEvent)
     }
 }

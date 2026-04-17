@@ -130,7 +130,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
                     on: configuration.networkInterface
                 )
             } catch {
-                await transport.shutdown()
+                await Self.shutdownTransportBestEffort(transport)
                 throw WiFiBeaconError.bindFailed(underlying: error)
             }
 
@@ -168,7 +168,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
                 } catch {
                     // Best effort
                 }
-                await transport.shutdown()
+                await Self.shutdownTransportBestEffort(transport)
             }
 
         case .restartTransmit:
@@ -202,7 +202,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
     }
 
     /// Shuts down the adapter, releasing all resources.
-    public func shutdown() async {
+    public func shutdown() async throws {
         let (transport, receiveTask, transmitTask, continuation) = state.withLock { s in
             let result = (s.udpTransport, s.receiveTask, s.transmitTask, s.discoveryContinuation)
             s.udpTransport = nil
@@ -229,7 +229,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
             } catch {
                 // Best effort
             }
-            await transport.shutdown()
+            await Self.shutdownTransportBestEffort(transport)
         }
 
         continuation?.finish()
@@ -249,7 +249,7 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
         receiveTask?.cancel()
         continuation?.finish()
         if let transport {
-            Task { await transport.shutdown() }
+            Task { await Self.shutdownTransportBestEffort(transport) }
         }
     }
 
@@ -361,6 +361,14 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
             return OpaqueAddress(mediumID: mediumID, raw: raw)
         default:
             return nil
+        }
+    }
+
+    private static func shutdownTransportBestEffort(_ transport: NIOUDPTransport) async {
+        do {
+            try await transport.shutdown()
+        } catch {
+            assertionFailure("WiFiBeaconAdapter transport shutdown failed: \(error)")
         }
     }
 }

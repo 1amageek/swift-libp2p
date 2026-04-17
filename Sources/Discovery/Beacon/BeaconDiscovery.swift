@@ -91,7 +91,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     ///
     /// After calling `shutdown()`, the service will not emit new observations.
     /// This method is idempotent and safe to call multiple times.
-    public func shutdown() async {
+    public func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         let task = state.withLock { s -> Task<Void, Never>? in
             guard s.isRunning else { return nil }

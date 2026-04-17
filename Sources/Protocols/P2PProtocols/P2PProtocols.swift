@@ -14,7 +14,7 @@ import P2PDiscovery
 /// listen-address contribution. Services opt into lifecycle management
 /// explicitly instead of inheriting it through unrelated capability protocols.
 public protocol LifecycleService: Sendable {
-    func shutdown() async
+    func shutdown() async throws
 }
 
 // MARK: - StreamService (Inbound Stream Handling)

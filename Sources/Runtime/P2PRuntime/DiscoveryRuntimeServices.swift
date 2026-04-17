@@ -21,7 +21,7 @@ private extension DiscoveryPipeline {
         var peerObservers: [any PeerLifecycleObserver] = []
         var listenAddressContributors: [any ListenAddressContributor] = []
         var preStartActions: [@Sendable () async -> Void] = []
-        var postStartActions: [@Sendable () async -> Void] = []
+        var postStartActions: [@Sendable () async throws -> Void] = []
 
         if !requirements.inboundProtocolIDs.isEmpty {
             let handler = requireConformance(
@@ -189,7 +189,7 @@ private struct DiscoveryOwnedInboundHandler: InboundProtocolHandler {
         }
     }
 
-    func shutdown() async {}
+    func shutdown() async throws {}
 }
 
 private struct DiscoveryOwnedPeerObserver: PeerLifecycleObserver {
@@ -237,5 +237,5 @@ private struct DiscoveryOwnedListenAddressContributor: ListenAddressContributor 
         }
     }
 
-    func shutdown() async {}
+    func shutdown() async throws {}
 }

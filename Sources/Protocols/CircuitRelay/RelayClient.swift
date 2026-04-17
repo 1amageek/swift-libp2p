@@ -575,7 +575,7 @@ public final class RelayClient: EventEmitting, Sendable {
     ///
     /// Call this method when the client is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         // Cancel all renewal tasks
         clientState.withLock { s in
             for (_, task) in s.renewalTasks {

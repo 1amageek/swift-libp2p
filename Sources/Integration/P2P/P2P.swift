@@ -818,10 +818,10 @@ public actor Node:
     /// - `idle`: transitions to `stopped`, finishes event stream
     /// - `running`: full cleanup (services, swarm, events)
     /// - `stopped`: no-op (idempotent)
-    public func shutdown() async {
+    public func shutdown() async throws {
         guard lifecycleState != .stopped else { return }
         lifecycleState = .stopped
-        await runtime.shutdown()
+        try await runtime.shutdown()
     }
 
     // MARK: - Connections (delegated to Swarm)

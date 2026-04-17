@@ -356,7 +356,7 @@ struct CircuitRelayE2ETests {
         // Cleanup
         try await listener1.close()
         try await listener2.close()
-        await client.shutdown()
+        try await client.shutdown()
     }
 
     @Test("Multiple connections through same relay are handled correctly", .timeLimit(.minutes(1)))
@@ -418,7 +418,7 @@ struct CircuitRelayE2ETests {
         #expect(receivedPeers == expectedPeers, "Should receive peers in FIFO order")
 
         try await listener.close()
-        await client.shutdown()
+        try await client.shutdown()
     }
 
     // MARK: - Data Transfer Tests
@@ -539,7 +539,7 @@ struct CircuitRelayE2ETests {
         // acceptConnection on the client should get the connection (fallback behavior)
         // Since listener is closed, it shouldn't be registered anymore
 
-        await client.shutdown()
+        try await client.shutdown()
     }
 
     // MARK: - Event Tests
@@ -597,7 +597,7 @@ struct CircuitRelayE2ETests {
             return false
         }, "Should emit circuitEstablished event")
 
-        await client.shutdown()
+        try await client.shutdown()
     }
 
     // MARK: - Concurrent Access Tests
@@ -654,6 +654,6 @@ struct CircuitRelayE2ETests {
         #expect(successCount == connectionCount, "All \(connectionCount) queued connections should be accepted")
 
         try await listener.close()
-        await client.shutdown()
+        try await client.shutdown()
     }
 }

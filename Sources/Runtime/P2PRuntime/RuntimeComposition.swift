@@ -14,13 +14,13 @@ public struct RuntimeComposition: Sendable {
     public let services: RuntimeServices
     public let discoverySources: [any DiscoveryService]
     public let preStartActions: [@Sendable () async -> Void]
-    public let postStartActions: [@Sendable () async -> Void]
+    public let postStartActions: [@Sendable () async throws -> Void]
 
     public init(
         services: RuntimeServices,
         discoverySources: [any DiscoveryService],
         preStartActions: [@Sendable () async -> Void],
-        postStartActions: [@Sendable () async -> Void]
+        postStartActions: [@Sendable () async throws -> Void]
     ) {
         self.services = services
         self.discoverySources = discoverySources
@@ -44,7 +44,7 @@ public struct RuntimeComposition: Sendable {
             preStartActions = services.preStartActions
             postStartActions = services.postStartActions
             postStartActions.append {
-                await discoveryPipeline.start()
+                try await discoveryPipeline.start()
             }
             discoverySources.append(discoveryPipeline)
         }

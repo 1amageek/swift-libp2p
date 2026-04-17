@@ -73,7 +73,7 @@ struct BandwidthReporterTests {
     }
 
     @Test("concurrent recording is safe", .timeLimit(.minutes(1)))
-    func concurrentRecording() async {
+    func concurrentRecording() async throws {
         let reporter = BandwidthReporter()
         let peer = makePeerID()
 

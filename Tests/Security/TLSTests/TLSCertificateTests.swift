@@ -192,7 +192,7 @@ struct TLSCertificateTests {
 
     @Test("TLSUpgrader conforms to EarlyMuxerNegotiating")
     func upgraderConformsToEarlyMuxer() {
-        let upgrader = TLSUpgrader()
-        #expect(upgrader is EarlyMuxerNegotiating)
+        let upgrader: any EarlyMuxerNegotiating = TLSUpgrader()
+        _ = upgrader
     }
 }

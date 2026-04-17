@@ -131,7 +131,7 @@ struct HeartbeatManagerTests {
     // MARK: - Heartbeat Count
 
     @Test("heartbeatCount increments on performHeartbeat", .timeLimit(.minutes(1)))
-    func heartbeatCountIncrements() async {
+    func heartbeatCountIncrements() async throws {
         let router = makeRouter()
         let heartbeat = makeHeartbeat(router: router)
 
@@ -204,7 +204,7 @@ struct HeartbeatManagerTests {
     }
 
     @Test("performHeartbeat calls cleanupBackoffs", .timeLimit(.minutes(1)))
-    func performHeartbeatCallsCleanupBackoffs() async {
+    func performHeartbeatCallsCleanupBackoffs() async throws {
         let router = makeRouter()
         let topic = Topic("test-topic")
         let peer = makePeerID()

@@ -575,7 +575,7 @@ public final class AutoNATService: EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         channel.finish()
     }
 

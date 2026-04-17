@@ -57,6 +57,35 @@ struct PeerRecordTests {
         }
     }
 
+    @Test("Marshal uses libp2p protobuf wire format")
+    func marshalUsesProtobufWireFormat() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
+        let record = PeerRecord.make(keyPair: keyPair, seq: 42, addresses: [addr])
+
+        let encoded = try record.marshal()
+
+        var expected = Data()
+        let peerIDBytes = keyPair.peerID.bytes
+        expected.append(0x0A)
+        expected.append(Varint.encode(UInt64(peerIDBytes.count)))
+        expected.append(peerIDBytes)
+        expected.append(0x10)
+        expected.append(Varint.encode(42))
+
+        let addrBytes = addr.bytes
+        var nested = Data()
+        nested.append(0x0A)
+        nested.append(Varint.encode(UInt64(addrBytes.count)))
+        nested.append(addrBytes)
+
+        expected.append(0x1A)
+        expected.append(Varint.encode(UInt64(nested.count)))
+        expected.append(nested)
+
+        #expect(encoded == expected)
+    }
+
     @Test("Sequence number preserved")
     func sequenceNumber() throws {
         let keyPair = KeyPair.generateEd25519()
@@ -81,6 +110,23 @@ struct PeerRecordTests {
         #expect(throws: (any Error).self) {
             _ = try PeerRecord.unmarshal(Data(data.prefix(3)))
         }
+    }
+
+    @Test("Unmarshal ignores unknown protobuf fields")
+    func unmarshalIgnoresUnknownFields() throws {
+        let keyPair = KeyPair.generateEd25519()
+        let addr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
+        let record = PeerRecord.make(keyPair: keyPair, seq: 7, addresses: [addr])
+
+        var data = try record.marshal()
+        data.append(0x22) // field 4, wire type 2
+        data.append(0x03)
+        data.append(Data([0x01, 0x02, 0x03]))
+        data.append(0x28) // field 5, wire type 0
+        data.append(0x01)
+
+        let restored = try PeerRecord.unmarshal(data)
+        #expect(restored == record)
     }
 
     @Test("Equatable conformance")

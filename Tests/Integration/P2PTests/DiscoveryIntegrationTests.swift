@@ -35,7 +35,7 @@ struct DiscoveryIntegrationTests {
         ))
 
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         let state = await discovery.currentState()
         #expect(state.attachCalls == 1)
@@ -104,8 +104,8 @@ struct DiscoveryIntegrationTests {
                 && clientState.disconnectedPeers.contains(serverPeerID)
         }
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 }
@@ -189,7 +189,7 @@ private actor MockNodeIntegratedDiscovery: DiscoveryService, PeerObserver, Lifec
         }
     }
 
-    func shutdown() async {
+    func shutdown() async throws {
         shutdownCalls += 1
     }
 }

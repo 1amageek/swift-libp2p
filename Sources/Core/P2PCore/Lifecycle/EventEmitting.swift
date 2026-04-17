@@ -25,7 +25,7 @@
 ///
 ///     private func emit(_ event: MyEvent) { channel.yield(event) }
 ///
-///     public func shutdown() async {
+///     public func shutdown() async throws {
 ///         channel.finish()
 ///     }
 /// }
@@ -42,5 +42,5 @@ public protocol EventEmitting: Sendable {
     ///
     /// This method must call `channel.finish()` to signal stream completion.
     /// This method must be idempotent - safe to call multiple times.
-    func shutdown() async
+    func shutdown() async throws
 }

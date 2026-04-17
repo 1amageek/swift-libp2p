@@ -393,7 +393,7 @@ public final class AutoRelay: EventEmitting, Sendable {
     /// Shuts down the AutoRelay service and finishes the event stream.
     ///
     /// Clears active relays, candidates, and terminates the event stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         serviceState.withLock { state in
             state.isShutDown = true
             state.activeRelays.removeAll()

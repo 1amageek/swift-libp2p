@@ -365,11 +365,11 @@ public final class AutoRelayService: EventEmitting, Sendable {
 
     // MARK: - Shutdown (EventEmitting)
 
-    public func shutdown() async {
+    public func shutdown() async throws {
         monitorTask.withLock { t in t?.cancel(); t = nil }
         triggerTask.withLock { t in t?.cancel(); t = nil }
         serviceState.withLock { $0.isShutDown = true }
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
         relayAddressCallback.withLock { $0 = nil }
         channel.finish()
     }

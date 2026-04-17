@@ -14,7 +14,7 @@ struct EventChannelTests {
     // MARK: - Basic
 
     @Test("yield + consume delivers events in order", .timeLimit(.minutes(1)))
-    func yieldAndConsume() async {
+    func yieldAndConsume() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
 
@@ -31,7 +31,7 @@ struct EventChannelTests {
     }
 
     @Test("Multiple events preserve order", .timeLimit(.minutes(1)))
-    func multipleEventsOrder() async {
+    func multipleEventsOrder() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
 
@@ -52,7 +52,7 @@ struct EventChannelTests {
     // MARK: - finish timing: all patterns
 
     @Test("finish → stream → for await: stream obtained after finish terminates immediately", .timeLimit(.minutes(1)))
-    func finishBeforeStreamAccess() async {
+    func finishBeforeStreamAccess() async throws {
         let channel = EventChannel<TestEvent>()
         channel.finish()
 
@@ -65,7 +65,7 @@ struct EventChannelTests {
     }
 
     @Test("stream → finish → for await: finish before consume terminates stream", .timeLimit(.minutes(1)))
-    func finishBeforeConsume() async {
+    func finishBeforeConsume() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
 
@@ -80,7 +80,7 @@ struct EventChannelTests {
     }
 
     @Test("stream → for await → finish: finish during consume terminates loop", .timeLimit(.minutes(1)))
-    func finishDuringConsume() async {
+    func finishDuringConsume() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
 
@@ -106,7 +106,7 @@ struct EventChannelTests {
     }
 
     @Test("stream → for await (no yield) → finish: empty stream terminates", .timeLimit(.minutes(1)))
-    func finishEmptyStream() async {
+    func finishEmptyStream() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
 
@@ -137,7 +137,7 @@ struct EventChannelTests {
     }
 
     @Test("yield after finish is a no-op", .timeLimit(.minutes(1)))
-    func yieldAfterFinish() async {
+    func yieldAfterFinish() async throws {
         let channel = EventChannel<TestEvent>()
         channel.yield(.ping)
         channel.finish()
@@ -155,7 +155,7 @@ struct EventChannelTests {
     }
 
     @Test("stream after finish returns immediately-terminating stream", .timeLimit(.minutes(1)))
-    func streamAfterFinish() async {
+    func streamAfterFinish() async throws {
         let channel = EventChannel<TestEvent>()
         let firstStream = channel.stream
         channel.finish()
@@ -179,10 +179,10 @@ struct EventChannelTests {
     // MARK: - Caching
 
     @Test("stream returns the same instance on repeated calls", .timeLimit(.minutes(1)))
-    func streamCaching() async {
+    func streamCaching() async throws {
         let channel = EventChannel<TestEvent>()
         let stream1 = channel.stream
-        let stream2 = channel.stream
+        _ = channel.stream
 
         channel.yield(.ping)
         channel.finish()
@@ -198,7 +198,7 @@ struct EventChannelTests {
     // MARK: - Concurrency
 
     @Test("concurrent yields do not crash", .timeLimit(.minutes(1)))
-    func concurrentYields() async {
+    func concurrentYields() async throws {
         let channel = EventChannel<TestEvent>()
         _ = channel.stream
 
@@ -214,7 +214,7 @@ struct EventChannelTests {
     }
 
     @Test("yield and finish concurrently do not crash", .timeLimit(.minutes(1)))
-    func yieldAndFinishConcurrently() async {
+    func yieldAndFinishConcurrently() async throws {
         let channel = EventChannel<TestEvent>()
         _ = channel.stream
 
@@ -231,7 +231,7 @@ struct EventChannelTests {
     }
 
     @Test("stream and finish concurrently do not hang", .timeLimit(.minutes(1)))
-    func streamAndFinishConcurrently() async {
+    func streamAndFinishConcurrently() async throws {
         let channel = EventChannel<TestEvent>()
 
         await withTaskGroup(of: Void.self) { group in
@@ -250,12 +250,12 @@ struct EventChannelTests {
     // MARK: - finish + async hop pattern
 
     @Test("stream → finish → await yield → for await: finish before consume with async hop", .timeLimit(.minutes(1)))
-    func finishWithAsyncHop() async {
+    func finishWithAsyncHop() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
         channel.finish()
 
-        // Simulate async hop (like await service.shutdown())
+        // Simulate async hop (like try await service.shutdown())
         await Task.yield()
 
         var count = 0
@@ -264,7 +264,7 @@ struct EventChannelTests {
     }
 
     @Test("stream → finish (no yield) → for await: immediate consume after finish", .timeLimit(.minutes(1)))
-    func finishNoYieldThenConsume() async {
+    func finishNoYieldThenConsume() async throws {
         let channel = EventChannel<TestEvent>()
         let stream = channel.stream
         channel.finish()
@@ -277,7 +277,7 @@ struct EventChannelTests {
     // MARK: - Buffering Policy
 
     @Test("custom bufferingPolicy is applied", .timeLimit(.minutes(1)))
-    func customBufferingPolicy() async {
+    func customBufferingPolicy() async throws {
         let channel = EventChannel<TestEvent>(bufferingPolicy: .bufferingNewest(2))
         let stream = channel.stream
 

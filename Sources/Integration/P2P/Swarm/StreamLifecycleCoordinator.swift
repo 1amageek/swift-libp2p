@@ -64,7 +64,9 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
             resources?.releaseStream(peer: peer, direction: .outbound)
             do {
                 try await stream.close()
-            } catch {}
+            } catch let closeError {
+                assertionFailure("DefaultStreamLifecycleCoordinator failed to close outbound stream after negotiation failure: \(closeError)")
+            }
             throw error
         }
 
@@ -72,7 +74,9 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
             resources?.releaseStream(peer: peer, direction: .outbound)
             do {
                 try await stream.close()
-            } catch {}
+            } catch let closeError {
+                assertionFailure("DefaultStreamLifecycleCoordinator failed to close outbound stream after protocol mismatch: \(closeError)")
+            }
             throw NodeError.protocolNegotiationFailed
         }
 

@@ -1312,7 +1312,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     // MARK: - Shutdown
 
     /// Shuts down the router.
-    public func shutdown() async {
+    public func shutdown() async throws {
         subscriptions.cancelAll()
         peerState.clear()
         meshState.clear()

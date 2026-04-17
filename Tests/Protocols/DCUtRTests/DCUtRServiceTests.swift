@@ -68,11 +68,11 @@ struct DCUtRServiceTests {
     // MARK: - Shutdown Tests
 
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesEventStream() async {
+    func shutdownFinishesEventStream() async throws {
         let service = DCUtRService()
         let events = service.events
 
-        await service.shutdown()
+        try await service.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
@@ -80,19 +80,19 @@ struct DCUtRServiceTests {
     }
 
     @Test("Multiple shutdowns are safe")
-    func multipleShutdownsSafe() async {
+    func multipleShutdownsSafe() async throws {
         let service = DCUtRService()
 
         // Should not crash when called multiple times
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
     }
 
     // MARK: - Upgrade Error Handling Tests
 
     @Test("Upgrade fails with no addresses from peer")
-    func upgradeFailsNoAddresses() async {
+    func upgradeFailsNoAddresses() async throws {
         let service = DCUtRService(configuration: .init(
             getLocalAddresses: { [Multiaddr.tcp(host: "127.0.0.1", port: 4001)] }
         ))

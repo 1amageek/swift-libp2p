@@ -136,7 +136,7 @@ public final class GossipSubService: Sendable {
     }
 
     /// Shuts down the GossipSub service.
-    public func shutdown() async {
+    public func shutdown() async throws {
         serviceState.withLock { s in
             s.isStarted = false
             s.opener = nil
@@ -148,7 +148,7 @@ public final class GossipSubService: Sendable {
             hb = nil
         }
 
-        await router.shutdown()
+        try await router.shutdown()
     }
 
     /// Whether the service is started.

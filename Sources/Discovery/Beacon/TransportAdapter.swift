@@ -25,5 +25,5 @@ public protocol TransportAdapter: Sendable {
     var discoveries: AsyncStream<RawDiscovery> { get }
 
     /// Shuts down the adapter and releases all resources.
-    func shutdown() async
+    func shutdown() async throws
 }

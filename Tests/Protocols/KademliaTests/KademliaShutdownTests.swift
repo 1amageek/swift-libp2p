@@ -9,7 +9,7 @@ import Foundation
 struct KademliaShutdownTests {
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service = KademliaService(localPeerID: peer)
         let events = service.events
@@ -22,7 +22,7 @@ struct KademliaShutdownTests {
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch {}
 
-        await service.shutdown()
+        try await service.shutdown()
 
         let count = await consumeTask.value
         // .stopped event may be yielded before finish
@@ -30,11 +30,11 @@ struct KademliaShutdownTests {
     }
 
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let service = KademliaService(localPeerID: peer)
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
     }
 }

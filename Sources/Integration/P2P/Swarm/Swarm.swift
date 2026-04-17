@@ -176,7 +176,7 @@ internal actor Swarm {
     }
 
     /// Shuts down the swarm: cancel tasks, close listeners, close connections.
-    func shutdown() async {
+    func shutdown() async throws {
         isRunning = false
 
         // Cancel accept loops first so listeners can close cleanly

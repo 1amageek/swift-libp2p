@@ -863,7 +863,7 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     /// Also stops the background maintenance task if running.
-    public func shutdown() async {
+    public func shutdown() async throws {
         stopMaintenance()
 
         // Atomically mark shutdown and extract the in-flight push task.

@@ -221,16 +221,16 @@ public actor SWIMMembership: DiscoveryService {
     }
 
     /// Shuts down the SWIM membership service.
-    public func shutdown() async {
+    public func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else { return }
 
         forwardTask?.cancel()
         forwardTask = nil
 
-        await swim?.leave()
-        await swim?.shutdown()
-        await transport?.shutdown()
+        try await swim?.leave()
+        try await swim?.shutdown()
+        try await transport?.shutdown()
 
         swim = nil
         transport = nil
@@ -258,9 +258,9 @@ public actor SWIMMembership: DiscoveryService {
     }
 
     /// Gracefully leaves the cluster.
-    public func leave() async {
+    public func leave() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
-        await swim?.leave()
+        try await swim?.leave()
     }
 
     /// Returns all current members.

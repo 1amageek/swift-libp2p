@@ -52,8 +52,8 @@ struct NodeTraversalIntegrationTests {
         let connectedPeer = try await client.connect(to: serverPeer)
         #expect(connectedPeer == serverPeer)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 }

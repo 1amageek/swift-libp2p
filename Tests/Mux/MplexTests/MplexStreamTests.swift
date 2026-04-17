@@ -105,7 +105,7 @@ struct MplexStreamTests {
 
     @Test("Read throws when reset", .timeLimit(.minutes(1)))
     func readThrowsWhenReset() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()
@@ -123,7 +123,7 @@ struct MplexStreamTests {
 
     @Test("Read throws when local read closed", .timeLimit(.minutes(1)))
     func readThrowsWhenLocalReadClosed() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()
@@ -188,7 +188,7 @@ struct MplexStreamTests {
 
     @Test("Write throws when write closed")
     func writeThrowsWhenWriteClosed() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()
@@ -206,7 +206,7 @@ struct MplexStreamTests {
 
     @Test("Write throws when reset")
     func writeThrowsWhenReset() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()
@@ -344,7 +344,7 @@ struct MplexStreamTests {
 
     @Test("Reset resumes all waiting readers", .timeLimit(.minutes(1)))
     func resetResumesAllWaitingReaders() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()
@@ -409,7 +409,7 @@ struct MplexStreamTests {
 
     @Test("Stream ID preserved")
     func streamIDPreserved() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream1 = try await connection.newStream()

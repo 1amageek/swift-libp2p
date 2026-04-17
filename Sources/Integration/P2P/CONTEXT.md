@@ -463,7 +463,7 @@ let node = Node {
 2. **pre-start capability injection**: `identity` / `supported protocols` と、必要なら `stream opener` を consumer role に注入
 3. **listener start**: `Swarm.start()`
 4. **post-start capability injection**: `listen addresses` を必要な service に注入
-5. **activation**: `StreamOpeningActivatable` を優先して起動し、残りの `ActivatableService` と `DiscoveryPipeline.start()` を起動
+5. **activation**: `StreamOpeningActivatable` を優先して起動し、残りの `ActivatableService` と `DiscoveryPipeline.start()` を起動。discovery startup failure は握りつぶさず、`Node.start()` 失敗として伝播する
 6. **PeerObserver 収集**: normalized `peerObservers` のみを保持
 
 ランタイムのディスパッチ:

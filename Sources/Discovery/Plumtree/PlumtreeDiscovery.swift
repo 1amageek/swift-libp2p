@@ -79,7 +79,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
         isStarted = true
     }
 
-    public func shutdown() async {
+    public func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         forwardTask?.cancel()
         forwardTask = nil
@@ -91,7 +91,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
         localAddresses.removeAll()
 
         if ownsPlumtreeService {
-            await plumtreeService.shutdown()
+            try await plumtreeService.shutdown()
         }
         broadcaster.shutdown()
     }

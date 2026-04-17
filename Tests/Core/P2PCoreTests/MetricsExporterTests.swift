@@ -30,7 +30,7 @@ struct MetricsExporterTests {
         let b: MetricName = "metric_b"
         let aDuplicate: MetricName = "metric_a"
 
-        var nameSet: Set<MetricName> = [a, b, aDuplicate]
+        let nameSet: Set<MetricName> = [a, b, aDuplicate]
         #expect(nameSet.count == 2)
         #expect(nameSet.contains(a))
         #expect(nameSet.contains(b))
@@ -307,7 +307,7 @@ struct MetricsExporterTests {
     // MARK: - Concurrent Safety
 
     @Test("Concurrent recording is safe", .timeLimit(.minutes(1)))
-    func concurrentSafety() async {
+    func concurrentSafety() async throws {
         let exporter = PrometheusExporter()
         exporter.register(.counter, name: "concurrent_counter", help: "Concurrency test")
         exporter.register(.gauge, name: "concurrent_gauge", help: "Concurrency test")
@@ -333,7 +333,7 @@ struct MetricsExporterTests {
     }
 
     @Test("Concurrent scrape and record", .timeLimit(.minutes(1)))
-    func concurrentScrapeAndRecord() async {
+    func concurrentScrapeAndRecord() async throws {
         let exporter = PrometheusExporter()
         exporter.register(.counter, name: "race_counter", help: "Race test")
 

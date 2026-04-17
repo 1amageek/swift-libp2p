@@ -408,7 +408,7 @@ public final class HolePunchService: EventEmitting, Sendable {
     /// terminate any consumers waiting on the `events` stream.
     ///
     /// This method is idempotent.
-    public func shutdown() async {
+    public func shutdown() async throws {
         channel.finish()
         serviceState.withLock { state in
             state.isShutdown = true

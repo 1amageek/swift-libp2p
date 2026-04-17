@@ -399,7 +399,7 @@ public final class HTTPService: EventEmitting, Sendable {
     // MARK: - Shutdown
 
     /// Shuts down the service and finishes the event stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         channel.finish()
     }
 }

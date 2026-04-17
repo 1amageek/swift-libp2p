@@ -13,20 +13,20 @@ struct BeaconDiscoveryTests {
     }
 
     @Test("start and shutdown", .timeLimit(.minutes(1)))
-    func startAndShutdown() async {
+    func startAndShutdown() async throws {
         let service = makeService()
         service.start()
         // Should not crash on double start
         service.start()
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let service = makeService()
         service.start()
-        await service.shutdown()
-        await service.shutdown() // second shutdown should not crash
+        try await service.shutdown()
+        try await service.shutdown() // second shutdown should not crash
     }
 
     @Test("encode beacon tier1")
@@ -135,7 +135,7 @@ struct BeaconDiscoveryTests {
             physicalFingerprint: nil
         )
         service.processDiscovery(discovery)
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("process discovery invalid beacon")

@@ -109,7 +109,7 @@ struct MetadataBookTests {
     }
 
     @Test("events emitted on set", .timeLimit(.minutes(1)))
-    func events() async {
+    func events() async throws {
         let book = MemoryMetadataBook()
         defer { book.shutdown() }
         let peer = makePeerID()
@@ -152,7 +152,7 @@ struct MetadataBookTests {
     }
 
     @Test("remove emits event only when key existed")
-    func removeEmitsEventOnlyWhenExists() async {
+    func removeEmitsEventOnlyWhenExists() async throws {
         let book = MemoryMetadataBook()
         defer { book.shutdown() }
         let peer = makePeerID()

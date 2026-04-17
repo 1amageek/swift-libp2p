@@ -1378,7 +1378,7 @@ struct KademliaClientModeTests {
     }
 
     @Test("Mode change emits modeChanged event")
-    func modeChangeEmitsEvent() async {
+    func modeChangeEmitsEvent() async throws {
         let service = KademliaService(
             localPeerID: KeyPair.generateEd25519().peerID,
             configuration: KademliaConfiguration(mode: .server)
@@ -1401,6 +1401,6 @@ struct KademliaClientModeTests {
             Issue.record("Expected modeChanged event, got: \(String(describing: receivedEvent))")
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }

@@ -34,7 +34,7 @@ struct NodeLifecycleGuardTests {
     // MARK: - Pre-start (idle state)
 
     @Test("handle() works before start", .timeLimit(.minutes(1)))
-    func handleBeforeStart() async {
+    func handleBeforeStart() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-handle")
 
@@ -42,12 +42,12 @@ struct NodeLifecycleGuardTests {
         let protocols = await node.supportedProtocols()
         #expect(protocols.contains("/test/1.0.0"))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
     @Test("handleStream() works before start", .timeLimit(.minutes(1)))
-    func handleStreamBeforeStart() async {
+    func handleStreamBeforeStart() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-handlestream")
 
@@ -55,12 +55,12 @@ struct NodeLifecycleGuardTests {
         let protocols = await node.supportedProtocols()
         #expect(protocols.contains("/test/1.0.0"))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
     @Test("connect(to address) throws before start", .timeLimit(.minutes(1)))
-    func connectToAddressBeforeStart() async {
+    func connectToAddressBeforeStart() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-connect")
 
@@ -68,12 +68,12 @@ struct NodeLifecycleGuardTests {
             _ = try await node.connect(to: Multiaddr.memory(id: "nonexistent"))
         }
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
     @Test("newStream throws before start", .timeLimit(.minutes(1)))
-    func newStreamBeforeStart() async {
+    func newStreamBeforeStart() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-newstream")
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
@@ -82,14 +82,14 @@ struct NodeLifecycleGuardTests {
             _ = try await node.newStream(to: peer, protocol: "/test/1.0.0")
         }
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
     // MARK: - Shutdown from idle (never started)
 
     @Test("shutdown from idle finishes events stream", .timeLimit(.minutes(1)))
-    func shutdownFromIdleFinishesEvents() async {
+    func shutdownFromIdleFinishesEvents() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-shutdown-events")
 
@@ -98,7 +98,7 @@ struct NodeLifecycleGuardTests {
             return true
         }
 
-        await node.shutdown()
+        try await node.shutdown()
         let finished = await consumeTask.value
         #expect(finished)
 
@@ -106,11 +106,11 @@ struct NodeLifecycleGuardTests {
     }
 
     @Test("shutdown from idle transitions to stopped", .timeLimit(.minutes(1)))
-    func shutdownFromIdleTransitionsToStopped() async {
+    func shutdownFromIdleTransitionsToStopped() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-shutdown-stopped")
 
-        await node.shutdown()
+        try await node.shutdown()
 
         // start() should throw — node is stopped, not idle
         await #expect(throws: NodeError.self) {
@@ -121,13 +121,13 @@ struct NodeLifecycleGuardTests {
     }
 
     @Test("shutdown from idle is idempotent", .timeLimit(.minutes(1)))
-    func shutdownFromIdleIsIdempotent() async {
+    func shutdownFromIdleIsIdempotent() async throws {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "idle-shutdown-idempotent")
 
-        await node.shutdown()
-        await node.shutdown()
-        await node.shutdown()
+        try await node.shutdown()
+        try await node.shutdown()
+        try await node.shutdown()
 
         hub.reset()
     }
@@ -139,7 +139,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "stopped-connect-addr")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         await #expect(throws: NodeError.self) {
             _ = try await node.connect(to: Multiaddr.memory(id: "nonexistent"))
@@ -153,7 +153,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "stopped-connect-peer")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         await #expect(throws: NodeError.self) {
@@ -168,7 +168,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "stopped-newstream")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         await #expect(throws: NodeError.self) {
@@ -183,7 +183,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "stopped-disconnect")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         await node.disconnect(from: peer)
@@ -196,7 +196,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "stopped-handle")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         await node.handle("/test/late/1.0.0") { _ in }
         let protocols = await node.supportedProtocols()
@@ -210,7 +210,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "stopped-restart")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         await #expect(throws: NodeError.self) {
             try await node.start()
@@ -224,8 +224,8 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "shutdown-idempotent")
         try await node.start()
-        await node.shutdown()
-        await node.shutdown()
+        try await node.shutdown()
+        try await node.shutdown()
 
         hub.reset()
     }
@@ -235,7 +235,7 @@ struct NodeLifecycleGuardTests {
         let hub = MemoryHub()
         let node = makeNode(hub: hub, name: "shutdown-readonly")
         try await node.start()
-        await node.shutdown()
+        try await node.shutdown()
 
         let peers = await node.connectedPeers
         #expect(peers.isEmpty)

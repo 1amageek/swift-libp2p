@@ -186,7 +186,7 @@ struct PlaintextHandshakeTests {
     }
 
     @Test("Handshake rejects oversized length prefix")
-    func handshakeRejectsOversizedLengthPrefix() async {
+    func handshakeRejectsOversizedLengthPrefix() async throws {
         let localKeyPair = KeyPair.generateEd25519()
         let oversizedLength = UInt64((64 * 1024) + 1)
         let oversizedPrefix = Varint.encode(oversizedLength)

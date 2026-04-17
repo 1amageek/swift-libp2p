@@ -292,8 +292,8 @@ struct DCUtRIntegrationTests {
         await responderTask.value
 
         // Cleanup
-        await initiator.shutdown()
-        await responder.shutdown()
+        try await initiator.shutdown()
+        try await responder.shutdown()
 
         // Verify dial attempts
         #expect(initiatorDialer.dialAttempts.count > 0)
@@ -349,8 +349,8 @@ struct DCUtRIntegrationTests {
         try await responderStream.close()
         await responderTask.value
 
-        await initiator.shutdown()
-        await responder.shutdown()
+        try await initiator.shutdown()
+        try await responder.shutdown()
     }
 
     // MARK: - Role Tests
@@ -404,7 +404,7 @@ struct DCUtRIntegrationTests {
         try await responderTask.value
 
         // Cleanup
-        await initiator.shutdown()
+        try await initiator.shutdown()
     }
 
     @Test("Responder receives CONNECT and sends CONNECT response")
@@ -456,7 +456,7 @@ struct DCUtRIntegrationTests {
         try await initiatorTask.value
 
         // Cleanup
-        await responder.shutdown()
+        try await responder.shutdown()
     }
 
     // MARK: - Failure Scenarios
@@ -509,7 +509,7 @@ struct DCUtRIntegrationTests {
         try await responderTask.value
 
         // Cleanup
-        await initiator.shutdown()
+        try await initiator.shutdown()
     }
 
     // MARK: - Protobuf Tests
@@ -602,7 +602,7 @@ struct DCUtRIntegrationTests {
         // Give eventTask time to collect events before shutting down
         try await Task.sleep(for: .milliseconds(10))
 
-        await initiator.shutdown()  // Finish event stream to unblock eventTask
+        try await initiator.shutdown()  // Finish event stream to unblock eventTask
         await eventTask.value  // Wait for eventTask to complete
 
         // Verify events were emitted
@@ -658,7 +658,7 @@ struct DCUtRIntegrationTests {
         do { try await maliciousResponderTask.value } catch { }
 
         // Cleanup
-        await initiator.shutdown()
+        try await initiator.shutdown()
     }
 
     @Test("Stream closed during message exchange")
@@ -703,7 +703,7 @@ struct DCUtRIntegrationTests {
         do { try await maliciousResponderTask.value } catch { }
 
         // Cleanup
-        await initiator.shutdown()
+        try await initiator.shutdown()
     }
 
     @Test("Responder handles stream closed before receiving CONNECT")
@@ -736,7 +736,7 @@ struct DCUtRIntegrationTests {
         await responder.handleInboundStream(context)
 
         // Cleanup
-        await responder.shutdown()
+        try await responder.shutdown()
     }
 
     @Test("Responder handles malformed message")
@@ -777,7 +777,7 @@ struct DCUtRIntegrationTests {
         do { try await malformedTask.value } catch { }
 
         // Cleanup
-        await responder.shutdown()
+        try await responder.shutdown()
     }
 
     // Note: Timeout test removed because DCUtRService.upgradeToDirectConnection

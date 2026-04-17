@@ -194,7 +194,7 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
         throw TraversalError.allAttemptsFailed(failures)
     }
 
-    public func shutdown() async {
+    public func shutdown() async throws {
         let shouldShutdown = runtimeState.withLock { state -> Bool in
             if state.isShutDown { return false }
             state.isShutDown = true
@@ -208,11 +208,22 @@ public final class TraversalCoordinator: EventEmitting, Sendable {
         }
         guard shouldShutdown else { return }
 
+        var firstError: Error?
         for mechanism in configuration.mechanisms {
-            await mechanism.shutdown()
+            do {
+                try await mechanism.shutdown()
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+            }
         }
 
         channel.finish()
+
+        if let firstError {
+            throw firstError
+        }
     }
 
     private func emit(_ event: TraversalEvent) {

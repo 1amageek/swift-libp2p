@@ -83,7 +83,7 @@ struct MplexConnectionTests {
 
     @Test("Start is idempotent")
     func startIsIdempotent() async throws {
-        let (connection, mock) = createTestConnection()
+        let (connection, _) = createTestConnection()
 
         // Multiple starts should not crash
         connection.start()
@@ -169,7 +169,7 @@ struct MplexConnectionTests {
 
     @Test("newStream throws when connection is closed")
     func newStreamThrowsWhenClosed() async throws {
-        let (connection, mock) = createTestConnection()
+        let (connection, _) = createTestConnection()
         connection.start()
         try await connection.close()
 
@@ -348,7 +348,7 @@ struct MplexConnectionTests {
 
     @Test("Close resumes pending accepts", .timeLimit(.minutes(1)))
     func closeResumesPendingAccepts() async throws {
-        let (connection, mock) = createTestConnection()
+        let (connection, _) = createTestConnection()
         connection.start()
 
         let acceptTask = Task {
@@ -525,7 +525,7 @@ struct MplexConnectionTests {
 
     @Test("Close while streams actively reading", .timeLimit(.minutes(1)))
     func closeWhileStreamsActivelyReading() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream1 = try await connection.newStream()
@@ -604,7 +604,7 @@ struct MplexConnectionTests {
                 }
             }
             for try await id in group {
-                ids.withLock { $0.insert(id) }
+                _ = ids.withLock { $0.insert(id) }
             }
         }
 

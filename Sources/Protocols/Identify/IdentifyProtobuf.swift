@@ -2,6 +2,12 @@
 import Foundation
 import NIOCore
 import P2PCore
+import os
+
+private let identifyProtobufLogger = Logger(
+    subsystem: "swift-libp2p",
+    category: "IdentifyProtobuf"
+)
 
 /// Protobuf encoding/decoding for Identify messages.
 ///
@@ -162,7 +168,7 @@ enum IdentifyProtobuf {
                     do {
                         publicKey = try PublicKey(protobufEncoded: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                     } catch {
-                        print("[IdentifyProtobuf] Failed to decode publicKey: \(error)")
+                        identifyProtobufLogger.error("Failed to decode publicKey: \(String(describing: error))")
                         throw IdentifyError.invalidProtobuf("publicKey decode failed: \(error)")
                     }
 
@@ -172,7 +178,7 @@ enum IdentifyProtobuf {
                         listenAddresses.append(addr)
                     } catch {
                         // listenAddrs is repeated/optional, skip invalid entries
-                        print("[IdentifyProtobuf] WARNING: Failed to decode listenAddr: \(error), skipping")
+                        identifyProtobufLogger.warning("Failed to decode listenAddr, skipping: \(String(describing: error))")
                     }
 
                 case 3: // protocols
@@ -185,7 +191,7 @@ enum IdentifyProtobuf {
                         observedAddress = try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                     } catch {
                         // observedAddr is optional, skip if decode fails
-                        print("[IdentifyProtobuf] WARNING: Failed to decode observedAddr: \(error), skipping")
+                        identifyProtobufLogger.warning("Failed to decode observedAddr, skipping: \(String(describing: error))")
                         observedAddress = nil
                     }
 
@@ -200,7 +206,7 @@ enum IdentifyProtobuf {
                         signedPeerRecord = try Envelope.unmarshal(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
                     } catch {
                         // signedPeerRecord is optional, log and skip if decode fails
-                        print("[IdentifyProtobuf] WARNING: Failed to decode signedPeerRecord: \(error), continuing without it")
+                        identifyProtobufLogger.warning("Failed to decode signedPeerRecord, continuing without it: \(String(describing: error))")
                         signedPeerRecord = nil
                     }
 

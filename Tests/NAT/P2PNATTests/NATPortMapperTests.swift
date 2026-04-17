@@ -127,12 +127,12 @@ struct NATPortMapperTests {
     // MARK: - Mapper Lifecycle Tests
 
     @Test("Mapper shutdown")
-    func mapperShutdown() async {
+    func mapperShutdown() async throws {
         let mapper = NATPortMapper()
 
         // Shutdown should be idempotent
-        await mapper.shutdown()
-        await mapper.shutdown()
+        try await mapper.shutdown()
+        try await mapper.shutdown()
 
         // Operations should fail after shutdown
         await #expect(throws: NATPortMapperError.self) {
@@ -141,7 +141,7 @@ struct NATPortMapperTests {
     }
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let mapper = NATPortMapper()
         let events = mapper.events
 
@@ -153,14 +153,14 @@ struct NATPortMapperTests {
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch {}
 
-        await mapper.shutdown()
+        try await mapper.shutdown()
 
         let count = await consumeTask.value
         #expect(count == 0)
     }
 
     @Test("Events stream created on access")
-    func eventsStreamCreation() async {
+    func eventsStreamCreation() async throws {
         let mapper = NATPortMapper()
 
         let events1 = mapper.events
@@ -172,7 +172,7 @@ struct NATPortMapperTests {
         _ = events1
         _ = events2
 
-        await mapper.shutdown()
+        try await mapper.shutdown()
     }
 
     // MARK: - Error Type Tests

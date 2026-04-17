@@ -11,7 +11,7 @@ struct CYCLONDiscoveryTests {
     }
 
     @Test("Discovery conforms to DiscoveryService")
-    func conformsToProtocol() async {
+    func conformsToProtocol() async throws {
         let localID = makePeerID()
         let cyclon = CYCLONDiscovery(localPeerID: localID, configuration: .testing)
         // Verify it can be used as DiscoveryService
@@ -20,7 +20,7 @@ struct CYCLONDiscoveryTests {
     }
 
     @Test("Seed adds peers to view")
-    func seedPeers() async {
+    func seedPeers() async throws {
         let localID = makePeerID()
         let cyclon = CYCLONDiscovery(localPeerID: localID, configuration: .testing)
 
@@ -38,7 +38,7 @@ struct CYCLONDiscoveryTests {
     }
 
     @Test("Seed skips self")
-    func seedSkipsSelf() async {
+    func seedSkipsSelf() async throws {
         let localID = makePeerID()
         let cyclon = CYCLONDiscovery(localPeerID: localID, configuration: .testing)
 
@@ -88,7 +88,7 @@ struct CYCLONDiscoveryTests {
     }
 
     @Test("Observations stream is multi-consumer")
-    func observationsMultiConsumer() async {
+    func observationsMultiConsumer() async throws {
         let localID = makePeerID()
         let cyclon = CYCLONDiscovery(localPeerID: localID, configuration: .testing)
 
@@ -102,7 +102,7 @@ struct CYCLONDiscoveryTests {
     }
 
     @Test("KnownPeers returns all peers in view")
-    func knownPeers() async {
+    func knownPeers() async throws {
         let localID = makePeerID()
         let cyclon = CYCLONDiscovery(localPeerID: localID, configuration: .testing)
 

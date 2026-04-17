@@ -157,7 +157,9 @@ public struct PipelineConnectionProvider: ConnectionProvider {
         } catch {
             do {
                 try await rawConnection.close()
-            } catch {}
+            } catch let closeError {
+                assertionFailure("PipelineConnectionProvider failed to close raw connection after upgrade failure: \(closeError)")
+            }
             throw error
         }
     }
@@ -182,7 +184,9 @@ private struct NativeInboundSessionCandidate: InboundSessionCandidate {
     func reject() async {
         do {
             try await connection.close()
-        } catch {}
+        } catch let closeError {
+            assertionFailure("NativeInboundSessionCandidate.reject() failed to close connection: \(closeError)")
+        }
     }
 
     func establish() async throws -> any StreamSession {
@@ -202,7 +206,9 @@ private struct UpgradedInboundSessionCandidate: InboundSessionCandidate {
     func reject() async {
         do {
             try await rawConnection.close()
-        } catch {}
+        } catch let closeError {
+            assertionFailure("UpgradedInboundSessionCandidate.reject() failed to close raw connection: \(closeError)")
+        }
     }
 
     func establish() async throws -> any StreamSession {
@@ -217,7 +223,9 @@ private struct UpgradedInboundSessionCandidate: InboundSessionCandidate {
         } catch {
             do {
                 try await rawConnection.close()
-            } catch {}
+            } catch let closeError {
+                assertionFailure("UpgradedInboundSessionCandidate.establish() failed to close raw connection after upgrade failure: \(closeError)")
+            }
             throw ConnectionAcceptorError.establishFailed(error)
         }
     }

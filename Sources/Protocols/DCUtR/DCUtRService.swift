@@ -485,7 +485,7 @@ public final class DCUtRService: EventEmitting, Sendable {
     ///
     /// Call this method when the service is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         _dialerOverride.withLock { $0 = nil }
         _localAddressProvider.withLock { $0 = nil }
         channel.finish()

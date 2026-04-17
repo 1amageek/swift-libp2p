@@ -114,7 +114,7 @@ public final class PlumtreeService: Sendable {
     }
 
     /// Shuts down the Plumtree service.
-    public func shutdown() async {
+    public func shutdown() async throws {
         let (flushTask, cleanupTask) = serviceState.withLock { s -> (Task<Void, Never>?, Task<Void, Never>?) in
             s.isStarted = false
             s.opener = nil

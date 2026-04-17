@@ -89,8 +89,8 @@ struct NodeE2ETests {
         #expect(serverPeers.contains(clientPeerID))
 
         // Cleanup
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -112,8 +112,8 @@ struct NodeE2ETests {
         let connectedPeer = try await client.connect(to: addrWithPeerID)
         #expect(connectedPeer == serverKeyPair.peerID)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -158,8 +158,8 @@ struct NodeE2ETests {
         }
         #expect(hasConnectedEvent)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -215,8 +215,8 @@ struct NodeE2ETests {
         #expect(messages.contains(testMessage))
 
         try await stream.close()
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -288,8 +288,8 @@ struct NodeE2ETests {
         #expect(echoCount.withLock { $0 } == 1)
         #expect(reverseCount.withLock { $0 } == 1)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -326,8 +326,8 @@ struct NodeE2ETests {
         #expect(result.rtt > .zero)
         #expect(result.rtt < .seconds(5)) // Should be fast with MemoryTransport
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -373,8 +373,8 @@ struct NodeE2ETests {
             #expect(stats.avg <= stats.max)
         }
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -413,10 +413,10 @@ struct NodeE2ETests {
         let serverConnCount = await server.connectionCount
         #expect(serverConnCount == 3)
 
-        await client1.shutdown()
-        await client2.shutdown()
-        await client3.shutdown()
-        await server.shutdown()
+        try await client1.shutdown()
+        try await client2.shutdown()
+        try await client3.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -484,9 +484,9 @@ struct NodeE2ETests {
             #expect(context.idleDuration >= .zero)
         }
 
-        await client1.shutdown()
-        await client2.shutdown()
-        await server.shutdown()
+        try await client1.shutdown()
+        try await client2.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -559,9 +559,9 @@ struct NodeE2ETests {
             #expect(event.active >= 2)
         }
 
-        await client1.shutdown()
-        await client2.shutdown()
-        await server.shutdown()
+        try await client1.shutdown()
+        try await client2.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -605,9 +605,9 @@ struct NodeE2ETests {
         #expect(node3Peers.contains(peer1))
         #expect(node3Peers.contains(peer2))
 
-        await node1.shutdown()
-        await node2.shutdown()
-        await node3.shutdown()
+        try await node1.shutdown()
+        try await node2.shutdown()
+        try await node3.shutdown()
         hub.reset()
     }
 
@@ -640,8 +640,8 @@ struct NodeE2ETests {
         #expect(connCount == 0)
         #expect(!connPeers.contains(serverPeerID))
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -680,8 +680,8 @@ struct NodeE2ETests {
         let wasReceived = disconnectReceived.withLock { $0 }
         #expect(wasReceived)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -715,8 +715,8 @@ struct NodeE2ETests {
             _ = try await client.connect(to: serverAddr)
         }
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -749,8 +749,8 @@ struct NodeE2ETests {
             _ = try await client.connect(to: serverAddr)
         }
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -805,8 +805,8 @@ struct NodeE2ETests {
         }
         #expect(serverSettledToSingleConnection)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -870,8 +870,8 @@ struct NodeE2ETests {
         #expect(String(buffer: response2) == "Goodbye, Bob!")
 
         try await stream.close()
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -936,8 +936,8 @@ struct NodeE2ETests {
         try await Task.sleep(for: .milliseconds(100))
         #expect(requestCount.withLock { $0 } == 5)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -976,8 +976,8 @@ struct NodeE2ETests {
         #expect(serverConnCount == 1)
         #expect(clientConnCount == 1)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -1016,8 +1016,8 @@ struct NodeE2ETests {
         #expect(count == 1)
 
         eventTask.cancel()
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -1055,8 +1055,8 @@ struct NodeE2ETests {
         #expect(count == 1)
 
         eventTask.cancel()
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -1108,7 +1108,7 @@ struct NodeE2ETests {
         let advertised = server.advertisedAddresses
         #expect(!advertised.isEmpty)
 
-        await server.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -1117,7 +1117,7 @@ struct NodeE2ETests {
         let hub = MemoryHub()
         let serverAddress = Multiaddr.memory(id: "production-noise-server")
 
-        let server = Node(
+        let server = try Node(
             profile: .production,
             keyPair: .generateEd25519(),
             listenAddresses: [serverAddress],
@@ -1128,7 +1128,7 @@ struct NodeE2ETests {
             Ping()
         }
 
-        let client = Node(
+        let client = try Node(
             profile: .production,
             keyPair: .generateEd25519(),
             transports: [MemoryTransport(hub: hub)],
@@ -1148,8 +1148,8 @@ struct NodeE2ETests {
         #expect(await client.connectionCount == 1)
         #expect(await server.connectionCount == 1)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 

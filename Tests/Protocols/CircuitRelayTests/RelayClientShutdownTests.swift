@@ -9,7 +9,7 @@ import Foundation
 struct RelayClientShutdownTests {
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let client = RelayClient()
         let events = client.events
 
@@ -21,17 +21,17 @@ struct RelayClientShutdownTests {
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch {}
 
-        await client.shutdown()
+        try await client.shutdown()
 
         let count = await consumeTask.value
         #expect(count == 0)
     }
 
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let client = RelayClient()
-        await client.shutdown()
-        await client.shutdown()
-        await client.shutdown()
+        try await client.shutdown()
+        try await client.shutdown()
+        try await client.shutdown()
     }
 }

@@ -13,7 +13,7 @@ private struct StubOpener: StreamOpener {
 @Suite("TraversalMechanism HolePunch")
 struct TraversalMechanismHolePunchTests {
     @Test("requires limited connection when configured", .timeLimit(.minutes(1)))
-    func requiresLimitedConnection() async {
+    func requiresLimitedConnection() async throws {
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let mechanism = HolePunchMechanism(dcutr: DCUtRService(), requireLimitedConnection: true)
 
@@ -34,7 +34,7 @@ struct TraversalMechanismHolePunchTests {
     }
 
     @Test("attempt without opener throws missing context", .timeLimit(.minutes(1)))
-    func attemptWithoutOpener() async {
+    func attemptWithoutOpener() async throws {
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let mechanism = HolePunchMechanism(dcutr: DCUtRService(), requireLimitedConnection: false)
 
@@ -69,7 +69,7 @@ struct TraversalMechanismHolePunchTests {
     }
 
     @Test("collectCandidates returns empty without opener", .timeLimit(.minutes(1)))
-    func collectCandidatesWithoutOpener() async {
+    func collectCandidatesWithoutOpener() async throws {
         let peer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let mechanism = HolePunchMechanism(dcutr: DCUtRService(), requireLimitedConnection: false)
 

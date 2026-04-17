@@ -55,7 +55,7 @@ struct NoiseKATTests {
 
         let ikm = Data(hexString: "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")!
         let salt = Data(hexString: "000102030405060708090a0b0c")!
-        let info = Data(hexString: "f0f1f2f3f4f5f6f7f8f9")!
+        _ = Data(hexString: "f0f1f2f3f4f5f6f7f8f9")!
 
         // Compute HKDF using Swift Crypto
         let prk = HMAC<SHA256>.authenticationCode(for: ikm, using: SymmetricKey(data: salt))
@@ -94,7 +94,7 @@ struct NoiseKATTests {
         print("output2: \(output2.hexString)")
 
         // Now test our implementation
-        var state = NoiseSymmetricState(protocolName: "Noise_XX_25519_ChaChaPoly_SHA256")
+        _ = NoiseSymmetricState(protocolName: "Noise_XX_25519_ChaChaPoly_SHA256")
 
         // Set chainingKey to our test value
         // We can't directly set it, so we'll use a workaround via mixKey
@@ -309,14 +309,14 @@ struct NoiseKATTests {
         let messageB = try responder.writeMessageB()
         print("Message B (\(messageB.count) bytes): \(messageB.prefix(64).hexString)...")
 
-        let payloadB = try initiator.readMessageB(messageB)
+        _ = try initiator.readMessageB(messageB)
         print("Payload B decoded successfully")
 
         // Message C: -> s, se
         let messageC = try initiator.writeMessageC()
         print("Message C (\(messageC.count) bytes): \(messageC.prefix(64).hexString)...")
 
-        let payloadC = try responder.readMessageC(messageC)
+        _ = try responder.readMessageC(messageC)
         print("Payload C decoded successfully")
 
         // Verify remote static keys are correct
@@ -324,8 +324,8 @@ struct NoiseKATTests {
         #expect(responder.remoteStaticKey != nil)
 
         // Split and verify cipher states
-        let (initSend, initRecv) = initiator.split()
-        let (respSend, respRecv) = responder.split()
+        let (initSend, _) = initiator.split()
+        let (_, respRecv) = responder.split()
 
         // Test encryption/decryption
         let testMessage = Data("Test message".utf8)

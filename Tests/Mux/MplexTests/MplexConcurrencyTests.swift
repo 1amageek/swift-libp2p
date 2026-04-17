@@ -230,7 +230,7 @@ struct MplexConcurrencyTests {
 
     @Test("Write during connection close returns error", .timeLimit(.minutes(1)))
     func writeDuringConnectionClose() async throws {
-        let (connection, mock) = createTestConnection(isInitiator: true)
+        let (connection, _) = createTestConnection(isInitiator: true)
         connection.start()
 
         let stream = try await connection.newStream()

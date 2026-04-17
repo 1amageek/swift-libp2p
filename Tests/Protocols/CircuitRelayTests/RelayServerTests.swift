@@ -137,7 +137,7 @@ struct RelayServerEventTests {
 
         // Cleanup
         eventTask.cancel()
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Server emits reservationDenied event when full", .timeLimit(.minutes(1)))
@@ -193,7 +193,7 @@ struct RelayServerEventTests {
 
         // Cleanup
         eventTask.cancel()
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     // MARK: - Circuit Events
@@ -276,7 +276,7 @@ struct RelayServerEventTests {
         // Cleanup
         handlerTask.cancel()
         eventTask.cancel()
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Server emits circuitFailed event when target has no reservation", .timeLimit(.minutes(1)))
@@ -306,7 +306,7 @@ struct RelayServerEventTests {
 
         #expect(response.status == .noReservation)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Server emits circuitFailed event when circuit limit exceeded", .timeLimit(.minutes(1)))
@@ -364,7 +364,7 @@ struct RelayServerEventTests {
 
         // Cleanup
         eventTask.cancel()
-        await server.shutdown()
+        try await server.shutdown()
     }
 }
 
@@ -394,7 +394,7 @@ struct RelayServerReservationTests {
 
         #expect(server.reservationCount == 1)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Expired reservation is cleaned up", .timeLimit(.minutes(1)))
@@ -426,7 +426,7 @@ struct RelayServerReservationTests {
         // Reservation should be cleaned up
         #expect(server.reservationCount == 0)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Connect to expired reservation fails", .timeLimit(.minutes(1)))
@@ -466,7 +466,7 @@ struct RelayServerReservationTests {
 
         #expect(response.status == .noReservation)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 }
 
@@ -550,7 +550,7 @@ struct RelayServerCircuitLimitTests {
         handler1Task.cancel()
         do { try await connect1ClientStream.close() } catch { }
         do { try await targetToRelay1.close() } catch { }
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("MaxCircuits total is enforced", .timeLimit(.minutes(1)))
@@ -583,7 +583,7 @@ struct RelayServerCircuitLimitTests {
         let response = try CircuitRelayProtobuf.decodeHop(Data(buffer: responseData))
         #expect(response.status == .resourceLimitExceeded)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 }
 
@@ -634,11 +634,11 @@ struct RelayServerConfigurationTests {
 struct RelayServerShutdownTests {
 
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesEventStream() async {
+    func shutdownFinishesEventStream() async throws {
         let server = RelayServer()
         let events = server.events
 
-        await server.shutdown()
+        try await server.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
@@ -646,11 +646,11 @@ struct RelayServerShutdownTests {
     }
 
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let server = RelayServer()
-        await server.shutdown()
-        await server.shutdown()
-        await server.shutdown()
+        try await server.shutdown()
+        try await server.shutdown()
+        try await server.shutdown()
     }
 }
 
@@ -710,7 +710,7 @@ struct RelayServerErrorScenarioTests {
 
         // Small delay to ensure event is emitted
         try await Task.sleep(for: .milliseconds(50))
-        await server.shutdown()
+        try await server.shutdown()
         eventTask.cancel()
 
         // Check for circuitFailed event with targetRejected reason
@@ -743,7 +743,7 @@ struct RelayServerErrorScenarioTests {
         await server.handleInboundStream(makeStreamContext(stream: serverStream, remotePeer: clientKey.peerID, localPeer: serverKey.peerID))
 
         // Server should still be functional
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Double reservation updates existing reservation", .timeLimit(.minutes(1)))
@@ -774,7 +774,7 @@ struct RelayServerErrorScenarioTests {
         let response2 = try CircuitRelayProtobuf.decodeHop(Data(buffer: response2Data))
         #expect(response2.status == .ok)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Connect fails when opener has no stream for target", .timeLimit(.minutes(1)))
@@ -804,7 +804,7 @@ struct RelayServerErrorScenarioTests {
         let response = try CircuitRelayProtobuf.decodeHop(Data(buffer: responseData))
         #expect(response.status == .connectionFailed)
 
-        await server.shutdown()
+        try await server.shutdown()
     }
 
     @Test("Connect to self returns appropriate error", .timeLimit(.minutes(1)))
@@ -829,6 +829,6 @@ struct RelayServerErrorScenarioTests {
 
         // Handler should complete without hanging
         // Response could be connectionFailed or similar - the point is it doesn't hang
-        await server.shutdown()
+        try await server.shutdown()
     }
 }

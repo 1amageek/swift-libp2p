@@ -9,7 +9,7 @@ import Foundation
 struct ProtoBookTests {
 
     @Test("setProtocols replaces all protocols for a peer")
-    func setProtocolsReplacesAll() async {
+    func setProtocolsReplacesAll() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -22,7 +22,7 @@ struct ProtoBookTests {
     }
 
     @Test("addProtocols unions with existing protocols")
-    func addProtocolsUnions() async {
+    func addProtocolsUnions() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -35,7 +35,7 @@ struct ProtoBookTests {
     }
 
     @Test("removeProtocols removes subset of protocols")
-    func removeProtocolsSubset() async {
+    func removeProtocolsSubset() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -48,7 +48,7 @@ struct ProtoBookTests {
     }
 
     @Test("removeProtocols cleans up peer entry when all protocols removed")
-    func removeProtocolsCleansUp() async {
+    func removeProtocolsCleansUp() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -60,7 +60,7 @@ struct ProtoBookTests {
     }
 
     @Test("protocols(for:) returns empty for unknown peer")
-    func protocolsForUnknownPeer() async {
+    func protocolsForUnknownPeer() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -69,7 +69,7 @@ struct ProtoBookTests {
     }
 
     @Test("supportsProtocols filters to supported ones")
-    func supportsProtocolsFilters() async {
+    func supportsProtocolsFilters() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -84,7 +84,7 @@ struct ProtoBookTests {
     }
 
     @Test("firstSupportedProtocol returns first match or nil")
-    func firstSupportedProtocol() async {
+    func firstSupportedProtocol() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -106,7 +106,7 @@ struct ProtoBookTests {
     }
 
     @Test("removePeer clears all protocol data for a peer")
-    func removePeerClearsAll() async {
+    func removePeerClearsAll() async throws {
         let book = MemoryProtoBook()
         let peer = KeyPair.generateEd25519().peerID
 
@@ -118,7 +118,7 @@ struct ProtoBookTests {
     }
 
     @Test("peers(supporting:) returns matching peers")
-    func peersSupporting() async {
+    func peersSupporting() async throws {
         let book = MemoryProtoBook()
         let peer1 = KeyPair.generateEd25519().peerID
         let peer2 = KeyPair.generateEd25519().peerID

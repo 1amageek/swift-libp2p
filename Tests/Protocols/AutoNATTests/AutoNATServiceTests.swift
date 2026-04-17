@@ -94,12 +94,12 @@ struct AutoNATServiceTests {
         #expect(service.status == .unknown)
 
         // Properly shutdown and await event task
-        await service.shutdown()
+        try await service.shutdown()
         await eventTask.value
     }
 
     @Test("Reset status clears state")
-    func resetStatusClearsState() async {
+    func resetStatusClearsState() async throws {
         let service = AutoNATService()
 
         // Reset should work even on fresh service
@@ -125,11 +125,11 @@ struct AutoNATServiceTests {
     // MARK: - Shutdown Tests
 
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesEventStream() async {
+    func shutdownFinishesEventStream() async throws {
         let service = AutoNATService()
         let events = service.events
 
-        await service.shutdown()
+        try await service.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
@@ -137,13 +137,13 @@ struct AutoNATServiceTests {
     }
 
     @Test("Multiple shutdowns are safe")
-    func multipleShutdownsSafe() async {
+    func multipleShutdownsSafe() async throws {
         let service = AutoNATService()
 
         // Should not crash when called multiple times
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
     }
 
     // MARK: - Probe Error Handling Tests

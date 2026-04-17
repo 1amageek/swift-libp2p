@@ -26,7 +26,7 @@ struct SWIMMembershipIntegrationTests {
         )
 
         try await membership.start()
-        await membership.shutdown()
+        try await membership.shutdown()
 
         #expect(Bool(true))
     }
@@ -70,8 +70,8 @@ struct SWIMMembershipIntegrationTests {
         _ = known1
         _ = known2
 
-        await membership1.shutdown()
-        await membership2.shutdown()
+        try await membership1.shutdown()
+        try await membership2.shutdown()
 
         #expect(Bool(true))
     }
@@ -100,7 +100,7 @@ struct SWIMMembershipIntegrationTests {
 
         try await membership.announce(addresses: addresses)
 
-        await membership.shutdown()
+        try await membership.shutdown()
 
         // Should complete without error
         #expect(Bool(true))
@@ -144,8 +144,8 @@ struct SWIMMembershipIntegrationTests {
         // May or may not find depending on SWIM propagation timing
         _ = candidates
 
-        await membership1.shutdown()
-        await membership2.shutdown()
+        try await membership1.shutdown()
+        try await membership2.shutdown()
     }
 
     // MARK: - Subscribe Operation
@@ -171,7 +171,7 @@ struct SWIMMembershipIntegrationTests {
         // Subscription should be created without error
         _ = subscription
 
-        await membership.shutdown()
+        try await membership.shutdown()
     }
 
     // MARK: - Observation Events
@@ -220,8 +220,8 @@ struct SWIMMembershipIntegrationTests {
 
         // Ensure stream termination even if cancellation alone is delayed.
         // shutdown() finishes EventBroadcaster streams.
-        await membership1.shutdown()
-        await membership2.shutdown()
+        try await membership1.shutdown()
+        try await membership2.shutdown()
 
         // May or may not receive observation (timing dependent)
         _ = await observeTask.result
@@ -242,8 +242,8 @@ struct SWIMMembershipIntegrationTests {
         let membership = SWIMMembership(localPeerID: peer, configuration: config)
 
         try await membership.start()
-        await membership.shutdown()
-        await membership.shutdown()  // Second shutdown should be safe
+        try await membership.shutdown()
+        try await membership.shutdown()  // Second shutdown should be safe
 
         #expect(Bool(true))
     }
@@ -271,7 +271,7 @@ struct SWIMMembershipIntegrationTests {
             #expect(Bool(true))
         }
 
-        await membership.shutdown()
+        try await membership.shutdown()
     }
 
     // MARK: - Join Operation
@@ -298,7 +298,7 @@ struct SWIMMembershipIntegrationTests {
             #expect(Bool(true))
         }
 
-        await membership.shutdown()
+        try await membership.shutdown()
     }
 
     @Test("join() before start throws error")
@@ -340,7 +340,7 @@ struct SWIMMembershipIntegrationTests {
         let membership = SWIMMembership(localPeerID: peer, configuration: config)
 
         try await membership.start()
-        await membership.shutdown()
+        try await membership.shutdown()
 
         #expect(Bool(true))
     }
@@ -358,7 +358,7 @@ struct SWIMMembershipIntegrationTests {
         let membership = SWIMMembership(localPeerID: peer, configuration: config)
 
         try await membership.start()
-        await membership.shutdown()
+        try await membership.shutdown()
 
         #expect(Bool(true))
     }
@@ -380,7 +380,7 @@ struct SWIMMembershipIntegrationTests {
         do {
             try await membership.start()
             // May or may not throw depending on validation
-            await membership.shutdown()
+            try await membership.shutdown()
         } catch {
             // Expected error for unroutable address
             #expect(Bool(true))

@@ -567,7 +567,7 @@ public final class RelayServer: EventEmitting, Sendable {
     ///
     /// Call this method when the server is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         let tasks = serverState.withLock { s -> [Task<Void, Never>] in
             let tasks = Array(s.cleanupTasks.values)
             s.cleanupTasks.removeAll()

@@ -21,11 +21,11 @@ public protocol TraversalMechanism: Sendable {
     ) async throws -> TraversalAttemptResult
 
     /// Releases resources held by this mechanism.
-    func shutdown() async
+    func shutdown() async throws
 }
 
 public extension TraversalMechanism {
     func prepare(context: TraversalContext) async {}
 
-    func shutdown() async {}
+    func shutdown() async throws {}
 }

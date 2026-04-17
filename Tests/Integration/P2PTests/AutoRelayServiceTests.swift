@@ -20,7 +20,7 @@ struct AutoRelayServiceTests {
     // MARK: - Lifecycle
 
     @Test("Activation starts monitoring after opener attachment", .timeLimit(.minutes(1)))
-    func attachStartsMonitoring() async {
+    func attachStartsMonitoring() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -35,13 +35,13 @@ struct AutoRelayServiceTests {
         await startService(service)
 
         // Should not crash, monitoring task should be running
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIdempotent() async {
+    func shutdownIdempotent() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -52,17 +52,17 @@ struct AutoRelayServiceTests {
             localPeer: localPeer
         )
 
-        await service.shutdown()
-        await service.shutdown()  // Should not crash
+        try await service.shutdown()
+        try await service.shutdown()  // Should not crash
 
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     // MARK: - Event Stream
 
     @Test("Events stream terminates on shutdown", .timeLimit(.minutes(1)))
-    func eventsTerminateOnShutdown() async {
+    func eventsTerminateOnShutdown() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -75,20 +75,20 @@ struct AutoRelayServiceTests {
 
         let events = service.events
 
-        await service.shutdown()
+        try await service.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
         #expect(count == 0)
 
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     // MARK: - PeerObserver
 
     @Test("PeerConnected/PeerDisconnected tracking", .timeLimit(.minutes(1)))
-    func peerObserverTracking() async {
+    func peerObserverTracking() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -106,9 +106,9 @@ struct AutoRelayServiceTests {
         await service.peerDisconnected(peer1)
 
         // Should not crash — internal state tracks peers correctly
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     // MARK: - Configuration
@@ -124,7 +124,7 @@ struct AutoRelayServiceTests {
     }
 
     @Test("Static relays are registered as candidates on init", .timeLimit(.minutes(1)))
-    func staticRelaysRegistered() async {
+    func staticRelaysRegistered() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -138,15 +138,15 @@ struct AutoRelayServiceTests {
         )
 
         // Should not crash — static relay is registered with the internal AutoRelay
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     // MARK: - Candidate Scoring
 
     @Test("Failure count is passed through to selector", .timeLimit(.minutes(1)))
-    func failureCountPassedToSelector() async {
+    func failureCountPassedToSelector() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -168,13 +168,13 @@ struct AutoRelayServiceTests {
         #expect(candidates[0].peer == peerA)
         #expect(candidates[0].recentFailures == 3)
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("Peer with failures scores lower than clean peer", .timeLimit(.minutes(1)))
-    func peerWithFailuresScoresLower() async {
+    func peerWithFailuresScoresLower() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -202,13 +202,13 @@ struct AutoRelayServiceTests {
         #expect(failedScore != nil)
         #expect(cleanScore!.score > failedScore!.score)
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("Cooldown excludes peer from candidates", .timeLimit(.minutes(1)))
-    func cooldownExcludesPeerTemporarily() async {
+    func cooldownExcludesPeerTemporarily() async throws {
         let autoNAT = AutoNATService()
         let relayClient = RelayClient()
         let localPeer = makePeer()
@@ -231,9 +231,9 @@ struct AutoRelayServiceTests {
         let candidates = service.buildCandidateInfosForTesting()
         #expect(candidates.isEmpty)
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("After cooldown peer is re-included with decayed failure count", .timeLimit(.minutes(1)))
@@ -269,9 +269,9 @@ struct AutoRelayServiceTests {
         #expect(candidates2.count == 1)
         #expect(candidates2[0].recentFailures == 2)
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("Single failure decays to zero and record is removed", .timeLimit(.minutes(1)))
@@ -302,9 +302,9 @@ struct AutoRelayServiceTests {
         #expect(candidates.count == 1)
         #expect(candidates[0].recentFailures == 0)
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("Deactivated event not emitted without prior activation", .timeLimit(.minutes(1)))
@@ -325,7 +325,7 @@ struct AutoRelayServiceTests {
 
         // Give a moment for initial monitor cycle
         try await Task.sleep(for: .milliseconds(100))
-        await service.shutdown()
+        try await service.shutdown()
 
         var receivedEvents: [AutoRelayServiceEvent] = []
         for await event in events {
@@ -338,8 +338,8 @@ struct AutoRelayServiceTests {
         }
         #expect(!hasDeactivated)
 
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     @Test("Rapid peer connect/disconnect does not crash", .timeLimit(.minutes(1)))
@@ -366,9 +366,9 @@ struct AutoRelayServiceTests {
 
         try await Task.sleep(for: .milliseconds(100))
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
     }
 
     // MARK: - Relay Address Callback
@@ -396,9 +396,9 @@ struct AutoRelayServiceTests {
         // Give monitor cycle time to run once
         try await Task.sleep(for: .milliseconds(200))
 
-        await service.shutdown()
-        await autoNAT.shutdown()
-        await relayClient.shutdown()
+        try await service.shutdown()
+        try await autoNAT.shutdown()
+        try await relayClient.shutdown()
 
         // Callback should have been called during the monitor cycle
         let wasInvoked = callbackInvoked.withLock { $0 }

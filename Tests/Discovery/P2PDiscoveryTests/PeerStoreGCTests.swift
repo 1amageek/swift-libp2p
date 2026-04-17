@@ -36,7 +36,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("addAddresses with TTL sets expiresAt")
-    func addAddressesWithTTL() async {
+    func addAddressesWithTTL() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,  // No default — only explicit TTL should apply
             gcInterval: nil
@@ -53,7 +53,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("addAddresses with nil TTL and nil default results in no expiration")
-    func addAddressesWithoutTTL() async {
+    func addAddressesWithoutTTL() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil
@@ -69,7 +69,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("addAddresses extends TTL when new expiration is later")
-    func extendsTTL() async {
+    func extendsTTL() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil
@@ -93,7 +93,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("addAddresses does not shorten TTL when new expiration is earlier")
-    func doesNotShortenTTL() async {
+    func doesNotShortenTTL() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil
@@ -117,7 +117,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("addresses(for:) filters expired addresses")
-    func addressesFiltersExpired() async {
+    func addressesFiltersExpired() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil
@@ -141,7 +141,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("cleanup removes expired addresses and returns count")
-    func cleanupRemovesExpired() async {
+    func cleanupRemovesExpired() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil
@@ -170,7 +170,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("cleanup removes peer when all addresses expire")
-    func cleanupRemovesPeerWhenEmpty() async {
+    func cleanupRemovesPeerWhenEmpty() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil
@@ -192,7 +192,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("defaultAddressTTL is applied when ttl parameter is nil")
-    func defaultTTLApplied() async {
+    func defaultTTLApplied() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: .seconds(300),
             gcInterval: nil
@@ -210,7 +210,7 @@ struct PeerStoreGCTests {
     }
 
     @Test("addAddresses with nil TTL upgrades to permanent")
-    func nilTTLUpgradesToPermanent() async {
+    func nilTTLUpgradesToPermanent() async throws {
         let store = MemoryPeerStore(configuration: .init(
             defaultAddressTTL: nil,
             gcInterval: nil

@@ -64,7 +64,7 @@ struct P2PTests {
     // MARK: - Node Initialization Tests
 
     @Test("Node initializes with configuration")
-    func testNodeInitialization() async {
+    func testNodeInitialization() async throws {
         let keyPair = KeyPair.generateEd25519()
         let config = NodeConfiguration(keyPair: keyPair)
         let node = Node(configuration: config)
@@ -80,11 +80,11 @@ struct P2PTests {
 
         try await node.start()
         // Should not throw, just do nothing
-        await node.shutdown()
+        try await node.shutdown()
     }
 
     @Test("Node registers protocol handlers")
-    func testNodeProtocolHandlers() async {
+    func testNodeProtocolHandlers() async throws {
         let config = NodeConfiguration()
         let node = Node(configuration: config)
 
@@ -98,7 +98,7 @@ struct P2PTests {
     }
 
     @Test("Node reports no connected peers initially")
-    func testNodeNoConnectedPeers() async {
+    func testNodeNoConnectedPeers() async throws {
         let config = NodeConfiguration()
         let node = Node(configuration: config)
 
@@ -108,7 +108,7 @@ struct P2PTests {
     }
 
     @Test("Node exposes trim report snapshot")
-    func testNodeConnectionTrimReport() async {
+    func testNodeConnectionTrimReport() async throws {
         let node = Node(configuration: .init())
 
         let report = await node.connectionTrimReport()
@@ -136,7 +136,7 @@ struct P2PTests {
     }
 
     @Test("NegotiatingUpgrader throws when no security upgraders")
-    func testUpgraderNoSecurity() async {
+    func testUpgraderNoSecurity() async throws {
         let upgrader = NegotiatingUpgrader(security: [], muxers: [MockMuxer(id: "/yamux/1.0.0")])
         let raw = MockRawConnection()
 
@@ -414,7 +414,7 @@ struct UpgradeAndNodeErrorTests {
             }
         }
 
-        await node.shutdown()
+        try await node.shutdown()
     }
 
     @Test("Node.newStream throws notConnected for unknown peer")
@@ -434,7 +434,7 @@ struct UpgradeAndNodeErrorTests {
             #expect(gotPeer == peer)
         }
 
-        await node.shutdown()
+        try await node.shutdown()
     }
 
     @Test("NodeError associated values are preserved")

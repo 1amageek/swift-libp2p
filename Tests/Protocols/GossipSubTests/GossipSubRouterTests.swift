@@ -92,7 +92,7 @@ struct GossipSubRouterTests {
     // MARK: - RPC Handling Tests
 
     @Test("Handle subscription from peer")
-    func handleSubscription() async {
+    func handleSubscription() async throws {
         let router = makeRouter()
         let topic = Topic("test-topic")
         let peer = makePeerID()
@@ -300,7 +300,7 @@ struct GossipSubRouterTests {
     }
 
     @Test("Handle GRAFT for unsubscribed topic sends PRUNE")
-    func handleGraftUnsubscribedSendsPrune() async {
+    func handleGraftUnsubscribedSendsPrune() async throws {
         let router = makeRouter()
         let topic = Topic("not-subscribed")
         let peer = makePeerID()
@@ -709,14 +709,14 @@ struct GossipSubRouterTests {
             topic: topic
         ))
 
-        await router.shutdown()
+        try await router.shutdown()
 
         #expect(router.meshState.subscribedTopics.isEmpty)
         #expect(router.meshState.allMeshPeers.isEmpty)
     }
 
     @Test("Shutdown terminates event stream", .timeLimit(.minutes(1)))
-    func shutdownTerminatesEventStream() async {
+    func shutdownTerminatesEventStream() async throws {
         let router = makeRouter()
         let events = router.events
 
@@ -728,18 +728,18 @@ struct GossipSubRouterTests {
 
         do { try await Task.sleep(for: .milliseconds(50)) } catch {}
 
-        await router.shutdown()
+        try await router.shutdown()
 
         let count = await consumeTask.value
         #expect(count == 0)
     }
 
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let router = makeRouter()
-        await router.shutdown()
-        await router.shutdown()
-        await router.shutdown()
+        try await router.shutdown()
+        try await router.shutdown()
+        try await router.shutdown()
     }
 
     // MARK: - Mesh Rebalancing Tests

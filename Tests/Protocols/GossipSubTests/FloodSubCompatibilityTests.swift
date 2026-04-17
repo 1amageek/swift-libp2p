@@ -72,7 +72,7 @@ struct FloodSubCompatibilityTests {
     // MARK: - FloodSub Subscription Tests
 
     @Test("FloodSub peer subscription is tracked")
-    func floodsubPeerSubscription() async {
+    func floodsubPeerSubscription() async throws {
         let router = makeRouter()
         let topic = Topic("test-topic")
         let floodsubPeer = makePeerID()
@@ -237,7 +237,7 @@ struct FloodSubCompatibilityTests {
     }
 
     @Test("FloodSub peers ignore incoming control messages")
-    func floodsubPeerIgnoresControlMessages() async {
+    func floodsubPeerIgnoresControlMessages() async throws {
         let router = makeRouter()
         let topic = Topic("test-topic")
         let floodsubPeer = makePeerID()

@@ -12,7 +12,7 @@ private struct EventOpener: StreamOpener {
 @Suite("TraversalEventStream")
 struct TraversalEventStreamTests {
     @Test("shutdown finishes events stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesStream() async {
+    func shutdownFinishesStream() async throws {
         let localPeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(),
@@ -35,21 +35,21 @@ struct TraversalEventStreamTests {
             return true
         }
 
-        await coordinator.shutdown()
+        try await coordinator.shutdown()
         let finished = await consumeTask.value
         #expect(finished)
     }
 
     @Test("shutdown is idempotent", .timeLimit(.minutes(1)))
-    func shutdownIsIdempotent() async {
+    func shutdownIsIdempotent() async throws {
         let localPeer = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
         let coordinator = TraversalCoordinator(
             configuration: TraversalConfiguration(),
             localPeer: localPeer,
             dialCapability: EmptyTraversalDialCapability()
         )
-        await coordinator.shutdown()
-        await coordinator.shutdown()
-        await coordinator.shutdown()
+        try await coordinator.shutdown()
+        try await coordinator.shutdown()
+        try await coordinator.shutdown()
     }
 }

@@ -40,7 +40,7 @@ struct AutoRelayConfigurationTests {
 struct AutoRelayCandidateTests {
 
     @Test("Adding candidate relays")
-    func testAddCandidateRelay() async {
+    func testAddCandidateRelay() async throws {
         let localKey = KeyPair.generateEd25519()
         let relay1Key = KeyPair.generateEd25519()
         let relay2Key = KeyPair.generateEd25519()
@@ -57,11 +57,11 @@ struct AutoRelayCandidateTests {
         #expect(autoRelay.activeRelayPeers().isEmpty)
         #expect(autoRelay.relayAddresses().isEmpty)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Removing candidate relay")
-    func testRemoveCandidateRelay() async {
+    func testRemoveCandidateRelay() async throws {
         let localKey = KeyPair.generateEd25519()
         let relayKey = KeyPair.generateEd25519()
 
@@ -74,7 +74,7 @@ struct AutoRelayCandidateTests {
         // Still no active relays
         #expect(autoRelay.activeRelayPeers().isEmpty)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Removing active relay emits events")
@@ -99,7 +99,7 @@ struct AutoRelayCandidateTests {
         #expect(autoRelay.activeRelayPeers().isEmpty)
         #expect(autoRelay.relayAddresses().isEmpty)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 
@@ -134,7 +134,7 @@ struct AutoRelaySelectionTests {
         let addresses = autoRelay.relayAddresses()
         #expect(addresses.count == 3)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Respects maxRelays limit")
@@ -157,7 +157,7 @@ struct AutoRelaySelectionTests {
         #expect(autoRelay.activeRelayPeers().count == 2)
         #expect(autoRelay.relayAddresses().count == 2)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Does not select relays when publicly reachable")
@@ -174,7 +174,7 @@ struct AutoRelaySelectionTests {
         #expect(autoRelay.activeRelayPeers().isEmpty)
         #expect(autoRelay.relayAddresses().isEmpty)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Does not select relays when reachability is unknown")
@@ -189,7 +189,7 @@ struct AutoRelaySelectionTests {
 
         #expect(autoRelay.activeRelayPeers().isEmpty)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("needsMoreRelays reflects state correctly")
@@ -213,7 +213,7 @@ struct AutoRelaySelectionTests {
         // Now at maxRelays - doesn't need more
         #expect(!autoRelay.needsMoreRelays)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 
@@ -249,7 +249,7 @@ struct AutoRelayAddressTests {
         #expect(desc.contains("p2p-circuit"))
         #expect(desc.contains("p2p/\(localKey.peerID)"))
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Skips addresses that already contain p2p-circuit")
@@ -280,7 +280,7 @@ struct AutoRelayAddressTests {
         #expect(result.count == 1)
         #expect(result[0].description.contains("5.6.7.8"))
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Handles relay address that already contains relay peer ID")
@@ -313,7 +313,7 @@ struct AutoRelayAddressTests {
         // Should have exactly 2 p2p components: relay + self
         #expect(p2pCount == 2)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Generates addresses for multiple relay addresses")
@@ -342,7 +342,7 @@ struct AutoRelayAddressTests {
             #expect(addr.description.contains("p2p/\(localKey.peerID)"))
         }
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 
@@ -367,7 +367,7 @@ struct AutoRelayReachabilityTests {
         #expect(autoRelay.activeRelayPeers().count == 1)
         #expect(autoRelay.activeRelayPeers().contains(relayKey.peerID))
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Transition to public clears active relays")
@@ -391,7 +391,7 @@ struct AutoRelayReachabilityTests {
         #expect(autoRelay.activeRelayPeers().isEmpty)
         #expect(autoRelay.relayAddresses().isEmpty)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Transition public -> private -> public")
@@ -421,7 +421,7 @@ struct AutoRelayReachabilityTests {
         await autoRelay.performReservationCycle()
         #expect(autoRelay.activeRelayPeers().count == 1)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Same reachability update is no-op")
@@ -443,11 +443,11 @@ struct AutoRelayReachabilityTests {
         // Should not clear relays
         #expect(autoRelay.activeRelayPeers().count == 1)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("currentReachability returns correct value")
-    func testCurrentReachability() async {
+    func testCurrentReachability() async throws {
         let localKey = KeyPair.generateEd25519()
         let autoRelay = AutoRelay(localPeer: localKey.peerID)
 
@@ -459,7 +459,7 @@ struct AutoRelayReachabilityTests {
         autoRelay.updateReachability(.publiclyReachable)
         #expect(autoRelay.currentReachability == .publiclyReachable)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 
@@ -500,7 +500,7 @@ struct AutoRelayEventTests {
 
         #expect(receivedRelayAdded)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Emits relayRemoved when relay is removed", .timeLimit(.minutes(1)))
@@ -538,7 +538,7 @@ struct AutoRelayEventTests {
 
         #expect(receivedRemoved)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Emits relayAddressesUpdated with complete address list", .timeLimit(.minutes(1)))
@@ -573,7 +573,7 @@ struct AutoRelayEventTests {
 
         #expect(receivedUpdate)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Emits reservationFailed on reservation error", .timeLimit(.minutes(1)))
@@ -608,7 +608,7 @@ struct AutoRelayEventTests {
 
         #expect(receivedFailed)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Emits relayRemoved and empty addresses on transition to public", .timeLimit(.minutes(1)))
@@ -652,7 +652,7 @@ struct AutoRelayEventTests {
         #expect(receivedRemoved)
         #expect(receivedEmptyAddresses)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 
@@ -675,20 +675,20 @@ struct AutoRelayShutdownTests {
         #expect(autoRelay.activeRelayPeers().count == 1)
 
         // Shutdown
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
 
         #expect(autoRelay.activeRelayPeers().isEmpty)
         #expect(autoRelay.relayAddresses().isEmpty)
     }
 
     @Test("Shutdown is idempotent")
-    func testShutdownIdempotent() async {
+    func testShutdownIdempotent() async throws {
         let localKey = KeyPair.generateEd25519()
         let autoRelay = AutoRelay(localPeer: localKey.peerID)
 
-        await autoRelay.shutdown()
-        await autoRelay.shutdown()
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
+        try await autoRelay.shutdown()
+        try await autoRelay.shutdown()
 
         // Should not crash
         #expect(autoRelay.activeRelayPeers().isEmpty)
@@ -704,7 +704,7 @@ struct AutoRelayShutdownTests {
         // Shutdown after a small delay
         Task {
             try await Task.sleep(for: .milliseconds(50))
-            await autoRelay.shutdown()
+            try await autoRelay.shutdown()
         }
 
         // This loop should terminate when shutdown is called
@@ -724,7 +724,7 @@ struct AutoRelayShutdownTests {
 
         let autoRelay = AutoRelay(localPeer: localKey.peerID)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
 
         // Adding candidates and updating reachability should be no-ops after shutdown
         autoRelay.addCandidateRelay(relayKey.peerID, addresses: [Multiaddr.tcp(host: "1.2.3.4", port: 4001)])
@@ -764,7 +764,7 @@ struct AutoRelayConcurrencyTests {
         await autoRelay.performReservationCycle()
         #expect(autoRelay.activeRelayPeers().count <= autoRelay.configuration.maxRelays)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Concurrent reachability updates are safe", .timeLimit(.minutes(1)))
@@ -789,7 +789,7 @@ struct AutoRelayConcurrencyTests {
         }
 
         // Should not crash
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Concurrent reservation cycles are safe", .timeLimit(.minutes(1)))
@@ -816,7 +816,7 @@ struct AutoRelayConcurrencyTests {
         // Should not crash, maxRelays respected
         #expect(autoRelay.activeRelayPeers().count <= autoRelay.configuration.maxRelays)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 
@@ -852,7 +852,7 @@ struct AutoRelayReservationActionTests {
         #expect(peers.count == 2)
         #expect(autoRelay.activeRelayPeers().count == 2)
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Failed reservations do not add active relays")
@@ -873,7 +873,7 @@ struct AutoRelayReservationActionTests {
         let active = autoRelay.activeRelayPeers()
         #expect(active.isEmpty, "Failed reservation should not add relay to active list")
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Mixed success and failure in reservation cycle")
@@ -909,7 +909,7 @@ struct AutoRelayReservationActionTests {
         #expect(active.count >= 1)
         #expect(!active.contains(failPeer), "Failed relay should not be active")
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 
     @Test("Reserve action provides correct addresses")
@@ -934,7 +934,7 @@ struct AutoRelayReservationActionTests {
         #expect(addresses[0].description.contains("10.20.30.40"))
         #expect(addresses[0].description.contains("p2p-circuit"))
 
-        await autoRelay.shutdown()
+        try await autoRelay.shutdown()
     }
 }
 

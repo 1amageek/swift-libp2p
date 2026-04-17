@@ -112,7 +112,7 @@ struct HolePunchServiceEventTests {
     }
 
     @Test("Events stream returns same stream on repeated access")
-    func eventsStreamSameInstance() async {
+    func eventsStreamSameInstance() async throws {
         let service = HolePunchService()
 
         // Getting events multiple times returns the same stream
@@ -120,7 +120,7 @@ struct HolePunchServiceEventTests {
         _ = service.events
 
         // Both should work - we verify by shutting down and seeing both complete
-        await service.shutdown()
+        try await service.shutdown()
 
         var count1 = 0
         for await _ in stream1 {
@@ -133,11 +133,11 @@ struct HolePunchServiceEventTests {
     }
 
     @Test("Shutdown finishes event stream", .timeLimit(.minutes(1)))
-    func shutdownFinishesStream() async {
+    func shutdownFinishesStream() async throws {
         let service = HolePunchService()
         let events = service.events
 
-        await service.shutdown()
+        try await service.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
@@ -190,7 +190,7 @@ struct HolePunchServiceEventTests {
             #expect(p == peer)
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -228,7 +228,7 @@ struct HolePunchServiceFailureTests {
         #expect(service.failureCount == 1)
         #expect(service.successCount == 0)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Punch fails with empty address list", .timeLimit(.minutes(1)))
@@ -249,13 +249,13 @@ struct HolePunchServiceFailureTests {
             #expect(error == .noSuitableAddresses)
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Punch fails after shutdown", .timeLimit(.minutes(1)))
     func punchFailsAfterShutdown() async throws {
         let service = HolePunchService()
-        await service.shutdown()
+        try await service.shutdown()
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -302,7 +302,7 @@ struct HolePunchServiceFailureTests {
         // Invariant: totalPeerAttempts == successCount + failureCount
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -326,7 +326,7 @@ struct HolePunchServiceConcurrencyTests {
         #expect(service.configuration.maxConcurrentPunches == 1)
 
         // After shutdown, active punches should be empty
-        await service.shutdown()
+        try await service.shutdown()
         #expect(service.activePunches().isEmpty)
     }
 }
@@ -478,30 +478,30 @@ struct HolePunchTransportTypeTests {
 struct HolePunchServiceShutdownTests {
 
     @Test("Shutdown is idempotent")
-    func shutdownIdempotent() async {
+    func shutdownIdempotent() async throws {
         let service = HolePunchService()
 
         // Multiple shutdowns should not crash
-        await service.shutdown()
-        await service.shutdown()
-        await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Shutdown clears active punches", .timeLimit(.minutes(1)))
-    func shutdownClearsActivePunches() async {
+    func shutdownClearsActivePunches() async throws {
         let service = HolePunchService()
 
-        await service.shutdown()
+        try await service.shutdown()
 
         #expect(service.activePunches().isEmpty)
     }
 
     @Test("Shutdown unblocks event consumers", .timeLimit(.minutes(1)))
-    func shutdownUnblocksConsumers() async {
+    func shutdownUnblocksConsumers() async throws {
         let service = HolePunchService()
         let events = service.events
 
-        await service.shutdown()
+        try await service.shutdown()
 
         var count = 0
         for await _ in events { count += 1 }
@@ -509,11 +509,11 @@ struct HolePunchServiceShutdownTests {
     }
 
     @Test("Statistics are preserved after shutdown")
-    func statisticsPreservedAfterShutdown() async {
+    func statisticsPreservedAfterShutdown() async throws {
         let service = HolePunchService()
 
         // Shutdown does not reset statistics
-        await service.shutdown()
+        try await service.shutdown()
 
         #expect(service.totalPeerAttempts == 0)
         #expect(service.successCount == 0)
@@ -665,7 +665,7 @@ struct HolePunchServiceAddressFilteringTests {
             #expect(error == .noSuitableAddresses)
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Public IPv4 addresses pass filtering")
@@ -698,7 +698,7 @@ struct HolePunchServiceAddressFilteringTests {
             #expect(error != .noSuitableAddresses)
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Mixed addresses: only public ones are used")
@@ -729,7 +729,7 @@ struct HolePunchServiceAddressFilteringTests {
             #expect(error != .noSuitableAddresses)
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -765,7 +765,7 @@ struct HolePunchServiceStatisticsTests {
         // Invariant: totalPeerAttempts == successCount + failureCount
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Failure count tracks failed punches")
@@ -791,7 +791,7 @@ struct HolePunchServiceStatisticsTests {
         #expect(service.failureCount == 1)
         #expect(service.successCount == 0)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Active punches is empty after completion")
@@ -817,7 +817,7 @@ struct HolePunchServiceStatisticsTests {
         // After completion (success or failure), active punches should be empty
         #expect(service.activePunches().isEmpty)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -855,7 +855,7 @@ struct HolePunchServiceRetryTests {
         // Invariant: totalPeerAttempts == successCount + failureCount
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("No retries needed for address filtering failure")
@@ -881,7 +881,7 @@ struct HolePunchServiceRetryTests {
         // Address filtering failure should not retry
         #expect(service.totalPeerAttempts == 1)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -891,33 +891,33 @@ struct HolePunchServiceRetryTests {
 struct HolePunchServiceTransportDetectionTests {
 
     @Test("Preferred TCP transport is used")
-    func preferredTCPUsed() async {
+    func preferredTCPUsed() async throws {
         let config = HolePunchServiceConfiguration(preferredTransport: .tcp)
         let service = HolePunchService(configuration: config)
 
         #expect(service.configuration.preferredTransport == .tcp)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Preferred QUIC transport is used")
-    func preferredQUICUsed() async {
+    func preferredQUICUsed() async throws {
         let config = HolePunchServiceConfiguration(preferredTransport: .quic)
         let service = HolePunchService(configuration: config)
 
         #expect(service.configuration.preferredTransport == .quic)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Auto-detect when no preference set")
-    func autoDetectNoPreference() async {
+    func autoDetectNoPreference() async throws {
         let config = HolePunchServiceConfiguration(preferredTransport: nil)
         let service = HolePunchService(configuration: config)
 
         #expect(service.configuration.preferredTransport == nil)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("QUIC detected from quic-v1 protocol component, not just UDP port", .timeLimit(.minutes(1)))
@@ -951,7 +951,7 @@ struct HolePunchServiceTransportDetectionTests {
         // Verify it doesn't fail with noSuitableAddresses (address is public)
         #expect(service.totalPeerAttempts == 1)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("TCP address with UDP port does not falsely detect QUIC", .timeLimit(.minutes(1)))
@@ -984,7 +984,7 @@ struct HolePunchServiceTransportDetectionTests {
         // The key verification is that it doesn't crash and proceeds normally
         #expect(service.totalPeerAttempts == 1)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }
 
@@ -1045,7 +1045,7 @@ struct HolePunchServiceTOCTOURaceTests {
         #expect(results.count == 5)
         _ = rejectedCount  // Value depends on timing
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Peer is removed from active set on failure", .timeLimit(.minutes(1)))
@@ -1085,7 +1085,7 @@ struct HolePunchServiceTOCTOURaceTests {
             #expect(error != .maxConcurrentPunchesReached)
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Shutdown rejected punch does not register in active set", .timeLimit(.minutes(1)))
@@ -1095,7 +1095,7 @@ struct HolePunchServiceTOCTOURaceTests {
             retryAttempts: 1
         ))
 
-        await service.shutdown()
+        try await service.shutdown()
 
         let peer = KeyPair.generateEd25519().peerID
         let relay = KeyPair.generateEd25519().peerID
@@ -1152,7 +1152,7 @@ struct HolePunchServiceStatisticsInvariantTests {
         #expect(service.failureCount == 5)
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Invariant holds with mixed public and private address failures", .timeLimit(.minutes(1)))
@@ -1195,6 +1195,6 @@ struct HolePunchServiceStatisticsInvariantTests {
         #expect(service.successCount == 0)
         #expect(service.totalPeerAttempts == service.successCount + service.failureCount)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 }

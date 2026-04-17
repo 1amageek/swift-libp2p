@@ -413,7 +413,7 @@ struct ConnectionPoolTests {
     }
 
     @Test("trimIfNeeded trims oldest activity first when tags are equal")
-    func trimPrefersOlderActivity() async {
+    func trimPrefersOlderActivity() async throws {
         let pool = makePool(highWatermark: 2, lowWatermark: 2, gracePeriod: .zero)
 
         let (oldPeer, oldAddr, oldConn) = makeMockConnection()
@@ -496,7 +496,7 @@ struct ConnectionPoolTests {
     }
 
     @Test("trimReport selection matches trimIfNeeded result")
-    func trimReportMatchesTrimExecution() async {
+    func trimReportMatchesTrimExecution() async throws {
         let pool = makePool(highWatermark: 2, lowWatermark: 2, gracePeriod: .zero)
 
         let (oldPeer, oldAddr, oldConn) = makeMockConnection()

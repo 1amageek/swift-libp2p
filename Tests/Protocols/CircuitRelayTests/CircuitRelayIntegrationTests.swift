@@ -1067,7 +1067,7 @@ struct RelayClientCancellationTests {
                 "Expected cancellation or quick failure, got: \(result)")
         #expect(elapsed < .seconds(5), "Should complete quickly, took: \(elapsed)")
 
-        await client.shutdown()
+        try await client.shutdown()
     }
 
     @Test("RelayClient.acceptConnection() cancellation after delay", .timeLimit(.minutes(1)))
@@ -1101,6 +1101,6 @@ struct RelayClientCancellationTests {
         #expect(result == "cancelled", "Expected CancellationError, got: \(result)")
         #expect(elapsed < .seconds(1), "Cancellation should be immediate, took: \(elapsed)")
 
-        await client.shutdown()
+        try await client.shutdown()
     }
 }

@@ -31,7 +31,7 @@ struct HealthMonitorTests {
     // MARK: - Monitoring Lifecycle
 
     @Test("Start monitoring adds peer")
-    func startMonitoring() async {
+    func startMonitoring() async throws {
         let monitor = HealthMonitor(
             configuration: .default,
             pingProvider: MockPingProvider(result: .success(.milliseconds(10)))
@@ -45,7 +45,7 @@ struct HealthMonitorTests {
     }
 
     @Test("Stop monitoring removes peer")
-    func stopMonitoring() async {
+    func stopMonitoring() async throws {
         let peer = randomPeerID()
         let monitor = HealthMonitor(
             configuration: .default,
@@ -60,7 +60,7 @@ struct HealthMonitorTests {
     }
 
     @Test("isMonitoring returns correct state")
-    func isMonitoring() async {
+    func isMonitoring() async throws {
         let peer1 = randomPeerID()
         let peer2 = randomPeerID()
         let monitor = HealthMonitor(
@@ -77,7 +77,7 @@ struct HealthMonitorTests {
     }
 
     @Test("Multiple peers can be monitored")
-    func monitoredPeers() async {
+    func monitoredPeers() async throws {
         let peer1 = randomPeerID()
         let peer2 = randomPeerID()
         let peer3 = randomPeerID()
@@ -100,7 +100,7 @@ struct HealthMonitorTests {
     }
 
     @Test("Stop all clears all peers")
-    func stopAll() async {
+    func stopAll() async throws {
         let monitor = HealthMonitor(
             configuration: .default,
             pingProvider: MockPingProvider(result: .success(.milliseconds(10)))
@@ -132,7 +132,7 @@ struct HealthMonitorTests {
     }
 
     @Test("checkHealth failure throws", .timeLimit(.minutes(1)))
-    func healthCheckFailure() async {
+    func healthCheckFailure() async throws {
         let monitor = HealthMonitor(
             configuration: .default,
             pingProvider: MockPingProvider(result: .failure(MockError.pingFailed))
@@ -147,7 +147,7 @@ struct HealthMonitorTests {
     // MARK: - Failure Counting
 
     @Test("Initial failure count is zero")
-    func initialFailureCount() async {
+    func initialFailureCount() async throws {
         let monitor = HealthMonitor(
             configuration: .default,
             pingProvider: MockPingProvider(result: .success(.milliseconds(10)))

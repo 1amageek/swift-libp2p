@@ -68,7 +68,7 @@ public actor CYCLONDiscovery: DiscoveryService {
     }
 
     /// Shuts down the shuffle loop and cleans up.
-    public func shutdown() async {
+    public func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard isStarted else { return }
         shuffleTask?.cancel()

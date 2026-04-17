@@ -151,7 +151,7 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
     public var events: AsyncStream<Event> { channel.stream }
 
     /// Shuts down the service and finishes the event stream.
-    public func shutdown() async {
+    public func shutdown() async throws {
         channel.finish()
         serviceState.withLock { state in
             state.pendingChecks.removeAll()

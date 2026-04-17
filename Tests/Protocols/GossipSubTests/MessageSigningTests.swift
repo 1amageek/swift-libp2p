@@ -236,7 +236,7 @@ struct MessageSigningTests {
 
         #expect(service.localPeerID == keyPair.peerID)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Service with localPeerID only requires testing config")
@@ -252,7 +252,7 @@ struct MessageSigningTests {
 
         #expect(service.localPeerID == keyPair.peerID)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     // MARK: - Wire Format Compatibility

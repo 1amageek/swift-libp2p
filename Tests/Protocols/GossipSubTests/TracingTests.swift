@@ -331,7 +331,7 @@ struct TracingTests {
     // MARK: - Concurrent safety
 
     @Test("JSONTracer handles concurrent writes safely", .timeLimit(.minutes(1)))
-    func concurrentSafety() async {
+    func concurrentSafety() async throws {
         let tracer = JSONTracer()
         let iterations = 100
 
@@ -358,7 +358,7 @@ struct TracingTests {
     }
 
     @Test("JSONTracer handles concurrent reads and writes", .timeLimit(.minutes(1)))
-    func concurrentReadsAndWrites() async {
+    func concurrentReadsAndWrites() async throws {
         let tracer = JSONTracer()
         let iterations = 50
 

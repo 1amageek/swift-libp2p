@@ -22,7 +22,7 @@ struct PlumtreeServiceTests {
     }
 
     @Test("Start and shutdown lifecycle")
-    func startShutdownLifecycle() async {
+    func startShutdownLifecycle() async throws {
         let service = PlumtreeService(
             localPeerID: makePeerID(),
             configuration: .testing
@@ -32,12 +32,12 @@ struct PlumtreeServiceTests {
         service.start()
         #expect(service.isStarted)
 
-        await service.shutdown()
+        try await service.shutdown()
         #expect(!service.isStarted)
     }
 
     @Test("Subscribe and unsubscribe")
-    func subscribeUnsubscribe() async {
+    func subscribeUnsubscribe() async throws {
         let service = PlumtreeService(
             localPeerID: makePeerID(),
             configuration: .testing
@@ -50,7 +50,7 @@ struct PlumtreeServiceTests {
         service.unsubscribe(from: "test-topic")
         #expect(!service.subscribedTopics.contains("test-topic"))
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Publish requires started service")
@@ -66,7 +66,7 @@ struct PlumtreeServiceTests {
     }
 
     @Test("Publish requires subscription")
-    func publishRequiresSubscription() async {
+    func publishRequiresSubscription() async throws {
         let service = PlumtreeService(
             localPeerID: makePeerID(),
             configuration: .testing
@@ -77,11 +77,11 @@ struct PlumtreeServiceTests {
             try service.publish(data: Data("test".utf8), to: "topic")
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Publish rejects oversized messages")
-    func publishRejectsOversized() async {
+    func publishRejectsOversized() async throws {
         let config = PlumtreeConfiguration(maxMessageSize: 100)
         let service = PlumtreeService(
             localPeerID: makePeerID(),
@@ -95,7 +95,7 @@ struct PlumtreeServiceTests {
             try service.publish(data: largeData, to: "topic")
         }
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Publish returns message ID")
@@ -110,7 +110,7 @@ struct PlumtreeServiceTests {
         let msgID = try service.publish(data: Data("hello".utf8), to: "topic")
         #expect(!msgID.bytes.isEmpty)
 
-        await service.shutdown()
+        try await service.shutdown()
     }
 
     @Test("Events stream is multi-consumer")

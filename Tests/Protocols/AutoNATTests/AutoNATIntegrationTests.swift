@@ -278,7 +278,7 @@ struct AutoNATIntegrationTests {
         // Client probes server
         let status = try await client.probe(using: opener, servers: [serverKey.peerID])
 
-        await serverTask.value
+        _ = await serverTask.value
 
         #expect(status.isPublic)
     }
@@ -329,7 +329,7 @@ struct AutoNATIntegrationTests {
         // Client probes server
         let status = try await client.probe(using: opener, servers: [serverKey.peerID])
 
-        await serverTask.value
+        _ = await serverTask.value
 
         #expect(status == .privateBehindNAT)
     }
@@ -661,7 +661,7 @@ struct AutoNATIntegrationTests {
         let serverConfig = AutoNATConfiguration(
             dialer: { addr in try await serverDialer.dial(addr) }
         )
-        let server = AutoNATService(configuration: serverConfig)
+        _ = AutoNATService(configuration: serverConfig)
 
         // Client with maxAddresses = 5 (smaller for easier testing)
         let clientConfig = AutoNATConfiguration(
@@ -724,7 +724,7 @@ struct AutoNATIntegrationTests {
         let serverConfig = AutoNATConfiguration(
             dialer: { addr in try await serverDialer.dial(addr) }
         )
-        let server = AutoNATService(configuration: serverConfig)
+        _ = AutoNATService(configuration: serverConfig)
 
         // Client with maxAddresses = 8 (exact match)
         let clientConfig = AutoNATConfiguration(
@@ -783,7 +783,7 @@ struct AutoNATIntegrationTests {
         let serverConfig = AutoNATConfiguration(
             dialer: { addr in try await serverDialer.dial(addr) }
         )
-        let server = AutoNATService(configuration: serverConfig)
+        _ = AutoNATService(configuration: serverConfig)
 
         let clientConfig = AutoNATConfiguration(
             minProbes: 1,
@@ -887,7 +887,7 @@ struct AutoNATIntegrationTests {
         try await Task.sleep(for: .milliseconds(10))
 
         // Properly shutdown and await event task
-        await client.shutdown()
+        try await client.shutdown()
         await eventTask.value
 
         let receivedEvents = await collector.getEvents()

@@ -16,7 +16,7 @@ struct TestMetricEvent: Sendable, Equatable {
 struct EventBusTests {
 
     @Test("subscribe and receive single event", .timeLimit(.minutes(1)))
-    func subscribeAndReceive() async {
+    func subscribeAndReceive() async throws {
         let bus = EventBus()
         defer { bus.shutdown() }
 
@@ -32,7 +32,7 @@ struct EventBusTests {
     }
 
     @Test("multiple subscribers receive same event", .timeLimit(.minutes(1)))
-    func multipleSubscribers() async {
+    func multipleSubscribers() async throws {
         let bus = EventBus()
         defer { bus.shutdown() }
 
@@ -51,7 +51,7 @@ struct EventBusTests {
     }
 
     @Test("different event types are independent", .timeLimit(.minutes(1)))
-    func differentTypes() async {
+    func differentTypes() async throws {
         let bus = EventBus()
         defer { bus.shutdown() }
 
@@ -79,7 +79,7 @@ struct EventBusTests {
     }
 
     @Test("shutdown terminates streams", .timeLimit(.minutes(1)))
-    func shutdownTerminatesStreams() async {
+    func shutdownTerminatesStreams() async throws {
         let bus = EventBus()
         let stream = bus.subscribe(to: TestNodeEvent.self)
 
@@ -95,7 +95,7 @@ struct EventBusTests {
     }
 
     @Test("subscribe after emit gets no previous events", .timeLimit(.minutes(1)))
-    func lateSubscriber() async {
+    func lateSubscriber() async throws {
         let bus = EventBus()
         defer { bus.shutdown() }
 
@@ -110,7 +110,7 @@ struct EventBusTests {
     }
 
     @Test("multiple event sequence", .timeLimit(.minutes(1)))
-    func multipleEvents() async {
+    func multipleEvents() async throws {
         let bus = EventBus()
         defer { bus.shutdown() }
 
@@ -134,7 +134,7 @@ struct EventBusTests {
     }
 
     @Test("concurrent emit is safe", .timeLimit(.minutes(1)))
-    func concurrentEmit() async {
+    func concurrentEmit() async throws {
         let bus = EventBus()
         defer { bus.shutdown() }
 
@@ -167,7 +167,7 @@ struct EventBusTests {
     }
 
     @Test("subscribe after shutdown works", .timeLimit(.minutes(1)))
-    func subscribeAfterShutdown() async {
+    func subscribeAfterShutdown() async throws {
         let bus = EventBus()
         let stream1 = bus.subscribe(to: TestNodeEvent.self)
         bus.emit(TestNodeEvent.peerConnected("peer1"))

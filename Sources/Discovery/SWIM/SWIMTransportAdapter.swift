@@ -73,7 +73,7 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
     }
 
     /// Shuts down the transport.
-    public func shutdown() async {
+    public func shutdown() async throws {
         let task = state.withLock { state -> Task<Void, Never>? in
             let t = state.receiveTask
             state.receiveTask = nil
@@ -81,7 +81,11 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
         }
         task?.cancel()
 
-        await udpTransport.shutdown()
+        do {
+            try await udpTransport.shutdown()
+        } catch {
+            logger.warning("SWIM transport shutdown failed", metadata: ["error": "\(error)"])
+        }
         messageContinuation.finish()
     }
 

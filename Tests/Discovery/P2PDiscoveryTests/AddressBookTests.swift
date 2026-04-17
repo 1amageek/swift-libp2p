@@ -165,7 +165,7 @@ struct AddressBookConfigurationTests {
 struct DefaultAddressBookBasicTests {
 
     @Test("Add and retrieve addresses for a peer")
-    func addAndRetrieve() async {
+    func addAndRetrieve() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -178,7 +178,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("Empty result for unknown peer")
-    func unknownPeer() async {
+    func unknownPeer() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -188,7 +188,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("bestAddress returns nil for unknown peer")
-    func bestAddressUnknown() async {
+    func bestAddressUnknown() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -198,7 +198,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("bestAddress returns the highest-scored address")
-    func bestAddressReturnsFirst() async {
+    func bestAddressReturnsFirst() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -211,7 +211,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("hasAddresses returns false for unknown peer")
-    func hasAddressesFalse() async {
+    func hasAddressesFalse() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -221,7 +221,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("hasAddresses returns true after adding addresses")
-    func hasAddressesTrue() async {
+    func hasAddressesTrue() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -233,7 +233,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("Remove peer clears all addresses")
-    func removePeer() async {
+    func removePeer() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -246,7 +246,7 @@ struct DefaultAddressBookBasicTests {
     }
 
     @Test("Remove individual address")
-    func removeAddress() async {
+    func removeAddress() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -269,7 +269,7 @@ struct DefaultAddressBookBasicTests {
 struct DefaultAddressBookScoringTests {
 
     @Test("TCP ranked higher than QUIC with default priority (TCP is first)")
-    func defaultPriorityTCPFirst() async {
+    func defaultPriorityTCPFirst() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -285,7 +285,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Custom priority can put QUIC above TCP")
-    func customPriorityQUICFirst() async {
+    func customPriorityQUICFirst() async throws {
         let store = makeStore()
         let config = AddressBookConfiguration(
             transportPriority: [.quic, .tcp, .udp, .webSocket, .webSocketSecure, .memory]
@@ -302,7 +302,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Score is between 0.0 and 1.0")
-    func scoreBounds() async {
+    func scoreBounds() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -316,7 +316,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Unknown address gets lowest score for unknown peer")
-    func scoreForUnknownAddress() async {
+    func scoreForUnknownAddress() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -332,7 +332,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Success history improves address ranking")
-    func successImprovesRanking() async {
+    func successImprovesRanking() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -352,7 +352,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Failure history degrades address ranking")
-    func failureDegrades() async {
+    func failureDegrades() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -375,7 +375,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Stale observations decay confidence over time")
-    func staleObservationDecaysConfidence() async {
+    func staleObservationDecaysConfidence() async throws {
         let store = makeStore()
         let config = AddressBookConfiguration(
             transportPriority: [.tcp],
@@ -408,7 +408,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Observation decay can be disabled")
-    func observationDecayCanBeDisabled() async {
+    func observationDecayCanBeDisabled() async throws {
         let store = makeStore()
         let config = AddressBookConfiguration(
             transportPriority: [.tcp],
@@ -439,7 +439,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Address reaching maxFailureCount has lower score than address without failures")
-    func maxFailuresDropsScore() async {
+    func maxFailuresDropsScore() async throws {
         let store = makeStore()
         let config = AddressBookConfiguration(maxFailureCount: 3)
         let book = DefaultAddressBook(peerStore: store, configuration: config)
@@ -463,7 +463,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Success resets failure count")
-    func successResetsFailures() async {
+    func successResetsFailures() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -486,7 +486,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Different transport types produce different transport scores")
-    func differentTransportScores() async {
+    func differentTransportScores() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -503,7 +503,7 @@ struct DefaultAddressBookScoringTests {
     }
 
     @Test("Empty transport priority list returns neutral transport score")
-    func emptyTransportPriority() async {
+    func emptyTransportPriority() async throws {
         let store = makeStore()
         let config = AddressBookConfiguration(transportPriority: [])
         let book = DefaultAddressBook(peerStore: store, configuration: config)
@@ -525,7 +525,7 @@ struct DefaultAddressBookScoringTests {
 struct DefaultAddressBookMultiplePeersTests {
 
     @Test("Addresses are isolated per peer")
-    func perPeerIsolation() async {
+    func perPeerIsolation() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer1 = makePeer()
@@ -546,7 +546,7 @@ struct DefaultAddressBookMultiplePeersTests {
     }
 
     @Test("Recording success for one peer does not affect another")
-    func successIsolation() async {
+    func successIsolation() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer1 = makePeer()
@@ -572,7 +572,7 @@ struct DefaultAddressBookMultiplePeersTests {
 struct DefaultAddressBookDuplicateTests {
 
     @Test("Adding duplicate addresses does not create duplicates")
-    func noDuplicates() async {
+    func noDuplicates() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -584,7 +584,7 @@ struct DefaultAddressBookDuplicateTests {
     }
 
     @Test("Re-adding existing address preserves history")
-    func readdPreservesHistory() async {
+    func readdPreservesHistory() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -612,7 +612,7 @@ struct DefaultAddressBookDuplicateTests {
 struct AddressBookAddAndSortTests {
 
     @Test("addAndSort single address returns sorted list")
-    func addAndSortSingle() async {
+    func addAndSortSingle() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -624,7 +624,7 @@ struct AddressBookAddAndSortTests {
     }
 
     @Test("addAndSort multiple addresses returns sorted list")
-    func addAndSortMultiple() async {
+    func addAndSortMultiple() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -638,7 +638,7 @@ struct AddressBookAddAndSortTests {
     }
 
     @Test("addAndSort accumulates addresses across calls")
-    func addAndSortAccumulates() async {
+    func addAndSortAccumulates() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -659,7 +659,7 @@ struct AddressBookAddAndSortTests {
 struct PeerStoreAddressLimitsTests {
 
     @Test("Addresses capped at maxAddressesPerPeer")
-    func maxAddressesCap() async {
+    func maxAddressesCap() async throws {
         let store = makeStore(maxAddressesPerPeer: 5)
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -675,7 +675,7 @@ struct PeerStoreAddressLimitsTests {
     }
 
     @Test("Adding beyond max evicts oldest address")
-    func evictsOldest() async {
+    func evictsOldest() async throws {
         let store = makeStore(maxAddressesPerPeer: 3)
         let peer = makePeer()
 
@@ -701,7 +701,7 @@ struct PeerStoreAddressLimitsTests {
     }
 
     @Test("recordFailure updates LRU order and prevents premature peer eviction")
-    func recordFailureTouchesPeerForLRU() async {
+    func recordFailureTouchesPeerForLRU() async throws {
         let store = makeStore(maxPeers: 2, maxAddressesPerPeer: 3)
         let peer1 = makePeer()
         let peer2 = makePeer()
@@ -836,7 +836,7 @@ struct AddressRecordTests {
 struct MemoryPeerStoreIntegrationTests {
 
     @Test("recordSuccess updates address record via PeerStore")
-    func recordSuccessUpdatesRecord() async {
+    func recordSuccessUpdatesRecord() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -852,7 +852,7 @@ struct MemoryPeerStoreIntegrationTests {
     }
 
     @Test("recordFailure updates address record via PeerStore")
-    func recordFailureUpdatesRecord() async {
+    func recordFailureUpdatesRecord() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -868,7 +868,7 @@ struct MemoryPeerStoreIntegrationTests {
     }
 
     @Test("Multiple failures increment failure count")
-    func multipleFailures() async {
+    func multipleFailures() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -885,7 +885,7 @@ struct MemoryPeerStoreIntegrationTests {
     }
 
     @Test("recordSuccess on non-existent address is a no-op")
-    func recordSuccessNonExistent() async {
+    func recordSuccessNonExistent() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -899,7 +899,7 @@ struct MemoryPeerStoreIntegrationTests {
     }
 
     @Test("recordFailure on non-existent address is a no-op")
-    func recordFailureNonExistent() async {
+    func recordFailureNonExistent() async throws {
         let store = makeStore()
         let book = DefaultAddressBook(peerStore: store)
         let peer = makePeer()
@@ -912,7 +912,7 @@ struct MemoryPeerStoreIntegrationTests {
     }
 
     @Test("PeerStore events emitted on address add")
-    func eventsOnAdd() async {
+    func eventsOnAdd() async throws {
         let store = makeStore()
         let peer = makePeer()
         let addr = Multiaddr.tcp(host: "1.2.3.4", port: 4001)
@@ -938,7 +938,7 @@ struct MemoryPeerStoreIntegrationTests {
     }
 
     @Test("addressRecords returns all records in a single call")
-    func addressRecordsBatch() async {
+    func addressRecordsBatch() async throws {
         let store = makeStore()
         let peer = makePeer()
         let addr1 = Multiaddr.tcp(host: "1.2.3.4", port: 4001)
@@ -971,7 +971,7 @@ struct CompositeDiscoveryAnnounceTests {
     }
 
     @Test("Announce throws if all services fail")
-    func announceAllFail() async {
+    func announceAllFail() async throws {
         let localPeerID = makePeer()
         let failing1 = FailingDiscoveryService()
         let failing2 = FailingDiscoveryService()
@@ -986,7 +986,7 @@ struct CompositeDiscoveryAnnounceTests {
     }
 
     @Test("Find throws if all services fail")
-    func findAllFail() async {
+    func findAllFail() async throws {
         let localPeerID = makePeer()
         let failing1 = FailingDiscoveryService()
         let failing2 = FailingDiscoveryService()
@@ -1092,19 +1092,19 @@ struct CompositeDiscoveryMergingTests {
 struct CompositeDiscoveryLifecycleTests {
 
     @Test("Start is idempotent")
-    func startIdempotent() async {
+    func startIdempotent() async throws {
         let localPeerID = makePeer()
         let service = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [service])
 
-        await composite.start()
-        await composite.start()  // Second start should be no-op
+        try await composite.start()
+        try await composite.start()  // Second start should be no-op
 
         // Should still be functional
         let peers = await composite.knownPeers()
         #expect(peers.isEmpty)
 
-        await composite.shutdown()
+        try await composite.shutdown()
     }
 
     @Test("Operations work without calling start")
@@ -1118,7 +1118,7 @@ struct CompositeDiscoveryLifecycleTests {
         let peers = await composite.knownPeers()
         #expect(peers.isEmpty)
 
-        await composite.shutdown()
+        try await composite.shutdown()
     }
 
     @Test("Empty services list works")
@@ -1126,7 +1126,7 @@ struct CompositeDiscoveryLifecycleTests {
         let localPeerID = makePeer()
         let composite = makeComposite(localPeerID: localPeerID, services: [] as [any DiscoveryService])
 
-        await composite.start()
+        try await composite.start()
 
         let peers = await composite.knownPeers()
         #expect(peers.isEmpty)
@@ -1135,7 +1135,7 @@ struct CompositeDiscoveryLifecycleTests {
         let results = try await composite.find(peer: makePeer())
         #expect(results.isEmpty)
 
-        await composite.shutdown()
+        try await composite.shutdown()
     }
 
     @Test("Weighted initialization preserves weights in scoring")
@@ -1161,7 +1161,7 @@ struct CompositeDiscoveryLifecycleTests {
         // Weighted: (3.0 * 1.0 + 1.0 * 1.0) / 2 = 2.0
         #expect(results[0].score == 2.0)
 
-        await composite.shutdown()
+        try await composite.shutdown()
     }
 }
 
@@ -1174,7 +1174,7 @@ struct CompositeDiscoveryObservationTests {
         let mock = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [mock])
 
-        await composite.start()
+        try await composite.start()
 
         let observations = composite.observations
         let received = Mutex<[PeerObservation]>([])
@@ -1203,7 +1203,7 @@ struct CompositeDiscoveryObservationTests {
         // Give time for forwarding
         try await Task.sleep(for: .milliseconds(100))
 
-        await composite.shutdown()
+        try await composite.shutdown()
         consumeTask.cancel()
 
         let events = received.withLock { $0 }
@@ -1218,7 +1218,7 @@ struct CompositeDiscoveryObservationTests {
         let mock = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [mock])
 
-        await composite.start()
+        try await composite.start()
 
         let observations = composite.observations
         let received = Mutex<[PeerObservation]>([])
@@ -1252,7 +1252,7 @@ struct CompositeDiscoveryObservationTests {
 
         try await Task.sleep(for: .milliseconds(100))
 
-        await composite.shutdown()
+        try await composite.shutdown()
         consumeTask.cancel()
 
         let events = received.withLock { $0 }
@@ -1268,7 +1268,7 @@ struct CompositeDiscoveryObservationTests {
         let mock = MockDiscoveryService()
         let composite = makeComposite(localPeerID: localPeerID, services: [mock])
 
-        await composite.start()
+        try await composite.start()
 
         let target = makePeer()
         let other = makePeer()
@@ -1307,7 +1307,7 @@ struct CompositeDiscoveryObservationTests {
 
         try await Task.sleep(for: .milliseconds(100))
 
-        await composite.shutdown()
+        try await composite.shutdown()
         consumeTask.cancel()
 
         let events = received.withLock { $0 }
@@ -1354,7 +1354,7 @@ private final class FailingDiscoveryService: DiscoveryService, Sendable {
         eventStream
     }
 
-    func shutdown() async {
+    func shutdown() async throws {
         eventContinuation.finish()
     }
 }

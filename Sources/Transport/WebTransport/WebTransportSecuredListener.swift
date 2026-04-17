@@ -181,7 +181,7 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
 
         tasks.0?.cancel()
         tasks.1?.cancel()
-        await endpoint.shutdown()
+        try await endpoint.shutdown()
         do {
             _ = try await endpointTask.value
         } catch {

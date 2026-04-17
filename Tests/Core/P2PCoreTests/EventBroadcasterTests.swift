@@ -12,7 +12,7 @@ struct EventBroadcasterTests {
     }
 
     @Test("Single subscriber receives events", .timeLimit(.minutes(1)))
-    func singleSubscriber() async {
+    func singleSubscriber() async throws {
         let broadcaster = EventBroadcaster<TestEvent>()
         let stream = broadcaster.subscribe()
 
@@ -28,7 +28,7 @@ struct EventBroadcasterTests {
     }
 
     @Test("Multiple subscribers each receive all events", .timeLimit(.minutes(1)))
-    func multipleSubscribers() async {
+    func multipleSubscribers() async throws {
         let broadcaster = EventBroadcaster<TestEvent>()
         let stream1 = broadcaster.subscribe()
         let stream2 = broadcaster.subscribe()
@@ -69,7 +69,7 @@ struct EventBroadcasterTests {
     }
 
     @Test("Subscriber after shutdown receives no events", .timeLimit(.minutes(1)))
-    func subscribeAfterShutdown() async {
+    func subscribeAfterShutdown() async throws {
         let broadcaster = EventBroadcaster<TestEvent>()
         broadcaster.emit(.ping)
         broadcaster.shutdown()
@@ -88,7 +88,7 @@ struct EventBroadcasterTests {
     }
 
     @Test("Shutdown finishes active streams", .timeLimit(.minutes(1)))
-    func shutdownFinishesStreams() async {
+    func shutdownFinishesStreams() async throws {
         let broadcaster = EventBroadcaster<TestEvent>()
         let stream = broadcaster.subscribe()
 

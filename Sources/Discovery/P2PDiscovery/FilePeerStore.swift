@@ -104,7 +104,7 @@ public actor FilePeerStore: PeerStore {
     }
 
     /// Shuts down periodic flush and performs a final flush.
-    public func shutdown() async {
+    public func shutdown() async throws {
         flushTask?.cancel()
         flushTask = nil
         do {

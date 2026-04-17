@@ -7,6 +7,9 @@ import P2PTransport
 import P2PMux
 import QUIC
 import QUICCrypto
+import os
+
+private let quicListenerLogger = Logger(subsystem: "swift-libp2p", category: "QUICListener")
 
 // MARK: - QUIC Listener (Standard)
 
@@ -147,9 +150,7 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                 do {
                     try await self.waitForHandshake(quicConnection, timeout: .seconds(30))
                 } catch {
-                    #if DEBUG
-                    print("Rejecting connection: handshake timeout - \(error)")
-                    #endif
+                    quicListenerLogger.debug("Rejecting connection: handshake timeout - \(String(describing: error))")
                     await quicConnection.close(error: 0x100)
                     continue
                 }
@@ -159,9 +160,7 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                 do {
                     remotePeer = try extractPeerIDFromQUIC(quicConnection)
                 } catch {
-                    #if DEBUG
-                    print("Rejecting connection: failed to extract PeerID - \(error)")
-                    #endif
+                    quicListenerLogger.debug("Rejecting connection: failed to extract PeerID - \(String(describing: error))")
                     await quicConnection.close(error: 0x100)
                     continue
                 }

@@ -25,7 +25,7 @@ import Synchronization
 ///
 /// private func emit(_ event: MyEvent) { channel.yield(event) }
 ///
-/// public func shutdown() async { channel.finish() }
+/// public func shutdown() async throws { channel.finish() }
 /// ```
 public final class EventChannel<Element: Sendable>: Sendable {
 
