@@ -96,6 +96,7 @@
   - `Node { ... }` for direct composition
   - `NodeGroup { ... }` for reusable grouped composition
   - `Service(...)` / `Discovery(...)` for custom expert-level components
+- Public custom `NodeComponent` authoring should prefer `var body: NodeGroup { ... }`, keeping the custom type itself declarative and free of resolver plumbing.
 - Public custom component authoring should not require callers to understand internal runtime arrays or lower-level resolver plumbing. If a public API exposes `ServiceComponent` / `DiscoveryComponent` details directly, treat that as a design smell and simplify it.
 
 ## Production Readiness Policy

@@ -428,7 +428,7 @@ Node層は推奨される並行性パターンを実証:
 
 ### サービス統合（Node DSL / ServicePipeline / DiscoveryPipeline）
 
-`Node` は SwiftUI 的な `P2PComponentBuilder` DSL を公開し、受け取った component 群を
+`Node` は SwiftUI 的な `NodeGroupBuilder` DSL を公開し、受け取った component 群を
 `ServicePipeline` と `DiscoveryPipeline` に分解して `NodeRuntime` へ渡す。
 中央の DSL は concrete service/discovery 実装を知らず、各 component が
 自分の runtime role を宣言する。

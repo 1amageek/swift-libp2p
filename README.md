@@ -83,7 +83,7 @@ try await stream.write(Data("Hello!".utf8))
 
 The public surface is now split into two layers:
 
-- `P2P`: batteries-included facade with `Node`, `Service`, `Discovery`, and the `P2PComponentBuilder` result builder
+- `P2P`: batteries-included facade with `Node`, `NodeGroup`, `Service`, `Discovery`, and the `NodeGroupBuilder` result builder
 - `P2PRuntime`: expert-facing runtime APIs such as `ConnectionProvider` and `RuntimeConfiguration`
 
 Current refactor goals:
@@ -103,7 +103,7 @@ Current refactor goals:
 │  (GossipSub, Kademlia, your protocols)                      │
 ├─────────────────────────────────────────────────────────────┤
 │  P2P facade                                                 │
-│  Node / P2PComponentBuilder(result builder)                 │
+│  Node / NodeGroup / NodeGroupBuilder(result builder)        │
 ├─────────────────────────────────────────────────────────────┤
 │  P2PRuntime                                                 │
 │  NodeRuntime / Swarm / ConnectionPool / Traversal           │
@@ -240,7 +240,7 @@ connect(to: Multiaddr)
 | Module | Description |
 |--------|-------------|
 | `P2PRuntime` | expert-facing runtime layer |
-| `P2P` | facade layer with `Node` and the `P2PComponentBuilder` result builder |
+| `P2P` | facade layer with `Node`, `NodeGroup`, and the `NodeGroupBuilder` result builder |
 
 ## Benchmark Snapshot
 
@@ -312,6 +312,10 @@ let node = Node(
 try await node.start()
 ```
 
+`Node.start()` succeeds only after built-in discovery components have completed
+their startup hooks. A discovery startup failure is surfaced as a start error; it
+is not downgraded to a warning.
+
 ### Production Profile
 
 For a safer default operating profile, use `.production`:
@@ -364,13 +368,13 @@ let node = Node {
 }
 ```
 
-If you want a custom type, conform to `NodeComponent` and forward to `NodeGroup`:
+If you want a custom type, conform to `NodeComponent` and implement `body` declaratively:
 
 ```swift
 struct MetricsStack: NodeComponent {
     let ping = PingService()
 
-    var nodeGroup: NodeGroup {
+    var body: some NodeComponent {
         NodeGroup {
             Service(ping)
                 .handlesInboundStreams()

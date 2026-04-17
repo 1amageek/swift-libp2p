@@ -12,9 +12,9 @@ import Foundation
 struct NodeLifecycleBenchmarks {
 
     @Test("Node DSL resolves trivial component")
-    func resolveTrivialComponent() {
-        benchmark("Node.init { Ping() }", iterations: 50_000) {
-            let node = Node(
+    func resolveTrivialComponent() throws {
+        try benchmark("Node.init { Ping() }", iterations: 50_000) {
+            let node = try Node(
                 listenAddresses: [],
                 transports: [],
                 security: [PlaintextUpgrader()],
@@ -28,9 +28,9 @@ struct NodeLifecycleBenchmarks {
     }
 
     @Test("Node DSL resolves several services and discoveries")
-    func resolveCompositeComponent() {
-        benchmark("Node.init { Ping; Identify; CYCLON; MDNS }", iterations: 20_000) {
-            let node = Node(
+    func resolveCompositeComponent() throws {
+        try benchmark("Node.init { Ping; Identify; CYCLON; MDNS }", iterations: 20_000) {
+            let node = try Node(
                 listenAddresses: [],
                 transports: [],
                 security: [PlaintextUpgrader()],
@@ -58,7 +58,7 @@ struct NodeLifecycleBenchmarks {
     func startShutdownRoundtrip() async throws {
         try await benchmark("Node.start + shutdown", iterations: 200) {
             let hub = MemoryHub()
-            let node = Node(
+            let node = try Node(
                 listenAddresses: [Multiaddr.memory(id: "benchmark-node")],
                 transports: [MemoryTransport(hub: hub)],
                 security: [PlaintextUpgrader()],
@@ -77,7 +77,7 @@ struct NodeLifecycleBenchmarks {
     func concurrentStartCoalescing() async throws {
         try await benchmark("Node.start x16 (coalesced)", iterations: 200) {
             let hub = MemoryHub()
-            let node = Node(
+            let node = try Node(
                 listenAddresses: [Multiaddr.memory(id: "benchmark-node-coalesce")],
                 transports: [MemoryTransport(hub: hub)],
                 security: [PlaintextUpgrader()],

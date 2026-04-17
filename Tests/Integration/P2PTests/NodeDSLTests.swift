@@ -64,7 +64,7 @@ struct NodeDSLTests {
 
     @Test("Node supports bare trailing-closure DSL", .timeLimit(.minutes(1)))
     func supportsBareTrailingClosureDSL() async throws {
-        let node = Node {
+        let node = try Node {
             Ping()
         }
 
@@ -83,7 +83,7 @@ struct NodeDSLTests {
         let pingService = PingService()
         let mockDiscovery = MockDiscoverySource(localPeerID: keyPair.peerID)
 
-        let node = Node(
+        let node = try Node(
             keyPair: keyPair,
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
@@ -116,7 +116,7 @@ struct NodeDSLTests {
         let pingService = PingService()
         let mockDiscovery = MockDiscoverySource(localPeerID: keyPair.peerID)
 
-        let node = Node(
+        let node = try Node(
             keyPair: keyPair,
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
@@ -145,7 +145,7 @@ struct NodeDSLTests {
 
     @Test("Nested custom NodeComponents resolve through multiple body levels", .timeLimit(.minutes(1)))
     func nestedCustomNodeComponentsResolve() async throws {
-        let node = Node {
+        let node = try Node {
             NestedNodeComponentLevel1(service: PingService())
         }
 
@@ -161,7 +161,7 @@ struct NodeDSLTests {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-factory-services")
 
-        let node = Node(
+        let node = try Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -189,7 +189,7 @@ struct NodeDSLTests {
         let address = Multiaddr.memory(id: "node-builder-stream-opening-activation")
         let mockService = MockStreamOpeningActivationService()
 
-        let node = Node(
+        let node = try Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -217,7 +217,7 @@ struct NodeDSLTests {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-dcutr")
 
-        let node = Node(
+        let node = try Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -248,7 +248,7 @@ struct NodeDSLTests {
             muxers: [YamuxMuxer()]
         )
 
-        let node = Node(
+        let node = try Node(
             keyPair: keyPair,
             listenAddresses: [address],
             connectionProviders: [provider],
@@ -284,7 +284,7 @@ struct NodeDSLTests {
             ]
         )
 
-        let node = Node(
+        let node = try Node(
             runtime: runtime,
             healthCheck: nil
         ) {
@@ -395,7 +395,7 @@ struct NodeDSLTests {
 
     @Test("Strict production start validation rejects warning-only configurations", .timeLimit(.minutes(1)))
     func strictProductionStartValidationRejectsWarningOnlyConfigurations() async throws {
-        let node = Node(
+        let node = try Node(
             keyPair: .generateEd25519(),
             healthCheck: nil,
             resourceManager: nil
@@ -422,7 +422,7 @@ struct NodeDSLTests {
         let keyPair = KeyPair.generateEd25519()
         let mockDiscovery = OwnedDiscoveryRoleSource(localPeerID: keyPair.peerID)
 
-        let server = Node(
+        let server = try Node(
             keyPair: keyPair,
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
@@ -437,7 +437,7 @@ struct NodeDSLTests {
                 .activatesOnStart()
         }
 
-        let client = Node(
+        let client = try Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-discovery-client")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -472,7 +472,7 @@ struct NodeDSLTests {
     @Test("Built-in discovery helpers register runtime stream roles", .timeLimit(.minutes(1)))
     func builtInDiscoveryHelpersRegisterRuntimeRoles() async throws {
         let hub = MemoryHub()
-        let node = Node(
+        let node = try Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-real-discovery")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -498,7 +498,7 @@ struct NodeDSLTests {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-builder-primitive-service-defaults")
 
-        let node = Node(
+        let node = try Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -522,7 +522,7 @@ struct NodeDSLTests {
     @Test("Built-in primitive initializers preserve discovery defaults", .timeLimit(.minutes(1)))
     func builtInPrimitiveInitializersPreserveDiscoveryDefaults() async throws {
         let hub = MemoryHub()
-        let node = Node(
+        let node = try Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-primitive-discovery-defaults")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -551,7 +551,7 @@ struct NodeDSLTests {
     func builtInMDNSStartupFailurePropagates() async throws {
         let hub = MemoryHub()
         let invalidServiceType = String(repeating: "a", count: 64)
-        let node = Node(
+        let node = try Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-mdns-startup-failure")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -580,7 +580,7 @@ struct NodeDSLTests {
     @Test("Built-in SWIM startup failure propagates through Node.start", .timeLimit(.minutes(1)))
     func builtInSWIMStartupFailurePropagates() async throws {
         let hub = MemoryHub()
-        let node = Node(
+        let node = try Node(
             listenAddresses: [Multiaddr.memory(id: "node-builder-swim-startup-failure")],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -617,7 +617,7 @@ struct NodeDSLTests {
         )
         let flakyProvider = FlakyListenConnectionProvider(delegate: baseProvider)
 
-        let node = Node(
+        let node = try Node(
             keyPair: .generateEd25519(),
             listenAddresses: [address],
             connectionProviders: [flakyProvider],
@@ -648,7 +648,7 @@ struct NodeDSLTests {
         let discovery = MockDiscoverySource(localPeerID: keyPair.peerID)
         let startup = FlakyDiscoveryStartup()
 
-        let node = Node(
+        let node = try Node(
             keyPair: keyPair,
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
@@ -722,7 +722,7 @@ struct NodeDSLTests {
     func concurrentStartCallsCoalesce() async throws {
         let hub = MemoryHub()
         let address = Multiaddr.memory(id: "node-concurrent-start-coalesce")
-        let node = Node(
+        let node = try Node(
             listenAddresses: [address],
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
@@ -760,7 +760,7 @@ struct NodeDSLTests {
         )
         let flakyProvider = FlakyListenConnectionProvider(delegate: baseProvider)
 
-        let node = Node(
+        let node = try Node(
             keyPair: .generateEd25519(),
             listenAddresses: [address],
             connectionProviders: [flakyProvider],
@@ -821,6 +821,111 @@ struct NodeDSLTests {
 
         #expect(startCounter.withLock { $0 } == 1)
         try await pipeline.shutdown()
+    }
+
+    // MARK: - Cycle detection
+
+    private struct DirectCycleComponent: NodeComponent {
+        var body: some NodeComponent {
+            DirectCycleComponent()
+        }
+    }
+
+    private struct MutualCycleA: NodeComponent {
+        var body: some NodeComponent {
+            NodeGroup {
+                MutualCycleB()
+            }
+        }
+    }
+
+    private struct MutualCycleB: NodeComponent {
+        var body: some NodeComponent {
+            NodeGroup {
+                MutualCycleA()
+            }
+        }
+    }
+
+    private struct SharedHelper: NodeComponent {
+        let service: PingService
+
+        var body: some NodeComponent {
+            Service(service).handlesInboundStreams()
+        }
+    }
+
+    private struct RepeatsHelperInBody: NodeComponent {
+        let first: PingService
+        let second: PingService
+
+        var body: some NodeComponent {
+            NodeGroup {
+                SharedHelper(service: first)
+                SharedHelper(service: second)
+            }
+        }
+    }
+
+    @Test("Self-recursive NodeComponent throws recursionCycleDetected", .timeLimit(.minutes(1)))
+    func directCycleThrowsRecursionError() {
+        #expect(throws: NodeCompositionError.self) {
+            _ = try Node {
+                DirectCycleComponent()
+            }
+        }
+    }
+
+    @Test("Mutually-recursive NodeComponents throw recursionCycleDetected", .timeLimit(.minutes(1)))
+    func mutualCycleThrowsRecursionError() {
+        #expect(throws: NodeCompositionError.self) {
+            _ = try Node {
+                MutualCycleA()
+            }
+        }
+    }
+
+    @Test("Repeated sibling of the same type resolves without cycle error", .timeLimit(.minutes(1)))
+    func repeatedSiblingsResolveSuccessfully() async throws {
+        let node = try Node {
+            NestedNodeComponentLevel1(service: PingService())
+            NestedNodeComponentLevel1(service: PingService())
+        }
+
+        try await node.start()
+        #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
+        try await node.shutdown()
+    }
+
+    @Test("Shared helper used twice within one body resolves successfully", .timeLimit(.minutes(1)))
+    func sharedHelperInSameBodyResolvesSuccessfully() async throws {
+        let node = try Node {
+            RepeatsHelperInBody(
+                first: PingService(),
+                second: PingService()
+            )
+        }
+
+        try await node.start()
+        #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
+        try await node.shutdown()
+    }
+
+    @Test("Recursion error carries the offending component's type name", .timeLimit(.minutes(1)))
+    func recursionErrorCarriesComponentTypeName() {
+        do {
+            _ = try Node {
+                DirectCycleComponent()
+            }
+            Issue.record("expected recursionCycleDetected to be thrown")
+        } catch let error as NodeCompositionError {
+            switch error {
+            case .recursionCycleDetected(let componentType):
+                #expect(componentType.contains("DirectCycleComponent"))
+            }
+        } catch {
+            Issue.record("expected NodeCompositionError, got \(error)")
+        }
     }
 }
 

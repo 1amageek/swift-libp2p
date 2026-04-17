@@ -628,9 +628,9 @@ public actor Node:
         keyBook: (any KeyBook)? = nil,
         traversal: TraversalConfiguration? = nil,
         maxNegotiatingInboundStreams: Int = 128,
-        @P2PComponentBuilder _ content: () -> NodeGroup = { NodeGroup() }
-    ) {
-        let components = content().resolveNodeComponents()
+        @NodeGroupBuilder _ content: () -> NodeGroup = { NodeGroup() }
+    ) throws {
+        let components = try content().resolveNodeComponents()
         self.init(configuration: NodeConfiguration(
             profile: profile,
             auditPolicy: auditPolicy,
@@ -664,9 +664,9 @@ public actor Node:
         keyBook: (any KeyBook)? = nil,
         resourceManager: (any ResourceManager)? = nil,
         traversal: TraversalConfiguration? = nil,
-        @P2PComponentBuilder _ content: () -> NodeGroup = { NodeGroup() }
-    ) {
-        let components = content().resolveNodeComponents()
+        @NodeGroupBuilder _ content: () -> NodeGroup = { NodeGroup() }
+    ) throws {
+        let components = try content().resolveNodeComponents()
         self.init(configuration: NodeConfiguration(
             runtime: runtime,
             healthCheck: healthCheck,
@@ -701,9 +701,9 @@ public actor Node:
         resourceManager: (any ResourceManager)? = nil,
         traversal: TraversalConfiguration? = nil,
         maxNegotiatingInboundStreams: Int = 128,
-        @P2PComponentBuilder _ content: () -> NodeGroup = { NodeGroup() }
-    ) {
-        self.init(
+        @NodeGroupBuilder _ content: () -> NodeGroup = { NodeGroup() }
+    ) throws {
+        try self.init(
             runtime: RuntimeConfiguration(
                 keyPair: keyPair,
                 listenAddresses: listenAddresses,
