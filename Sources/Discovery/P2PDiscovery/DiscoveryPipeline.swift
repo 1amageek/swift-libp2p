@@ -79,7 +79,7 @@ package struct ResolvedDiscoveryRuntimeRequirements: Sendable {
 package struct ResolvedDiscoveryComponent: Sendable {
     package let source: any DiscoveryService
     package let weight: Double
-    package let startup: (@Sendable () async -> Void)?
+    package let startup: (@Sendable () async throws -> Void)?
     package let runtimeRequirements: ResolvedDiscoveryRuntimeRequirements
 }
 
@@ -96,58 +96,63 @@ public struct DiscoveryComponent: Sendable {
 public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
     private let makeSource: @Sendable (DiscoveryContext) -> Source
     private let weight: Double
-    private let startup: (@Sendable (Source) async -> Void)?
+    private let startup: (@Sendable (Source) async throws -> Void)?
     private let inboundProtocolIDs: (@Sendable (Source) -> [String])?
     private let runtimeRequirements: DiscoveryRuntimeRequirements
+    public private(set) var defaultsApplied: Bool
 
     private init(
         weight: Double,
         makeSource: @escaping @Sendable (DiscoveryContext) -> Source,
-        startup: (@Sendable (Source) async -> Void)?,
+        startup: (@Sendable (Source) async throws -> Void)?,
         inboundProtocolIDs: (@Sendable (Source) -> [String])?,
-        runtimeRequirements: DiscoveryRuntimeRequirements
+        runtimeRequirements: DiscoveryRuntimeRequirements,
+        defaultsApplied: Bool
     ) {
         self.makeSource = makeSource
         self.weight = weight
         self.startup = startup
         self.inboundProtocolIDs = inboundProtocolIDs
         self.runtimeRequirements = runtimeRequirements
+        self.defaultsApplied = defaultsApplied
     }
 
     public init(
         _ source: Source,
         weight: Double = 1.0,
-        startup: (@Sendable (Source) async -> Void)? = nil
+        startup: (@Sendable (Source) async throws -> Void)? = nil
     ) {
         self.init(
             weight: weight,
             makeSource: { _ in source },
             startup: startup,
             inboundProtocolIDs: nil,
-            runtimeRequirements: .empty
+            runtimeRequirements: .empty,
+            defaultsApplied: false
         )
     }
 
     public init(
         weight: Double = 1.0,
         makeSource: @escaping @Sendable (PeerID) -> Source,
-        startup: (@Sendable (Source) async -> Void)? = nil
+        startup: (@Sendable (Source) async throws -> Void)? = nil
     ) {
         self.init(
             weight: weight,
             makeSource: { context in makeSource(context.localPeerID) },
             startup: startup,
             inboundProtocolIDs: nil,
-            runtimeRequirements: .empty
+            runtimeRequirements: .empty,
+            defaultsApplied: false
         )
     }
 
     package func component() -> DiscoveryComponent {
         DiscoveryComponent { context in
             let source = makeSource(context)
-            let startupAction: (@Sendable () async -> Void)?
+            let startupAction: (@Sendable () async throws -> Void)?
             if let startup {
-                startupAction = { await startup(source) }
+                startupAction = { try await startup(source) }
             } else {
                 startupAction = nil
             }
@@ -178,7 +183,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: resolver,
-            runtimeRequirements: runtimeRequirements
+            runtimeRequirements: runtimeRequirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -190,7 +196,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -202,7 +209,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -214,7 +222,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -226,7 +235,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -238,7 +248,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -250,7 +261,8 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -262,20 +274,32 @@ public struct DiscoveryRegistration<Source: DiscoveryService>: Sendable {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: requirements
+            runtimeRequirements: requirements,
+            defaultsApplied: defaultsApplied
+        )
+    }
+
+    package mutating func markDefaultsApplied() {
+        self = DiscoveryRegistration(
+            weight: weight,
+            makeSource: makeSource,
+            startup: startup,
+            inboundProtocolIDs: inboundProtocolIDs,
+            runtimeRequirements: runtimeRequirements,
+            defaultsApplied: true
         )
     }
 }
 
 package extension DiscoveryRegistration {
     mutating func onStart(
-        _ startupHook: @escaping @Sendable (Source) async -> Void
+        _ startupHook: @escaping @Sendable (Source) async throws -> Void
     ) {
-        let combinedStartup: (@Sendable (Source) async -> Void)?
+        let combinedStartup: (@Sendable (Source) async throws -> Void)?
         if let startup {
             combinedStartup = { source in
-                await startup(source)
-                await startupHook(source)
+                try await startup(source)
+                try await startupHook(source)
             }
         } else {
             combinedStartup = startupHook
@@ -285,7 +309,8 @@ package extension DiscoveryRegistration {
             makeSource: makeSource,
             startup: combinedStartup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: runtimeRequirements
+            runtimeRequirements: runtimeRequirements,
+            defaultsApplied: defaultsApplied
         )
     }
 
@@ -295,7 +320,8 @@ package extension DiscoveryRegistration {
             makeSource: makeSource,
             startup: startup,
             inboundProtocolIDs: inboundProtocolIDs,
-            runtimeRequirements: runtimeRequirements
+            runtimeRequirements: runtimeRequirements,
+            defaultsApplied: defaultsApplied
         )
     }
 }
@@ -338,7 +364,7 @@ public enum DiscoveryPipelineBuilder {
 package func discovery<Source: DiscoveryService>(
     _ source: Source,
     weight: Double = 1.0,
-    startup: (@Sendable (Source) async -> Void)? = nil
+    startup: (@Sendable (Source) async throws -> Void)? = nil
 ) -> DiscoveryComponent {
     DiscoveryRegistration(
         source,
@@ -350,7 +376,7 @@ package func discovery<Source: DiscoveryService>(
 package func discovery<Source: DiscoveryService>(
     _ source: Source,
     weight: Double = 1.0,
-    startup: (@Sendable (Source) async -> Void)? = nil,
+    startup: (@Sendable (Source) async throws -> Void)? = nil,
     configure: (inout DiscoveryRegistration<Source>) -> Void
 ) -> DiscoveryComponent {
     var registration = DiscoveryRegistration(
@@ -365,11 +391,11 @@ package func discovery<Source: DiscoveryService>(
 package func discovery(
     _ source: any DiscoveryService,
     weight: Double = 1.0,
-    startup: (@Sendable (any DiscoveryService) async -> Void)? = nil
+    startup: (@Sendable (any DiscoveryService) async throws -> Void)? = nil
 ) -> DiscoveryComponent {
-    let startupAction: (@Sendable () async -> Void)?
+    let startupAction: (@Sendable () async throws -> Void)?
     if let startup {
-        startupAction = { await startup(source) }
+        startupAction = { try await startup(source) }
     } else {
         startupAction = nil
     }
@@ -386,7 +412,7 @@ package func discovery(
 package func discovery<Source: DiscoveryService>(
     weight: Double = 1.0,
     _ makeSource: @escaping @Sendable (PeerID) -> Source,
-    startup: (@Sendable (Source) async -> Void)? = nil
+    startup: (@Sendable (Source) async throws -> Void)? = nil
 ) -> DiscoveryComponent {
     DiscoveryRegistration(
         weight: weight,
@@ -398,7 +424,7 @@ package func discovery<Source: DiscoveryService>(
 package func discovery<Source: DiscoveryService>(
     weight: Double = 1.0,
     _ makeSource: @escaping @Sendable (PeerID) -> Source,
-    startup: (@Sendable (Source) async -> Void)? = nil,
+    startup: (@Sendable (Source) async throws -> Void)? = nil,
     configure: (inout DiscoveryRegistration<Source>) -> Void
 ) -> DiscoveryComponent {
     var registration = DiscoveryRegistration(
@@ -413,13 +439,13 @@ package func discovery<Source: DiscoveryService>(
 package func discovery(
     weight: Double = 1.0,
     _ makeSource: @escaping @Sendable (PeerID) -> any DiscoveryService,
-    startup: (@Sendable (any DiscoveryService) async -> Void)? = nil
+    startup: (@Sendable (any DiscoveryService) async throws -> Void)? = nil
 ) -> DiscoveryComponent {
     return DiscoveryComponent { context in
         let source = makeSource(context.localPeerID)
-        let startupAction: (@Sendable () async -> Void)?
+        let startupAction: (@Sendable () async throws -> Void)?
         if let startup {
-            startupAction = { await startup(source) }
+            startupAction = { try await startup(source) }
         } else {
             startupAction = nil
         }
@@ -437,7 +463,7 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
 
     private let ownerID: UUID
     private let services: [(service: any DiscoveryService, weight: Double)]
-    private let startups: [@Sendable () async -> Void]
+    private let startups: [@Sendable () async throws -> Void]
     package let runtimeRequirements: [(service: any DiscoveryService, requirements: ResolvedDiscoveryRuntimeRequirements)]
     private let state: Mutex<State>
     private let broadcaster = EventBroadcaster<PeerObservation>()
@@ -447,6 +473,7 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
         var forwardingTasks: [Task<Void, Never>] = []
         var isRunning = false
         var isShutdown = false
+        var startTask: Task<Void, any Error>?
     }
 
     public init(
@@ -491,7 +518,7 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
     ) -> (
         ownerID: UUID,
         services: [(service: any DiscoveryService, weight: Double)],
-        startups: [@Sendable () async -> Void],
+        startups: [@Sendable () async throws -> Void],
         runtimeRequirements: [(service: any DiscoveryService, requirements: ResolvedDiscoveryRuntimeRequirements)]
     ) {
         let resolved = components.map { $0.resolver(context) }
@@ -527,18 +554,54 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
         }
     }
 
-    public func start() async {
-        let alreadyRunning = state.withLock { state in
-            if state.isRunning { return true }
-            state.isRunning = true
-            return false
+    public func start() async throws {
+        enum StartAction {
+            case noop
+            case awaitExisting(Task<Void, any Error>)
+            case runNew(Task<Void, any Error>)
         }
-        guard !alreadyRunning else { return }
 
-        for startup in startups {
-            await DiscoveryServiceOwnershipRegistry.withOwnerAccess(ownerID: ownerID) {
-                await startup()
+        let action: StartAction = state.withLock { state in
+            if let existing = state.startTask {
+                return .awaitExisting(existing)
             }
+            if state.isRunning {
+                return .noop
+            }
+            precondition(!state.isShutdown, "DiscoveryPipeline.start() called after shutdown")
+            state.isRunning = true
+            let task = Task { [weak self] in
+                guard let self else { return }
+                try await self.performStart()
+            }
+            state.startTask = task
+            return .runNew(task)
+        }
+
+        switch action {
+        case .noop:
+            return
+        case .awaitExisting(let task):
+            try await task.value
+        case .runNew(let task):
+            try await task.value
+        }
+    }
+
+    private func performStart() async throws {
+        defer {
+            state.withLock { $0.startTask = nil }
+        }
+
+        do {
+            for startup in startups {
+                try await DiscoveryServiceOwnershipRegistry.withOwnerAccess(ownerID: ownerID) {
+                    try await startup()
+                }
+            }
+        } catch {
+            await resetAfterStartFailure()
+            throw error
         }
 
         for (service, _) in services {
@@ -550,7 +613,7 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
         }
     }
 
-    public func shutdown() async {
+    public func shutdown() async throws {
         let (tasks, servicesToStop) = state.withLock { state -> ([Task<Void, Never>], [(any DiscoveryService, Double)]) in
             guard !state.isShutdown else { return ([], []) }
             state.isShutdown = true
@@ -565,9 +628,16 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
             task.cancel()
         }
 
+        var firstError: Error?
         for (service, _) in servicesToStop {
-            await DiscoveryServiceOwnershipRegistry.withOwnerAccess(ownerID: ownerID) {
-                await service.shutdown()
+            do {
+                try await DiscoveryServiceOwnershipRegistry.withOwnerAccess(ownerID: ownerID) {
+                    try await service.shutdown()
+                }
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
             }
         }
 
@@ -575,6 +645,35 @@ public final class DiscoveryPipeline: DiscoveryService, Sendable {
             DiscoveryServiceOwnershipRegistry.release(service, ownerID: ownerID)
         }
         broadcaster.shutdown()
+
+        if let firstError {
+            throw firstError
+        }
+    }
+
+    package func resetAfterStartFailure() async {
+        let (tasks, servicesToStop) = state.withLock { state -> ([Task<Void, Never>], [(any DiscoveryService, Double)]) in
+            let tasks = state.forwardingTasks
+            state.forwardingTasks.removeAll()
+            state.sequenceNumber = 0
+            state.isRunning = false
+            return (tasks, services)
+        }
+
+        for task in tasks {
+            task.cancel()
+        }
+
+        for (service, _) in servicesToStop {
+            do {
+                try await DiscoveryServiceOwnershipRegistry.withOwnerAccess(ownerID: ownerID) {
+                    try await service.shutdown()
+                }
+            } catch {
+                // Startup already failed; preserve rollback progress and leave the
+                // explicit failure on the original start path.
+            }
+        }
     }
 
     public func announce(addresses: [Multiaddr]) async throws {

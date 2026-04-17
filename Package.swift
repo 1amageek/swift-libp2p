@@ -702,7 +702,9 @@ let package = Package(
         .testTarget(
             name: "P2PBenchmarks",
             dependencies: [
+                "P2P",
                 "P2PCore",
+                "P2PIdentify",
                 "P2PKademlia",
                 "P2PGossipSub",
                 "P2PRuntime",

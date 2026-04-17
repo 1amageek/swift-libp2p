@@ -54,8 +54,8 @@ public protocol ServiceNodeComponent: NodeComponent {
 }
 
 public extension ServiceNodeComponent {
-    var nodeGroup: NodeGroup {
-        servicePrimitive.nodeGroup
+    var body: Service<ServiceType> {
+        servicePrimitive
     }
 
     func handlesInboundStreams() -> Self where ServiceType: InboundProtocolHandler {
@@ -118,8 +118,8 @@ public protocol DiscoveryNodeComponent: NodeComponent {
 }
 
 public extension DiscoveryNodeComponent {
-    var nodeGroup: NodeGroup {
-        discoveryPrimitive.nodeGroup
+    var body: Discovery<Source> {
+        discoveryPrimitive
     }
 
     func weight(_ newWeight: Double) -> Self {
@@ -127,7 +127,7 @@ public extension DiscoveryNodeComponent {
     }
 
     func onStart(
-        _ startupHook: @escaping @Sendable (Source) async -> Void
+        _ startupHook: @escaping @Sendable (Source) async throws -> Void
     ) -> Self {
         Self(discoveryPrimitive: discoveryPrimitive.onStart(startupHook))
     }
@@ -165,7 +165,9 @@ public extension DiscoveryNodeComponent {
     }
 }
 
-public struct Service<ServiceType: LifecycleService>: ServiceNodeComponent {
+public struct Service<ServiceType: LifecycleService>: _NodePrimitiveComponent {
+    public typealias Body = Never
+
     fileprivate let descriptor: ServiceDescriptor<ServiceType>
 
     public init(_ serviceInstance: ServiceType) {
@@ -186,18 +188,21 @@ public struct Service<ServiceType: LifecycleService>: ServiceNodeComponent {
         self.descriptor = descriptor
     }
 
-    public var servicePrimitive: Service<ServiceType> {
-        self
+    func _resolvePrimitive(
+        into services: inout [ServiceComponent],
+        discovery: inout [DiscoveryComponent]
+    ) {
+        services.append(descriptor.component())
+    }
+}
+
+extension Service {
+    package var defaultsApplied: Bool {
+        descriptor.registration.defaultsApplied
     }
 
-    public init(servicePrimitive: Service<ServiceType>) {
-        self = servicePrimitive
-    }
-
-    public var nodeGroup: NodeGroup {
-        NodeGroup {
-            descriptor.component()
-        }
+    fileprivate func markingDefaultsApplied() -> Service {
+        Service(descriptor: descriptor.updating { $0.markDefaultsApplied() })
     }
 }
 
@@ -255,7 +260,9 @@ public extension Service {
     }
 }
 
-public struct Discovery<Source: DiscoveryService>: DiscoveryNodeComponent {
+public struct Discovery<Source: DiscoveryService>: _NodePrimitiveComponent {
+    public typealias Body = Never
+
     fileprivate let descriptor: DiscoveryDescriptor<Source>
 
     public init(_ source: Source) {
@@ -267,7 +274,7 @@ public struct Discovery<Source: DiscoveryService>: DiscoveryNodeComponent {
     package init(
         weight: Double = 1.0,
         makeSource: @escaping @Sendable (PeerID) -> Source,
-        startup: (@Sendable (Source) async -> Void)? = nil
+        startup: (@Sendable (Source) async throws -> Void)? = nil
     ) {
         self.descriptor = DiscoveryDescriptor(
             registration: DiscoveryRegistration(
@@ -282,18 +289,21 @@ public struct Discovery<Source: DiscoveryService>: DiscoveryNodeComponent {
         self.descriptor = descriptor
     }
 
-    public var discoveryPrimitive: Discovery<Source> {
-        self
+    func _resolvePrimitive(
+        into services: inout [ServiceComponent],
+        discovery: inout [DiscoveryComponent]
+    ) {
+        discovery.append(descriptor.component())
+    }
+}
+
+extension Discovery {
+    package var defaultsApplied: Bool {
+        descriptor.registration.defaultsApplied
     }
 
-    public init(discoveryPrimitive: Discovery<Source>) {
-        self = discoveryPrimitive
-    }
-
-    public var nodeGroup: NodeGroup {
-        NodeGroup {
-            descriptor.component()
-        }
+    fileprivate func markingDefaultsApplied() -> Discovery {
+        Discovery(descriptor: descriptor.updating { $0.markDefaultsApplied() })
     }
 }
 
@@ -303,7 +313,7 @@ public extension Discovery {
     }
 
     func onStart(
-        _ startupHook: @escaping @Sendable (Source) async -> Void
+        _ startupHook: @escaping @Sendable (Source) async throws -> Void
     ) -> Discovery {
         Discovery(descriptor: descriptor.updating { $0.onStart(startupHook) })
     }
@@ -343,11 +353,42 @@ public extension Discovery {
     }
 }
 
+private protocol ThrowingStartupDiscoveryService: DiscoveryService {
+    func start() async throws
+}
+
+private protocol StartupDiscoveryService: DiscoveryService {
+    func start()
+}
+
+extension MDNSDiscovery: ThrowingStartupDiscoveryService {}
+extension SWIMMembership: ThrowingStartupDiscoveryService {}
+extension BeaconDiscovery: StartupDiscoveryService {}
+
+private extension Discovery where Source: ThrowingStartupDiscoveryService {
+    func startsOnNodeStart() -> Discovery {
+        onStart { service in
+            try await service.start()
+        }
+    }
+}
+
+private extension Discovery where Source: StartupDiscoveryService {
+    func startsOnNodeStart() -> Discovery {
+        onStart { service in
+            service.start()
+        }
+    }
+}
+
 public struct Ping: ServiceNodeComponent {
     public let servicePrimitive: Service<PingService>
 
     private static func defaults(_ primitive: Service<PingService>) -> Service<PingService> {
-        primitive.handlesInboundStreams()
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
+            .handlesInboundStreams()
+            .markingDefaultsApplied()
     }
 
     public init(_ pingService: PingService = PingService()) {
@@ -355,7 +396,7 @@ public struct Ping: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<PingService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -363,13 +404,15 @@ public struct Identify: ServiceNodeComponent {
     public let servicePrimitive: Service<IdentifyService>
 
     private static func defaults(_ primitive: Service<IdentifyService>) -> Service<IdentifyService> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .observesPeers()
             .consumesLocalIdentity()
             .consumesListenAddresses()
             .consumesSupportedProtocols()
             .activatesWithStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(_ identifyService: IdentifyService) {
@@ -390,7 +433,7 @@ public struct Identify: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<IdentifyService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -400,11 +443,13 @@ public struct RelayServer: ServiceNodeComponent {
     private static func defaults(
         _ primitive: Service<P2PCircuitRelay.RelayServer>
     ) -> Service<P2PCircuitRelay.RelayServer> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .receivesStreamOpening()
             .consumesLocalIdentity()
             .consumesListenAddresses()
+            .markingDefaultsApplied()
     }
 
     public init(_ relayServer: P2PCircuitRelay.RelayServer) {
@@ -423,7 +468,7 @@ public struct RelayServer: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<P2PCircuitRelay.RelayServer>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -431,10 +476,12 @@ public struct GossipSub: ServiceNodeComponent {
     public let servicePrimitive: Service<GossipSubService>
 
     private static func defaults(_ primitive: Service<GossipSubService>) -> Service<GossipSubService> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .observesPeers()
             .activatesWithStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(_ gossipSubService: GossipSubService) {
@@ -453,7 +500,7 @@ public struct GossipSub: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<GossipSubService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -461,10 +508,12 @@ public struct Plumtree: ServiceNodeComponent {
     public let servicePrimitive: Service<PlumtreeService>
 
     private static func defaults(_ primitive: Service<PlumtreeService>) -> Service<PlumtreeService> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .observesPeers()
             .activatesWithStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(_ plumtreeService: PlumtreeService) {
@@ -483,7 +532,7 @@ public struct Plumtree: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<PlumtreeService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -491,11 +540,9 @@ public struct DCUtR: ServiceNodeComponent {
     public let servicePrimitive: Service<DCUtRService>
 
     private static func defaults(_ primitive: Service<DCUtRService>) -> Service<DCUtRService> {
-        primitive.handlesInboundStreams()
-    }
-
-    public init(_ dcutrService: DCUtRService) {
-        self.servicePrimitive = Self.defaults(Service(dcutrService))
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
+            .handlesInboundStreams()
             .postStart { context, service in
                 let addresses = await context.listenAddresses.listenAddresses()
                 service.setLocalAddressProvider { addresses }
@@ -503,23 +550,21 @@ public struct DCUtR: ServiceNodeComponent {
                     _ = try await context.addressDialer.connect(to: address)
                 }
             }
+            .markingDefaultsApplied()
+    }
+
+    public init(_ dcutrService: DCUtRService) {
+        self.servicePrimitive = Self.defaults(Service(dcutrService))
     }
 
     public init(configuration: DCUtRConfiguration = .init()) {
         self.servicePrimitive = Self.defaults(Service(makeService: { _ in
             DCUtRService(configuration: configuration)
         }))
-        .postStart { context, service in
-            let addresses = await context.listenAddresses.listenAddresses()
-            service.setLocalAddressProvider { addresses }
-            service.setDialer { address in
-                _ = try await context.addressDialer.connect(to: address)
-            }
-        }
     }
 
     public init(servicePrimitive: Service<DCUtRService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -527,9 +572,11 @@ public struct Kademlia: ServiceNodeComponent {
     public let servicePrimitive: Service<KademliaService>
 
     private static func defaults(_ primitive: Service<KademliaService>) -> Service<KademliaService> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .activatesWithStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(_ kademliaService: KademliaService) {
@@ -548,7 +595,7 @@ public struct Kademlia: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<KademliaService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -556,10 +603,12 @@ public struct AutoRelay: ServiceNodeComponent {
     public let servicePrimitive: Service<AutoRelayService>
 
     private static func defaults(_ primitive: Service<AutoRelayService>) -> Service<AutoRelayService> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .contributesListenAddresses()
             .observesPeers()
             .activatesWithStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(_ autoRelayService: AutoRelayService) {
@@ -584,7 +633,7 @@ public struct AutoRelay: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<AutoRelayService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -592,9 +641,11 @@ public struct Supernode: ServiceNodeComponent {
     public let servicePrimitive: Service<SupernodeService>
 
     private static func defaults(_ primitive: Service<SupernodeService>) -> Service<SupernodeService> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .observesPeers()
             .activatesOnStart()
+            .markingDefaultsApplied()
     }
 
     public init(_ supernodeService: SupernodeService) {
@@ -616,7 +667,7 @@ public struct Supernode: ServiceNodeComponent {
     }
 
     public init(servicePrimitive: Service<SupernodeService>) {
-        self.servicePrimitive = servicePrimitive
+        self.servicePrimitive = Self.defaults(servicePrimitive)
     }
 }
 
@@ -624,12 +675,10 @@ public struct MDNS: DiscoveryNodeComponent {
     public let discoveryPrimitive: Discovery<MDNSDiscovery>
 
     private static func defaults(_ primitive: Discovery<MDNSDiscovery>) -> Discovery<MDNSDiscovery> {
-        primitive.onStart { service in
-            do {
-                try await service.start()
-            } catch {
-            }
-        }
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
+            .startsOnNodeStart()
+            .markingDefaultsApplied()
     }
 
     public init(configuration: MDNSConfiguration = .default) {
@@ -639,7 +688,7 @@ public struct MDNS: DiscoveryNodeComponent {
     }
 
     public init(discoveryPrimitive: Discovery<MDNSDiscovery>) {
-        self.discoveryPrimitive = discoveryPrimitive
+        self.discoveryPrimitive = Self.defaults(discoveryPrimitive)
     }
 }
 
@@ -647,12 +696,10 @@ public struct SWIM: DiscoveryNodeComponent {
     public let discoveryPrimitive: Discovery<SWIMMembership>
 
     private static func defaults(_ primitive: Discovery<SWIMMembership>) -> Discovery<SWIMMembership> {
-        primitive.onStart { service in
-            do {
-                try await service.start()
-            } catch {
-            }
-        }
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
+            .startsOnNodeStart()
+            .markingDefaultsApplied()
     }
 
     public init(configuration: SWIMMembershipConfiguration = .default) {
@@ -662,7 +709,7 @@ public struct SWIM: DiscoveryNodeComponent {
     }
 
     public init(discoveryPrimitive: Discovery<SWIMMembership>) {
-        self.discoveryPrimitive = discoveryPrimitive
+        self.discoveryPrimitive = Self.defaults(discoveryPrimitive)
     }
 }
 
@@ -670,10 +717,12 @@ public struct CYCLON: DiscoveryNodeComponent {
     public let discoveryPrimitive: Discovery<CYCLONDiscovery>
 
     private static func defaults(_ primitive: Discovery<CYCLONDiscovery>) -> Discovery<CYCLONDiscovery> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .activatesOnStart()
             .receivesStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(configuration: CYCLONConfiguration = .default) {
@@ -683,7 +732,7 @@ public struct CYCLON: DiscoveryNodeComponent {
     }
 
     public init(discoveryPrimitive: Discovery<CYCLONDiscovery>) {
-        self.discoveryPrimitive = discoveryPrimitive
+        self.discoveryPrimitive = Self.defaults(discoveryPrimitive)
     }
 }
 
@@ -693,11 +742,13 @@ public struct PlumtreeDiscovery: DiscoveryNodeComponent {
     private static func defaults(
         _ primitive: Discovery<P2PDiscoveryPlumtree.PlumtreeDiscovery>
     ) -> Discovery<P2PDiscoveryPlumtree.PlumtreeDiscovery> {
-        primitive
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
             .handlesInboundStreams()
             .observesPeers()
             .activatesOnStart()
             .receivesStreamOpening()
+            .markingDefaultsApplied()
     }
 
     public init(configuration: PlumtreeDiscoveryConfiguration = .default) {
@@ -707,7 +758,7 @@ public struct PlumtreeDiscovery: DiscoveryNodeComponent {
     }
 
     public init(discoveryPrimitive: Discovery<P2PDiscoveryPlumtree.PlumtreeDiscovery>) {
-        self.discoveryPrimitive = discoveryPrimitive
+        self.discoveryPrimitive = Self.defaults(discoveryPrimitive)
     }
 }
 
@@ -715,9 +766,10 @@ public struct Beacon: DiscoveryNodeComponent {
     public let discoveryPrimitive: Discovery<BeaconDiscovery>
 
     private static func defaults(_ primitive: Discovery<BeaconDiscovery>) -> Discovery<BeaconDiscovery> {
-        primitive.onStart { service in
-            service.start()
-        }
+        guard !primitive.defaultsApplied else { return primitive }
+        return primitive
+            .startsOnNodeStart()
+            .markingDefaultsApplied()
     }
 
     public init(configuration: BeaconDiscoveryConfiguration) {
@@ -731,6 +783,6 @@ public struct Beacon: DiscoveryNodeComponent {
     }
 
     public init(discoveryPrimitive: Discovery<BeaconDiscovery>) {
-        self.discoveryPrimitive = discoveryPrimitive
+        self.discoveryPrimitive = Self.defaults(discoveryPrimitive)
     }
 }

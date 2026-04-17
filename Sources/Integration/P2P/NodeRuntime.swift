@@ -31,6 +31,7 @@ internal actor NodeRuntime {
     }
 
     private var lifecycleState: LifecycleState = .idle
+    private var startTask: Task<Void, any Error>?
     private var eventForwardingTask: Task<Void, Never>?
     private var activeServices: [any LifecycleService] = []
     private var activePeerObservers: [any PeerObserver] = []
@@ -93,12 +94,25 @@ internal actor NodeRuntime {
     func start(capabilities: any RuntimeCapabilitySource) async throws {
         switch lifecycleState {
         case .running: return
-        case .starting: return
+        case .starting:
+            if let startTask {
+                try await startTask.value
+            }
+            return
         case .stopped: throw NodeError.nodeNotRunning
         case .idle: break
         }
         lifecycleState = .starting
+        let task = Task { [weak self] in
+            guard let self else { return }
+            try await self.performStart(capabilities: capabilities)
+        }
+        startTask = task
+        defer { startTask = nil }
+        try await task.value
+    }
 
+    private func performStart(capabilities: any RuntimeCapabilitySource) async throws {
         do {
             let serviceContext = ServiceContext(
                 localIdentity: capabilities,
@@ -157,7 +171,7 @@ internal actor NodeRuntime {
             }
 
             for action in composition.postStartActions {
-                await action()
+                try await action()
             }
 
             let resolved = advertisedAddressStore.current
@@ -244,11 +258,17 @@ internal actor NodeRuntime {
         }
     }
 
-    func shutdown() async {
+    func shutdown() async throws {
         guard lifecycleState != .stopped else { return }
         lifecycleState = .stopped
 
-        await traversalCoordinator?.shutdown()
+        var firstError: Error?
+
+        do {
+            try await traversalCoordinator?.shutdown()
+        } catch {
+            firstError = firstError ?? error
+        }
         traversalCoordinator = nil
 
         if let memoryStore = peerStore as? MemoryPeerStore {
@@ -258,7 +278,11 @@ internal actor NodeRuntime {
         await discoveryController?.shutdown()
         discoveryController = nil
         if let discovery = configuration.discovery {
-            await discovery.shutdown()
+            do {
+                try await discovery.shutdown()
+            } catch {
+                firstError = firstError ?? error
+            }
         }
 
         if let bootstrap {
@@ -269,7 +293,11 @@ internal actor NodeRuntime {
         await healthMonitor?.stopAll()
 
         for service in activeServices {
-            await service.shutdown()
+            do {
+                try await service.shutdown()
+            } catch {
+                firstError = firstError ?? error
+            }
         }
         activeServices = []
         activePeerObservers = []
@@ -277,11 +305,19 @@ internal actor NodeRuntime {
         relayAddressStore.clear()
 
         eventForwardingTask?.cancel()
-        await swarm.shutdown()
+        do {
+            try await swarm.shutdown()
+        } catch {
+            firstError = firstError ?? error
+        }
         await eventForwardingTask?.value
         eventForwardingTask = nil
         healthMonitor = nil
         channel.finish()
+
+        if let firstError {
+            throw firstError
+        }
     }
 
     func dial(to address: Multiaddr) async throws -> PeerID {
@@ -429,13 +465,16 @@ internal actor NodeRuntime {
     }
 
     private func rollbackStartFailure() async {
-        await traversalCoordinator?.shutdown()
+        do {
+            try await traversalCoordinator?.shutdown()
+        } catch {
+        }
         traversalCoordinator = nil
 
         await discoveryController?.shutdown()
         discoveryController = nil
         if let discovery = configuration.discovery {
-            await discovery.shutdown()
+            await discovery.resetAfterStartFailure()
         }
 
         if let bootstrap {
@@ -447,7 +486,10 @@ internal actor NodeRuntime {
         healthMonitor = nil
 
         for service in activeServices {
-            await service.shutdown()
+            do {
+                try await service.shutdown()
+            } catch {
+            }
         }
         activeServices = []
         activePeerObservers = []
@@ -455,7 +497,10 @@ internal actor NodeRuntime {
         relayAddressStore.clear()
 
         eventForwardingTask?.cancel()
-        await swarm.shutdown()
+        do {
+            try await swarm.shutdown()
+        } catch {
+        }
         await eventForwardingTask?.value
         eventForwardingTask = nil
     }

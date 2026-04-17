@@ -44,7 +44,7 @@ public struct RuntimeServices: Sendable {
     public let discoverySources: [any DiscoverySource]
     public let listenAddressContributors: [any ListenAddressContributor]
     public let preStartActions: [@Sendable () async -> Void]
-    public let postStartActions: [@Sendable () async -> Void]
+    public let postStartActions: [@Sendable () async throws -> Void]
 
     public static let empty = RuntimeServices(
         lifecycleServices: [],
@@ -63,7 +63,7 @@ public struct RuntimeServices: Sendable {
         discoverySources: [any DiscoverySource],
         listenAddressContributors: [any ListenAddressContributor],
         preStartActions: [@Sendable () async -> Void],
-        postStartActions: [@Sendable () async -> Void]
+        postStartActions: [@Sendable () async throws -> Void]
     ) {
         self.lifecycleServices = lifecycleServices
         self.inboundHandlers = inboundHandlers
@@ -186,6 +186,7 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
     private let runtimeRequirements: ServiceRuntimeRequirements
     private let preStartHooks: [@Sendable (ServiceContext, Service) async -> Void]
     private let postStartHooks: [@Sendable (ServiceContext, Service) async -> Void]
+    public private(set) var defaultsApplied: Bool
 
     public init(_ service: Service) {
         self.makeService = { _ in service }
@@ -196,6 +197,7 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
         self.runtimeRequirements = .empty
         self.preStartHooks = []
         self.postStartHooks = []
+        self.defaultsApplied = false
     }
 
     package init(makeService: @escaping @Sendable (ServiceContext) -> Service) {
@@ -207,6 +209,7 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
         self.runtimeRequirements = .empty
         self.preStartHooks = []
         self.postStartHooks = []
+        self.defaultsApplied = false
     }
 
     private init(
@@ -217,7 +220,8 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
         listenAddressContributorResolver: ListenAddressContributorResolver?,
         runtimeRequirements: ServiceRuntimeRequirements,
         preStartHooks: [@Sendable (ServiceContext, Service) async -> Void],
-        postStartHooks: [@Sendable (ServiceContext, Service) async -> Void]
+        postStartHooks: [@Sendable (ServiceContext, Service) async -> Void],
+        defaultsApplied: Bool
     ) {
         self.makeService = makeService
         self.inboundHandlerResolver = inboundHandlerResolver
@@ -227,13 +231,14 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
         self.runtimeRequirements = runtimeRequirements
         self.preStartHooks = preStartHooks
         self.postStartHooks = postStartHooks
+        self.defaultsApplied = defaultsApplied
     }
 
     package func component() -> ServiceComponent {
         ServiceComponent { context in
             let service = makeService(context)
             var preStartActions: [@Sendable () async -> Void] = []
-            var postStartActions: [@Sendable () async -> Void] = []
+            var postStartActions: [@Sendable () async throws -> Void] = []
             let streamOpeningActivatable =
                 runtimeRequirements.receivesStreamOpening && runtimeRequirements.activatesOnStart
                 ? (service as? any StreamOpeningActivatable)
@@ -325,7 +330,8 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
         listenAddressContributorResolver: ListenAddressContributorResolver?? = nil,
         runtimeRequirements: ServiceRuntimeRequirements? = nil,
         appendingPreStartHook: (@Sendable (ServiceContext, Service) async -> Void)? = nil,
-        appendingPostStartHook: (@Sendable (ServiceContext, Service) async -> Void)? = nil
+        appendingPostStartHook: (@Sendable (ServiceContext, Service) async -> Void)? = nil,
+        defaultsApplied: Bool? = nil
     ) -> ServiceRegistration<Service> {
         var preHooks = preStartHooks
         var postHooks = postStartHooks
@@ -343,8 +349,15 @@ public struct ServiceRegistration<Service: LifecycleService>: Sendable {
             listenAddressContributorResolver: listenAddressContributorResolver ?? self.listenAddressContributorResolver,
             runtimeRequirements: runtimeRequirements ?? self.runtimeRequirements,
             preStartHooks: preHooks,
-            postStartHooks: postHooks
+            postStartHooks: postHooks,
+            defaultsApplied: defaultsApplied ?? self.defaultsApplied
         )
+    }
+}
+
+package extension ServiceRegistration {
+    mutating func markDefaultsApplied() {
+        self = updating(defaultsApplied: true)
     }
 }
 

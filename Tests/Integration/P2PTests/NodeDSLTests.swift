@@ -5,7 +5,9 @@ import Testing
 @testable import P2PCore
 @testable import P2PDiscovery
 @testable import P2PDiscoveryCYCLON
+@testable import P2PDiscoveryMDNS
 @testable import P2PDiscoveryPlumtree
+@testable import P2PDiscoverySWIM
 @testable import P2PCircuitRelay
 @testable import P2PDCUtR
 @testable import P2PIdentify
@@ -13,13 +15,17 @@ import Testing
 @testable import P2PSecurityPlaintext
 @testable import P2PTransportMemory
 
+private enum NodeDSLStartupError: Error {
+    case startupFailed
+}
+
 @Suite("Node DSL Tests", .serialized)
 struct NodeDSLTests {
     private struct CompositeTestComponent: NodeComponent {
         let pingService: PingService
         let discoverySource: MockDiscoverySource
 
-        var nodeGroup: NodeGroup {
+        var body: some NodeComponent {
             NodeGroup {
                 Service(pingService)
                     .handlesInboundStreams()
@@ -28,6 +34,31 @@ struct NodeDSLTests {
                         source.markStarted()
                     }
             }
+        }
+    }
+
+    private struct NestedNodeComponentLevel1: NodeComponent {
+        let service: PingService
+
+        var body: some NodeComponent {
+            NestedNodeComponentLevel2(service: service)
+        }
+    }
+
+    private struct NestedNodeComponentLevel2: NodeComponent {
+        let service: PingService
+
+        var body: some NodeComponent {
+            NestedNodeComponentLevel3(service: service)
+        }
+    }
+
+    private struct NestedNodeComponentLevel3: NodeComponent {
+        let service: PingService
+
+        var body: some NodeComponent {
+            Service(service)
+                .handlesInboundStreams()
         }
     }
 
@@ -41,7 +72,7 @@ struct NodeDSLTests {
 
         #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
 
-        await node.shutdown()
+        try await node.shutdown()
     }
 
     @Test("Custom NodeComponent can compose primitive groups", .timeLimit(.minutes(1)))
@@ -71,7 +102,7 @@ struct NodeDSLTests {
         #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
         #expect(mockDiscovery.state().started)
 
-        await node.shutdown()
+        try await node.shutdown()
 
         #expect(mockDiscovery.state().shutdown)
         hub.reset()
@@ -106,10 +137,23 @@ struct NodeDSLTests {
         #expect(protocols.contains(ProtocolID.ping))
         #expect(mockDiscovery.state().started)
 
-        await node.shutdown()
+        try await node.shutdown()
 
         #expect(mockDiscovery.state().shutdown)
         hub.reset()
+    }
+
+    @Test("Nested custom NodeComponents resolve through multiple body levels", .timeLimit(.minutes(1)))
+    func nestedCustomNodeComponentsResolve() async throws {
+        let node = Node {
+            NestedNodeComponentLevel1(service: PingService())
+        }
+
+        try await node.start()
+
+        #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
+
+        try await node.shutdown()
     }
 
     @Test("Built-in service helpers derive runtime capabilities without attach", .timeLimit(.minutes(1)))
@@ -135,7 +179,7 @@ struct NodeDSLTests {
         #expect(protocols.contains(CircuitRelayProtocol.hopProtocolID))
         #expect((await node.listenAddresses()).contains(address))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -164,7 +208,7 @@ struct NodeDSLTests {
         #expect(!state.attachCalled)
         #expect(!state.activateCalled)
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -188,7 +232,7 @@ struct NodeDSLTests {
         let protocols = await node.supportedProtocols()
         #expect(protocols.contains(DCUtRProtocol.protocolID))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -220,7 +264,7 @@ struct NodeDSLTests {
         #expect(protocols.contains(ProtocolID.ping))
         #expect(listenAddresses.contains(address))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -251,7 +295,7 @@ struct NodeDSLTests {
         let listenAddresses = await node.listenAddresses()
         #expect(listenAddresses.contains(address))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -420,8 +464,8 @@ struct NodeDSLTests {
         }
         #expect(finalState.peerConnectedCount == 1)
 
-        await client.shutdown()
-        await server.shutdown()
+        try await client.shutdown()
+        try await server.shutdown()
         hub.reset()
     }
 
@@ -445,7 +489,120 @@ struct NodeDSLTests {
         #expect(protocols.contains(cyclonProtocolID))
         #expect(protocols.contains(ProtocolID.plumtree))
 
-        await node.shutdown()
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Built-in primitive initializers preserve service defaults", .timeLimit(.minutes(1)))
+    func builtInPrimitiveInitializersPreserveServiceDefaults() async throws {
+        let hub = MemoryHub()
+        let address = Multiaddr.memory(id: "node-builder-primitive-service-defaults")
+
+        let node = Node(
+            listenAddresses: [address],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            Ping(servicePrimitive: Service(PingService()))
+            DCUtR(servicePrimitive: Service(DCUtRService(configuration: .init())))
+        }
+
+        try await node.start()
+
+        let protocols = await node.supportedProtocols()
+        #expect(protocols.contains(ProtocolID.ping))
+        #expect(protocols.contains(DCUtRProtocol.protocolID))
+
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Built-in primitive initializers preserve discovery defaults", .timeLimit(.minutes(1)))
+    func builtInPrimitiveInitializersPreserveDiscoveryDefaults() async throws {
+        let hub = MemoryHub()
+        let node = Node(
+            listenAddresses: [Multiaddr.memory(id: "node-builder-primitive-discovery-defaults")],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            CYCLON(discoveryPrimitive: Discovery(weight: 1.0, makeSource: { localPeerID in
+                CYCLONDiscovery(localPeerID: localPeerID, configuration: .default)
+            }))
+            PlumtreeDiscovery(discoveryPrimitive: Discovery(weight: 1.0, makeSource: { localPeerID in
+                P2PDiscoveryPlumtree.PlumtreeDiscovery(localPeerID: localPeerID, configuration: .default)
+            }))
+        }
+
+        try await node.start()
+
+        let protocols = await node.supportedProtocols()
+        #expect(protocols.contains(cyclonProtocolID))
+        #expect(protocols.contains(ProtocolID.plumtree))
+
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Built-in MDNS startup failure propagates through Node.start", .timeLimit(.minutes(1)))
+    func builtInMDNSStartupFailurePropagates() async throws {
+        let hub = MemoryHub()
+        let invalidServiceType = String(repeating: "a", count: 64)
+        let node = Node(
+            listenAddresses: [Multiaddr.memory(id: "node-builder-mdns-startup-failure")],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            MDNS(configuration: MDNSConfiguration(serviceType: invalidServiceType))
+        }
+
+        do {
+            try await node.start()
+            Issue.record("Expected MDNS startup to fail for invalid service type")
+        } catch {
+        }
+
+        do {
+            try await node.start()
+            Issue.record("Expected repeated MDNS startup to fail for invalid service type")
+        } catch {
+        }
+
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Built-in SWIM startup failure propagates through Node.start", .timeLimit(.minutes(1)))
+    func builtInSWIMStartupFailurePropagates() async throws {
+        let hub = MemoryHub()
+        let node = Node(
+            listenAddresses: [Multiaddr.memory(id: "node-builder-swim-startup-failure")],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            SWIM(configuration: SWIMMembershipConfiguration(port: 7946, bindHost: "256.256.256.256"))
+        }
+
+        do {
+            try await node.start()
+            Issue.record("Expected SWIM startup to fail for invalid bind host")
+        } catch {
+        }
+
+        do {
+            try await node.start()
+            Issue.record("Expected repeated SWIM startup to fail for invalid bind host")
+        } catch {
+        }
+
+        try await node.shutdown()
         hub.reset()
     }
 
@@ -479,8 +636,191 @@ struct NodeDSLTests {
         let listenAddresses = await node.listenAddresses()
         #expect(listenAddresses.contains(address))
 
-        await node.shutdown()
+        try await node.shutdown()
         hub.reset()
+    }
+
+    @Test("Node surfaces discovery startup failures and can retry start", .timeLimit(.minutes(1)))
+    func nodeSurfacesDiscoveryStartupFailuresAndCanRetryStart() async throws {
+        let hub = MemoryHub()
+        let address = Multiaddr.memory(id: "node-builder-discovery-retry-start")
+        let keyPair = KeyPair.generateEd25519()
+        let discovery = MockDiscoverySource(localPeerID: keyPair.peerID)
+        let startup = FlakyDiscoveryStartup()
+
+        let node = Node(
+            keyPair: keyPair,
+            listenAddresses: [address],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            Discovery(discovery)
+                .onStart { source in
+                    source.markStarted()
+                    try await startup.run()
+                }
+        }
+
+        await #expect(throws: NodeDSLStartupError.self) {
+            try await node.start()
+        }
+
+        #expect(discovery.state().started)
+
+        try await node.start()
+
+        let listenAddresses = await node.listenAddresses()
+        #expect(listenAddresses.contains(address))
+
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Built-in service primitives mark defaults applied", .timeLimit(.minutes(1)))
+    func builtInServicePrimitivesMarkDefaultsApplied() {
+        #expect(Ping().servicePrimitive.defaultsApplied)
+        #expect(Identify().servicePrimitive.defaultsApplied)
+        #expect(DCUtR(servicePrimitive: Service(DCUtRService(configuration: .init()))).servicePrimitive.defaultsApplied)
+    }
+
+    @Test("Built-in discovery primitives mark defaults applied", .timeLimit(.minutes(1)))
+    func builtInDiscoveryPrimitivesMarkDefaultsApplied() {
+        #expect(MDNS().discoveryPrimitive.defaultsApplied)
+        #expect(SWIM().discoveryPrimitive.defaultsApplied)
+        #expect(CYCLON().discoveryPrimitive.defaultsApplied)
+        #expect(PlumtreeDiscovery().discoveryPrimitive.defaultsApplied)
+    }
+
+    @Test("User modifiers preserve defaultsApplied on discovery primitives", .timeLimit(.minutes(1)))
+    func userModifiersPreserveDefaultsAppliedFlag() {
+        let tuned = MDNS().weight(3.0)
+        #expect(tuned.discoveryPrimitive.defaultsApplied)
+
+        let customized = CYCLON()
+            .weight(2.5)
+            .onStart { _ in }
+        #expect(customized.discoveryPrimitive.defaultsApplied)
+    }
+
+    @Test("Re-wrapping a built-in primitive does not re-apply defaults", .timeLimit(.minutes(1)))
+    func rewrappingPreservesDefaultsApplied() {
+        let initial = MDNS().weight(4.0)
+        #expect(initial.discoveryPrimitive.defaultsApplied)
+
+        let rewrapped = MDNS(discoveryPrimitive: initial.discoveryPrimitive)
+        #expect(rewrapped.discoveryPrimitive.defaultsApplied)
+
+        let initialService = Ping().servicePrimitive
+        #expect(initialService.defaultsApplied)
+        let rewrappedService = Ping(servicePrimitive: initialService)
+        #expect(rewrappedService.servicePrimitive.defaultsApplied)
+    }
+
+    @Test("Concurrent start() calls coalesce to a single startup", .timeLimit(.minutes(1)))
+    func concurrentStartCallsCoalesce() async throws {
+        let hub = MemoryHub()
+        let address = Multiaddr.memory(id: "node-concurrent-start-coalesce")
+        let node = Node(
+            listenAddresses: [address],
+            transports: [MemoryTransport(hub: hub)],
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()],
+            healthCheck: nil
+        ) {
+            Ping()
+        }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    try await node.start()
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let listenAddresses = await node.listenAddresses()
+        #expect(listenAddresses.contains(address))
+        #expect((await node.supportedProtocols()).contains(ProtocolID.ping))
+
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Start coalescing propagates failure uniformly to concurrent callers", .timeLimit(.minutes(1)))
+    func startCoalescingPropagatesFailureUniformly() async throws {
+        let hub = MemoryHub()
+        let address = Multiaddr.memory(id: "node-start-coalesce-failure")
+        let baseProvider = ConnectionProviders.pipeline(
+            transport: MemoryTransport(hub: hub),
+            security: [PlaintextUpgrader()],
+            muxers: [YamuxMuxer()]
+        )
+        let flakyProvider = FlakyListenConnectionProvider(delegate: baseProvider)
+
+        let node = Node(
+            keyPair: .generateEd25519(),
+            listenAddresses: [address],
+            connectionProviders: [flakyProvider],
+            healthCheck: nil
+        )
+
+        let failureCount = Mutex(0)
+        await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    do {
+                        try await node.start()
+                        return false
+                    } catch {
+                        return true
+                    }
+                }
+            }
+            for await failed in group {
+                if failed { failureCount.withLock { $0 += 1 } }
+            }
+        }
+        #expect(failureCount.withLock { $0 } >= 1)
+
+        try await node.start()
+        let listenAddresses = await node.listenAddresses()
+        #expect(listenAddresses.contains(address))
+
+        try await node.shutdown()
+        hub.reset()
+    }
+
+    @Test("Concurrent DiscoveryPipeline.start() calls coalesce", .timeLimit(.minutes(1)))
+    func concurrentDiscoveryPipelineStartCoalesces() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let source = MockDiscoverySource(localPeerID: keyPair.peerID)
+        let startCounter = Mutex(0)
+        let registration = DiscoveryRegistration(
+            weight: 1.0,
+            makeSource: { _ in source },
+            startup: { _ in
+                startCounter.withLock { $0 += 1 }
+            }
+        )
+        let component = registration.component()
+        let pipeline = DiscoveryPipeline(localPeerID: keyPair.peerID) {
+            component
+        }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<16 {
+                group.addTask {
+                    try await pipeline.start()
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(startCounter.withLock { $0 } == 1)
+        try await pipeline.shutdown()
     }
 }
 
@@ -527,8 +867,25 @@ private final class MockDiscoverySource: DiscoveryService, Sendable {
         }
     }
 
-    func shutdown() async {
+    func shutdown() async throws {
         currentState.withLock { $0.shutdown = true }
+    }
+}
+
+private final class FlakyDiscoveryStartup: Sendable {
+    private let state = Mutex(true)
+
+    func run() async throws {
+        let shouldFail = state.withLock { state -> Bool in
+            if state {
+                state = false
+                return true
+            }
+            return false
+        }
+        if shouldFail {
+            throw NodeDSLStartupError.startupFailed
+        }
     }
 }
 
@@ -607,7 +964,7 @@ private final class OwnedDiscoveryRoleSource:
         }
     }
 
-    func shutdown() async {
+    func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
     }
 }
@@ -647,7 +1004,7 @@ private final class MockStreamOpeningActivationService:
         currentState.withLock { $0.activateUsingCalled = true }
     }
 
-    func shutdown() async {}
+    func shutdown() async throws {}
 }
 
 private final class FlakyListenConnectionProvider: ConnectionProvider, Sendable {
