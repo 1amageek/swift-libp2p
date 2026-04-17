@@ -176,33 +176,12 @@ extension GossipSubMessage {
         ///
         /// Format: "libp2p-pubsub:" + protobuf(from, data, seqno, topic)
         private static func buildSigningData(source: PeerID, data: Data, seqno: Data, topic: Topic) -> Data {
-            let topicBytes = topic.utf8Bytes
-            let fromBytes = source.bytes
-            let estimatedSize = signingDomainPrefix.count + 16 + fromBytes.count + data.count + seqno.count + topicBytes.count
-            var result = Data(capacity: estimatedSize)
-            result.append(GossipSubMessage.signingDomainPrefix)
-
-            // Field 1: from (source peer ID bytes)
-            result.append(0x0a) // tag 1, wire type 2 (length-delimited)
-            Varint.encode(UInt64(fromBytes.count), into: &result)
-            result.append(fromBytes)
-
-            // Field 2: data
-            result.append(0x12) // tag 2, wire type 2
-            Varint.encode(UInt64(data.count), into: &result)
-            result.append(data)
-
-            // Field 3: seqno
-            result.append(0x1a) // tag 3, wire type 2
-            Varint.encode(UInt64(seqno.count), into: &result)
-            result.append(seqno)
-
-            // Field 4: topic
-            result.append(0x22) // tag 4, wire type 2
-            Varint.encode(UInt64(topicBytes.count), into: &result)
-            result.append(topicBytes)
-
-            return result
+            GossipSubMessage.buildSigningDataBytes(
+                fromBytes: source.bytes,
+                data: data,
+                seqno: seqno,
+                topicBytes: topic.utf8Bytes
+            )
         }
 
         /// Builds the message.
@@ -342,44 +321,81 @@ extension GossipSubMessage {
     ///
     /// Format: "libp2p-pubsub:" + protobuf(from, seqno, topic, data)
     private func buildSigningData() -> Data {
-        let topicBytes = topic.utf8Bytes
-        let fromBytes = source?.bytes
-        let estimatedSize = Self.signingDomainPrefix.count
-            + 16
-            + (fromBytes?.count ?? 0)
-            + data.count
-            + sequenceNumber.count
-            + topicBytes.count
+        Self.buildSigningDataBytes(
+            fromBytes: source?.bytes,
+            data: data,
+            seqno: sequenceNumber.isEmpty ? nil : sequenceNumber,
+            topicBytes: topic.utf8Bytes
+        )
+    }
+}
 
-        // Build protobuf-style message bytes (same order as wire format)
-        var result = Data(capacity: estimatedSize)
-        result.append(Self.signingDomainPrefix)
+extension GossipSubMessage {
+    fileprivate static func buildSigningDataBytes(
+        fromBytes: Data?,
+        data: Data,
+        seqno: Data?,
+        topicBytes: Data
+    ) -> Data {
+        let prefix = GossipSubMessage.signingDomainPrefix
 
-        // Field 1: from (source peer ID bytes)
-        if let fromBytes {
-            result.append(0x0a) // tag 1, wire type 2 (length-delimited)
-            Varint.encode(UInt64(fromBytes.count), into: &result)
-            result.append(fromBytes)
+        let fromFieldSize = fromBytes.map { 1 + varintByteCount(UInt64($0.count)) + $0.count } ?? 0
+        let dataFieldSize = 1 + varintByteCount(UInt64(data.count)) + data.count
+        let seqnoFieldSize = seqno.map { 1 + varintByteCount(UInt64($0.count)) + $0.count } ?? 0
+        let topicFieldSize = 1 + varintByteCount(UInt64(topicBytes.count)) + topicBytes.count
+        let exactSize = prefix.count + fromFieldSize + dataFieldSize + seqnoFieldSize + topicFieldSize
+
+        var result = Data(count: exactSize)
+        result.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
+            let base = dst.baseAddress!
+            var offset = 0
+
+            prefix.withUnsafeBytes { src in
+                if prefix.count > 0 {
+                    base.advanced(by: offset).copyMemory(from: src.baseAddress!, byteCount: prefix.count)
+                }
+            }
+            offset += prefix.count
+
+            if let fromBytes {
+                writeField(tag: 0x0a, payload: fromBytes, into: dst, base: base, offset: &offset)
+            }
+            writeField(tag: 0x12, payload: data, into: dst, base: base, offset: &offset)
+            if let seqno {
+                writeField(tag: 0x1a, payload: seqno, into: dst, base: base, offset: &offset)
+            }
+            writeField(tag: 0x22, payload: topicBytes, into: dst, base: base, offset: &offset)
         }
-
-        // Field 2: data
-        result.append(0x12) // tag 2, wire type 2
-        Varint.encode(UInt64(data.count), into: &result)
-        result.append(data)
-
-        // Field 3: seqno
-        if !sequenceNumber.isEmpty {
-            result.append(0x1a) // tag 3, wire type 2
-            Varint.encode(UInt64(sequenceNumber.count), into: &result)
-            result.append(sequenceNumber)
-        }
-
-        // Field 4: topic
-        result.append(0x22) // tag 4, wire type 2
-        Varint.encode(UInt64(topicBytes.count), into: &result)
-        result.append(topicBytes)
-
         return result
+    }
+
+    private static func writeField(
+        tag: UInt8,
+        payload: Data,
+        into dst: UnsafeMutableRawBufferPointer,
+        base: UnsafeMutableRawPointer,
+        offset: inout Int
+    ) {
+        dst[offset] = tag
+        offset += 1
+        let remaining = UnsafeMutableRawBufferPointer(
+            start: base.advanced(by: offset),
+            count: dst.count - offset
+        )
+        offset += Varint.encode(UInt64(payload.count), into: remaining)
+        if !payload.isEmpty {
+            payload.withUnsafeBytes { src in
+                base.advanced(by: offset).copyMemory(from: src.baseAddress!, byteCount: payload.count)
+            }
+            offset += payload.count
+        }
+    }
+
+    private static func varintByteCount(_ value: UInt64) -> Int {
+        var v = value
+        var size = 1
+        while v >= 0x80 { v >>= 7; size += 1 }
+        return size
     }
 }
 
