@@ -522,7 +522,7 @@ public actor Node:
 {
 
     /// The configuration for this node.
-    public let configuration: NodeConfiguration
+    public nonisolated let configuration: NodeConfiguration
 
     /// The peer ID of this node.
     public var peerID: PeerID {
