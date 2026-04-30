@@ -80,7 +80,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.1.0"),
         .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.1.0"),
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.0"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.1.0"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.1.2"),
         .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.1.0"),
         .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),

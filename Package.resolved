@@ -1,5 +1,5 @@
 {
-  "originHash" : "1bd5828c1062c24fe1de0bd23b5b1d5d372d48aa88722f195ead90228182b595",
+  "originHash" : "5179bd42969cdfa5db985084d3f5e2b44bb83d26f17d74b9610c4791d3959fdd",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -96,8 +96,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-quic.git",
       "state" : {
-        "revision" : "3ea690db3fdd24a9b1e0498f59e0135e73761cd0",
-        "version" : "1.1.1"
+        "revision" : "b580e85d137957038f493fe7017dda9b53c5e2a5",
+        "version" : "1.1.2"
       }
     },
     {
