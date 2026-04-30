@@ -7,9 +7,9 @@ import P2PTransport
 import P2PMux
 import QUIC
 import QUICCrypto
-import os
+import Logging
 
-private let quicListenerLogger = Logger(subsystem: "swift-libp2p", category: "QUICListener")
+private let quicListenerLogger = Logger(label: "swift-libp2p.QUICListener")
 
 // MARK: - QUIC Listener (Standard)
 
@@ -61,8 +61,7 @@ public final class QUICListener: Listener, Sendable {
     /// Closes the listener.
     public func close() async throws {
         state.withLock { $0.isClosed = true }
-        // Note: QUICEndpoint doesn't have a close method in the current API
-        // This would need to be added for proper cleanup
+        try await endpoint.shutdown()
     }
 }
 
@@ -90,6 +89,7 @@ public final class QUICListener: Listener, Sendable {
 public final class QUICSecuredListener: SecuredListener, Sendable {
 
     let endpoint: QUICEndpoint
+    private let endpointTask: Task<Void, Error>
     private let _localAddress: Multiaddr
     private let localKeyPair: KeyPair
 
@@ -117,10 +117,17 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
     ///
     /// - Parameters:
     ///   - endpoint: The underlying QUIC endpoint
+    ///   - endpointTask: The task running the endpoint packet loop
     ///   - localAddress: The local multiaddr
     ///   - localKeyPair: The local key pair for identity
-    init(endpoint: QUICEndpoint, localAddress: Multiaddr, localKeyPair: KeyPair) {
+    init(
+        endpoint: QUICEndpoint,
+        endpointTask: Task<Void, Error>,
+        localAddress: Multiaddr,
+        localKeyPair: KeyPair
+    ) {
         self.endpoint = endpoint
+        self.endpointTask = endpointTask
         self._localAddress = localAddress
         self.localKeyPair = localKeyPair
 
@@ -233,6 +240,12 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
         }
 
         task?.cancel()
+        try await endpoint.shutdown()
+        do {
+            _ = try await endpointTask.value
+        } catch {
+            quicListenerLogger.debug("Endpoint task ended during shutdown: \(String(describing: error))")
+        }
     }
 
     // MARK: - Private Helpers

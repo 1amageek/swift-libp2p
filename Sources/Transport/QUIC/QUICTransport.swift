@@ -7,6 +7,9 @@ import P2PMux
 import QUIC
 import QUICCrypto
 import NIOUDPTransport
+import Logging
+
+private let quicTransportLogger = Logger(label: "swift-libp2p.QUICTransport")
 
 // MARK: - QUIC Transport
 
@@ -189,7 +192,14 @@ public final class QUICTransport: SecuredTransport, Sendable {
             localPeer: localKeyPair.peerID,
             remotePeer: remotePeer,
             localAddress: localAddress,
-            remoteAddress: address
+            remoteAddress: address,
+            onClose: { [endpoint] in
+                do {
+                    try await endpoint.shutdown()
+                } catch {
+                    quicTransportLogger.debug("Client endpoint shutdown failed: \(String(describing: error))")
+                }
+            }
         )
 
         // Start forwarding incoming streams
@@ -254,7 +264,7 @@ public final class QUICTransport: SecuredTransport, Sendable {
         let socket = NIOQUICSocket(configuration: udpConfig)
 
         // Create server endpoint - this starts the socket and runs the I/O loop
-        let (endpoint, _) = try await QUICEndpoint.serve(
+        let (endpoint, endpointTask) = try await QUICEndpoint.serve(
             socket: socket,
             configuration: config
         )
@@ -269,6 +279,7 @@ public final class QUICTransport: SecuredTransport, Sendable {
 
         let listener = QUICSecuredListener(
             endpoint: endpoint,
+            endpointTask: endpointTask,
             localAddress: actualAddress,
             localKeyPair: localKeyPair
         )

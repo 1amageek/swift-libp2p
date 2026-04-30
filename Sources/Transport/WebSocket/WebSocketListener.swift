@@ -8,10 +8,10 @@ import NIOHTTP1
 import NIOWebSocket
 @preconcurrency import NIOSSL
 import Synchronization
-import os
+import Logging
 
 /// Debug logger for WebSocket listener
-private let wsListenerLogger = Logger(subsystem: "swift-libp2p", category: "WebSocketListener")
+private let wsListenerLogger = Logger(label: "swift-libp2p.WebSocketListener")
 
 /// A WebSocket listener wrapping a NIO ServerChannel.
 ///

@@ -138,6 +138,7 @@ public final class GoProtocolHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
+        discardProcessOutput(rmProcess)
         do {
             try runProcessWithTimeout(rmProcess)
         } catch {
@@ -153,6 +154,7 @@ public final class GoProtocolHarness: Sendable {
             "-p", "\(actualPort):4001/udp",
             "-e", "LISTEN_PORT=4001",
         ]
+        runArgs.insert(contentsOf: interopHarnessRunLabelArguments(), at: 6)
         runArgs.append(contentsOf: protocolType.envVars)
         runArgs.append(protocolType.imageName)
 
@@ -160,6 +162,7 @@ public final class GoProtocolHarness: Sendable {
         let runProcess = Process()
         runProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         runProcess.arguments = runArgs
+        discardProcessOutput(runProcess)
 
         try runProcessWithTimeout(runProcess)
 
@@ -211,6 +214,7 @@ public final class GoProtocolHarness: Sendable {
             let stopProcess = Process()
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
+            discardProcessOutput(stopProcess)
             do {
                 try runProcessWithTimeout(stopProcess)
             } catch {
@@ -260,6 +264,7 @@ public final class GoProtocolHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
+        discardProcessOutput(process)
 
         do {
             try runProcessWithTimeout(process)
@@ -279,6 +284,7 @@ public final class GoProtocolHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
+        discardProcessOutput(process)
         do {
             try process.run()
         } catch {

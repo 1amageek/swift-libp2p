@@ -95,6 +95,7 @@ public final class RustTCPHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
+        discardProcessOutput(rmProcess)
         do {
             try runProcessWithTimeout(rmProcess)
         } catch {
@@ -109,10 +110,12 @@ public final class RustTCPHarness: Sendable {
             "--rm",
             "-d",
             "--name", containerName,
+        ] + interopHarnessRunLabelArguments() + [
             "-p", "\(actualPort):4001/tcp",
             "-e", "LISTEN_PORT=4001",
             imageName
         ]
+        discardProcessOutput(runProcess)
 
         try runProcessWithTimeout(runProcess)
 
@@ -171,6 +174,7 @@ public final class RustTCPHarness: Sendable {
             let stopProcess = Process()
             stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             stopProcess.arguments = ["docker", "stop", containerName]
+            discardProcessOutput(stopProcess)
             do {
                 try runProcessWithTimeout(stopProcess)
             } catch {
@@ -189,6 +193,7 @@ public final class RustTCPHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
+        discardProcessOutput(process)
 
         do {
             try runProcessWithTimeout(process)
@@ -209,6 +214,7 @@ public final class RustTCPHarness: Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["docker", "stop", containerName]
+        discardProcessOutput(process)
         do {
             try process.run()
         } catch {

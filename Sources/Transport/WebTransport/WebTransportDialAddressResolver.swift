@@ -30,16 +30,11 @@ enum WebTransportDialAddressResolver {
         port: UInt16,
         family: Int32
     ) throws -> QUIC.SocketAddress {
-        var hints = addrinfo(
-            ai_flags: AI_ADDRCONFIG,
-            ai_family: family,
-            ai_socktype: datagramSocketType(),
-            ai_protocol: udpProtocol(),
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
+        var hints = addrinfo()
+        hints.ai_flags = AI_ADDRCONFIG
+        hints.ai_family = family
+        hints.ai_socktype = datagramSocketType()
+        hints.ai_protocol = udpProtocol()
 
         var rawResults: UnsafeMutablePointer<addrinfo>?
         let status = String(port).withCString { service in

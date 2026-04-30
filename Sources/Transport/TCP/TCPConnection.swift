@@ -4,10 +4,10 @@ import P2PCore
 import P2PTransport
 import NIOCore
 import Synchronization
-import os
+import Logging
 
 /// Debug logger for TCP connection
-private let tcpLogger = Logger(subsystem: "swift-libp2p", category: "TCPConnection")
+private let tcpLogger = Logger(label: "swift-libp2p.TCPConnection")
 
 /// Maximum buffer size (1MB) for DoS protection.
 private let tcpMaxReadBufferSize = 1024 * 1024

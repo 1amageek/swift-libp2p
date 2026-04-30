@@ -4,10 +4,10 @@ import P2PCore
 import P2PTransport
 import NIOCore
 import NIOPosix
-import os
+import Logging
 
 /// Debug logger for TCP transport
-private let tcpTransportLogger = Logger(subsystem: "swift-libp2p", category: "TCPTransport")
+private let tcpTransportLogger = Logger(label: "swift-libp2p.TCPTransport")
 
 /// TCP transport using SwiftNIO.
 public final class TCPTransport: Transport, Sendable {

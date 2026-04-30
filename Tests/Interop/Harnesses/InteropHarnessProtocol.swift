@@ -207,6 +207,19 @@ func runProcessWithTimeout(
     return process.terminationStatus
 }
 
+func discardProcessOutput(_ process: Process) {
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+}
+
+func interopHarnessRunLabelArguments() -> [String] {
+    let runID = ProcessInfo.processInfo.environment["SWIFT_LIBP2P_INTEROP_RUN_ID"] ?? "manual"
+    return [
+        "--label", "swift-libp2p.interop=true",
+        "--label", "swift-libp2p.interop.run=\(runID)",
+    ]
+}
+
 func waitForProcessExit(
     _ process: Process,
     timeoutSeconds: TimeInterval = interopProcessTimeoutSeconds

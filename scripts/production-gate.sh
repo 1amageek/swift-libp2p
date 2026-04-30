@@ -2,20 +2,25 @@
 set -euo pipefail
 
 include_benchmarks=0
+include_interop=1
 test_timeout_seconds=60
 build_timeout_seconds=240
 benchmark_timeout_seconds=600
 benchmark_build_timeout_seconds=600
+interop_mode="smoke"
+interop_timeout_seconds=90
+interop_build_timeout_seconds=900
 extra_args=()
 
 usage() {
   cat <<'EOF' >&2
 Usage:
-  scripts/production-gate.sh [--include-benchmarks] [--timeout S] [--build-timeout S] [--benchmark-timeout S] [--benchmark-build-timeout S] [-- <swift test args...>]
+  scripts/production-gate.sh [--skip-interop] [--interop-mode MODE] [--include-benchmarks] [--timeout S] [--build-timeout S] [--benchmark-timeout S] [--benchmark-build-timeout S] [-- <swift test args...>]
 
 Examples:
   scripts/production-gate.sh
   scripts/production-gate.sh --include-benchmarks
+  scripts/production-gate.sh --skip-interop
   scripts/production-gate.sh --timeout 90 --build-timeout 300
 EOF
   exit 2
@@ -26,6 +31,22 @@ while [[ $# -gt 0 ]]; do
     --include-benchmarks)
       include_benchmarks=1
       shift
+      ;;
+    --skip-interop)
+      include_interop=0
+      shift
+      ;;
+    --interop-mode)
+      interop_mode="$2"
+      shift 2
+      ;;
+    --interop-timeout)
+      interop_timeout_seconds="$2"
+      shift 2
+      ;;
+    --interop-build-timeout)
+      interop_build_timeout_seconds="$2"
+      shift 2
       ;;
     --timeout)
       test_timeout_seconds="$2"
@@ -58,16 +79,27 @@ for value in \
   "$test_timeout_seconds" \
   "$build_timeout_seconds" \
   "$benchmark_timeout_seconds" \
-  "$benchmark_build_timeout_seconds"
+  "$benchmark_build_timeout_seconds" \
+  "$interop_timeout_seconds" \
+  "$interop_build_timeout_seconds"
 do
   [[ "$value" =~ ^[0-9]+$ ]] || usage
   (( value > 0 )) || usage
 done
 
+case "$interop_mode" in
+  smoke|transport|protocol|full)
+    ;;
+  *)
+    usage
+    ;;
+esac
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 timeout_runner="$script_dir/swift-test-timeout.sh"
 benchmark_runner="$script_dir/run-benchmarks.sh"
+interop_runner="$script_dir/interop-test.sh"
 
 [[ -x "$timeout_runner" ]] || {
   echo "Missing executable: $timeout_runner" >&2
@@ -75,6 +107,10 @@ benchmark_runner="$script_dir/run-benchmarks.sh"
 }
 [[ -x "$benchmark_runner" ]] || {
   echo "Missing executable: $benchmark_runner" >&2
+  exit 2
+}
+[[ -x "$interop_runner" ]] || {
+  echo "Missing executable: $interop_runner" >&2
   exit 2
 }
 
@@ -103,6 +139,20 @@ run_suite() {
 run_suite "$build_timeout_seconds" "DataPathCopyGuardTests"
 run_suite "$test_timeout_seconds" "NodeDSLTests"
 run_suite "$test_timeout_seconds" "NodeE2ETests"
+
+if (( include_interop == 1 )); then
+  echo
+  echo "==> Interop release gate ($interop_mode)"
+  interop_args=(
+    "$interop_mode"
+    --timeout "$interop_timeout_seconds"
+    --build-timeout "$interop_build_timeout_seconds"
+  )
+  if (( ${#extra_args[@]} > 0 )); then
+    interop_args+=(-- "${extra_args[@]}")
+  fi
+  "$interop_runner" "${interop_args[@]}"
+fi
 
 if (( include_benchmarks == 1 )); then
   echo

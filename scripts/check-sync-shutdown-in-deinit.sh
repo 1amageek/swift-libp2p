@@ -5,15 +5,22 @@ if [[ $# -eq 0 ]]; then
   set -- Sources
 fi
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "rg is required" >&2
-  exit 2
-fi
-
 files=()
-while IFS= read -r file; do
-  files+=("$file")
-done < <(rg --files "$@" | rg '\.swift$' || true)
+if command -v rg >/dev/null 2>&1; then
+  while IFS= read -r file; do
+    files+=("$file")
+  done < <(rg --files "$@" | rg '\.swift$' || true)
+else
+  for path in "$@"; do
+    if [[ -d "$path" ]]; then
+      while IFS= read -r file; do
+        files+=("$file")
+      done < <(find "$path" -type f -name '*.swift')
+    elif [[ -f "$path" && "$path" == *.swift ]]; then
+      files+=("$path")
+    fi
+  done
+fi
 
 if [[ ${#files[@]} -eq 0 ]]; then
   echo "No Swift files found under: $*"

@@ -7,10 +7,10 @@ import NIOPosix
 import NIOHTTP1
 import NIOWebSocket
 import NIOSSL
-import os
+import Logging
 
 /// Debug logger for WebSocket transport
-private let wsTransportLogger = Logger(subsystem: "swift-libp2p", category: "WebSocketTransport")
+private let wsTransportLogger = Logger(label: "swift-libp2p.WebSocketTransport")
 
 /// WebSocket upgrade result for client-side typed upgrade.
 enum WebSocketUpgradeResult: Sendable {

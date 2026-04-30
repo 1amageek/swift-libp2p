@@ -1,0 +1,14 @@
+[package]
+name = "rust-libp2p-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p = { version = "0.56", features = ["quic", "noise", "macros", "tokio"] }
+libp2p-stream = "0.4.0-alpha"
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+prost = "0.13"
+unsigned-varint = { version = "0.8", features = ["futures"] }

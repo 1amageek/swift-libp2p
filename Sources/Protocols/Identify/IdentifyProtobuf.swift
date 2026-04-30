@@ -2,12 +2,9 @@
 import Foundation
 import NIOCore
 import P2PCore
-import os
+import Logging
 
-private let identifyProtobufLogger = Logger(
-    subsystem: "swift-libp2p",
-    category: "IdentifyProtobuf"
-)
+private let identifyProtobufLogger = Logger(label: "swift-libp2p.IdentifyProtobuf")
 
 /// Protobuf encoding/decoding for Identify messages.
 ///

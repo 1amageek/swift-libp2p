@@ -22,9 +22,17 @@ struct UDPSocket: ~Copyable {
         #endif
     }
 
+    private static var udpProtocol: Int32 {
+        #if canImport(Glibc)
+        Int32(IPPROTO_UDP)
+        #else
+        IPPROTO_UDP
+        #endif
+    }
+
     /// Creates a new non-blocking UDP socket.
     init() throws {
-        let sock = socket(AF_INET, UDPSocket.datagramType, IPPROTO_UDP)
+        let sock = socket(AF_INET, UDPSocket.datagramType, UDPSocket.udpProtocol)
         if sock < 0 {
             throw NATPortMapperError.networkError("Failed to create UDP socket")
         }

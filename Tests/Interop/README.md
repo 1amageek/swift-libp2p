@@ -4,7 +4,7 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 
 ## 前提条件
 
-- Docker (OrbStack推奨)
+- Docker Engine with Docker Compose
 - Swift 5.9+
 
 ## テストカバレッジ
@@ -36,15 +36,41 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 
 ## テスト実行
 
-### 正しい実行手順（推奨）
+### 正しい実行手順（必須）
 
-Interopテストは**無闇に全体実行せず**、必ず次の順序で実行してください。
+Interopテストは `scripts/interop-test.sh` を唯一の入口として実行します。このスクリプトが Docker Engine / Docker Compose の前提確認、Compose profile に基づく image build、Swift test のタイムアウト実行、失敗時のログ収集を担当します。
 
-1. 変更箇所に対応するテストを絞り込む（仮説を立てて `--filter` を決める）
-2. 前処理チェックを実行する
-3. 単一テストケースをタイムアウト付きで実行する
-4. スイート全体をタイムアウト＋再実行ガード付きで実行する
-5. 必要な場合のみ上位スイート（Phase単位）へ広げる
+```bash
+# Docker / Compose 前提確認
+scripts/interop-test.sh preflight
+
+# リリース前の最小必須確認
+scripts/interop-test.sh smoke
+
+# Transport を触った場合
+scripts/interop-test.sh transport
+
+# Protocol を触った場合
+scripts/interop-test.sh protocol
+
+# リリース候補確認
+scripts/interop-test.sh full
+```
+
+`scripts/production-gate.sh` はデフォルトで `scripts/interop-test.sh smoke` を実行します。Docker を使えない環境でローカルの非リリース確認だけ行う場合のみ `--skip-interop` を明示します。
+
+```bash
+scripts/production-gate.sh
+scripts/production-gate.sh --interop-mode full
+scripts/production-gate.sh --skip-interop
+```
+
+重要:
+- `swift test --filter Interop` を直接常用しない。環境確認とログ収集が抜けるため。
+- `docker run` を手で実行しない。image build と topology は `docker-compose.interop.yml` に集約する。
+- 失敗時は `.test-artifacts/interop/...` の `docker-info.txt`, `compose.log`, `docker-ps.txt` を根拠に原因を切り分ける。
+
+### Focused Debug
 
 ```bash
 # 1) 前処理（同期シャットダウン混入チェック）
@@ -61,7 +87,6 @@ scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 --
 ```
 
 重要:
-- `swift test --filter Interop` を常用しない（最後の確認用途のみ）
 - 複数の hang-guard 実行を並列に走らせない
 - タイムアウト/失敗時は `.test-artifacts/hang-guard/...` のログを根拠に原因を切り分ける
 
@@ -196,14 +221,17 @@ Tests/Interop/
 ## マルチノードテスト
 
 ```bash
-# Docker Compose起動
-docker-compose -f docker-compose.interop.yml up -d
+# Docker Compose topology起動
+scripts/interop-test.sh up --keep-running
+
+# Transport profile を起動する場合
+scripts/interop-test.sh up --profile transport --keep-running
 
 # テスト実行
 swift test --filter TopologyInteropTests
 
 # 終了
-docker-compose -f docker-compose.interop.yml down
+scripts/interop-test.sh down
 ```
 
 ## トラブルシューティング
@@ -214,7 +242,7 @@ docker-compose -f docker-compose.interop.yml down
 ERROR: Cannot connect to the Docker daemon
 ```
 
-→ Docker (OrbStack) を起動してください。
+→ Docker Engine を起動してください。macOS では OrbStack / Docker Desktop など、Docker Engine 互換のruntimeを使用できます。
 
 ### テストがタイムアウト
 

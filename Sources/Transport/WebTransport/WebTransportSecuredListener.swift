@@ -20,6 +20,7 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
         var continuation: AsyncStream<any MuxedConnection>.Continuation?
         var forwardingTask: Task<Void, Never>?
         var rotationTask: Task<Void, Never>?
+        var activeConnections: [any QUICConnectionProtocol] = []
     }
 
     private let state: Mutex<State>
@@ -79,7 +80,11 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
             guard let self = self else { return }
 
             for await quicConnection in await self.endpoint.incomingConnections {
-                let isClosed = self.state.withLock { $0.isClosed }
+                let isClosed = self.state.withLock { state in
+                    guard !state.isClosed else { return true }
+                    state.activeConnections.append(quicConnection)
+                    return false
+                }
                 if isClosed { break }
 
                 do {
@@ -168,7 +173,11 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
     }
 
     public func close() async throws {
-        let tasks = state.withLock { state -> (Task<Void, Never>?, Task<Void, Never>?) in
+        let cleanup = state.withLock { state -> (
+            Task<Void, Never>?,
+            Task<Void, Never>?,
+            [any QUICConnectionProtocol]
+        ) in
             state.isClosed = true
             state.continuation?.finish()
             state.continuation = nil
@@ -176,16 +185,31 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
             state.forwardingTask = nil
             let rotationTask = state.rotationTask
             state.rotationTask = nil
-            return (forwardingTask, rotationTask)
+            let activeConnections = state.activeConnections
+            state.activeConnections.removeAll()
+            return (forwardingTask, rotationTask, activeConnections)
         }
 
-        tasks.0?.cancel()
-        tasks.1?.cancel()
-        try await endpoint.shutdown()
+        cleanup.0?.cancel()
+        cleanup.1?.cancel()
+        await cleanup.1?.value
+        for connection in cleanup.2 {
+            await connection.close(error: nil)
+        }
+        var shutdownError: Error?
+        do {
+            try await endpoint.shutdown()
+        } catch {
+            shutdownError = error
+        }
         do {
             _ = try await endpointTask.value
         } catch {
             // Endpoint task cancellation or stop-related errors are expected on close.
+        }
+        await cleanup.0?.value
+        if let shutdownError {
+            throw shutdownError
         }
     }
 }

@@ -4,10 +4,10 @@ import P2PTransport
 import NIOCore
 import NIOWebSocket
 import Synchronization
-import os
+import Logging
 
 /// Debug logger for WebSocket connection
-private let wsConnectionLogger = Logger(subsystem: "swift-libp2p", category: "WebSocketConnection")
+private let wsConnectionLogger = Logger(label: "swift-libp2p.WebSocketConnection")
 
 /// Maximum buffer size (1MB) for DoS protection.
 private let wsMaxReadBufferSize = 1024 * 1024

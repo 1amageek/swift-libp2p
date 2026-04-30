@@ -1,0 +1,97 @@
+name: CI
+
+env:
+  SWIFT_LIBP2P_DISABLE_BENCHMARKS: "1"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      interop_mode:
+        description: Interop suite to run
+        required: false
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - transport
+          - protocol
+          - full
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-gate:
+    name: macOS production gate
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Static shutdown guard
+        run: scripts/check-sync-shutdown-in-deinit.sh Sources/Transport Tests/Interop/Harnesses
+
+      - name: Production gate
+        run: scripts/production-gate.sh --skip-interop --timeout 180 --build-timeout 1200 -- --no-parallel
+
+  linux-build:
+    name: Linux build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: swift:6.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build package
+        run: swift build --disable-sandbox
+
+  interop:
+    name: Go/Rust interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      INTEROP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.interop_mode || 'smoke' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Docker versions
+        run: |
+          docker version
+          docker compose version
+
+      - name: Interop preflight
+        run: scripts/interop-test.sh preflight
+
+      - name: Interop suite
+        run: scripts/interop-test.sh "$INTEROP_MODE" --timeout 1200 --build-timeout 1200 -- --no-parallel
+
+      - name: Upload interop artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-artifacts
+          path: .test-artifacts/interop
+          if-no-files-found: ignore

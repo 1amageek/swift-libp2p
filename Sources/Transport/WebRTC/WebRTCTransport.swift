@@ -19,10 +19,10 @@ import WebRTC
 import DTLSCore
 import NIOCore
 import NIOPosix
-import os
+import Logging
 
 /// Debug logger for WebRTC transport
-private let webrtcTransportLogger = Logger(subsystem: "swift-libp2p", category: "WebRTCTransport")
+private let webrtcTransportLogger = Logger(label: "swift-libp2p.WebRTCTransport")
 
 /// A libp2p transport using WebRTC Direct.
 ///

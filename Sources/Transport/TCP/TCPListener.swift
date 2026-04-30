@@ -5,10 +5,10 @@ import P2PTransport
 import NIOCore
 import NIOPosix
 import Synchronization
-import os
+import Logging
 
 /// Debug logger for TCP listener
-private let tcpListenerLogger = Logger(subsystem: "swift-libp2p", category: "TCPListener")
+private let tcpListenerLogger = Logger(label: "swift-libp2p.TCPListener")
 
 /// A TCP listener wrapping a NIO ServerChannel.
 public final class TCPListener: Listener, Sendable {

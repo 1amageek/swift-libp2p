@@ -193,6 +193,7 @@ public final class WebTransportMuxedConnection: MuxedConnection, Sendable {
         streamChannel.finish()
         task?.cancel()
         await quicConnection.close(error: nil)
+        await task?.value
         if let onClose {
             await onClose()
         }

@@ -19,139 +19,166 @@ struct DataPathBenchmarks {
 
     @Test("Memory + Plaintext + Yamux connect")
     func connectPlaintextYamux() async throws {
-        let factory = try await ConnectionPairFactory(security: PlaintextUpgrader())
-        defer { Task { await factory.shutdown() } }
-
-        try await benchmark("Memory+Plaintext+Yamux connect", iterations: 2_000) {
-            let pair = try await factory.connect()
-            await pair.shutdown()
+        try await Self.withFactory(security: PlaintextUpgrader()) { factory in
+            try await benchmark("Memory+Plaintext+Yamux connect", iterations: 2_000) {
+                let pair = try await factory.connect()
+                await pair.shutdown()
+            }
         }
     }
 
     @Test("Memory + Noise + Yamux connect")
     func connectNoiseYamux() async throws {
-        let factory = try await ConnectionPairFactory(security: NoiseUpgrader())
-        defer { Task { await factory.shutdown() } }
-
-        try await benchmark("Memory+Noise+Yamux connect", iterations: 500) {
-            let pair = try await factory.connect()
-            await pair.shutdown()
+        try await Self.withFactory(security: NoiseUpgrader()) { factory in
+            try await benchmark("Memory+Noise+Yamux connect", iterations: 500) {
+                let pair = try await factory.connect()
+                await pair.shutdown()
+            }
         }
     }
 
     @Test("Memory + TLS + Yamux connect")
     func connectTLSYamux() async throws {
-        let factory = try await ConnectionPairFactory(security: TLSUpgrader())
-        defer { Task { await factory.shutdown() } }
-
-        try await benchmark("Memory+TLS+Yamux connect", iterations: 500) {
-            let pair = try await factory.connect()
-            await pair.shutdown()
+        try await Self.withFactory(security: TLSUpgrader()) { factory in
+            try await benchmark("Memory+TLS+Yamux connect", iterations: 500) {
+                let pair = try await factory.connect()
+                await pair.shutdown()
+            }
         }
     }
 
     @Test("Memory + Plaintext + Yamux roundtrip 1KB")
     func roundtripPlaintextYamux1KB() async throws {
-        let factory = try await ConnectionPairFactory(security: PlaintextUpgrader())
-        let pair = try await factory.connect()
-        let streamPair = try await pair.openStreamPair()
-        let payload = Self.payload(size: 1024)
-
-        defer {
-            Task {
-                await streamPair.shutdown()
-                await pair.shutdown()
-                await factory.shutdown()
-            }
-        }
-
-        try await streamPair.roundTrip(payload)
-
-        try await benchmarkThroughput(
-            "Memory+Plaintext+Yamux roundtrip 1KB",
-            iterations: 5_000,
-            bytesPerIteration: payload.readableBytes * 2
-        ) {
+        try await Self.withStreamPair(security: PlaintextUpgrader()) { streamPair, payload in
             try await streamPair.roundTrip(payload)
+
+            try await benchmarkThroughput(
+                "Memory+Plaintext+Yamux roundtrip 1KB",
+                iterations: 5_000,
+                bytesPerIteration: payload.readableBytes * 2
+            ) {
+                try await streamPair.roundTrip(payload)
+            }
         }
     }
 
     @Test("Memory + Noise + Yamux roundtrip 1KB")
     func roundtripNoiseYamux1KB() async throws {
-        let factory = try await ConnectionPairFactory(security: NoiseUpgrader())
-        let pair = try await factory.connect()
-        let streamPair = try await pair.openStreamPair()
-        let payload = Self.payload(size: 1024)
-
-        defer {
-            Task {
-                await streamPair.shutdown()
-                await pair.shutdown()
-                await factory.shutdown()
-            }
-        }
-
-        try await streamPair.roundTrip(payload)
-
-        try await benchmarkThroughput(
-            "Memory+Noise+Yamux roundtrip 1KB",
-            iterations: 2_000,
-            bytesPerIteration: payload.readableBytes * 2
-        ) {
+        try await Self.withStreamPair(security: NoiseUpgrader()) { streamPair, payload in
             try await streamPair.roundTrip(payload)
+
+            try await benchmarkThroughput(
+                "Memory+Noise+Yamux roundtrip 1KB",
+                iterations: 2_000,
+                bytesPerIteration: payload.readableBytes * 2
+            ) {
+                try await streamPair.roundTrip(payload)
+            }
         }
     }
 
     @Test("Memory + TLS + Yamux roundtrip 1KB")
     func roundtripTLSYamux1KB() async throws {
-        let factory = try await ConnectionPairFactory(security: TLSUpgrader())
-        let pair = try await factory.connect()
-        let streamPair = try await pair.openStreamPair()
-        let payload = Self.payload(size: 1024)
-
-        defer {
-            Task {
-                await streamPair.shutdown()
-                await pair.shutdown()
-                await factory.shutdown()
-            }
-        }
-
-        try await streamPair.roundTrip(payload)
-
-        try await benchmarkThroughput(
-            "Memory+TLS+Yamux roundtrip 1KB",
-            iterations: 1_000,
-            bytesPerIteration: payload.readableBytes * 2
-        ) {
+        try await Self.withRetryingStreamPair(security: TLSUpgrader()) { streamPair, payload in
             try await streamPair.roundTrip(payload)
+
+            try await benchmarkThroughput(
+                "Memory+TLS+Yamux roundtrip 1KB",
+                iterations: 1_000,
+                bytesPerIteration: payload.readableBytes * 2
+            ) {
+                try await streamPair.roundTrip(payload)
+            }
         }
     }
 
     @Test("Memory + Noise + Yamux roundtrip 32KB")
     func roundtripNoiseYamux32KB() async throws {
-        let factory = try await ConnectionPairFactory(security: NoiseUpgrader())
-        let pair = try await factory.connect()
-        let streamPair = try await pair.openStreamPair()
-        let payload = Self.payload(size: 32 * 1024)
+        try await Self.withStreamPair(security: NoiseUpgrader(), payloadSize: 32 * 1024) { streamPair, payload in
+            try await streamPair.roundTrip(payload)
 
-        defer {
-            Task {
-                await streamPair.shutdown()
-                await pair.shutdown()
-                await factory.shutdown()
+            try await benchmarkThroughput(
+                "Memory+Noise+Yamux roundtrip 32KB",
+                iterations: 500,
+                bytesPerIteration: payload.readableBytes * 2
+            ) {
+                try await streamPair.roundTrip(payload)
+            }
+        }
+    }
+
+    private static func withFactory(
+        security: any SecurityUpgrader,
+        operation: (ConnectionPairFactory) async throws -> Void
+    ) async throws {
+        let factory = try await ConnectionPairFactory(security: security)
+        do {
+            try await operation(factory)
+            await factory.shutdown()
+        } catch {
+            await factory.shutdown()
+            throw error
+        }
+    }
+
+    private static func withStreamPair(
+        security: any SecurityUpgrader,
+        payloadSize: Int = 1024,
+        operation: (StreamPair, ByteBuffer) async throws -> Void
+    ) async throws {
+        let factory = try await ConnectionPairFactory(security: security)
+        let pair: ConnectionPair
+        let streamPair: StreamPair
+        do {
+            pair = try await factory.connect()
+            streamPair = try await pair.openStreamPair()
+        } catch {
+            await factory.shutdown()
+            throw error
+        }
+
+        do {
+            try await operation(streamPair, Self.payload(size: payloadSize))
+            await streamPair.shutdown()
+            await pair.shutdown()
+            await factory.shutdown()
+        } catch {
+            await streamPair.shutdown()
+            await pair.shutdown()
+            await factory.shutdown()
+            throw error
+        }
+    }
+
+    private static func withRetryingStreamPair(
+        security: any SecurityUpgrader,
+        payloadSize: Int = 1024,
+        attempts: Int = 2,
+        operation: (StreamPair, ByteBuffer) async throws -> Void
+    ) async throws {
+        var lastError: (any Error)?
+
+        for attempt in 1...attempts {
+            do {
+                try await withStreamPair(
+                    security: security,
+                    payloadSize: payloadSize,
+                    operation: operation
+                )
+                return
+            } catch {
+                lastError = error
+                if attempt < attempts {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
             }
         }
 
-        try await streamPair.roundTrip(payload)
-
-        try await benchmarkThroughput(
-            "Memory+Noise+Yamux roundtrip 32KB",
-            iterations: 500,
-            bytesPerIteration: payload.readableBytes * 2
-        ) {
-            try await streamPair.roundTrip(payload)
+        if let lastError {
+            throw lastError
         }
+
+        throw CancellationError()
     }
 
     private static func payload(size: Int) -> ByteBuffer {

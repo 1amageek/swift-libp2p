@@ -853,9 +853,10 @@ struct AutoNATIntegrationTests {
             func getEvents() -> [AutoNATEvent] { events }
         }
         let collector = EventCollector()
+        let events = client.events
 
         let eventTask = Task {
-            for await event in client.events {
+            for await event in events {
                 await collector.add(event)
                 if case .statusChanged = event { break }
             }

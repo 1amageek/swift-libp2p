@@ -123,6 +123,7 @@ public final class GoTCPHarness: Sendable {
             "run",
             "-d",
             "--name", containerName,
+        ] + interopHarnessRunLabelArguments() + [
             "-p", "\(actualPort):4001/tcp",
             "-e", "LISTEN_PORT=4001",
             imageName

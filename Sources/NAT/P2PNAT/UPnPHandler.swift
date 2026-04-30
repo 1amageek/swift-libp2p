@@ -1,5 +1,8 @@
 /// UPnPHandler - UPnP IGD protocol handler for NAT traversal
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// UPnP Internet Gateway Device protocol handler.
 ///

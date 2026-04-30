@@ -6,9 +6,9 @@ import Synchronization
 import P2PCore
 import P2PMux
 import QUIC
-import os
+import Logging
 
-private let logger = Logger(subsystem: "swift-libp2p", category: "QUICMuxedStream")
+private let logger = Logger(label: "swift-libp2p.QUICMuxedStream")
 
 /// A QUIC stream wrapped as a MuxedStream.
 ///

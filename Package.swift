@@ -2,6 +2,8 @@
 
 import PackageDescription
 
+let includesBenchmarks = Context.environment["SWIFT_LIBP2P_DISABLE_BENCHMARKS"] != "1"
+
 let package = Package(
     name: "swift-libp2p",
     platforms: [
@@ -77,12 +79,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.29.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.1.0"),
+        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.1.2"),
         .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.1.0"),
-        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.0"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.1.2"),
-        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.1.0"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.1.0"),
+        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.1"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.1.3"),
+        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.1.1"),
+        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.1.2"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -115,6 +117,7 @@ let package = Package(
             name: "P2PTransportTCP",
             dependencies: [
                 "P2PTransport",
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
@@ -127,6 +130,7 @@ let package = Package(
                 "P2PTransport",
                 "P2PCore",
                 "P2PMux",
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "QUIC", package: "swift-quic"),
             ],
             path: "Sources/Transport/QUIC",
@@ -139,6 +143,7 @@ let package = Package(
                 "P2PCore",
                 "P2PMux",
                 "P2PCertificate",
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "WebRTC", package: "swift-webrtc"),
                 .product(name: "DTLSCore", package: "swift-tls"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -151,6 +156,7 @@ let package = Package(
             name: "P2PTransportWebSocket",
             dependencies: [
                 "P2PTransport",
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
@@ -458,7 +464,12 @@ let package = Package(
         ),
         .target(
             name: "P2PIdentify",
-            dependencies: ["P2PProtocols", "P2PCore", "P2PMux"],
+            dependencies: [
+                "P2PProtocols",
+                "P2PCore",
+                "P2PMux",
+                .product(name: "Logging", package: "swift-log"),
+            ],
             path: "Sources/Protocols/Identify",
             exclude: ["CONTEXT.md"]
         ),
@@ -699,6 +710,7 @@ let package = Package(
         ),
 
         // MARK: - Benchmarks
+    ] + (includesBenchmarks ? [
         .testTarget(
             name: "P2PBenchmarks",
             dependencies: [
@@ -720,6 +732,7 @@ let package = Package(
             path: "Benchmarks/P2PBenchmarks"
         ),
 
+    ] : []) + [
         // MARK: - Examples
         .executableTarget(
             name: "PingPongDemo",

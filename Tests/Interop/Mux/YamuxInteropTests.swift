@@ -61,7 +61,10 @@ struct YamuxInteropTests {
     }
 
     private func establishConnection() async throws -> EstablishedYamuxSession {
-        let harness = try await GoTCPHarness.start()
+        let harness = try await GoTCPHarness.start(
+            dockerfile: "Dockerfiles/Dockerfile.yamux.go",
+            imageName: "go-libp2p-yamux-test"
+        )
 
         let keyPair = KeyPair.generateEd25519()
         let transport = TCPTransport()

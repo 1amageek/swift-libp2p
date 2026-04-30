@@ -123,6 +123,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     private let _remotePeer: PeerID
     private let _localAddress: Multiaddr?
     private let _initialRemoteAddress: Multiaddr
+    private let onClose: (@Sendable () async -> Void)?
 
     private let state: Mutex<ConnectionState>
     private let streamChannel: StreamChannel
@@ -187,13 +188,15 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         localPeer: PeerID,
         remotePeer: PeerID,
         localAddress: Multiaddr?,
-        remoteAddress: Multiaddr
+        remoteAddress: Multiaddr,
+        onClose: (@Sendable () async -> Void)? = nil
     ) {
         self.quicConnection = quicConnection
         self._localPeer = localPeer
         self._remotePeer = remotePeer
         self._localAddress = localAddress
         self._initialRemoteAddress = remoteAddress
+        self.onClose = onClose
         self.streamChannel = StreamChannel()
         self.state = Mutex(ConnectionState())
     }
@@ -266,6 +269,9 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         streamChannel.finish()
         task?.cancel()
         await quicConnection.close(error: nil)
+        if let onClose {
+            await onClose()
+        }
     }
 }
 

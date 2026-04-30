@@ -101,7 +101,11 @@ public final class SystemDNSResolver: DNSResolver, Sendable {
             DispatchQueue.global().async {
                 var hints = addrinfo()
                 hints.ai_family = family == .ipv4 ? AF_INET : AF_INET6
+                #if os(Linux)
+                hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+                #else
                 hints.ai_socktype = SOCK_STREAM
+                #endif
 
                 var result: UnsafeMutablePointer<addrinfo>?
                 let status = getaddrinfo(hostname, nil, &hints, &result)

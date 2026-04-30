@@ -1,0 +1,12 @@
+[package]
+name = "rust-libp2p-tcp-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p = { version = "0.56", features = ["tcp", "noise", "yamux", "macros", "tokio"] }
+libp2p-stream = "0.4.0-alpha"
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"

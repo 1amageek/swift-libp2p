@@ -104,6 +104,7 @@ public final class RustLibp2pHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerName]
+        discardProcessOutput(rmProcess)
         do {
             try runProcessWithTimeout(rmProcess)
         } catch {
@@ -118,10 +119,12 @@ public final class RustLibp2pHarness: Sendable {
             "--rm",
             "-d",
             "--name", containerName,
+        ] + interopHarnessRunLabelArguments() + [
             "-p", "\(hostPort):4001/udp",
             "-e", "LISTEN_PORT=4001",
             "rust-libp2p-test"
         ]
+        discardProcessOutput(runProcess)
 
         try runProcessWithTimeout(runProcess)
 
@@ -182,6 +185,7 @@ public final class RustLibp2pHarness: Sendable {
         let stopProcess = Process()
         stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         stopProcess.arguments = ["docker", "stop", containerId]
+        discardProcessOutput(stopProcess)
         do {
             try runProcessWithTimeout(stopProcess)
         } catch {
@@ -191,6 +195,7 @@ public final class RustLibp2pHarness: Sendable {
         let rmProcess = Process()
         rmProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         rmProcess.arguments = ["docker", "rm", "-f", containerId]
+        discardProcessOutput(rmProcess)
         do {
             try runProcessWithTimeout(rmProcess)
         } catch {
