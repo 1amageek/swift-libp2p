@@ -71,9 +71,58 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
+        run: |
+          set -euo pipefail
+
+          source /etc/os-release
+          case "$VERSION_ID" in
+            24.04)
+              swift_os="ubuntu24.04"
+              swift_platform="ubuntu2404"
+              gcc_version="13"
+              ;;
+            22.04)
+              swift_os="ubuntu22.04"
+              swift_platform="ubuntu2204"
+              gcc_version="12"
+              ;;
+            *)
+              echo "Unsupported Ubuntu version: $VERSION_ID" >&2
+              exit 1
+              ;;
+          esac
+
+          swift_version="6.2"
+          swift_release="swift-${swift_version}-RELEASE"
+          swift_archive="${swift_release}-${swift_os}.tar.gz"
+          swift_url="https://download.swift.org/swift-${swift_version}-release/${swift_platform}/${swift_release}/${swift_archive}"
+          install_dir="$RUNNER_TEMP/swift"
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            clang \
+            curl \
+            git \
+            gnupg2 \
+            libc6-dev \
+            libcurl4-openssl-dev \
+            libedit2 \
+            libgcc-${gcc_version}-dev \
+            libpython3-dev \
+            libsqlite3-0 \
+            libstdc++-${gcc_version}-dev \
+            libxml2-dev \
+            libz3-dev \
+            pkg-config \
+            tzdata \
+            unzip \
+            zlib1g-dev
+
+          mkdir -p "$install_dir"
+          curl --fail --location --show-error "$swift_url" --output "$RUNNER_TEMP/$swift_archive"
+          tar --extract --gzip --file "$RUNNER_TEMP/$swift_archive" --directory "$install_dir" --strip-components 1
+          echo "$install_dir/usr/bin" >> "$GITHUB_PATH"
 
       - name: Swift version
         run: swift --version
