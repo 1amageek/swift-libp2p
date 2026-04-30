@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Swift version
         run: swift --version
@@ -52,7 +52,7 @@ jobs:
       image: swift:6.2
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Swift version
         run: swift --version
@@ -68,7 +68,7 @@ jobs:
       INTEROP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.interop_mode || 'smoke' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Swift
         uses: swift-actions/setup-swift@v2
@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload interop artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: interop-artifacts
           path: .test-artifacts/interop
