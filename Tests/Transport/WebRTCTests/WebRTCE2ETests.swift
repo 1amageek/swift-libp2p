@@ -356,6 +356,207 @@ struct WebRTCE2ETests {
 
     // MARK: - Error Handling Tests
 
+    @Test("Dial with mismatched /p2p PeerID is rejected", .timeLimit(.minutes(1)))
+    func peerIDMismatchRejected() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        // Pin a PeerID that the server's certificate cannot prove
+        let wrongPeer = KeyPair.generateEd25519().peerID
+        let pinnedAddress = Multiaddr(
+            uncheckedProtocols: listener.localAddress.protocols + [.p2p(wrongPeer)]
+        )
+
+        do {
+            _ = try await transport.dialSecured(pinnedAddress, localKeyPair: clientKeyPair)
+            Issue.record("Expected peerIDMismatch error")
+        } catch let error as WebRTCTransportError {
+            guard case .peerIDMismatch(let expected, let actual) = error else {
+                Issue.record("Expected peerIDMismatch, got \(error)")
+                return
+            }
+            #expect(expected == wrongPeer)
+            #expect(actual == serverKeyPair.peerID)
+        }
+
+        try await listener.close()
+    }
+
+    @Test("Dial with wrong certhash digest fails instead of hanging", .timeLimit(.minutes(1)))
+    func wrongCerthashDigestRejected() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        // Well-formed sha2-256 multihash whose digest does not match the
+        // server's certificate fingerprint
+        let port = try #require(listener.localAddress.udpPort)
+        let wrongHash = Data([0x12, 0x20] + Array(repeating: UInt8(0xCD), count: 32))
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(port), .webrtcDirect, .certhash(wrongHash)
+        ])
+
+        do {
+            _ = try await transport.dialSecured(addr, localKeyPair: clientKeyPair)
+            Issue.record("Expected dial to fail on fingerprint mismatch")
+        } catch let error as WebRTCTransportError {
+            switch error {
+            case .dtlsHandshakeFailed, .handshakeTimeout, .connectionClosed:
+                break // fingerprint mismatch surfaces as a handshake failure
+            default:
+                Issue.record("Unexpected error: \(error)")
+            }
+        }
+
+        try await listener.close()
+    }
+
+    @Test("Listen on unassigned address throws socketBindFailed", .timeLimit(.minutes(1)))
+    func bindFailureThrowsSocketBindFailed() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+
+        // TEST-NET-3 address is not assigned to any local interface
+        do {
+            _ = try await transport.listenSecured(
+                try Multiaddr("/ip4/203.0.113.7/udp/0/webrtc-direct"),
+                localKeyPair: keyPair
+            )
+            Issue.record("Expected bind to fail")
+        } catch let error as WebRTCTransportError {
+            guard case .socketBindFailed = error else {
+                Issue.record("Expected socketBindFailed, got \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("Dial with unresolvable socket address throws invalidAddress", .timeLimit(.minutes(1)))
+    func unresolvableSocketAddressThrowsInvalidAddress() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+
+        // A zoned IPv6 literal is a valid multiaddr component (validation
+        // strips the zone) but NIO's SocketAddress cannot parse it, so the
+        // dial must fail with a typed invalidAddress error. Malformed IPs
+        // like 999.0.0.1 cannot reach the dial path at all: every validated
+        // Multiaddr constructor rejects them (covered by MultiaddrTests).
+        let certhash = Data([0x12, 0x20] + Array(repeating: UInt8(0xAB), count: 32))
+        let addr = try Multiaddr(protocols: [
+            .ip6("fe80::1%zone0"), .udp(4001), .webrtcDirect, .certhash(certhash)
+        ])
+
+        do {
+            _ = try await transport.dialSecured(addr, localKeyPair: keyPair)
+            Issue.record("Expected invalidAddress")
+        } catch let error as WebRTCTransportError {
+            guard case .invalidAddress = error else {
+                Issue.record("Expected invalidAddress, got \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("Closed listener finishes its connections stream", .timeLimit(.minutes(1)))
+    func closedListenerFinishesConnectionsStream() async throws {
+        let keyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: keyPair
+        )
+
+        try await listener.close()
+        // close() is idempotent
+        try await listener.close()
+
+        // The stream must finish, not hang (the time limit is the guard)
+        var received = 0
+        for await _ in listener.connections { received += 1 }
+        #expect(received == 0)
+    }
+
+    @Test("Connection survives late data on a locally closed stream", .timeLimit(.minutes(1)))
+    func lateDataOnClosedStreamDoesNotPoisonConnection() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        let serverTask = Task { () -> (any MuxedConnection)? in
+            for await serverConnection in listener.connections {
+                // First stream: read once, then close locally. Closing is
+                // local-only, so the client can keep sending afterwards.
+                let first = try await serverConnection.acceptStream()
+                _ = try await first.read()
+                try await first.close()
+
+                // Barrier: tell the client the first stream is closed
+                let barrier = try await serverConnection.newStream()
+                try await barrier.write(ByteBuffer(bytes: Data([0x01])))
+
+                // Second stream: must work even after late data arrived
+                // for the closed first stream
+                let second = try await serverConnection.acceptStream()
+                let data = try await second.read()
+                try await second.write(data)
+                try await second.closeWrite()
+                return serverConnection
+            }
+            return nil
+        }
+
+        let clientConnection = try await transport.dialSecured(
+            listener.localAddress,
+            localKeyPair: clientKeyPair
+        )
+
+        let firstStream = try await clientConnection.newStream()
+        try await firstStream.write(ByteBuffer(bytes: Data("first".utf8)))
+
+        // Wait until the server has closed its side of the first stream
+        let barrier = try await clientConnection.acceptStream()
+        _ = try await barrier.read()
+
+        // Late data for the closed channel — must be dropped server-side
+        // without poisoning the connection's pending buffers
+        for _ in 0..<8 {
+            try await firstStream.write(ByteBuffer(bytes: Data(repeating: 0xEE, count: 32 * 1024)))
+        }
+
+        // A fresh stream must still work end-to-end
+        let secondStream = try await clientConnection.newStream()
+        let payload = Data("second".utf8)
+        try await secondStream.write(ByteBuffer(bytes: payload))
+        try await secondStream.closeWrite()
+        let echoed = try await secondStream.read()
+        #expect(Data(buffer: echoed) == payload)
+
+        // Cleanup
+        let serverConnection = try await serverTask.value
+        try await clientConnection.close()
+        if let serverConnection {
+            do { try await serverConnection.close() } catch { }
+        }
+        try await listener.close()
+    }
+
     @Test("Invalid multiaddr throws unsupportedAddress", .timeLimit(.minutes(1)))
     func invalidMultiaddrThrows() async throws {
         let clientKeyPair = KeyPair.generateEd25519()

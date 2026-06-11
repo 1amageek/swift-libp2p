@@ -11,6 +11,7 @@
 
 import Foundation
 import Synchronization
+import Logging
 import NIOCore
 import WebRTC
 
@@ -19,6 +20,7 @@ final class WebRTCUDPSocket: Sendable {
 
     private let channel: any NIOCore.Channel
     private let routingState: Mutex<RoutingState>
+    private let logger = Logger(label: "swift-libp2p.WebRTCUDPSocket")
 
     struct RoutingState: Sendable {
         /// Maps remote address key ("host:port") to WebRTCConnection.
@@ -49,9 +51,18 @@ final class WebRTCUDPSocket: Sendable {
     }
 
     /// Registers a connection for the given remote address.
-    func addRoute(remoteAddress: SocketAddress, connection: WebRTCConnection) {
+    ///
+    /// - Returns: `false` when the socket is already closed and the
+    ///   route was not registered — the caller must discard the
+    ///   connection instead of assuming it is reachable.
+    @discardableResult
+    func addRoute(remoteAddress: SocketAddress, connection: WebRTCConnection) -> Bool {
         let key = remoteAddress.addressKey
-        routingState.withLock { $0.routes[key] = connection }
+        return routingState.withLock { state in
+            guard !state.isClosed else { return false }
+            state.routes[key] = connection
+            return true
+        }
     }
 
     /// Removes the route for the given remote address.
@@ -109,7 +120,9 @@ final class WebRTCUDPSocket: Sendable {
             do {
                 try connection.receive(data)
             } catch {
+                // receive throws only on terminal failure — drop the route
                 routingState.withLock { _ = $0.routes.removeValue(forKey: key) }
+                logger.warning("Removing route for \(key): connection is terminal: \(error)")
             }
             return
         }
@@ -126,19 +139,30 @@ final class WebRTCUDPSocket: Sendable {
                 try connection.receive(data)
             } catch {
                 routingState.withLock { _ = $0.routes.removeValue(forKey: key) }
+                logger.warning("Removing route for \(key): newly accepted connection is terminal: \(error)")
             }
         }
     }
 
     /// Called when the NIO channel encounters an error.
     ///
-    /// Marks the socket as closed and clears routes.
-    /// Connections will learn about the error on their next operation.
+    /// The datagram channel is unusable after an error: closes the
+    /// channel and every routed connection so their streams fail
+    /// instead of waiting on reads that can never complete.
     func handleChannelError(_ error: Error) {
-        routingState.withLock { state in
+        let connections = routingState.withLock { state -> [WebRTCConnection]? in
+            guard !state.isClosed else { return nil }
             state.isClosed = true
+            let connections = Array(state.routes.values)
             state.routes.removeAll()
+            return connections
         }
+        guard let connections else { return }
+        logger.warning("UDP channel failed; closing socket and \(connections.count) routed connection(s): \(error)")
+        for connection in connections {
+            connection.close()
+        }
+        channel.close(promise: nil)
     }
 
     /// Closes the UDP socket and marks it as closed.

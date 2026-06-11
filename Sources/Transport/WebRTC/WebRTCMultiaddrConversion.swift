@@ -47,6 +47,25 @@ extension SocketAddress {
         }
     }
 
+    /// Converts this NIO SocketAddress to a WebRTC Direct Multiaddr without certhash.
+    ///
+    /// Used for the remote address of inbound connections, where the
+    /// peer's certificate hash is not known from any dialed address.
+    ///
+    /// - Returns: `/ip4/<host>/udp/<port>/webrtc-direct`, or nil for unix sockets.
+    func toWebRTCDirectMultiaddr() -> Multiaddr? {
+        switch self {
+        case .v4(let addr):
+            let port = UInt16(self.port ?? 0)
+            return Multiaddr(uncheckedProtocols: [.ip4(addr.host), .udp(port), .webrtcDirect])
+        case .v6(let addr):
+            let port = UInt16(self.port ?? 0)
+            return Multiaddr(uncheckedProtocols: [.ip6(addr.host), .udp(port), .webrtcDirect])
+        case .unixDomainSocket:
+            return nil
+        }
+    }
+
     /// Stable string key for routing table lookup.
     ///
     /// Format: `"192.168.1.1:4001"` (IPv4) or `"[::1]:4001"` (IPv6).

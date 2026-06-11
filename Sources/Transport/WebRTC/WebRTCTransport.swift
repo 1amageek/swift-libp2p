@@ -142,21 +142,37 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             }
 
         let bindHost = components.host.contains(":") ? "::0" : "0.0.0.0"
-        let channel = try await bootstrap.bind(host: bindHost, port: 0).get()
+        let channel: any NIOCore.Channel
+        do {
+            channel = try await bootstrap.bind(host: bindHost, port: 0).get()
+        } catch {
+            throw WebRTCTransportError.socketBindFailed(underlying: error)
+        }
 
         // All remaining steps are wrapped in do/catch to clean up the channel on error
         do {
             let socket = WebRTCUDPSocket(channel: channel)
 
             // Create remote NIO SocketAddress for sending
-            let remoteSocketAddress = try SocketAddress(ipAddress: components.host, port: Int(components.port))
+            let remoteSocketAddress: SocketAddress
+            do {
+                remoteSocketAddress = try SocketAddress(ipAddress: components.host, port: Int(components.port))
+            } catch {
+                webrtcTransportLogger.warning("Cannot build socket address for \(address): \(error)")
+                throw WebRTCTransportError.invalidAddress(address)
+            }
             let sendHandler = socket.makeSendHandler(remoteAddress: remoteSocketAddress)
 
             // Create WebRTC connection with real UDP send handler
-            let connection = try endpoint.connect(
-                remoteFingerprint: components.fingerprint,
-                sendHandler: sendHandler
-            )
+            let connection: WebRTCConnection
+            do {
+                connection = try endpoint.connect(
+                    remoteFingerprint: components.fingerprint,
+                    sendHandler: sendHandler
+                )
+            } catch {
+                throw TransportError.connectionFailed(underlying: error)
+            }
 
             // Register route so incoming responses are delivered to this connection
             socket.addRoute(remoteAddress: remoteSocketAddress, connection: connection)
@@ -172,34 +188,59 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
                 }
             )
 
-            // Start DTLS handshake
-            try connection.start()
+            // From here on, a failure must also close the connection so
+            // its handshake retransmission timers stop
+            do {
+                // Start DTLS handshake
+                do {
+                    try connection.start()
+                } catch {
+                    throw WebRTCTransportError.dtlsHandshakeFailed(underlying: error)
+                }
 
-            // Wait for DTLS + SCTP to complete (polls state, 30s timeout)
-            try await connection.waitForConnected()
+                // Wait for DTLS + SCTP to complete (polls state, 30s timeout)
+                try await connection.waitForConnected()
 
-            // Extract PeerID from certificate (guaranteed available after handshake)
-            guard let certDER = connection.remoteCertificateDER else {
-                throw WebRTCTransportError.certificateInvalid("No certificate after handshake")
+                // Extract PeerID from certificate (guaranteed available after handshake)
+                guard let certDER = connection.remoteCertificateDER else {
+                    throw WebRTCTransportError.certificateInvalid("No certificate after handshake")
+                }
+                let remotePeerID: PeerID
+                do {
+                    remotePeerID = try LibP2PCertificate.extractPeerID(from: certDER)
+                } catch {
+                    throw WebRTCTransportError.certificateInvalid("PeerID extraction failed: \(error)")
+                }
+
+                // When the dialed address pins a PeerID, the certificate
+                // must prove it
+                if let expectedPeer = address.peerID, expectedPeer != remotePeerID {
+                    throw WebRTCTransportError.peerIDMismatch(
+                        expected: expectedPeer,
+                        actual: remotePeerID
+                    )
+                }
+
+                // Build local address from bound socket
+                let localAddress = channel.localAddress?.toWebRTCDirectMultiaddr(
+                    certhash: certificate.fingerprint.multihash
+                )
+
+                let muxed = WebRTCMuxedConnection(
+                    webrtcConnection: connection,
+                    localPeer: localKeyPair.peerID,
+                    remotePeer: remotePeerID,
+                    localAddress: localAddress,
+                    remoteAddress: address,
+                    udpSocket: socket // Dial mode: connection owns the socket
+                )
+                muxed.startForwarding()
+
+                return muxed
+            } catch {
+                connection.close()
+                throw error
             }
-            let remotePeerID = try LibP2PCertificate.extractPeerID(from: certDER)
-
-            // Build local address from bound socket
-            let localAddress = channel.localAddress?.toWebRTCDirectMultiaddr(
-                certhash: certificate.fingerprint.multihash
-            )
-
-            let muxed = WebRTCMuxedConnection(
-                webrtcConnection: connection,
-                localPeer: localKeyPair.peerID,
-                remotePeer: remotePeerID,
-                localAddress: localAddress,
-                remoteAddress: address,
-                udpSocket: socket // Dial mode: connection owns the socket
-            )
-            muxed.startForwarding()
-
-            return muxed
         } catch {
             // Clean up the bound channel on any failure after bind
             channel.close(promise: nil)
@@ -232,7 +273,12 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             privateKey: generated.privateKey
         )
         let endpoint = WebRTCEndpoint(certificate: certificate)
-        let listener = try endpoint.listen()
+        let listener: WebRTCListener
+        do {
+            listener = try endpoint.listen()
+        } catch {
+            throw TransportError.connectionFailed(underlying: error)
+        }
 
         // Bind UDP socket on the requested port
         let handler = WebRTCUDPHandler()
@@ -242,33 +288,18 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
                 channel.pipeline.addHandler(handler)
             }
 
-        let channel = try await bootstrap.bind(host: host, port: Int(port)).get()
+        let channel: any NIOCore.Channel
+        do {
+            channel = try await bootstrap.bind(host: host, port: Int(port)).get()
+        } catch {
+            // The upstream listener was created before the bind; close it
+            // so its connections stream finishes instead of leaking
+            listener.close()
+            throw WebRTCTransportError.socketBindFailed(underlying: error)
+        }
 
         // Create socket without onNewPeer (set after construction to avoid circular reference)
         let listenSocket = WebRTCUDPSocket(channel: channel)
-
-        // Set onNewPeer after construction.
-        // The closure captures [weak listenSocket] directly -- no SocketBox needed.
-        listenSocket.setOnNewPeer { [weak listenSocket] remoteAddress in
-            guard let socket = listenSocket else { return }
-            let peerID = remoteAddress.addressKey
-            let sendHandler = socket.makeSendHandler(remoteAddress: remoteAddress)
-            guard let conn = listener.acceptConnection(peerID: peerID, sendHandler: sendHandler) else {
-                return
-            }
-            socket.addRoute(remoteAddress: remoteAddress, connection: conn)
-        }
-
-        // Wire the NIO handler to the socket's datagram router.
-        // setHandlers flushes any datagrams buffered before this point.
-        handler.setHandlers(
-            onDatagram: { [weak listenSocket] remoteAddr, data in
-                listenSocket?.handleDatagram(from: remoteAddr, data: data)
-            },
-            onError: { [weak listenSocket] error in
-                listenSocket?.handleChannelError(error)
-            }
-        )
 
         // Compute local address with certhash from the bound socket
         let boundAddress = channel.localAddress
@@ -284,6 +315,8 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             )
         }
 
+        // The secured listener owns the accept pipeline, so it must exist
+        // before any datagram can trigger onNewPeer
         let securedListener = WebRTCSecuredListener(
             listener: listener,
             socket: listenSocket,
@@ -291,6 +324,23 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             localKeyPair: localKeyPair
         )
         securedListener.startAccepting()
+
+        // New peers are handled by the secured listener, which tracks
+        // accepted connections for cleanup on failure
+        listenSocket.setOnNewPeer { [weak securedListener] remoteAddress in
+            securedListener?.handleNewPeer(remoteAddress)
+        }
+
+        // Wire the NIO handler to the socket's datagram router.
+        // setHandlers flushes any datagrams buffered before this point.
+        handler.setHandlers(
+            onDatagram: { [weak listenSocket] remoteAddr, data in
+                listenSocket?.handleDatagram(from: remoteAddr, data: data)
+            },
+            onError: { [weak listenSocket] error in
+                listenSocket?.handleChannelError(error)
+            }
+        )
 
         return securedListener
     }
@@ -323,22 +373,21 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
             }
         }
 
-        guard hasWebRTC else { return nil }
+        // certhash is required: without it the DTLS fingerprint cannot be
+        // verified, so the address is not dialable
+        guard hasWebRTC, let hash = certhashData else { return nil }
 
-        // Parse certhash as multihash to get fingerprint
-        let fingerprint: CertificateFingerprint
-        if let hash = certhashData, hash.count >= 2 {
-            // Multihash format: [hash function code, digest size, ...digest bytes]
-            // The digest bytes are already the SHA-256 hash -- use fromDigest
-            // to avoid hash-of-hash.
-            let digestStart = 2
-            guard hash.count >= digestStart else { return nil }
-            let digestBytes = Data(hash[digestStart...])
-            fingerprint = CertificateFingerprint.fromDigest(digestBytes)
-        } else {
-            // No certhash -- still valid for dialing (will verify after handshake)
-            fingerprint = CertificateFingerprint.fromDER(Data())
+        // Multihash format: [hash function code, digest size, ...digest bytes].
+        // Only sha2-256 (0x12) with a 32-byte digest is accepted — the DTLS
+        // layer compares SHA-256 fingerprints. The digest bytes are already
+        // the SHA-256 hash, so use fromDigest to avoid hash-of-hash.
+        guard hash.count == 34,
+              hash[hash.startIndex] == 0x12,
+              hash[hash.startIndex + 1] == 0x20 else {
+            return nil
         }
+        let digestBytes = Data(hash.dropFirst(2))
+        let fingerprint = CertificateFingerprint.fromDigest(digestBytes)
 
         return WebRTCAddressComponents(host: ip, port: port, fingerprint: fingerprint)
     }

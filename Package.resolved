@@ -1,5 +1,5 @@
 {
-  "originHash" : "fc26e69170ec430a74de8668a0451435de63139b5ab58bc2318ae1e6b2400430",
+  "originHash" : "3dddfc7be65b1bd858f0d813306c0d343824ba2eee648e2bde56028227f766c7",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -96,8 +96,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-quic.git",
       "state" : {
-        "revision" : "923e2f933cbb54adec55e20cadd425fd07513bc5",
-        "version" : "1.1.3"
+        "revision" : "3c385f130b17a89f20de4f0cb7258df761fc5d56",
+        "version" : "1.1.4"
       }
     },
     {
@@ -123,8 +123,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-tls.git",
       "state" : {
-        "revision" : "5676dbbf1c88ddbf805321e497a0591504ebdbc7",
-        "version" : "1.2.0"
+        "revision" : "75dc0d3d08cfa746695c9e22bb06bc5c97d4fb62",
+        "version" : "1.2.1"
       }
     },
     {
@@ -132,8 +132,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-webrtc.git",
       "state" : {
-        "revision" : "8ad81b14c00715dc6c91f9f73116ee7ac208048b",
-        "version" : "1.3.0"
+        "revision" : "6681aa6e0aaf9ca9fef069f0f3f621b626598c92",
+        "version" : "1.4.0"
       }
     }
   ],

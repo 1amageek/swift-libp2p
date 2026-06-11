@@ -39,6 +39,51 @@ struct WebRTCTransportTests {
         let addr = try Multiaddr("/ip4/0.0.0.0/udp/4001/webrtc-direct")
         #expect(transport.canListen(addr))
     }
+
+    @Test("Cannot dial WebRTC address without certhash")
+    func cannotDialWithoutCerthash() throws {
+        let transport = WebRTCTransport()
+
+        // Without certhash the DTLS fingerprint cannot be verified
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4001/webrtc-direct")
+        #expect(!transport.canDial(addr))
+    }
+
+    @Test("Cannot dial WebRTC address with non-sha256 certhash")
+    func cannotDialWithWrongHashFunction() {
+        let transport = WebRTCTransport()
+
+        // sha1 (0x11, 20 bytes) instead of sha2-256 (0x12, 32 bytes)
+        let sha1Hash = Data([0x11, 0x14] + Array(repeating: UInt8(0xAB), count: 20))
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(4001), .webrtcDirect, .certhash(sha1Hash)
+        ])
+        #expect(!transport.canDial(addr))
+    }
+
+    @Test("Cannot dial WebRTC address with truncated certhash digest")
+    func cannotDialWithTruncatedDigest() {
+        let transport = WebRTCTransport()
+
+        // Correct sha2-256 header but only 16 digest bytes
+        let truncated = Data([0x12, 0x20] + Array(repeating: UInt8(0xAB), count: 16))
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(4001), .webrtcDirect, .certhash(truncated)
+        ])
+        #expect(!transport.canDial(addr))
+    }
+
+    @Test("Can dial WebRTC address with trailing /p2p component")
+    func canDialWithPeerIDComponent() {
+        let transport = WebRTCTransport()
+
+        let certhash = Data([0x12, 0x20] + Array(repeating: UInt8(0xAB), count: 32))
+        let peer = KeyPair.generateEd25519().peerID
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(4001), .webrtcDirect, .certhash(certhash), .p2p(peer)
+        ])
+        #expect(transport.canDial(addr))
+    }
 }
 
 @Suite("WebRTC Multiaddr Tests")
