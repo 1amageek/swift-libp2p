@@ -84,7 +84,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.1"),
         .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.1.3"),
         .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.2.0"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.2.0"),
+        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
