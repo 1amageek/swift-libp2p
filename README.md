@@ -22,6 +22,15 @@ Identify, Ping, GossipSub v1.1/v1.2, Kademlia DHT (S/Kademlia), Plumtree, Circui
 ### NAT Traversal
 Traversal Coordinator (local direct -> direct IP -> hole punch -> relay fallback), UPnP + NAT-PMP
 
+### Security Posture
+
+- Resource limits are enforced by default: `NodeConfiguration.resourceManager` is non-optional and defaults to an enforcing `DefaultResourceManager` (per-protocol/peer/connection limits). There is no silent "unlimited" default; opting out requires an explicit `NullResourceManager()`.
+- Plaintext security is not `@_exported` from the `P2P` umbrella module (import `P2PSecurityPlaintext` explicitly). Production validation rejects plaintext and a disabled resource manager as errors.
+- PSK private networks (Pnet) are wired into both dial and listen and fail closed when a configured PSK cannot be applied.
+- GossipSub validates messages before inserting into the seen-cache, verifies signed peer-exchange records, and bounds control traffic (IHAVE/IWANT/GRAFT/PRUNE/IDONTWANT).
+- Kademlia's default validator verifies IPNS and public-key record signatures.
+- Identify verifies signed peer records when present; Circuit Relay, Rendezvous, and AutoNAT apply reservation/registration/rate limits.
+
 ## Requirements
 
 - Swift 6.2+
@@ -31,7 +40,7 @@ Traversal Coordinator (local direct -> direct IP -> hole punch -> relay fallback
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-libp2p.git", from: "0.1.0")
+    .package(url: "https://github.com/1amageek/swift-libp2p.git", from: "0.2.0")
 ]
 ```
 
@@ -76,7 +85,7 @@ let peer = try await node.connect(
 
 // Open a stream
 let stream = try await node.newStream(to: peer, protocol: "/chat/1.0.0")
-try await stream.write(Data("Hello!".utf8))
+try await stream.write(ByteBuffer(string: "Hello!"))
 ```
 
 ## Current Status
@@ -195,7 +204,7 @@ connect(to: Multiaddr)
 | `P2PSecurity` | `SecurityUpgrader`, `SecureChannel` |
 | `P2PSecurityNoise` | Noise XX (X25519 + ChaChaPoly + SHA256) |
 | `P2PSecurityTLS` | TLS 1.3 with libp2p certificate extension |
-| `P2PPnet` | Private Network (PSK + XSalsa20, go-libp2p compatible) |
+| `P2PPnet` | Private Network (PSK + XSalsa20, go-libp2p compatible). A configured PSK (`NodeConfiguration(privateNetwork:)`) is applied before security on both dial and listen, and fails closed if it cannot be applied (no unprotected fallback). |
 | `P2PSecurityPlaintext` | Plaintext (testing only) |
 | `P2PCertificate` | X.509 certificate generation/verification |
 
@@ -286,7 +295,7 @@ let node = Node(configuration: NodeConfiguration(
     security: [NoiseUpgrader()],
     muxers: [YamuxMuxer()],
     pool: PoolConfiguration(
-        limits: .init(maxConnections: 100, maxConnectionsPerPeer: 2),
+        limits: .init(highWatermark: 100, lowWatermark: 80, maxConnectionsPerPeer: 2),
         reconnectionPolicy: .default,
         idleTimeout: .seconds(300)
     )
@@ -335,7 +344,18 @@ let node = Node(
 ```
 
 The production profile enables resource accounting and production-oriented
-pool and health-check defaults. It also rejects `PlaintextUpgrader`.
+pool and health-check defaults. Production validation reports an *error* (not a
+warning) for plaintext security and for a disabled resource manager.
+
+`NodeConfiguration.resourceManager` is non-optional and defaults to an enforcing
+`DefaultResourceManager`. There is no silent "unlimited" default: per-protocol,
+per-peer, and per-connection limits are enforced. Opting out of limits requires
+an explicit `NullResourceManager()`, which production validation rejects as an
+error.
+
+Plaintext security is not `@_exported` from the umbrella `P2P` module; callers
+that want it must `import P2PSecurityPlaintext` directly, and it is rejected by
+production validation.
 
 You can also validate a node before startup:
 
@@ -422,8 +442,8 @@ Task {
 Task {
     for await event in gossipsub.events {
         switch event {
-        case .messageReceived(let msg):
-            print("Message on \(msg.topic): \(msg.data)")
+        case .messageReceived(let topic, let message):
+            print("Message on \(topic): \(message.data)")
         default: break
         }
     }
