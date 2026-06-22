@@ -98,7 +98,7 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
 
     /// The raw bytes of this PeerID (multihash bytes).
     public var bytes: Data {
-        multihash.bytes
+        Data(multihash.bytes)
     }
 
     /// Extracts the public key if this PeerID uses identity encoding.
@@ -109,7 +109,7 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
         guard multihash.code == .identity else {
             return nil
         }
-        return try PublicKey(protobufEncoded: multihash.digest)
+        return try PublicKey(protobufEncoded: Data(multihash.digest))
     }
 
     /// The Base58btc string representation of this PeerID.

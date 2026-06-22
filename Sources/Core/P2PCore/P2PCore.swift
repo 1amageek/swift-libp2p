@@ -13,3 +13,7 @@
 @_exported import Logging
 @_exported import NIOCore
 @_exported import NIOFoundationCompat
+
+// Embedded-clean codec core (varint/multihash framing/Base58/hex/protobuf).
+// The Data/NIO public API is restored by the Compat layer in this target.
+@_exported import LibP2PCore

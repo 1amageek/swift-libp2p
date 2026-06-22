@@ -1,14 +1,19 @@
 /// Base58 encoding/decoding (Bitcoin alphabet).
 /// Used for PeerID string representation.
-
-import Foundation
+///
+/// Embedded-clean: no Foundation. The byte container is `[UInt8]`; the
+/// `Data`/`String`-extension surface lives in the `P2PCore` adapter.
 
 public enum Base58 {
 
-    private static let alphabet = Array("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
-    private static let base = UInt(alphabet.count)
+    @usableFromInline
+    static let alphabet = Array("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
 
-    private static let decodeTable: [Character: UInt8] = {
+    @usableFromInline
+    static let base = UInt(58)
+
+    @usableFromInline
+    static let decodeTable: [Character: UInt8] = {
         var table: [Character: UInt8] = [:]
         for (index, char) in alphabet.enumerated() {
             table[char] = UInt8(index)
@@ -16,16 +21,16 @@ public enum Base58 {
         return table
     }()
 
-    /// Encodes data as a Base58 string.
+    /// Encodes bytes as a Base58 string.
     ///
-    /// - Parameter data: The data to encode
-    /// - Returns: Base58-encoded string
-    public static func encode(_ data: Data) -> String {
-        guard !data.isEmpty else { return "" }
+    /// - Parameter bytes: The bytes to encode.
+    /// - Returns: Base58-encoded string.
+    public static func encode(_ bytes: [UInt8]) -> String {
+        guard !bytes.isEmpty else { return "" }
 
-        // Count leading zeros
+        // Count leading zeros.
         var leadingZeros = 0
-        for byte in data {
+        for byte in bytes {
             if byte == 0 {
                 leadingZeros += 1
             } else {
@@ -35,7 +40,7 @@ public enum Base58 {
 
         // Convert to base58 using the standard in-place digit expansion.
         // This avoids rebuilding quotient arrays on every division pass.
-        let payload = data.dropFirst(leadingZeros)
+        let payload = bytes.dropFirst(leadingZeros)
         let capacity = max(1, (payload.count * 138 / 100) + 1)
         var digits = [UInt8](repeating: 0, count: capacity)
         var digitCount = 0
@@ -74,15 +79,15 @@ public enum Base58 {
         return result
     }
 
-    /// Decodes a Base58 string to data.
+    /// Decodes a Base58 string to bytes.
     ///
-    /// - Parameter string: The Base58-encoded string
-    /// - Returns: Decoded data
-    /// - Throws: `Base58Error.invalidCharacter` if the string contains invalid characters
-    public static func decode(_ string: String) throws -> Data {
-        guard !string.isEmpty else { return Data() }
+    /// - Parameter string: The Base58-encoded string.
+    /// - Returns: Decoded bytes.
+    /// - Throws: `Base58Error.invalidCharacter` if the string contains invalid characters.
+    public static func decode(_ string: String) throws(Base58Error) -> [UInt8] {
+        guard !string.isEmpty else { return [] }
 
-        // Count leading '1's
+        // Count leading '1's.
         var leadingOnes = 0
         for char in string {
             if char == "1" {
@@ -92,8 +97,8 @@ public enum Base58 {
             }
         }
 
-        // Convert from base58 — O(n*m) where n=string length, m=byte length
-        // Uses in-place mutation to avoid O(n²) from repeated array copies
+        // Convert from base58 — O(n*m) where n=string length, m=byte length.
+        // Uses in-place mutation to avoid O(n²) from repeated array copies.
         var bytes: [UInt8] = []
         bytes.reserveCapacity(string.utf8.count)
 
@@ -102,7 +107,7 @@ public enum Base58 {
                 throw Base58Error.invalidCharacter(char)
             }
 
-            // Multiply existing bytes by 58 and add new value (big-endian)
+            // Multiply existing bytes by 58 and add new value (big-endian).
             var carry = UInt(value)
             for i in stride(from: bytes.count - 1, through: 0, by: -1) {
                 let product = UInt(bytes[i]) * base + carry
@@ -116,31 +121,13 @@ public enum Base58 {
             }
         }
 
-        // Add leading zeros
-        let leadingZeros = Data(repeating: 0, count: leadingOnes)
-
-        return leadingZeros + Data(bytes)
+        // Add leading zeros.
+        var result = [UInt8](repeating: 0, count: leadingOnes)
+        result.append(contentsOf: bytes)
+        return result
     }
 }
 
-public enum Base58Error: Error, Equatable {
+public enum Base58Error: Error, Equatable, Sendable {
     case invalidCharacter(Character)
-}
-
-// MARK: - Data Extension
-
-extension Data {
-
-    /// Returns a Base58-encoded string representation of this data.
-    public var base58EncodedString: String {
-        Base58.encode(self)
-    }
-
-    /// Creates data from a Base58-encoded string.
-    ///
-    /// - Parameter base58String: The Base58-encoded string
-    /// - Throws: `Base58Error` if the string is invalid
-    public init(base58Encoded base58String: String) throws {
-        self = try Base58.decode(base58String)
-    }
 }

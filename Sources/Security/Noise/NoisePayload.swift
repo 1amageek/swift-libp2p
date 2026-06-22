@@ -100,9 +100,9 @@ struct NoisePayload: Sendable {
 
         for field in fields {
             switch field.fieldNumber {
-            case 1: identityKey = field.data
-            case 2: identitySig = field.data
-            case 3: payloadData = field.data
+            case 1: identityKey = Data(field.data)
+            case 2: identitySig = Data(field.data)
+            case 3: payloadData = Data(field.data)
             default: break
             }
         }

@@ -118,8 +118,8 @@ public struct Exchange: Sendable {
 
         for field in fields {
             switch field.fieldNumber {
-            case 1: peerIDBytes = field.data
-            case 2: pubkeyBytes = field.data
+            case 1: peerIDBytes = Data(field.data)
+            case 2: pubkeyBytes = Data(field.data)
             default: break
             }
         }

@@ -2,8 +2,9 @@
 ///
 /// Used by Noise (NoisePayload) and Plaintext (Exchange) security modules.
 /// Scope: wire type 2 only. PublicKey uses mixed wire types and is excluded.
-
-import Foundation
+///
+/// Embedded-clean: no Foundation. The byte container is `[UInt8]`; the
+/// `Data`-based surface lives in the `P2PCore` adapter.
 
 /// Errors from lightweight protobuf decode operations.
 public enum ProtobufLiteError: Error, Sendable, Equatable {
@@ -16,32 +17,15 @@ public enum ProtobufLiteError: Error, Sendable, Equatable {
 }
 
 /// A decoded protobuf field (wire type 2 only).
-///
-/// Stores a reference to the source data and offset/length to avoid copying.
-/// The `data` property returns a slice that shares storage with the source.
 public struct ProtobufField: Sendable {
     public let fieldNumber: UInt64
 
-    /// Source data containing the field.
-    private let sourceData: Data
+    /// The field data.
+    public let data: [UInt8]
 
-    /// Offset from sourceData.startIndex to the field data.
-    private let dataOffset: Int
-
-    /// Length of the field data.
-    private let dataLength: Int
-
-    /// The field data as a slice of the source (zero-copy).
-    public var data: Data {
-        let start = sourceData.startIndex + dataOffset
-        return sourceData[start ..< start + dataLength]
-    }
-
-    internal init(fieldNumber: UInt64, sourceData: Data, offset: Int, length: Int) {
+    public init(fieldNumber: UInt64, data: [UInt8]) {
         self.fieldNumber = fieldNumber
-        self.sourceData = sourceData
-        self.dataOffset = offset
-        self.dataLength = length
+        self.data = data
     }
 }
 
@@ -54,35 +38,40 @@ public struct ProtobufField: Sendable {
 ///   - fieldNumber: The protobuf field number (1-based).
 ///   - data: The field data to encode.
 /// - Returns: Encoded bytes for this field.
-public func encodeProtobufField(fieldNumber: UInt64, data: Data) -> Data {
-    var result = Data()
+public func encodeProtobufField(fieldNumber: UInt64, data: [UInt8]) -> [UInt8] {
     let tag = (fieldNumber << 3) | 2
-    result.append(contentsOf: Varint.encode(tag))
-    result.append(contentsOf: Varint.encode(UInt64(data.count)))
-    result.append(data)
+    var result = Varint.encodeBytes(tag)
+    result.append(contentsOf: Varint.encodeBytes(UInt64(data.count)))
+    result.append(contentsOf: data)
     return result
 }
 
-/// Decodes all protobuf fields from data, requiring wire type 2 (length-delimited).
+/// Decodes all protobuf fields from bytes, requiring wire type 2 (length-delimited).
 ///
 /// Unknown field numbers are preserved in the result. Wire types other than 2
 /// cause an error since the Noise/Plaintext protobuf schemas only use
 /// length-delimited fields.
 ///
 /// - Parameters:
-///   - data: The protobuf-encoded data.
+///   - bytes: The protobuf-encoded bytes.
 ///   - maxFieldSize: Maximum allowed size for a single field (default: 1 MB).
 /// - Returns: Array of decoded fields in order of appearance.
 /// - Throws: `ProtobufLiteError` on invalid data.
 public func decodeProtobufFields(
-    from data: Data,
+    from bytes: [UInt8],
     maxFieldSize: Int = 1_048_576
-) throws -> [ProtobufField] {
+) throws(ProtobufLiteError) -> [ProtobufField] {
     var fields: [ProtobufField] = []
     var offset = 0
 
-    while offset < data.count {
-        let (fieldTag, tagBytes) = try Varint.decode(from: data, at: offset)
+    while offset < bytes.count {
+        let fieldTag: UInt64
+        let tagBytes: Int
+        do {
+            (fieldTag, tagBytes) = try Varint.decode(from: bytes, at: offset)
+        } catch {
+            throw .truncatedField
+        }
         offset += tagBytes
 
         let fieldNumber = fieldTag >> 3
@@ -92,7 +81,13 @@ public func decodeProtobufFields(
             throw ProtobufLiteError.unexpectedWireType(wireType)
         }
 
-        let (fieldLength, lengthBytes) = try Varint.decode(from: data, at: offset)
+        let fieldLength: UInt64
+        let lengthBytes: Int
+        do {
+            (fieldLength, lengthBytes) = try Varint.decode(from: bytes, at: offset)
+        } catch {
+            throw .truncatedField
+        }
         offset += lengthBytes
 
         guard fieldLength <= UInt64(maxFieldSize) else {
@@ -101,16 +96,13 @@ public func decodeProtobufFields(
 
         let length = Int(fieldLength)
 
-        guard offset + length <= data.count else {
+        guard offset + length <= bytes.count else {
             throw ProtobufLiteError.truncatedField
         }
 
-        // Zero-copy: store reference to source data with offset/length
         fields.append(ProtobufField(
             fieldNumber: fieldNumber,
-            sourceData: data,
-            offset: offset,
-            length: length
+            data: Array(bytes[offset..<(offset + length)])
         ))
         offset += length
     }

@@ -4,6 +4,19 @@ import PackageDescription
 
 let includesBenchmarks = Context.environment["SWIFT_LIBP2P_DISABLE_BENCHMARKS"] != "1"
 
+// Embedded toggle controls the experimental Embedded feature + WMO for the
+// Embedded-clean cores. Lifetimes is enabled in BOTH modes because Span-returning
+// members of the P2PCoreBytes dependency require @_lifetime.
+let embeddedEnabled = Context.environment["P2P_CORE_EMBEDDED"] == "1"
+
+let coreSettings: [SwiftSetting] = {
+    var s: [SwiftSetting] = [.enableExperimentalFeature("Lifetimes")]
+    if embeddedEnabled {
+        s += [.enableExperimentalFeature("Embedded"), .unsafeFlags(["-wmo"])]
+    }
+    return s
+}()
+
 let package = Package(
     name: "swift-libp2p",
     platforms: [
@@ -15,6 +28,7 @@ let package = Package(
     ],
     products: [
         // MARK: - Core
+        .library(name: "LibP2PCore", targets: ["LibP2PCore"]),
         .library(name: "P2PCore", targets: ["P2PCore"]),
 
         // MARK: - Transport
@@ -79,20 +93,40 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.29.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.2.0"),
-        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.2.0"),
-        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.2"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.2.0"),
-        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.0"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.5.0"),
+        // Sibling P2P packages are referenced by LOCAL PATH on the `embedded`
+        // branch so the Embedded-clean cores under development resolve against the
+        // working trees. This manifest must NOT be released with local-path refs.
+        .package(path: "../swift-mDNS"),
+        .package(path: "../swift-SWIM"),
+        .package(path: "../swift-nio-udp"),
+        .package(path: "../swift-quic"),
+        .package(path: "../swift-tls"),
+        .package(path: "../swift-webrtc"),
+        .package(path: "../swift-p2p-core"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
     targets: [
         // MARK: - Core
+        // Embedded-clean codec core (dual-build: host + Embedded). No Foundation,
+        // no NIO, no Crypto, no `any`. The first decomposition slice: unsigned
+        // varint (LEB128), multihash framing, Base58, hex, and the protobuf wire
+        // helpers, all over [UInt8] / P2PCoreBytes.
+        .target(
+            name: "LibP2PCore",
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+            ],
+            path: "Sources/LibP2PCore",
+            swiftSettings: coreSettings
+        ),
+        // Foundation adapter over LibP2PCore: restores the historical Data/NIO
+        // public API and keeps the Crypto/Logging/NIO-bearing core types.
         .target(
             name: "P2PCore",
             dependencies: [
+                "LibP2PCore",
+                .product(name: "P2PCoreFoundation", package: "swift-p2p-core"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -103,7 +137,7 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PCoreTests",
-            dependencies: ["P2PCore"],
+            dependencies: ["P2PCore", "LibP2PCore"],
             path: "Tests/Core/P2PCoreTests"
         ),
 
