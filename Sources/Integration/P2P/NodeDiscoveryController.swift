@@ -84,8 +84,12 @@ internal actor NodeDiscoveryController {
         guard !pool.hasReconnecting(for: peer) else { return }
         guard !pool.hasPendingDial(to: peer) else { return }
 
-        if !hints.isEmpty {
-            await peerStore.addAddresses(hints, for: peer)
+        // Filter discovery hints before auto-dialing: loopback, link-local, and
+        // unspecified addresses are not safe auto-dial targets and could be used
+        // to redirect the node. Only globally dialable hints are persisted/dialed.
+        let dialableHints = hints.filter { $0.isGloballyDialableHint }
+        if !dialableHints.isEmpty {
+            await peerStore.addAddresses(dialableHints, for: peer)
         }
 
         guard let address = await addressBook.bestAddress(for: peer) else {

@@ -13,8 +13,8 @@ import Synchronization
 // MARK: - Test Helpers
 
 private struct MockIntegrationIdentityContext: NodeIdentityContext {
-    let localPeer: PeerID
-    let localKeyPair: KeyPair = .generateEd25519()
+    let localKeyPair: KeyPair
+    var localPeer: PeerID { localKeyPair.peerID }
 }
 
 private struct MockIntegrationListenAddressContext: ListenAddressContext {
@@ -23,14 +23,17 @@ private struct MockIntegrationListenAddressContext: ListenAddressContext {
     func listenAddresses() async -> [Multiaddr] { addresses }
 }
 
+/// Configures a relay server with the relay's own key pair so that issued
+/// reservation vouchers are signed by — and verifiable against — the relay peer
+/// the client dials. The relay's PeerID is `relayKey.peerID`.
 private func configureRelayServer(
     _ server: RelayServer,
-    localPeer: PeerID,
+    relayKey: KeyPair,
     opener: any StreamOpener,
     listenAddresses: [Multiaddr] = []
 ) async {
     await server.attachStreamOpening(opener)
-    await server.attachIdentityContext(MockIntegrationIdentityContext(localPeer: localPeer))
+    await server.attachIdentityContext(MockIntegrationIdentityContext(localKeyPair: relayKey))
     await server.attachListenAddressContext(MockIntegrationListenAddressContext(addresses: listenAddresses))
 }
 
@@ -247,7 +250,7 @@ struct CircuitRelayIntegrationTests {
 
         // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
+        await configureRelayServer(server, relayKey: relayKey, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Setup mock opener for client
         let clientOpener = MockStreamOpener()
@@ -289,7 +292,7 @@ struct CircuitRelayIntegrationTests {
 
         // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener)
+        await configureRelayServer(server, relayKey: relayKey, opener: serverOpener)
 
         let clientOpener = MockStreamOpener()
         clientOpener.setStream(clientStream, for: CircuitRelayProtocol.hopProtocolID)
@@ -334,7 +337,7 @@ struct CircuitRelayIntegrationTests {
 
         // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
+        await configureRelayServer(server, relayKey: relayKey, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // First, target makes a reservation
         let (resClientStream, resServerStream) = MockMuxedStream.createPair(
@@ -485,7 +488,7 @@ struct CircuitRelayIntegrationTests {
 
         // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener)
+        await configureRelayServer(server, relayKey: relayKey, opener: serverOpener)
 
         let (clientStream, serverStream) = MockMuxedStream.createPair(
             protocolID: CircuitRelayProtocol.hopProtocolID
@@ -539,7 +542,7 @@ struct CircuitRelayIntegrationTests {
 
         // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
+        await configureRelayServer(server, relayKey: relayKey, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Verify configuration is set
         #expect(serverConfig.maxCircuitsPerPeer == 1)
@@ -606,7 +609,7 @@ struct RelayListenerTests {
 
         // Attach the required relay server roles
         let serverOpener = MockStreamOpener()
-        await configureRelayServer(server, localPeer: relayKey.peerID, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
+        await configureRelayServer(server, relayKey: relayKey, opener: serverOpener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Step 1: Target makes reservation on relay
         let (resClientStream, resServerStream) = MockMuxedStream.createPair(

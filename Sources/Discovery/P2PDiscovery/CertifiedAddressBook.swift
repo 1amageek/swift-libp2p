@@ -69,15 +69,23 @@ public protocol CertifiedAddressBookProtocol: Sendable {
 ///
 /// Uses `Mutex` for thread-safe high-frequency access (Discovery layer pattern).
 /// Events are distributed via `EventBroadcaster` (multi-consumer).
+///
+/// Bounded by record count with LRU eviction so that a Sybil flood of validly
+/// signed records from distinct peers cannot grow the store without limit.
 public final class CertifiedAddressBook: CertifiedAddressBookProtocol, Sendable {
+
+    /// Default cap on the number of certified records.
+    public static let defaultMaxRecords = 4096
 
     // MARK: - State
 
     private let state: Mutex<State>
     private let broadcaster = EventBroadcaster<CertifiedAddressBookEvent>()
+    private let maxRecords: Int
 
     private struct State: Sendable {
         var records: [PeerID: CertifiedRecord] = [:]
+        var accessOrder = LRUOrder<PeerID>()
     }
 
     private struct CertifiedRecord: Sendable {
@@ -89,7 +97,9 @@ public final class CertifiedAddressBook: CertifiedAddressBookProtocol, Sendable 
     // MARK: - Initialization
 
     /// Creates a new CertifiedAddressBook.
-    public init() {
+    public init(maxRecords: Int = CertifiedAddressBook.defaultMaxRecords) {
+        precondition(maxRecords > 0, "maxRecords must be positive")
+        self.maxRecords = maxRecords
         self.state = Mutex(State())
     }
 
@@ -136,6 +146,9 @@ public final class CertifiedAddressBook: CertifiedAddressBookProtocol, Sendable 
                         reason: "Sequence number \(peerRecord.seq) is not newer than stored \(existing.sequenceNumber)"
                     )
                 }
+            } else {
+                // New peer: bound the store before inserting.
+                evictIfNeeded(&s)
             }
 
             s.records[signerPeerID] = CertifiedRecord(
@@ -143,6 +156,7 @@ public final class CertifiedAddressBook: CertifiedAddressBookProtocol, Sendable 
                 peerRecord: peerRecord,
                 sequenceNumber: peerRecord.seq
             )
+            s.accessOrder.insert(signerPeerID)
             return .recordAccepted(signerPeerID)
         }
 
@@ -173,10 +187,25 @@ public final class CertifiedAddressBook: CertifiedAddressBookProtocol, Sendable 
         state.withLock { Array($0.records.keys) }
     }
 
+    /// Number of certified records currently stored (for tests and monitoring).
+    public func recordCount() -> Int {
+        state.withLock { $0.records.count }
+    }
+
     public func shutdown() {
         state.withLock { s in
             s.records.removeAll()
+            s.accessOrder.removeAll()
         }
         broadcaster.shutdown()
+    }
+
+    // MARK: - Private
+
+    /// Evicts least-recently-used records when the store is at capacity.
+    private func evictIfNeeded(_ s: inout State) {
+        while s.records.count >= maxRecords, let oldest = s.accessOrder.removeOldest() {
+            s.records.removeValue(forKey: oldest)
+        }
     }
 }

@@ -113,6 +113,12 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
 
         /// Counter for unreachable checks.
         var unreachableCount: Int = 0
+
+        /// Last time we served a dial-back request for each peer (server-side cooldown).
+        var lastServedByPeer: [PeerID: ContinuousClock.Instant] = [:]
+
+        /// Number of dial-back operations currently in flight (server-side).
+        var activeDials: Int = 0
     }
 
     // MARK: - Properties
@@ -129,6 +135,13 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
     /// Duration after which pending checks expire.
     public let checkTimeout: Duration
 
+    /// The maximum number of concurrent server-side dial-back operations.
+    ///
+    /// This caps the amplification potential of the AutoNAT v2 server: even if
+    /// many peers request dial-backs simultaneously, at most this many outbound
+    /// dials run at once.
+    public let maxConcurrentDials: Int
+
     // MARK: - Initialization
 
     /// Creates a new AutoNAT v2 service.
@@ -136,12 +149,15 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
     /// - Parameters:
     ///   - cooldownDuration: Minimum time between requests to the same peer. Default: 30 seconds.
     ///   - checkTimeout: Duration after which pending checks expire. Default: 60 seconds.
+    ///   - maxConcurrentDials: Maximum concurrent server-side dial-back operations. Default: 16.
     public init(
         cooldownDuration: Duration = .seconds(30),
-        checkTimeout: Duration = .seconds(60)
+        checkTimeout: Duration = .seconds(60),
+        maxConcurrentDials: Int = 16
     ) {
         self.cooldownDuration = cooldownDuration
         self.checkTimeout = checkTimeout
+        self.maxConcurrentDials = max(1, maxConcurrentDials)
         self.serviceState = Mutex(ServiceState())
     }
 
@@ -156,6 +172,8 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
         serviceState.withLock { state in
             state.pendingChecks.removeAll()
             state.lastCheckByPeer.removeAll()
+            state.lastServedByPeer.removeAll()
+            state.activeDials = 0
             state.currentReachability = .unknown
             state.reachableCount = 0
             state.unreachableCount = 0
@@ -285,8 +303,18 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
 
     /// Handles an incoming AutoNAT v2 stream (server-side).
     ///
+    /// The server validates the requested dial target before performing any
+    /// outbound dial in order to prevent amplification / SSRF attacks:
+    ///
+    /// 1. The target must be a globally-routable unicast address (loopback,
+    ///    private, link-local, CGNAT, multicast, reserved, and metadata
+    ///    addresses are rejected).
+    /// 2. The target's IP must match the connecting peer's observed IP.
+    /// 3. A per-peer cooldown is enforced (`cooldownDuration`).
+    /// 4. A global concurrency cap is enforced (`maxConcurrentDials`).
+    ///
     /// - Parameters:
-    ///   - context: The stream context.
+    ///   - context: The stream context (provides the observed remote address and peer).
     ///   - dialer: A function to dial-back the client address and send the nonce.
     public func handleIncomingStream(
         context: StreamContext,
@@ -302,49 +330,169 @@ public final class AutoNATv2Service: EventEmitting, Sendable {
             let message = try AutoNATv2Codec.decode(requestBuffer)
 
             guard case .dialRequest(let request) = message else {
-                let errorResponse = AutoNATv2Message.dialResponse(
-                    .init(status: .badRequest)
-                )
-                var data = ByteBuffer()
-                AutoNATv2Codec.encode(errorResponse, into: &data)
-                try await stream.writeLengthPrefixedMessage(data)
+                try await sendStatus(.badRequest, on: stream)
                 return
             }
+
+            // Enforce per-peer server-side cooldown before any expensive work.
+            guard canServePeer(context.remotePeer) else {
+                emitAll([.checkFailed(
+                    address: request.address,
+                    error: AutoNATv2Error.rateLimited(peer: context.remotePeer)
+                )])
+                try await sendStatus(.badRequest, on: stream, address: request.address)
+                return
+            }
+
+            // Validate the dial target against the observed IP and routability rules.
+            if let reason = rejectionReason(for: request.address, observedAddress: context.remoteAddress) {
+                emitAll([.checkFailed(
+                    address: request.address,
+                    error: AutoNATv2Error.dialTargetRejected(reason)
+                )])
+                try await sendStatus(.badRequest, on: stream, address: request.address)
+                return
+            }
+
+            // Reserve a concurrency slot for the outbound dial.
+            guard reserveDialSlot() else {
+                emitAll([.checkFailed(
+                    address: request.address,
+                    error: AutoNATv2Error.dialConcurrencyLimitReached
+                )])
+                try await sendStatus(.internalError, on: stream, address: request.address)
+                return
+            }
+            defer { releaseDialSlot() }
+
+            // Record that we served this peer (cooldown) now that all checks passed.
+            recordServed(context.remotePeer)
 
             // Attempt dial-back
             do {
                 try await dialer(request.address, request.nonce)
 
-                // Dial-back succeeded
-                let response = AutoNATv2Message.dialResponse(
-                    .init(status: .ok, address: request.address)
-                )
-                var data = ByteBuffer()
-                AutoNATv2Codec.encode(response, into: &data)
-                try await stream.writeLengthPrefixedMessage(data)
+                try await sendStatus(.ok, on: stream, address: request.address)
             } catch {
                 // Dial-back failed
-                let response = AutoNATv2Message.dialResponse(
-                    .init(status: .dialError, address: request.address)
-                )
-                var data = ByteBuffer()
-                AutoNATv2Codec.encode(response, into: &data)
-                try await stream.writeLengthPrefixedMessage(data)
+                try await sendStatus(.dialError, on: stream, address: request.address)
             }
 
         } catch let handleError {
             logger.debug("Error handling AutoNAT v2 request: \(handleError)")
             do {
-                let errorResponse = AutoNATv2Message.dialResponse(
-                    .init(status: .internalError)
-                )
-                var data = ByteBuffer()
-                AutoNATv2Codec.encode(errorResponse, into: &data)
-                try await stream.writeLengthPrefixedMessage(data)
+                try await sendStatus(.internalError, on: stream)
             } catch {
                 logger.debug("Failed to send AutoNAT v2 error response: \(error)")
             }
         }
+    }
+
+    /// Encodes and writes a DialResponse with the given status.
+    private func sendStatus(
+        _ status: AutoNATv2Message.DialStatus,
+        on stream: MuxedStream,
+        address: Multiaddr? = nil
+    ) async throws {
+        let response = AutoNATv2Message.dialResponse(.init(status: status, address: address))
+        var data = ByteBuffer()
+        AutoNATv2Codec.encode(response, into: &data)
+        try await stream.writeLengthPrefixedMessage(data)
+    }
+
+    // MARK: - Server-side Dial Validation
+
+    /// Returns a human-readable rejection reason if the requested dial target is
+    /// unsafe to dial, or `nil` if it is acceptable.
+    ///
+    /// A target is acceptable only if it is a globally-routable unicast address
+    /// AND its IP matches the connecting peer's observed IP.
+    func rejectionReason(for target: Multiaddr, observedAddress: Multiaddr) -> String? {
+        guard let targetIP = Self.extractIP(from: target) else {
+            return "dial target has no IP component"
+        }
+        guard IPAddressClassifier.isPublicUnicast(targetIP) else {
+            return "dial target \(targetIP) is not a globally-routable unicast address"
+        }
+        guard let observedIP = Self.extractIP(from: observedAddress) else {
+            return "observed address has no IP component"
+        }
+        guard Self.normalizeForComparison(targetIP) == Self.normalizeForComparison(observedIP) else {
+            return "dial target IP \(targetIP) does not match observed IP \(observedIP)"
+        }
+        return nil
+    }
+
+    /// Extracts the IP string from a multiaddr (ip4/ip6), or nil.
+    static func extractIP(from addr: Multiaddr) -> String? {
+        for proto in addr.protocols {
+            switch proto {
+            case .ip4(let ip): return ip
+            case .ip6(let ip): return ip
+            default: continue
+            }
+        }
+        return nil
+    }
+
+    /// Normalizes an IP string for equality comparison (numeric canonical form).
+    ///
+    /// Falls back to the lowercased original only when the address cannot be parsed,
+    /// which is acceptable because unparseable targets are already rejected by
+    /// `IPAddressClassifier.isPublicUnicast`.
+    static func normalizeForComparison(_ ip: String) -> String {
+        if let v4 = IPAddressClassifier.parseIPv4(ip) {
+            return v4.map(String.init).joined(separator: ".")
+        }
+        if let v6 = IPAddressClassifier.parseIPv6(ip) {
+            if let embedded = IPAddressClassifier.embeddedIPv4(v6) {
+                return embedded.map(String.init).joined(separator: ".")
+            }
+            return v6.map { String(format: "%04x", $0) }.joined(separator: ":")
+        }
+        return ip.lowercased()
+    }
+
+    // MARK: - Server-side Rate Limiting / Concurrency
+
+    /// Checks whether the server may serve a dial-back request for the given peer.
+    func canServePeer(_ peer: PeerID) -> Bool {
+        serviceState.withLock { state in
+            guard let last = state.lastServedByPeer[peer] else { return true }
+            return (ContinuousClock.now - last) >= cooldownDuration
+        }
+    }
+
+    /// Records that the server served a dial-back request for the given peer.
+    private func recordServed(_ peer: PeerID) {
+        serviceState.withLock { state in
+            state.lastServedByPeer[peer] = .now
+        }
+    }
+
+    /// Atomically reserves a concurrency slot for an outbound dial.
+    ///
+    /// - Returns: `true` if a slot was reserved, `false` if the cap is reached.
+    private func reserveDialSlot() -> Bool {
+        serviceState.withLock { state in
+            guard state.activeDials < maxConcurrentDials else { return false }
+            state.activeDials += 1
+            return true
+        }
+    }
+
+    /// Releases a previously-reserved concurrency slot.
+    private func releaseDialSlot() {
+        serviceState.withLock { state in
+            if state.activeDials > 0 {
+                state.activeDials -= 1
+            }
+        }
+    }
+
+    /// Returns the number of outbound dials currently in flight (testing/observability).
+    var activeDialCount: Int {
+        serviceState.withLock { $0.activeDials }
     }
 
     // MARK: - Nonce Management

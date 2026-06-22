@@ -4,6 +4,7 @@ import P2PDiscovery
 import P2PMux
 import P2PPlumtree
 import P2PProtocols
+import Logging
 
 /// Discovery service backed by Plumtree gossip.
 ///
@@ -32,6 +33,7 @@ public actor PlumtreeDiscovery: DiscoveryService {
     private var opener: (any StreamOpener)?
 
     private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
+    private nonisolated let logger = Logger(label: "p2p.discovery.plumtree")
 
     public nonisolated var discoveryProtocolID: String {
         plumtreeProtocolID
@@ -239,7 +241,12 @@ public actor PlumtreeDiscovery: DiscoveryService {
             let announcement = try PlumtreeDiscoveryAnnouncement.decode(gossip.data)
             try ingestAnnouncement(announcement, source: gossip.source)
         } catch {
-            return
+            // Malformed or spoofed announcement — drop it but record at debug so
+            // attacks/corruption are observable rather than fully silent.
+            logger.debug("Dropped Plumtree announcement", metadata: [
+                "source": "\(gossip.source)",
+                "error": "\(error)",
+            ])
         }
     }
 
@@ -330,7 +337,12 @@ extension PlumtreeDiscovery:
             let stream = try await opener.newStream(to: peer, protocol: plumtreeProtocolID)
             plumtreeService.handlePeerConnected(peer, stream: stream)
         } catch {
-            // Failed to open stream — peer may not support Plumtree
+            // Failed to open stream — the peer may not support Plumtree. This is
+            // expected for non-participants, so log at debug rather than silently.
+            logger.debug("Failed to open Plumtree stream", metadata: [
+                "peer": "\(peer)",
+                "error": "\(error)",
+            ])
         }
     }
 

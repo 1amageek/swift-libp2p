@@ -354,8 +354,10 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
     }
 
     private func extractWebRTCComponents(from address: Multiaddr) -> WebRTCAddressComponents? {
+        // Port 0 is not a valid dial target; reject rather than silently
+        // substituting. `udpPort` is UInt16 so the upper bound is type-enforced.
         guard let ip = address.ipAddress,
-              let port = address.udpPort else {
+              let port = address.udpPort, port > 0 else {
             return nil
         }
 

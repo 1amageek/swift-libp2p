@@ -21,4 +21,12 @@ public enum NATPortMapperError: Error, Sendable {
     case invalidResponse
     /// Service is shutdown.
     case shutdown
+    /// A gateway-supplied URL (SSDP LOCATION or SOAP control URL) failed
+    /// validation: wrong scheme, non-LAN host, or host mismatch. Prevents SSRF.
+    case untrustedGatewayURL(String)
+    /// A gateway-returned external IP failed validation (unspecified, loopback,
+    /// private, link-local, multicast, or otherwise non-routable bogon).
+    case invalidExternalAddress(String)
+    /// A UDP response arrived from a source other than the expected gateway.
+    case unexpectedResponseSource(String)
 }

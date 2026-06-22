@@ -44,6 +44,9 @@ public enum CircuitRelayEvent: Sendable {
 
     /// A circuit failed to establish.
     case circuitFailed(source: PeerID, destination: PeerID, reason: CircuitFailureReason)
+
+    /// A circuit was terminated because it exceeded its data or duration limit.
+    case circuitLimitExceeded(source: PeerID, destination: PeerID, limit: CircuitLimit)
 }
 
 /// Reasons why a circuit failed to establish.

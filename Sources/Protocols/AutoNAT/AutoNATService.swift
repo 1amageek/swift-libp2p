@@ -386,7 +386,13 @@ public final class AutoNATService: EventEmitting, Sendable {
                 return
             }
 
-            // Peer ID validation (optional)
+            // Peer ID validation (optional).
+            //
+            // When a peer ID is present in the request it MUST match the
+            // connecting peer. The peer ID is optional in the wire format (the
+            // libp2p spec allows omitting it), so its absence is permitted; the
+            // amplification defense is the observed-IP address filter applied
+            // below, which is always enforced regardless of the peer ID.
             if configuration.requirePeerIDMatch {
                 if let requestedPeerID = dial.peer.id, requestedPeerID != remotePeer {
                     emit(.dialRequestRejected(from: remotePeer, reason: .peerIDMismatch))

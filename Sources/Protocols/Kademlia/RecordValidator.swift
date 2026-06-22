@@ -291,6 +291,20 @@ public struct CompositeValidator: RecordValidator {
         }
         return true
     }
+
+    /// Selection delegates to the last validator (the "primary" domain
+    /// validator). Earlier validators are typically constraints (e.g. size
+    /// limits) whose default `select` would discard the domain-specific
+    /// selection logic (e.g. IPNS sequence-number comparison).
+    public func select(key: Data, records: [KademliaRecord]) async throws -> Int {
+        guard !records.isEmpty else {
+            throw RecordSelectionError.noRecords
+        }
+        guard let primary = validators.last else {
+            return 0
+        }
+        return try await primary.select(key: key, records: records)
+    }
 }
 
 // MARK: - Default Validator
@@ -322,6 +336,49 @@ public struct DefaultRecordValidator: RecordValidator {
 
     public func validate(record: KademliaRecord, from: PeerID) async throws -> Bool {
         record.key.count <= maxKeySize && record.value.count <= maxValueSize
+    }
+}
+
+// MARK: - Secure Default Validator
+
+extension NamespacedValidator {
+    /// The secure default validator used by `KademliaConfiguration`.
+    ///
+    /// Composes cryptographic validation for the standard libp2p namespaces with
+    /// basic size limits, and rejects unknown namespaces:
+    /// - `/ipns/` → size limits AND `IPNSValidator` (signature + sequence + expiry).
+    /// - `/pk/`   → size limits AND `PublicKeyValidator` (signed envelope, signer == key PeerID).
+    /// - any other namespace → rejected (`defaultBehavior: .reject`).
+    ///
+    /// This is the root-cause fix for forged `/ipns/` and `/pk/` records being
+    /// silently accepted: a size-only validator did NO signature checking, so any
+    /// peer could store fake records under another peer's name. The correct
+    /// cryptographic validators already existed — this makes them the default.
+    ///
+    /// - Parameters:
+    ///   - maxKeySize: Maximum key size in bytes (default 1KB).
+    ///   - maxValueSize: Maximum value size in bytes (default 64KB).
+    public static func secureDefault(
+        maxKeySize: Int = 1024,
+        maxValueSize: Int = 65536
+    ) -> NamespacedValidator {
+        let sizeLimits = CompositeValidator(validators: [
+            KeyLengthValidator(maxLength: maxKeySize),
+            ValueSizeValidator(maxSize: maxValueSize)
+        ])
+        return NamespacedValidator(
+            validators: [
+                IPNSValidator.namespace: CompositeValidator(validators: [
+                    sizeLimits,
+                    IPNSValidator()
+                ]),
+                PublicKeyValidator.namespace: CompositeValidator(validators: [
+                    sizeLimits,
+                    PublicKeyValidator()
+                ])
+            ],
+            defaultBehavior: .reject
+        )
     }
 }
 

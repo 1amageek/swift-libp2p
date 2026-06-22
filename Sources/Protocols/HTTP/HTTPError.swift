@@ -28,4 +28,12 @@ public enum HTTPError: Error, Sendable, Equatable {
 
     /// Could not open a stream to the remote peer.
     case connectionFailed(String)
+
+    /// The Content-Length header is invalid (non-numeric, negative, overflows,
+    /// exceeds the maximum body size, or is duplicated with conflicting values).
+    case invalidContentLength(String)
+
+    /// The framing requested by the message cannot be honored (e.g.
+    /// `Transfer-Encoding: chunked`, which is not supported).
+    case unsupportedFraming(String)
 }

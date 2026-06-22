@@ -72,6 +72,17 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// IWANT promise tracking (A5).
     let gossipPromises: GossipPromises
 
+    /// Per-peer IWANT response budget consumed within the current heartbeat
+    /// window. Reset each heartbeat via `resetIWantBudget()`. Bounds how much
+    /// of the message cache a single peer can exfiltrate per heartbeat.
+    private let iwantBudget: Mutex<[PeerID: IWantBudget]>
+
+    /// Tracks messages and bytes served to a peer in the current window.
+    struct IWantBudget: Sendable {
+        var messages: Int = 0
+        var bytes: Int = 0
+    }
+
     /// Event channel.
     private let channel = EventChannel<GossipSubEvent>()
 
@@ -112,6 +123,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         self.validators = Mutex([:])
         self.directPeerState = Mutex(configuration.directPeers)
         self.gossipPromises = GossipPromises()
+        self.iwantBudget = Mutex([:])
         // Sync protected peers from initial direct peer configuration
         let allDirectPeers = configuration.directPeers.values
             .reduce(into: Set<PeerID>()) { $0.formUnion($1) }
@@ -211,10 +223,8 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     /// - Returns: A subscription for receiving messages
     public func subscribe(to topic: Topic) throws -> Subscription {
         // Check subscription filter (A2)
-        if let filter = configuration.subscriptionFilter {
-            guard filter.canSubscribe(to: topic) else {
-                throw GossipSubError.subscriptionNotAllowed(topic)
-            }
+        guard configuration.effectiveSubscriptionFilter.canSubscribe(to: topic) else {
+            throw GossipSubError.subscriptionNotAllowed(topic)
         }
 
         // Try to subscribe atomically with limit checking
@@ -335,19 +345,20 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         var response = GossipSubRPC()
         var forwardMessages: [(peer: PeerID, rpc: GossipSubRPC)] = []
 
-        // Filter incoming subscriptions (A2)
+        // Filter incoming subscriptions (A2).
+        // A default MaxCountSubscriptionFilter is always applied when none is
+        // configured, so subscription flooding is bounded even by default.
         var filteredSubs = rpc.subscriptions
-        if let filter = configuration.subscriptionFilter {
+        do {
+            let filter = configuration.effectiveSubscriptionFilter
             let currentSubs = peerState.getPeer(peerID)?.subscriptions ?? []
-            do {
-                filteredSubs = try filter.filterIncomingSubscriptions(
-                    rpc.subscriptions,
-                    currentlySubscribed: currentSubs
-                )
-            } catch {
-                // Filter rejected entire RPC batch — discard
-                return RPCHandleResult()
-            }
+            filteredSubs = try filter.filterIncomingSubscriptions(
+                rpc.subscriptions,
+                currentlySubscribed: currentSubs
+            )
+        } catch {
+            // Filter rejected entire RPC batch — discard
+            return RPCHandleResult()
         }
 
         // Handle subscriptions
@@ -448,16 +459,17 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         }
 
         // === Dedup Phase ===
-        // Check if already seen (before validation to avoid redundant work)
-        let isFirstDelivery = seenCache.add(effectiveMessage.id)
-        if !isFirstDelivery {
+        // Check (without inserting) whether we've already delivered this ID.
+        // CRITICAL: we must NOT insert into the seen cache before validation.
+        // The default message ID is attacker-forgeable (source‖seqno), so
+        // inserting pre-validation lets an attacker poison the cache with a
+        // forged ID and censor a legitimate future message that hashes to it.
+        // We only mark a message as seen AFTER it passes full validation.
+        if seenCache.contains(effectiveMessage.id) {
             // Duplicate - record penalty and don't forward
             peerScorer.recordDuplicateMessage(from: peerID)
             return []
         }
-
-        // Resolve IWANT promises (A5)
-        gossipPromises.messageDelivered(effectiveMessage.id)
 
         // === Validation Phase ===
         // Validate message structure
@@ -544,6 +556,18 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 return []  // No penalty, no forward
             }
         }
+
+        // === Accept Phase ===
+        // Mark as seen ONLY now that the message has passed all validation.
+        // `add` returns false if a concurrent delivery beat us to it; in that
+        // race we treat it as a duplicate and stop (no double-forward).
+        guard seenCache.add(effectiveMessage.id) else {
+            peerScorer.recordDuplicateMessage(from: peerID)
+            return []
+        }
+
+        // Resolve IWANT promises (A5) only for validated messages.
+        gossipPromises.messageDelivered(effectiveMessage.id)
 
         // === Scoring Phase ===
         // Track message delivery AFTER validation succeeds
@@ -633,10 +657,21 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             }
         }
 
+        // Direct peers are always forwarded to, regardless of score.
+        let directForTopic = directPeers(for: topic)
+
         var forwards: [(peer: PeerID, rpc: GossipSubRPC)] = []
         let rpc = GossipSubRPC(messages: [message])
 
         for peer in targetPeers where peer != excluding {
+            // Score gating: do not forward to graylisted or sub-threshold peers
+            // (except direct peers). Prevents feeding everything to low-score /
+            // abusive peers.
+            if !directForTopic.contains(peer) {
+                if peerScorer.isGraylisted(peer) { continue }
+                if peerScorer.score(for: peer) < configuration.publishThreshold { continue }
+            }
+
             // Check IDONTWANT (v1.2): Skip if peer doesn't want this message
             if let state = peerState.getPeer(peer), state.doesntWant(message.id) {
                 emit(.messageSkippedByIdontWant(peer: peer, messageID: message.id))
@@ -684,11 +719,26 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         _ ihaves: [ControlMessage.IHave],
         from peerID: PeerID
     ) -> [ControlMessage.IWant] {
+        // Score gating: drop IHAVE from graylisted or low-score peers to prevent
+        // cache harvesting and amplification from untrusted/abusive peers.
+        if peerScorer.isGraylisted(peerID) {
+            return []
+        }
+        if peerScorer.score(for: peerID) < configuration.gossipThreshold {
+            return []
+        }
+
         // Use Set for deduplication and cap size during collection
         var wantedIDs = Set<MessageID>()
         let maxWant = configuration.maxIWantMessages
 
         outerLoop: for ihave in ihaves {
+            // Only consider IHAVE for topics we are subscribed to. Gossip about
+            // topics we do not follow is meaningless and only wastes bandwidth.
+            guard meshState.isSubscribed(to: ihave.topic) else {
+                continue
+            }
+
             emit(.ihaveReceived(peer: peerID, topic: ihave.topic, messageCount: ihave.messageIDs.count))
 
             for msgID in ihave.messageIDs {
@@ -706,60 +756,94 @@ public final class GossipSubRouter: EventEmitting, Sendable {
 
         guard !wantedIDs.isEmpty else { return [] }
 
-        // Record IWANT promises (A5)
+        // Record IWANT promises (A5), bounded globally and per-peer.
         let expiry = ContinuousClock.now + configuration.iwantFollowupTime
-        gossipPromises.addPromise(
+        let wantedArray = Array(wantedIDs)
+        let recorded = gossipPromises.addPromise(
             peer: peerID,
-            messageIDs: Array(wantedIDs),
-            expires: expiry
+            messageIDs: wantedArray,
+            expires: expiry,
+            maxTotal: configuration.maxGossipPromises,
+            maxPerPeer: configuration.maxGossipPromisesPerPeer
         )
 
-        emit(.iwantSent(peer: peerID, messageCount: wantedIDs.count))
+        // Only request what we are willing to track. If the promise table is
+        // full for this peer we drop the surplus rather than sending IWANTs we
+        // cannot account for.
+        guard recorded > 0 else { return [] }
+        let requestedIDs = Array(wantedArray.prefix(recorded))
 
-        return [ControlMessage.IWant(messageIDs: Array(wantedIDs))]
+        emit(.iwantSent(peer: peerID, messageCount: requestedIDs.count))
+
+        return [ControlMessage.IWant(messageIDs: requestedIDs)]
     }
 
     /// Handles IWANT messages.
+    ///
+    /// Enforces a hard per-peer, per-heartbeat budget on the number of messages
+    /// and total bytes served. Without a budget, a peer could request every
+    /// cached message ID and exfiltrate the entire message cache (and we would
+    /// even serve `.excessive` requests). Once the budget is exhausted, we stop
+    /// serving that peer until the next heartbeat resets the budget.
     private func handleIWants(
         _ iwants: [ControlMessage.IWant],
         from peerID: PeerID
     ) -> [GossipSubMessage] {
-        // Block graylisted peers immediately
+        // Block graylisted peers immediately.
         if peerScorer.isGraylisted(peerID) {
+            return []
+        }
+
+        let maxMessages = configuration.maxIWantResponseMessages
+        let maxBytes = configuration.maxIWantResponseBytes
+
+        // Read current consumption for this peer.
+        var budget = iwantBudget.withLock { $0[peerID] ?? IWantBudget() }
+        // If already exhausted, serve nothing.
+        if budget.messages >= maxMessages || budget.bytes >= maxBytes {
             return []
         }
 
         var messages: [GossipSubMessage] = []
 
-        for iwant in iwants {
+        outer: for iwant in iwants {
             for msgID in iwant.messageIDs {
-                // Track the IWANT request and check for excessive requests
+                // Track the IWANT request and penalize excessive duplicates.
                 let result = peerScorer.trackIWantRequest(from: peerID, for: msgID)
-                if case .excessive(let count) = result {
-                    // Apply penalty for excessive IWANT requests
+                if case .excessive = result {
                     peerScorer.recordExcessiveIWant(from: peerID)
-                    let currentScore = peerScorer.score(for: peerID)
                     emit(.peerPenalized(
                         peer: peerID,
                         reason: .excessiveIWant,
-                        score: currentScore
+                        score: peerScorer.score(for: peerID)
                     ))
-                    // Log once per excessive detection, not per request
-                    if count == configuration.maxIWantMessages {
-                        // Only continue processing if score is still acceptable
-                        if peerScorer.isGraylisted(peerID) {
-                            return messages
-                        }
-                    }
+                    // Do NOT serve excessive requests.
+                    if peerScorer.isGraylisted(peerID) { break outer }
+                    continue
                 }
-            }
 
-            // Retrieve requested messages from cache
-            let found = messageCache.getMultiple(iwant.messageIDs)
-            messages.append(contentsOf: found.values)
+                // Enforce per-peer per-heartbeat budget.
+                if budget.messages >= maxMessages || budget.bytes >= maxBytes {
+                    break outer
+                }
+
+                guard let message = messageCache.get(msgID) else { continue }
+
+                budget.messages += 1
+                budget.bytes += message.data.count
+                messages.append(message)
+            }
         }
 
+        // Persist consumption for the rest of this heartbeat window.
+        iwantBudget.withLock { $0[peerID] = budget }
+
         return messages
+    }
+
+    /// Resets the per-peer IWANT response budget. Called each heartbeat.
+    public func resetIWantBudget() {
+        iwantBudget.withLock { $0.removeAll(keepingCapacity: true) }
     }
 
     /// Handles GRAFT messages.
@@ -798,9 +882,13 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 continue
             }
 
-            // Check mesh limits
+            // Check mesh limits. Reject the GRAFT once the mesh is already at
+            // its upper bound (D_high), NOT at the much larger absolute cap
+            // `maxPeersPerTopic`. Accepting GRAFTs up to maxPeersPerTopic would
+            // let an attacker bloat our mesh far beyond the intended degree.
+            // Direct peers bypass this limit (they are always meshed).
             let currentCount = meshState.meshPeerCount(for: topic)
-            if currentCount >= configuration.maxPeersPerTopic {
+            if currentCount >= configuration.meshDegreeHigh && !isDirectPeer(peerID) {
                 // Mesh full - send PRUNE with backoff and set local backoff
                 prunes.append(ControlMessage.Prune(
                     topic: topic,
@@ -838,38 +926,22 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 emit(.peerLeftMesh(peer: peerID, topic: topic))
             }
 
-            // Set backoff
+            // Set backoff. If the peer supplied a backoff use it, otherwise
+            // default to the configured prune backoff so we always honor a
+            // re-graft delay (an attacker omitting backoff must not bypass it).
+            let backoffDuration: Duration
             if let backoff = prune.backoff {
-                peerState.updatePeer(peerID) { state in
-                    state.setBackoff(for: topic, duration: .seconds(Int64(backoff)))
-                }
+                backoffDuration = .seconds(Int64(backoff))
+            } else {
+                backoffDuration = configuration.pruneBackoff
+            }
+            peerState.updatePeer(peerID) { state in
+                state.setBackoff(for: topic, duration: backoffDuration)
             }
 
             // Handle peer exchange (A3, v1.1+)
             if !prune.peers.isEmpty {
-                let senderScore = peerScorer.score(for: peerID)
-                if senderScore >= configuration.acceptPXThreshold {
-                    let pxCandidates = prune.peers
-                        .map(\.peerID)
-                        .filter { $0 != localPeerID }
-                        .prefix(max(configuration.prunePeers, prune.peers.count))
-
-                    pxPeersToConnect.append(contentsOf: pxCandidates)
-                    emit(.peerExchangeReceived(
-                        peer: peerID,
-                        topic: topic,
-                        pxPeerCount: pxCandidates.count
-                    ))
-                } else {
-                    emit(.peerExchangeRejected(
-                        peer: peerID,
-                        topic: topic,
-                        reason: .scoreBelowThreshold(
-                            score: senderScore,
-                            threshold: configuration.acceptPXThreshold
-                        )
-                    ))
-                }
+                handlePeerExchange(prune.peers, from: peerID, topic: topic, into: &pxPeersToConnect)
             }
 
             emit(.pruned(peer: peerID, topic: topic, backoff: prune.backoff.map { .seconds(Int64($0)) }))
@@ -878,6 +950,108 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         // Emit PX connect requests for Node integration
         if !pxPeersToConnect.isEmpty {
             emit(.peerExchangeConnect(peers: pxPeersToConnect))
+        }
+    }
+
+    /// Handles peer exchange (PX) entries from a PRUNE message.
+    ///
+    /// Security properties enforced here:
+    /// - PX is ignored entirely unless `enablePeerExchange` is true.
+    /// - The sender's score must be at least `acceptPXThreshold`.
+    /// - Each PX entry MUST carry a valid signed peer record (envelope); the
+    ///   record is verified and its embedded PeerID must match the claimed
+    ///   PeerID. Unverifiable entries are dropped with an explicit event and
+    ///   never dialed.
+    /// - The number of accepted peers is capped at `prunePeers` (min semantics)
+    ///   so the sender cannot inflate the limit.
+    private func handlePeerExchange(
+        _ peers: [ControlMessage.Prune.PeerInfo],
+        from peerID: PeerID,
+        topic: Topic,
+        into pxPeersToConnect: inout [PeerID]
+    ) {
+        // Ignore PX entirely when peer exchange is disabled.
+        guard configuration.enablePeerExchange else {
+            emit(.peerExchangeRejected(peer: peerID, topic: topic, reason: .peerExchangeDisabled))
+            return
+        }
+
+        // Require the sender to be sufficiently trusted.
+        let senderScore = peerScorer.score(for: peerID)
+        guard senderScore >= configuration.acceptPXThreshold else {
+            emit(.peerExchangeRejected(
+                peer: peerID,
+                topic: topic,
+                reason: .scoreBelowThreshold(
+                    score: senderScore,
+                    threshold: configuration.acceptPXThreshold
+                )
+            ))
+            return
+        }
+
+        var verified: [PeerID] = []
+        var rejected = 0
+        let limit = configuration.prunePeers
+
+        for info in peers {
+            // Min semantics: never accept more than the configured cap.
+            if verified.count >= limit { break }
+
+            // Never dial ourselves.
+            guard info.peerID != localPeerID else { continue }
+
+            // A signed peer record is mandatory: unauthenticated PX entries
+            // would let an attacker inject arbitrary PeerIDs/addresses.
+            guard let recordBytes = info.signedPeerRecord else {
+                rejected += 1
+                continue
+            }
+
+            // Verify the envelope signature and that the record's PeerID matches
+            // the claimed PeerID. We verify the envelope and then unmarshal the
+            // PeerRecord from a zero-based copy of the payload.
+            //
+            // NOTE: We deliberately do NOT use `Envelope.record(as:)` here.
+            // `PeerRecord.unmarshal` (P2PCore) indexes the input `Data` with
+            // absolute integer offsets and crashes when handed the non-zero-based
+            // slice that `Envelope.unmarshal` exposes as `payload`. Re-basing the
+            // payload via `Data(envelope.payload)` avoids that Core bug. (See
+            // report: recommended Core fix in PeerRecord.decodeLengthDelimitedField.)
+            do {
+                let envelope = try Envelope.unmarshal(recordBytes)
+                guard try envelope.verify(as: PeerRecord.self) else {
+                    rejected += 1
+                    continue
+                }
+                let record = try PeerRecord.unmarshal(Data(envelope.payload))
+                guard record.peerID == info.peerID,
+                      envelope.peerID == info.peerID else {
+                    rejected += 1
+                    continue
+                }
+                verified.append(info.peerID)
+            } catch {
+                rejected += 1
+                continue
+            }
+        }
+
+        if rejected > 0 {
+            emit(.peerExchangeRejected(
+                peer: peerID,
+                topic: topic,
+                reason: .unverifiedPeerRecords(rejectedCount: rejected)
+            ))
+        }
+
+        if !verified.isEmpty {
+            pxPeersToConnect.append(contentsOf: verified)
+            emit(.peerExchangeReceived(
+                peer: peerID,
+                topic: topic,
+                pxPeerCount: verified.count
+            ))
         }
     }
 
@@ -897,12 +1071,25 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             return
         }
 
+        // Drop IDONTWANT from graylisted peers.
+        if peerScorer.isGraylisted(peerID) { return }
+
+        // Only honor IDONTWANT from peers that are actually in our mesh for some
+        // topic. IDONTWANT only affects mesh forwarding, so honoring it from
+        // non-mesh peers is pointless and lets an attacker fill our per-peer
+        // don't-want table without ever being in the mesh.
+        let isMeshPeer = meshState.subscribedTopics.contains { meshState.isInMesh(peerID, for: $0) }
+        guard isMeshPeer else { return }
+
         let ttl = configuration.idontwantTTL
+        // Cap the number of message IDs honored per RPC to bound work/memory.
+        let perRPCCap = configuration.maxIDontWantMessageIDs
         var totalCount = 0
 
         peerState.updatePeer(peerID) { state in
             for idontwant in idontwants {
                 for msgID in idontwant.messageIDs {
+                    if totalCount >= perRPCCap { return }
                     state.addDontWant(msgID, ttl: ttl)
                     totalCount += 1
                 }
@@ -992,9 +1179,6 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             peers.formUnion(meshState.fanoutPeers(for: topic))
         }
 
-        // Always include direct peers (v1.1)
-        peers.formUnion(directPeers(for: topic))
-
         // Flood publish if enabled
         if configuration.floodPublish {
             let allSubscribed = peerState.peersSubscribedTo(topic)
@@ -1002,6 +1186,17 @@ public final class GossipSubRouter: EventEmitting, Sendable {
                 peers.insert(peer)
             }
         }
+
+        // Score gating: drop graylisted / sub-threshold peers from the publish
+        // set so low-score and abusive peers do not receive our messages.
+        peers = peers.filter { peer in
+            !peerScorer.isGraylisted(peer)
+                && peerScorer.score(for: peer) >= configuration.publishThreshold
+        }
+
+        // Always include direct peers (v1.1) — added AFTER score filtering so
+        // they are never excluded by score.
+        peers.formUnion(directPeers(for: topic))
 
         return Array(peers)
     }
@@ -1201,7 +1396,11 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             // Select peers for gossip (not in mesh)
             let meshPeers = meshState.meshPeers(for: topic)
             let allSubscribed = Set(peerState.peersSubscribedTo(topic))
-            let gossipPeers = allSubscribed.subtracting(meshPeers)
+            let gossipPeers = allSubscribed.subtracting(meshPeers).filter { peer in
+                // Score gating: do not gossip to graylisted / sub-threshold peers.
+                !peerScorer.isGraylisted(peer)
+                    && peerScorer.score(for: peer) >= configuration.gossipThreshold
+            }
 
             // Random selection
             let selected = gossipPeers.shuffled().prefix(configuration.gossipDegree)
@@ -1273,6 +1472,22 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     public func performScoringMaintenance() {
         peerScorer.applyDecayToAll()
         peerScorer.cleanupIWantTracking()
+
+        // Before evaluating delivery rate, account for messages we expected
+        // each mesh peer to deliver this window. Every mesh peer is expected to
+        // forward the messages that were published/forwarded on its topics.
+        // We approximate "expected" as the number of messages currently in the
+        // gossip cache for each topic the peer is meshed on.
+        for topic in meshState.subscribedTopics {
+            let cachedCount = messageCache.getGossipIDs(for: topic).count
+            guard cachedCount > 0 else { continue }
+            for peer in meshState.meshPeers(for: topic) {
+                for _ in 0..<cachedCount {
+                    peerScorer.recordExpectedMessage(from: peer)
+                }
+            }
+        }
+
         let penalizedPeers = peerScorer.applyDeliveryRatePenalties()
 
         // Emit events for penalized peers
@@ -1280,10 +1495,14 @@ public final class GossipSubRouter: EventEmitting, Sendable {
             let currentScore = peerScorer.score(for: peer)
             emit(.peerPenalized(
                 peer: peer,
-                reason: .protocolViolation("Low delivery rate: \(String(format: "%.1f%%", deliveryRate * 100))"),
+                reason: .lowDeliveryRate(rate: deliveryRate),
                 score: currentScore
             ))
         }
+
+        // Roll the delivery window: reset counters so the next window measures
+        // a fresh rate rather than an ever-growing cumulative counter.
+        peerScorer.resetDeliveryTracking()
     }
 
     // MARK: - Event Emission

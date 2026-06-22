@@ -166,5 +166,9 @@ extension GossipSubEvent {
     public enum PXRejectReason: Sendable {
         /// Sender's score is below the accept threshold.
         case scoreBelowThreshold(score: Double, threshold: Double)
+        /// Peer exchange is disabled on this node.
+        case peerExchangeDisabled
+        /// One or more PX entries failed signed-peer-record verification.
+        case unverifiedPeerRecords(rejectedCount: Int)
     }
 }

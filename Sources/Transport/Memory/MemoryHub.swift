@@ -66,8 +66,12 @@ public final class MemoryHub: Sendable {
         }
 
         try listeners.withLock { listeners in
-            // Clean up any dead references
-            if let existing = listeners[id], existing.listener != nil {
+            // Reclaim dead weak entries so the map does not grow unbounded with
+            // tombstones from listeners that were deallocated without
+            // unregistering.
+            listeners = listeners.filter { $0.value.listener != nil }
+
+            if listeners[id]?.listener != nil {
                 throw TransportError.addressInUse(address)
             }
             listeners[id] = WeakListener(listener: listener)

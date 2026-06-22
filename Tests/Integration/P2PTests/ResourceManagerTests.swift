@@ -749,7 +749,10 @@ struct ResourceManagerTests {
         #expect(system.maxInboundStreams == 4096)
         #expect(system.maxOutboundStreams == 4096)
         #expect(system.maxTotalStreams == 8192)
-        #expect(system.maxMemory == 128 * 1024 * 1024)
+        // Memory is intentionally unenforced (nil) in the default presets: the
+        // runtime does not yet reserve memory on buffer paths, so advertising a
+        // memory limit would be false protection.
+        #expect(system.maxMemory == nil)
 
         let peer = ScopeLimits.defaultPeer
         #expect(peer.maxInboundConnections == 2)
@@ -758,29 +761,36 @@ struct ResourceManagerTests {
         #expect(peer.maxInboundStreams == 256)
         #expect(peer.maxOutboundStreams == 256)
         #expect(peer.maxTotalStreams == 512)
-        #expect(peer.maxMemory == 16 * 1024 * 1024)
+        #expect(peer.maxMemory == nil)
 
         let unlimited = ScopeLimits.unlimited
         #expect(unlimited.maxInboundConnections == nil)
         #expect(unlimited.maxMemory == nil)
     }
 
-    // MARK: - Release Never Underflows
+    // MARK: - Balanced Reserve/Release
 
-    @Test("Release does not underflow below zero")
-    func testReleaseNoUnderflow() {
+    // NOTE: Releasing without a matching reserve is now treated as accounting
+    // drift (a programming error): it trips an assertion in debug builds rather
+    // than silently clamping to zero (see DefaultResourceManager.decrement and
+    // finding #5). The previous "release does not underflow" test asserted the
+    // old silent-clamp behavior and has been replaced with a balance test that
+    // verifies a matched reserve/release pair returns every counter to zero.
+    @Test("Matched reserve/release returns counters to zero")
+    func testBalancedReserveRelease() throws {
         let rm = makeManager()
         let peer = makePeer()
 
-        // Release without prior reserve
+        try rm.reserveInboundConnection(from: peer)
+        try rm.reserveOutboundStream(to: peer)
         rm.releaseConnection(peer: peer, direction: .inbound)
         rm.releaseStream(peer: peer, direction: .outbound)
-        rm.releaseMemory(1000, for: peer)
 
         let snap = rm.snapshot()
         #expect(snap.system.inboundConnections == 0)
         #expect(snap.system.outboundStreams == 0)
-        #expect(snap.system.memory == 0)
+        // The peer entry is garbage-collected once all counters reach zero.
+        #expect(snap.peers[peer] == nil)
     }
 
     // MARK: - NodeError Integration

@@ -31,17 +31,24 @@ struct PCPHandler: NATProtocolHandler {
             timeout: configuration.discoveryTimeout
         )
 
+        try PCPHandler.validateAnnounceResponse(response)
+        return .pcp(gatewayIP: gatewayIP)
+    }
+
+    /// Validates a PCP ANNOUNCE response, proving the gateway is PCP-capable.
+    ///
+    /// Only SUCCESS (result code 0) is accepted. UNSUPP_VERSION (result code 1)
+    /// means the gateway does NOT speak this PCP version, so treating it as
+    /// "PCP-capable" would cause every subsequent MAP request to fail.
+    /// Extracted for direct unit testing without network I/O.
+    static func validateAnnounceResponse(_ response: [UInt8]) throws {
         guard response.count >= 4, response[0] == PCPHandler.version else {
             throw NATPortMapperError.invalidResponse
         }
-
         let resultCode = response[3]
-        // SUCCESS or UNSUPP_VERSION are both valid indicators of a PCP-capable gateway
-        if resultCode != 0 && resultCode != 1 {
+        guard resultCode == PCPHandler.resultSuccess else {
             throw NATPortMapperError.requestDenied("PCP error: \(resultCode)")
         }
-
-        return .pcp(gatewayIP: gatewayIP)
     }
 
     func getExternalAddress(
@@ -108,7 +115,9 @@ struct PCPHandler: NATProtocolHandler {
             response,
             gateway: gateway,
             internalPort: internalPort,
-            externalAddress: externalAddress
+            externalAddress: externalAddress,
+            requestedDuration: duration,
+            configuration: configuration
         )
     }
 
@@ -171,7 +180,7 @@ struct PCPHandler: NATProtocolHandler {
         return data
     }
 
-    private func parseExternalAddress(from response: [UInt8]) throws -> String {
+    func parseExternalAddress(from response: [UInt8]) throws -> String {
         guard response.count >= 60 else {
             throw NATPortMapperError.invalidResponse
         }
@@ -190,8 +199,9 @@ struct PCPHandler: NATProtocolHandler {
         let isIPv4Mapped = response[44..<54].allSatisfy { $0 == 0 } &&
                            response[54] == 0xFF && response[55] == 0xFF
 
+        let externalAddress: String
         if isIPv4Mapped {
-            return "\(response[56]).\(response[57]).\(response[58]).\(response[59])"
+            externalAddress = "\(response[56]).\(response[57]).\(response[58]).\(response[59])"
         } else {
             // Full IPv6
             var parts: [String] = []
@@ -199,15 +209,23 @@ struct PCPHandler: NATProtocolHandler {
                 let value = UInt16(response[i]) << 8 | UInt16(response[i + 1])
                 parts.append(String(value, radix: 16))
             }
-            return parts.joined(separator: ":")
+            externalAddress = parts.joined(separator: ":")
         }
+
+        // Validate: a gateway can return a bogus / bogon external address.
+        guard IPAddressValidator.isRoutableExternalAddress(externalAddress) else {
+            throw NATPortMapperError.invalidExternalAddress(externalAddress)
+        }
+        return externalAddress
     }
 
     private func parseMAPResponse(
         _ response: [UInt8],
         gateway: NATGatewayType,
         internalPort: UInt16,
-        externalAddress: String
+        externalAddress: String,
+        requestedDuration: Duration,
+        configuration: NATPortMapperConfiguration
     ) throws -> PortMapping {
         guard response.count >= 60 else {
             throw NATPortMapperError.invalidResponse
@@ -232,12 +250,21 @@ struct PCPHandler: NATProtocolHandler {
         // Assigned external port (offset 42-43)
         let assignedPort = UInt16(response[42]) << 8 | UInt16(response[43])
 
+        // Clamp the gateway-assigned lifetime for real mappings. A release
+        // (duration == 0) keeps a zero expiration.
+        let effectiveLifetime: Duration
+        if requestedDuration == .zero {
+            effectiveLifetime = .seconds(Int64(assignedLifetime))
+        } else {
+            effectiveLifetime = configuration.clampedLifetime(seconds: assignedLifetime)
+        }
+
         return PortMapping(
             internalPort: internalPort,
             externalPort: assignedPort,
             externalAddress: externalAddress,
             protocol: responseProtocol,
-            expiration: ContinuousClock.now + .seconds(Int64(assignedLifetime)),
+            expiration: ContinuousClock.now + effectiveLifetime,
             gatewayType: gateway
         )
     }

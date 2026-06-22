@@ -582,7 +582,7 @@ struct PeerScorerTests {
     }
 
     @Test("Per-topic decay")
-    func testPerTopicDecay() {
+    func testPerTopicDecay() async throws {
         let topic: Topic = "test-topic"
         let params = TopicScoreParams(
             topicWeight: 1.0,
@@ -594,7 +594,11 @@ struct PeerScorerTests {
             meshFailurePenaltyWeight: 0,
             invalidMessageDeliveriesWeight: 0
         )
+        // Per-topic decay is gated on `decayInterval` (matching the global path),
+        // so penalties do NOT evaporate on every heartbeat. Use a short interval
+        // so the test can exercise the gated decay without a long wait.
         let scorer = PeerScorer(
+            config: PeerScorerConfig(decayInterval: .milliseconds(50)),
             topicParams: [topic: params]
         )
         let peerID = makePeerID()
@@ -608,7 +612,12 @@ struct PeerScorerTests {
         // P2 = 1.0 * 10 = 10.0
         #expect(scoreBefore == 10.0)
 
-        // Apply decay
+        // An immediate decay call must NOT decay: the interval has not elapsed.
+        scorer.applyDecayToAll()
+        #expect(scorer.computeScore(for: peerID) == 10.0)
+
+        // After the decay interval elapses, one decay halves the counter.
+        try await Task.sleep(for: .milliseconds(80))
         scorer.applyDecayToAll()
 
         let scoreAfter = scorer.computeScore(for: peerID)

@@ -4,6 +4,8 @@ import P2PNegotiation
 import P2PRuntime
 import P2PProtocols
 
+private let streamLifecycleLogger = Logger(label: "p2p.swarm.stream-lifecycle")
+
 internal protocol StreamLifecycleCoordinator: Sendable {
     func openOutboundStream(
         on connection: MuxedConnection,
@@ -22,9 +24,9 @@ internal protocol StreamLifecycleCoordinator: Sendable {
 }
 
 internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
-    private let resources: (any StreamResourceAccounting)?
+    private let resources: any StreamResourceAccounting
 
-    init(resources: (any StreamResourceAccounting)?) {
+    init(resources: any StreamResourceAccounting) {
         self.resources = resources
     }
 
@@ -33,14 +35,15 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
         peer: PeerID,
         protocolID: String
     ) async throws -> MuxedStream {
-        if let resources {
-            do {
-                try resources.reserveStream(peer: peer, direction: .outbound)
-            } catch let error as ResourceError {
-                switch error {
-                case .limitExceeded(let scope, let resource):
-                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
-                }
+        // Reserve the outbound stream against the protocol scope: the protocol
+        // ID is known up front for an outbound dial, so per-protocol limits are
+        // enforced here (not just peer/system).
+        do {
+            try resources.reserveStream(protocolID: protocolID, peer: peer, direction: .outbound)
+        } catch let error as ResourceError {
+            switch error {
+            case .limitExceeded(let scope, let resource):
+                throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
             }
         }
 
@@ -48,7 +51,7 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
         do {
             stream = try await connection.newStream()
         } catch {
-            resources?.releaseStream(peer: peer, direction: .outbound)
+            resources.releaseStream(protocolID: protocolID, peer: peer, direction: .outbound)
             throw error
         }
 
@@ -61,20 +64,22 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
                 write: { try await stream.write($0) }
             )
         } catch {
-            resources?.releaseStream(peer: peer, direction: .outbound)
+            resources.releaseStream(protocolID: protocolID, peer: peer, direction: .outbound)
             do {
                 try await stream.close()
             } catch let closeError {
+                streamLifecycleLogger.error("Failed to close outbound stream after negotiation failure: \(closeError)")
                 assertionFailure("DefaultStreamLifecycleCoordinator failed to close outbound stream after negotiation failure: \(closeError)")
             }
             throw error
         }
 
         guard result.protocolID == protocolID else {
-            resources?.releaseStream(peer: peer, direction: .outbound)
+            resources.releaseStream(protocolID: protocolID, peer: peer, direction: .outbound)
             do {
                 try await stream.close()
             } catch let closeError {
+                streamLifecycleLogger.error("Failed to close outbound stream after protocol mismatch: \(closeError)")
                 assertionFailure("DefaultStreamLifecycleCoordinator failed to close outbound stream after protocol mismatch: \(closeError)")
             }
             throw NodeError.protocolNegotiationFailed
@@ -84,14 +89,12 @@ internal struct DefaultStreamLifecycleCoordinator: StreamLifecycleCoordinator {
             base: stream,
             remainder: combined(result.remainderBuffer, reader.drainRemainder())
         )
-        guard let resources else {
-            return negotiatedStream
-        }
         return ResourceTrackedStream(
             stream: negotiatedStream,
             peer: peer,
             direction: .outbound,
-            resourceManager: resources
+            resourceManager: resources,
+            negotiatedProtocolID: protocolID
         )
     }
 

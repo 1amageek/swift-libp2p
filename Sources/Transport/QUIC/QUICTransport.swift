@@ -104,18 +104,22 @@ public final class QUICTransport: SecuredTransport, Sendable {
 
     /// Whether this transport can dial the given address.
     ///
+    /// A dial target must specify a concrete (non-zero) port.
+    ///
     /// - Parameter address: The address to check
-    /// - Returns: `true` if this is a valid QUIC address
+    /// - Returns: `true` if this is a valid QUIC dial address
     public func canDial(_ address: Multiaddr) -> Bool {
-        address.toQUICSocketAddress() != nil
+        address.toQUICDialSocketAddress() != nil
     }
 
     /// Whether this transport can listen on the given address.
     ///
+    /// Listening accepts port 0 (ephemeral bind), unlike dialing.
+    ///
     /// - Parameter address: The address to check
-    /// - Returns: `true` if this is a valid QUIC address
+    /// - Returns: `true` if this is a valid QUIC listen address
     public func canListen(_ address: Multiaddr) -> Bool {
-        canDial(address)
+        address.toQUICSocketAddress() != nil
     }
 
     // MARK: - QUIC-Specific API
@@ -134,22 +138,23 @@ public final class QUICTransport: SecuredTransport, Sendable {
         _ address: Multiaddr,
         localKeyPair: KeyPair
     ) async throws -> any MuxedConnection {
-        guard let socketAddress = address.toQUICSocketAddress() else {
+        guard let socketAddress = address.toQUICDialSocketAddress() else {
             throw TransportError.unsupportedAddress(address)
         }
 
-        // Create configuration with libp2p TLS provider factory
+        // Fail fast: validate up front that a libp2p TLS provider can be created
+        // for this key pair. If certificate generation fails, propagate the
+        // error here (dialSecured is async throws) rather than deferring it into
+        // the handshake via a FailingTLSProvider. TLS providers are stateful
+        // per-connection, so the factory still constructs fresh instances, but
+        // this probe proves construction succeeds.
+        _ = try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
+
+        // Create configuration with libp2p TLS provider factory.
+        // Construction is validated above, so the factory does not need a
+        // deferred-failure fallback for valid key pairs.
         var config = configuration
-        config.tlsProviderFactory = { [localKeyPair] isClient in
-            do {
-                // Use swift-quic's pure Swift TLS 1.3 implementation
-                return try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
-            } catch {
-                // Return a failing provider instead of crashing
-                // The error will be reported during handshake
-                return FailingTLSProvider(error: error)
-            }
-        }
+        config.tlsProviderFactory = makeTLSProviderFactory(localKeyPair: localKeyPair)
 
         // Create client endpoint with libp2p TLS
         let endpoint = QUICEndpoint(configuration: config)
@@ -173,8 +178,10 @@ public final class QUICTransport: SecuredTransport, Sendable {
             quicConnection = try await endpoint.dial(address: socketAddress)
         }
 
-        // Collect session tickets for future 0-RTT connections
-        startSessionTicketCollection(for: quicConnection, serverIdentity: serverIdentity)
+        // Collect session tickets for future 0-RTT connections. The returned
+        // task is handed to the connection so it is cancelled on close rather
+        // than leaking as an unstructured task.
+        let sessionTicketTask = startSessionTicketCollection(for: quicConnection, serverIdentity: serverIdentity)
 
         // Extract PeerID from TLS certificate
         let remotePeer = try extractPeerIDFromQUIC(quicConnection)
@@ -193,6 +200,7 @@ public final class QUICTransport: SecuredTransport, Sendable {
             remotePeer: remotePeer,
             localAddress: localAddress,
             remoteAddress: address,
+            sessionTicketTask: sessionTicketTask,
             onClose: { [endpoint] in
                 do {
                     try await endpoint.shutdown()
@@ -209,15 +217,20 @@ public final class QUICTransport: SecuredTransport, Sendable {
     }
 
     /// Collects session tickets from a QUIC connection for future 0-RTT resumption.
+    ///
+    /// - Returns: The collection task, or `nil` if the connection does not
+    ///   expose session tickets. The caller hands it to the owning connection so
+    ///   it is cancelled on close (no leaked unstructured task).
     private func startSessionTicketCollection(
         for connection: any QUICConnectionProtocol,
         serverIdentity: String
-    ) {
-        guard let managedConn = connection as? ManagedConnection else { return }
+    ) -> Task<Void, Never>? {
+        guard let managedConn = connection as? ManagedConnection else { return nil }
         let cache = self.sessionCache
 
-        Task {
+        return Task {
             for await ticketInfo in managedConn.sessionTickets {
+                if Task.isCancelled { return }
                 cache.storeTicket(
                     ticketInfo.ticket,
                     resumptionMasterSecret: ticketInfo.resumptionMasterSecret,
@@ -243,18 +256,14 @@ public final class QUICTransport: SecuredTransport, Sendable {
             throw TransportError.unsupportedAddress(address)
         }
 
-        // Create configuration with libp2p TLS provider factory
+        // Fail fast: validate up front that a libp2p TLS provider can be created.
+        // listenSecured is async throws, so propagate certificate-generation
+        // failures here instead of deferring them into the handshake.
+        _ = try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
+
+        // Create configuration with libp2p TLS provider factory (validated above)
         var config = configuration
-        config.tlsProviderFactory = { [localKeyPair] isClient in
-            do {
-                // Use swift-quic's pure Swift TLS 1.3 implementation
-                return try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
-            } catch {
-                // Return a failing provider instead of crashing
-                // The error will be reported during handshake
-                return FailingTLSProvider(error: error)
-            }
-        }
+        config.tlsProviderFactory = makeTLSProviderFactory(localKeyPair: localKeyPair)
 
         // Create server socket bound to the specific address (will be started by serve())
         let udpConfig = UDPConfiguration(
@@ -307,7 +316,7 @@ public final class QUICTransport: SecuredTransport, Sendable {
         localKeyPair: KeyPair,
         listener: any SecuredListener
     ) async throws -> any MuxedConnection {
-        guard let socketAddress = address.toQUICSocketAddress() else {
+        guard let socketAddress = address.toQUICDialSocketAddress() else {
             throw TransportError.unsupportedAddress(address)
         }
 
@@ -341,6 +350,30 @@ public final class QUICTransport: SecuredTransport, Sendable {
     }
 
     // MARK: - Private Helpers
+
+    /// Builds the libp2p TLS provider factory for a key pair.
+    ///
+    /// Callers MUST validate provider construction up front (see
+    /// `dialSecured`/`listenSecured`) so the error surfaces at dial/listen. The
+    /// swift-quic factory signature is non-throwing and called per connection;
+    /// because construction is already proven to succeed, the catch path is
+    /// unreachable for a valid key pair. It is retained only as a logged
+    /// defense-in-depth fallback — the genuine failure path is the up-front
+    /// `try`, not this closure.
+    private func makeTLSProviderFactory(localKeyPair: KeyPair) -> @Sendable (Bool) -> any TLS13Provider {
+        { isClient in
+            do {
+                // Use swift-quic's pure Swift TLS 1.3 implementation.
+                return try SwiftQUICTLSProvider(localKeyPair: localKeyPair)
+            } catch {
+                // Unreachable after up-front validation; surface loudly.
+                quicTransportLogger.error(
+                    "TLS provider construction failed after validation: \(String(describing: error))"
+                )
+                return FailingTLSProvider(error: error)
+            }
+        }
+    }
 
 }
 

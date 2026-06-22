@@ -99,8 +99,14 @@ internal actor Swarm {
 
     // Background tasks
     private var idleCheckTask: Task<Void, Never>?
-    private var reconnectTasks: [Task<Void, Never>] = []
     private var acceptTasks: [Task<Void, Never>] = []
+
+    /// Long-lived tasks tracked by a monotonically increasing token so each can
+    /// self-remove on completion (avoiding unbounded growth) and all can be
+    /// cancelled at shutdown. Covers reconnect timers, per-connection
+    /// inbound-stream loops, accept candidates, and per-stream negotiations.
+    private var trackedTasks: [UInt64: Task<Void, Never>] = [:]
+    private var nextTaskToken: UInt64 = 0
 
     // Peer-connected dedup tracking
     private var peerConnectedEmitted: Set<PeerID> = []
@@ -186,8 +192,17 @@ internal actor Swarm {
         // Cancel background tasks
         idleCheckTask?.cancel()
         idleCheckTask = nil
-        for task in reconnectTasks { task.cancel() }
-        reconnectTasks.removeAll()
+
+        // Cancel all tracked tasks (reconnect timers, inbound-stream loops,
+        // accept candidates, per-stream negotiations).
+        let tasksToCancel = trackedTasks
+        trackedTasks.removeAll()
+        for (_, task) in tasksToCancel { task.cancel() }
+
+        // Drain the negotiation semaphore so any stream-negotiation tasks
+        // blocked in `wait()` are resumed (they then observe cancellation /
+        // closed streams instead of hanging forever).
+        negotiationSemaphore.drain()
 
         // Cancel pending dials
         pool.cancelAllPendingDials()
@@ -205,15 +220,16 @@ internal actor Swarm {
 
         // Close all connections
         for peer in pool.connectedPeers {
-            let removed = pool.remove(forPeer: peer)
-            for managed in removed {
+            let removed = pool.removeReleasing(forPeer: peer)
+            for removal in removed {
+                let managed = removal.managed
                 do {
                     try await managed.connection?.close()
                 } catch {
                     swarmLogger.debug("Failed to close connection to \(peer): \(error)")
                 }
-                if managed.state.isConnected {
-                    configuration.connectionResources?.releaseConnection(peer: peer, direction: managed.direction)
+                if removal.shouldReleaseResource && managed.state.isConnected {
+                    configuration.connectionResources.releaseConnection(peer: peer, direction: managed.direction)
                 }
             }
             onPeerDisconnected(peer)
@@ -256,6 +272,13 @@ internal actor Swarm {
             return try await pendingTask.value
         }
 
+        // Dial backoff: suppress redundant dials to a peer that recently failed.
+        // Checked on the primary dial path (not only reconnect/discovery) so a
+        // dead peer is not hammered. Surfaced as a typed error, never silently.
+        if let peerID = address.peerID, dialBackoff.shouldBackOff(from: peerID) {
+            throw NodeError.dialBackedOff(peerID)
+        }
+
         // If the address already identifies the remote peer, enforce the per-peer
         // limit before opening another transport path.
         if let peerID = address.peerID, !pool.canConnectTo(peer: peerID) {
@@ -287,6 +310,12 @@ internal actor Swarm {
         } catch {
             if let peerID = address.peerID {
                 pool.removePendingDial(for: peerID)
+                // Record the failure so the next dial to this peer is backed
+                // off. Skip on cancellation (shutdown / superseded dial) — that
+                // is not a connectivity failure.
+                if !(error is CancellationError) {
+                    dialBackoff.recordFailure(for: peerID)
+                }
             }
             emit(.outgoingConnectionError(peer: address.peerID, error: error))
             throw error
@@ -297,15 +326,19 @@ internal actor Swarm {
     func closePeer(_ peer: PeerID) async {
         pool.disableAutoReconnect(for: peer)
 
-        let removed = pool.remove(forPeer: peer)
-        for managed in removed {
+        // Authoritative removal: each connection's resource is released exactly
+        // once. A racing handleConnectionClosed observes `shouldReleaseResource
+        // == false` (or finds the entry gone) and never double-releases.
+        let removed = pool.removeReleasing(forPeer: peer)
+        for removal in removed {
+            let managed = removal.managed
             if let connection = managed.connection {
                 await runBestEffort("close removed connection during closePeer") {
                     try await connection.close()
                 }
             }
-            if managed.state.isConnected {
-                configuration.connectionResources?.releaseConnection(peer: peer, direction: managed.direction)
+            if removal.shouldReleaseResource && managed.state.isConnected {
+                configuration.connectionResources.releaseConnection(peer: peer, direction: managed.direction)
             }
         }
 
@@ -395,17 +428,15 @@ internal actor Swarm {
         }
 
         // Reserve outbound connection resource
-        if let rm = configuration.connectionResources {
-            do {
-                try rm.reserveConnection(peer: remotePeer, direction: .outbound)
-            } catch let error as ResourceError {
-                await runBestEffort("close upgraded connection after outbound resource reservation failure") {
-                    try await muxedConnection.close()
-                }
-                switch error {
-                case .limitExceeded(let scope, let resource):
-                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
-                }
+        do {
+            try configuration.connectionResources.reserveConnection(peer: remotePeer, direction: .outbound)
+        } catch let error as ResourceError {
+            await runBestEffort("close upgraded connection after outbound resource reservation failure") {
+                try await muxedConnection.close()
+            }
+            switch error {
+            case .limitExceeded(let scope, let resource):
+                throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
             }
         }
 
@@ -413,7 +444,7 @@ internal actor Swarm {
         let connID: ConnectionID
         if let cid = connectingID {
             guard pool.activateConnectionIfPermitted(cid, connection: muxedConnection) else {
-                configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .outbound)
+                configuration.connectionResources.releaseConnection(peer: remotePeer, direction: .outbound)
                 await runBestEffort("close upgraded connection rejected by per-peer limit") {
                     try await muxedConnection.close()
                 }
@@ -428,7 +459,7 @@ internal actor Swarm {
                 direction: .outbound,
                 isLimited: isRelay
             ) else {
-                configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .outbound)
+                configuration.connectionResources.releaseConnection(peer: remotePeer, direction: .outbound)
                 await runBestEffort("close upgraded connection rejected by per-peer limit") {
                     try await muxedConnection.close()
                 }
@@ -449,10 +480,23 @@ internal actor Swarm {
         // Resolve simultaneous connect before emitting events.
         await resolveSimultaneousConnect(for: remotePeer)
 
+        // Re-check running state: shutdown may have started during the awaits
+        // above. Without this, an outbound connection could go live after
+        // shutdown. Release exactly once via the authoritative pool removal.
+        guard isRunning else {
+            if let removal = pool.removeReleasing(connID), removal.shouldReleaseResource {
+                configuration.connectionResources.releaseConnection(peer: remotePeer, direction: .outbound)
+            }
+            await runBestEffort("close outbound connection completed during shutdown") {
+                try await muxedConnection.close()
+            }
+            throw NodeError.nodeNotRunning
+        }
+
         // Start handling inbound streams BEFORE onPeerConnected.
-        Task { [weak self] in
-            await self?.handleInboundStreams(connection: muxedConnection)
-            await self?.handleConnectionClosed(id: connID, peer: remotePeer)
+        track { swarm in
+            await swarm.handleInboundStreams(connection: muxedConnection)
+            await swarm.handleConnectionClosed(id: connID, peer: remotePeer)
         }
 
         // Emit events (guarded: only fires for first connection to this peer)
@@ -469,8 +513,8 @@ internal actor Swarm {
             do {
                 let candidate = try await listener.accept()
 
-                Task { [weak self] in
-                    await self?.handleInboundCandidate(candidate)
+                track { swarm in
+                    await swarm.handleInboundCandidate(candidate)
                 }
             } catch {
                 if case ConnectionAcceptorError.establishFailed(let underlying) = error {
@@ -538,15 +582,13 @@ internal actor Swarm {
         }
 
         // Reserve inbound connection resource
-        if let rm = configuration.connectionResources {
-            do {
-                try rm.reserveConnection(peer: remotePeer, direction: .inbound)
-            } catch {
-                await runBestEffort("close inbound connection after inbound resource reservation failure") {
-                    try await muxedConnection.close()
-                }
-                return
+        do {
+            try configuration.connectionResources.reserveConnection(peer: remotePeer, direction: .inbound)
+        } catch {
+            await runBestEffort("close inbound connection after inbound resource reservation failure") {
+                try await muxedConnection.close()
             }
+            return
         }
 
         // Add to pool
@@ -558,7 +600,7 @@ internal actor Swarm {
             direction: .inbound,
             isLimited: isRelay
         ) else {
-            configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .inbound)
+            configuration.connectionResources.releaseConnection(peer: remotePeer, direction: .inbound)
             await runBestEffort("close inbound connection rejected by per-peer limit") {
                 try await muxedConnection.close()
             }
@@ -571,10 +613,23 @@ internal actor Swarm {
         // Resolve simultaneous connect before emitting events.
         await resolveSimultaneousConnect(for: remotePeer)
 
+        // Re-check running state: shutdown may have started during the awaits
+        // above (gating, resource reservation, simultaneous-connect resolution).
+        // Without this, a connection could go live after shutdown.
+        guard isRunning else {
+            if let removal = pool.removeReleasing(connID), removal.shouldReleaseResource {
+                configuration.connectionResources.releaseConnection(peer: remotePeer, direction: .inbound)
+            }
+            await runBestEffort("close inbound connection accepted during shutdown") {
+                try await muxedConnection.close()
+            }
+            return
+        }
+
         // Start handling inbound streams BEFORE onPeerConnected.
-        Task { [weak self] in
-            await self?.handleInboundStreams(connection: muxedConnection)
-            await self?.handleConnectionClosed(id: connID, peer: remotePeer)
+        track { swarm in
+            await swarm.handleInboundStreams(connection: muxedConnection)
+            await swarm.handleConnectionClosed(id: connID, peer: remotePeer)
         }
 
         // Emit events (guarded: only fires for first connection to this peer)
@@ -591,61 +646,135 @@ internal actor Swarm {
         let semaphore = negotiationSemaphore
 
         for await stream in connection.inboundStreams {
+            // Stop spawning per-stream tasks once shutdown has begun. The
+            // accept/upgrade path may still deliver a stream after `isRunning`
+            // flips; refusing it here prevents work after shutdown.
+            guard isRunning else {
+                await runBestEffort("close inbound stream after shutdown") {
+                    try await stream.close()
+                }
+                continue
+            }
+
             let capturedHandlers = handlers
 
             let remotePeer = connection.remotePeer
             let remoteAddress = connection.remoteAddress
             let localAddress = connection.localAddress
 
-            Task {
-                // Limit concurrent inbound stream negotiations
-                await semaphore.wait()
-
-                // Reserve inbound stream resource
-                if let rm = rm {
-                    do {
-                        try rm.reserveStream(peer: remotePeer, direction: .inbound)
-                    } catch {
-                        semaphore.signal()
-                        await runBestEffort("close inbound stream after inbound stream resource reservation failure") {
-                            try await stream.close()
-                        }
-                        return
-                    }
-                }
-
-                defer {
-                    rm?.releaseStream(peer: remotePeer, direction: .inbound)
-                }
-
-                do {
-                    let context = try await configuration.streamLifecycle.negotiateInboundStream(
-                        stream,
-                        supportedProtocols: supportedProtocols,
-                        remotePeer: remotePeer,
-                        remoteAddress: remoteAddress,
-                        localPeer: localPeer,
-                        localAddress: localAddress
-                    )
-
-                    // Release semaphore after negotiation completes (before handler runs)
-                    semaphore.signal()
-
-                    if let context, let handler = capturedHandlers[context.protocolID] {
-                        await handler(context)
-                    } else {
-                        await runBestEffort("close inbound stream for unsupported protocol") {
-                            try await stream.close()
-                        }
-                    }
-                } catch {
-                    semaphore.signal()
-                    await runBestEffort("close inbound stream after handler failure") {
-                        try await stream.close()
-                    }
-                }
+            let task = Task {
+                await self.processInboundStream(
+                    stream,
+                    handlers: capturedHandlers,
+                    supportedProtocols: supportedProtocols,
+                    remotePeer: remotePeer,
+                    remoteAddress: remoteAddress,
+                    localPeer: localPeer,
+                    localAddress: localAddress,
+                    resources: rm,
+                    semaphore: semaphore
+                )
             }
+            trackStreamTask(task)
         }
+    }
+
+    /// Negotiates a single inbound stream and dispatches it to a handler.
+    ///
+    /// Resource lifetime: the peer-scoped reservation taken before negotiation
+    /// is upgraded to a protocol-scoped reservation once the protocol is known,
+    /// and the reservation is then bound to the stream via `ResourceTrackedStream`
+    /// so it is released exactly when the stream closes — matching the stream's
+    /// lifetime even when the handler retains the stream beyond this task.
+    private func processInboundStream(
+        _ stream: MuxedStream,
+        handlers capturedHandlers: [String: ProtocolHandler],
+        supportedProtocols: [String],
+        remotePeer: PeerID,
+        remoteAddress: Multiaddr,
+        localPeer: PeerID,
+        localAddress: Multiaddr?,
+        resources rm: any StreamResourceAccounting,
+        semaphore: AsyncSemaphore
+    ) async {
+        // Limit concurrent inbound stream negotiations.
+        await semaphore.wait()
+
+        // Reserve inbound stream resource (peer scope; protocol is unknown until
+        // negotiation completes).
+        do {
+            try rm.reserveStream(peer: remotePeer, direction: .inbound)
+        } catch {
+            semaphore.signal()
+            await runBestEffort("close inbound stream after inbound stream resource reservation failure") {
+                try await stream.close()
+            }
+            return
+        }
+
+        let context: StreamContext?
+        do {
+            context = try await configuration.streamLifecycle.negotiateInboundStream(
+                stream,
+                supportedProtocols: supportedProtocols,
+                remotePeer: remotePeer,
+                remoteAddress: remoteAddress,
+                localPeer: localPeer,
+                localAddress: localAddress
+            )
+        } catch {
+            semaphore.signal()
+            rm.releaseStream(peer: remotePeer, direction: .inbound)
+            await runBestEffort("close inbound stream after negotiation failure") {
+                try await stream.close()
+            }
+            return
+        }
+
+        // Release semaphore after negotiation completes (before handler runs).
+        semaphore.signal()
+
+        guard let context, let handler = capturedHandlers[context.protocolID] else {
+            rm.releaseStream(peer: remotePeer, direction: .inbound)
+            await runBestEffort("close inbound stream for unsupported protocol") {
+                try await stream.close()
+            }
+            return
+        }
+
+        // Upgrade the peer-scoped reservation to a protocol-scoped one now that
+        // the protocol is known, so per-protocol limits are enforced for inbound
+        // streams too. Release the peer-scoped reservation first to avoid
+        // double-counting system/peer counters.
+        rm.releaseStream(peer: remotePeer, direction: .inbound)
+        do {
+            try rm.reserveStream(protocolID: context.protocolID, peer: remotePeer, direction: .inbound)
+        } catch {
+            await runBestEffort("close inbound stream after protocol resource reservation failure") {
+                try await context.stream.close()
+            }
+            return
+        }
+
+        // Bind the protocol-scoped reservation to the stream lifetime: it is
+        // released exactly once when the stream closes/resets/deinits, even if
+        // the handler retains the stream beyond this task.
+        let trackedStream = ResourceTrackedStream(
+            stream: context.stream,
+            peer: remotePeer,
+            direction: .inbound,
+            resourceManager: rm,
+            negotiatedProtocolID: context.protocolID
+        )
+        let trackedContext = StreamContext(
+            stream: trackedStream,
+            remotePeer: context.remotePeer,
+            remoteAddress: context.remoteAddress,
+            localPeer: context.localPeer,
+            localAddress: context.localAddress,
+            protocolID: context.protocolID
+        )
+        await handler(trackedContext)
     }
 
     // MARK: - Private: Connection Close / Reconnect
@@ -659,8 +788,13 @@ internal actor Swarm {
             return
         }
 
-        // Release connection resource
-        configuration.connectionResources?.releaseConnection(peer: peer, direction: managed.direction)
+        // Release connection resource exactly once. The entry is kept (it
+        // transitions to .disconnected for reconnection bookkeeping), so mark
+        // the reservation released under the pool lock; a racing close path
+        // (closePeer / idle trim) observes the flag and does not double-release.
+        if pool.markResourceReleased(id) {
+            configuration.connectionResources.releaseConnection(peer: peer, direction: managed.direction)
+        }
 
         // Update state
         pool.updateState(id, to: .disconnected(reason: .remoteClose))
@@ -709,15 +843,14 @@ internal actor Swarm {
         pool.incrementRetryCount(id)
         emitConnectionEvent(.reconnecting(peer: peer, attempt: attempt, nextDelay: delay))
 
-        let task = Task { [weak self] in
+        track { swarm in
             let slept = await sleepUnlessCancelled(
                 for: delay,
                 context: "reconnect backoff for peer \(peer)"
             )
             guard slept else { return }
-            await self?.performReconnect(id: id, peer: peer, address: address, attempt: attempt)
+            await swarm.performReconnect(id: id, peer: peer, address: address, attempt: attempt)
         }
-        reconnectTasks.append(task)
     }
 
     private func performReconnect(id: ConnectionID, peer: PeerID, address: Multiaddr, attempt: Int) async {
@@ -757,22 +890,20 @@ internal actor Swarm {
             }
 
             // Reserve outbound connection resource
-            if let rm = configuration.connectionResources {
-                do {
-                    try rm.reserveConnection(peer: peer, direction: .outbound)
-                } catch let error as ResourceError {
-                    await runBestEffort("close reconnected connection after outbound resource reservation failure") {
-                        try await muxedConnection.close()
-                    }
-                    switch error {
-                    case .limitExceeded(let scope, let resource):
-                        throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
-                    }
+            do {
+                try configuration.connectionResources.reserveConnection(peer: peer, direction: .outbound)
+            } catch let error as ResourceError {
+                await runBestEffort("close reconnected connection after outbound resource reservation failure") {
+                    try await muxedConnection.close()
+                }
+                switch error {
+                case .limitExceeded(let scope, let resource):
+                    throw NodeError.resourceLimitExceeded(scope: scope, resource: resource)
                 }
             }
 
             guard pool.activateConnectionIfPermitted(id, connection: muxedConnection) else {
-                configuration.connectionResources?.releaseConnection(peer: remotePeer, direction: .outbound)
+                configuration.connectionResources.releaseConnection(peer: remotePeer, direction: .outbound)
                 await runBestEffort("close reconnected connection rejected by per-peer limit") {
                     try await muxedConnection.close()
                 }
@@ -784,9 +915,9 @@ internal actor Swarm {
 
             await resolveSimultaneousConnect(for: remotePeer)
 
-            Task { [weak self] in
-                await self?.handleInboundStreams(connection: muxedConnection)
-                await self?.handleConnectionClosed(id: id, peer: remotePeer)
+            track { swarm in
+                await swarm.handleInboundStreams(connection: muxedConnection)
+                await swarm.handleConnectionClosed(id: id, peer: remotePeer)
             }
 
             onPeerConnected(remotePeer)
@@ -835,10 +966,11 @@ internal actor Swarm {
         )
         guard !losers.isEmpty else { return }
 
-        // Close and remove losers
+        // Close and remove losers (authoritative removal: release exactly once)
         for loser in losers {
-            _ = pool.remove(loser.id)
-            configuration.connectionResources?.releaseConnection(peer: loser.peer, direction: loser.direction)
+            if let removal = pool.removeReleasing(loser.id), removal.shouldReleaseResource {
+                configuration.connectionResources.releaseConnection(peer: loser.peer, direction: loser.direction)
+            }
             if let conn = loser.connection {
                 await runBestEffort("close duplicate connection in simultaneous connect resolution") {
                     try await conn.close()
@@ -868,24 +1000,33 @@ internal actor Swarm {
     private func performIdleCheck() async {
         let idleTimeout = configuration.idleTimeout
 
-        // 1. Close idle connections
+        // 1. Close idle connections.
+        // Remove from the pool FIRST (authoritative, under the lock) so a racing
+        // handleConnectionClosed observes the entry gone / already-released and
+        // cannot double-release during the subsequent `await close`.
         let idleConnections = pool.idleConnections(threshold: idleTimeout)
         for managed in idleConnections {
-            configuration.connectionResources?.releaseConnection(peer: managed.peer, direction: managed.direction)
-            if let connection = managed.connection {
+            guard let removal = pool.removeReleasing(managed.id) else { continue }
+            if removal.shouldReleaseResource {
+                configuration.connectionResources.releaseConnection(peer: managed.peer, direction: managed.direction)
+            }
+            if let connection = removal.managed.connection {
                 await runBestEffort("close idle connection during idle check") {
                     try await connection.close()
                 }
             }
-            _ = pool.remove(managed.id)
             if !pool.isConnected(to: managed.peer) {
                 onPeerDisconnected(managed.peer)
                 emitConnectionEvent(.disconnected(peer: managed.peer, reason: .idleTimeout))
             }
         }
 
-        // 2. Trim if over limits
-        let trimReport = pool.trimReport()
+        // 2. Trim if over limits.
+        // Compute-and-apply atomically under a single lock so the report
+        // describes exactly the connections that were trimmed (no TOCTOU gap
+        // between a separate report and apply).
+        let trimOutcome = pool.trimReleasing()
+        let trimReport = trimOutcome.report
         if trimReport.requiresTrim && trimReport.selectedCount < trimReport.targetTrimCount {
             emitConnectionEvent(
                 .trimConstrained(
@@ -910,9 +1051,11 @@ internal actor Swarm {
             }
         )
 
-        let trimmed = pool.trimIfNeeded()
-        for managed in trimmed {
-            configuration.connectionResources?.releaseConnection(peer: managed.peer, direction: managed.direction)
+        for removal in trimOutcome.removed {
+            let managed = removal.managed
+            if removal.shouldReleaseResource {
+                configuration.connectionResources.releaseConnection(peer: managed.peer, direction: managed.direction)
+            }
             if let connection = managed.connection {
                 await runBestEffort("close trimmed connection during idle check") {
                     try await connection.close()
@@ -942,6 +1085,42 @@ internal actor Swarm {
             idleDuration: candidate.idleDuration,
             direction: candidate.direction
         )
+    }
+
+    // MARK: - Private: Task Tracking
+
+    /// Spawns a tracked actor-isolated task that self-removes on completion and
+    /// is cancelled at shutdown. The token is reserved synchronously so the task
+    /// can deregister itself even if it finishes before this method returns.
+    @discardableResult
+    private func track(_ operation: @escaping @Sendable (isolated Swarm) async -> Void) -> Task<Void, Never> {
+        let token = nextTaskToken
+        nextTaskToken &+= 1
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await operation(self)
+            await self.untrack(token)
+        }
+        trackedTasks[token] = task
+        return task
+    }
+
+    private func untrack(_ token: UInt64) {
+        trackedTasks.removeValue(forKey: token)
+    }
+
+    /// Registers an already-created stream-negotiation task for tracking and
+    /// self-removal. Used by the inbound-stream loop, which builds the task in
+    /// the synchronous `for await` body.
+    private func trackStreamTask(_ task: Task<Void, Never>) {
+        let token = nextTaskToken
+        nextTaskToken &+= 1
+        trackedTasks[token] = task
+        // Self-remove once the task completes (hop back onto the actor).
+        Task { [weak self] in
+            await task.value
+            await self?.untrack(token)
+        }
     }
 
     // MARK: - Private: Event Helpers

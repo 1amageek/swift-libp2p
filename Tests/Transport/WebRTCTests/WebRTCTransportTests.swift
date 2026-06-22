@@ -84,6 +84,36 @@ struct WebRTCTransportTests {
         ])
         #expect(transport.canDial(addr))
     }
+
+    // MARK: - Port Validation (Finding 9)
+
+    @Test("Cannot dial WebRTC address with port 0")
+    func cannotDialPortZero() {
+        let transport = WebRTCTransport()
+
+        // Port 0 is not a valid dial target; it must be rejected rather than
+        // silently substituted.
+        let certhash = Data([0x12, 0x20] + Array(repeating: UInt8(0xAB), count: 32))
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(0), .webrtcDirect, .certhash(certhash)
+        ])
+        #expect(!transport.canDial(addr))
+    }
+
+    @Test("dialSecured rejects WebRTC address with port 0")
+    func dialSecuredRejectsPortZero() async {
+        let transport = WebRTCTransport()
+        let keyPair = KeyPair.generateEd25519()
+
+        let certhash = Data([0x12, 0x20] + Array(repeating: UInt8(0xAB), count: 32))
+        let addr = Multiaddr(uncheckedProtocols: [
+            .ip4("127.0.0.1"), .udp(0), .webrtcDirect, .certhash(certhash)
+        ])
+
+        await #expect(throws: TransportError.self) {
+            _ = try await transport.dialSecured(addr, localKeyPair: keyPair)
+        }
+    }
 }
 
 @Suite("WebRTC Multiaddr Tests")

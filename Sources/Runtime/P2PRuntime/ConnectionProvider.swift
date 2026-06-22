@@ -5,6 +5,8 @@ import P2PSecurity
 import P2PTransport
 import P2PMux
 
+private let connectionProviderLogger = Logger(label: "p2p.runtime.connection-provider")
+
 public struct LocalIdentity: Sendable {
     public let keyPair: KeyPair
 
@@ -41,15 +43,25 @@ public enum ConnectionProviders {
     public static func compose(
         transports: [any Transport],
         security: [any SecurityUpgrader],
-        muxers: [any Muxer]
+        muxers: [any Muxer],
+        protector: (any ConnectionProtector)? = nil
     ) -> [any ConnectionProvider] {
         let upgrader = NegotiatingUpgrader(
             security: security,
-            muxers: muxers
+            muxers: muxers,
+            protector: protector
         )
 
         return transports.map { transport in
             if let securedTransport = transport as? any SecuredTransport {
+                // Secured transports (e.g. QUIC/TLS) negotiate security inside
+                // the transport, bypassing NegotiatingUpgrader. A pre-security
+                // PSK protector cannot be inserted here through this path; such
+                // transports must apply pnet at the transport layer. Fail closed
+                // rather than silently shipping an unprotected connection.
+                if protector != nil {
+                    return UnsupportedProtectorConnectionProvider(transport: securedTransport)
+                }
                 return SecuredTransportConnectionProvider(transport: securedTransport)
             }
 
@@ -92,6 +104,42 @@ public enum ConnectionProviders {
 
 public enum ConnectionAcceptorError: Error {
     case establishFailed(any Error)
+}
+
+public enum ConnectionProviderError: Error, Sendable {
+    /// A PSK protector was configured but the transport handles security
+    /// internally (secured transport), so the pre-security protector cannot be
+    /// applied. This fails closed rather than dialing/listening unprotected.
+    case protectorUnsupportedForSecuredTransport
+}
+
+/// A provider for a secured transport that was configured with a PSK protector
+/// it cannot apply. Every dial/listen fails closed so a configured private
+/// network is never silently bypassed.
+public struct UnsupportedProtectorConnectionProvider: ConnectionProvider {
+    public let transport: any SecuredTransport
+
+    public init(transport: any SecuredTransport) {
+        self.transport = transport
+    }
+
+    public var pathKind: TransportPathKind { transport.pathKind }
+
+    public func canDial(_ address: Multiaddr) -> Bool {
+        transport.canDial(address)
+    }
+
+    public func canListen(_ address: Multiaddr) -> Bool {
+        transport.canListen(address)
+    }
+
+    public func dial(_ address: Multiaddr, identity: LocalIdentity) async throws -> any StreamSession {
+        throw ConnectionProviderError.protectorUnsupportedForSecuredTransport
+    }
+
+    public func listen(_ address: Multiaddr, identity: LocalIdentity) async throws -> any ConnectionAcceptor {
+        throw ConnectionProviderError.protectorUnsupportedForSecuredTransport
+    }
 }
 
 public struct SecuredTransportConnectionProvider: ConnectionProvider {
@@ -158,6 +206,7 @@ public struct PipelineConnectionProvider: ConnectionProvider {
             do {
                 try await rawConnection.close()
             } catch let closeError {
+                connectionProviderLogger.error("PipelineConnectionProvider failed to close raw connection after upgrade failure: \(closeError)")
                 assertionFailure("PipelineConnectionProvider failed to close raw connection after upgrade failure: \(closeError)")
             }
             throw error
@@ -185,6 +234,7 @@ private struct NativeInboundSessionCandidate: InboundSessionCandidate {
         do {
             try await connection.close()
         } catch let closeError {
+            connectionProviderLogger.error("NativeInboundSessionCandidate.reject() failed to close connection: \(closeError)")
             assertionFailure("NativeInboundSessionCandidate.reject() failed to close connection: \(closeError)")
         }
     }
@@ -207,6 +257,7 @@ private struct UpgradedInboundSessionCandidate: InboundSessionCandidate {
         do {
             try await rawConnection.close()
         } catch let closeError {
+            connectionProviderLogger.error("UpgradedInboundSessionCandidate.reject() failed to close raw connection: \(closeError)")
             assertionFailure("UpgradedInboundSessionCandidate.reject() failed to close raw connection: \(closeError)")
         }
     }
@@ -224,6 +275,7 @@ private struct UpgradedInboundSessionCandidate: InboundSessionCandidate {
             do {
                 try await rawConnection.close()
             } catch let closeError {
+                connectionProviderLogger.error("UpgradedInboundSessionCandidate.establish() failed to close raw connection after upgrade failure: \(closeError)")
                 assertionFailure("UpgradedInboundSessionCandidate.establish() failed to close raw connection after upgrade failure: \(closeError)")
             }
             throw ConnectionAcceptorError.establishFailed(error)

@@ -11,6 +11,17 @@
 import Foundation
 import Synchronization
 import NIOCore
+import Logging
+
+private let wsRTCUDPHandlerLogger = Logger(label: "swift-libp2p.WebRTCUDPHandler")
+
+/// Maximum number of datagrams buffered before handlers are set.
+///
+/// Datagrams arriving before `setHandlers()` is wired are buffered so a DCEP
+/// open bundled with early data is not lost. Bounded so a peer cannot pin
+/// unbounded memory by flooding datagrams during the brief pre-handler window
+/// (memory-exhaustion DoS). Excess datagrams are dropped with a log.
+private let webRTCMaxPreHandlerBufferedDatagrams = 1024
 
 /// NIO handler that forwards incoming UDP datagrams to a callback.
 ///
@@ -74,19 +85,30 @@ final class WebRTCUDPHandler: ChannelInboundHandler, Sendable {
         enum Action {
             case deliver(@Sendable (SocketAddress, Data) -> Void)
             case buffer
+            case dropped
         }
 
         let action = handlerState.withLock { state -> Action in
             if let callback = state.onDatagram {
                 return .deliver(callback)
-            } else {
-                state.buffered.append((remoteAddress, bytes))
-                return .buffer
             }
+            // Bound the pre-handler buffer to prevent memory-exhaustion DoS.
+            guard state.buffered.count < webRTCMaxPreHandlerBufferedDatagrams else {
+                return .dropped
+            }
+            state.buffered.append((remoteAddress, bytes))
+            return .buffer
         }
 
-        if case .deliver(let callback) = action {
+        switch action {
+        case .deliver(let callback):
             callback(remoteAddress, bytes)
+        case .buffer:
+            break
+        case .dropped:
+            wsRTCUDPHandlerLogger.warning(
+                "Pre-handler datagram buffer full (\(webRTCMaxPreHandlerBufferedDatagrams)); dropping datagram from \(remoteAddress)"
+            )
         }
     }
 

@@ -194,6 +194,13 @@ public final class PeerScorer: Sendable {
         var meshFailurePenalty: Double = 0
         /// Counter for invalid message deliveries in this topic.
         var invalidMessageDeliveries: Double = 0
+        /// When per-topic counters were last decayed.
+        ///
+        /// Per-topic decay must be gated on `decayInterval` (matching the
+        /// global score-decay path). Decaying on every heartbeat (~1s) instead
+        /// of every interval (~60s) would make penalties evaporate ~60x too
+        /// fast, defeating the purpose of the penalty.
+        var lastDecay: ContinuousClock.Instant = .now
     }
 
     /// State for tracking IWANT requests per peer per message.
@@ -992,15 +999,20 @@ public final class PeerScorer: Sendable {
             }
         }
 
-        // Apply per-topic decay
+        // Apply per-topic decay, gated on `decayInterval` (NOT every heartbeat).
+        let now = ContinuousClock.now
         topicState.withLock { states in
             for (peer, var peerTopics) in states {
                 for (topic, var ts) in peerTopics {
+                    let elapsed = now - ts.lastDecay
+                    guard elapsed >= config.decayInterval else { continue }
+                    let decayPeriods = Int(elapsed / config.decayInterval)
                     let params = resolveTopicParams(topic)
-                    ts.firstMessageDeliveries *= params.firstMessageDeliveriesDecay
-                    ts.meshMessageDeliveries *= params.meshMessageDeliveriesDecay
-                    ts.meshFailurePenalty *= params.meshFailurePenaltyDecay
-                    ts.invalidMessageDeliveries *= params.invalidMessageDeliveriesDecay
+                    ts.firstMessageDeliveries *= pow(params.firstMessageDeliveriesDecay, Double(decayPeriods))
+                    ts.meshMessageDeliveries *= pow(params.meshMessageDeliveriesDecay, Double(decayPeriods))
+                    ts.meshFailurePenalty *= pow(params.meshFailurePenaltyDecay, Double(decayPeriods))
+                    ts.invalidMessageDeliveries *= pow(params.invalidMessageDeliveriesDecay, Double(decayPeriods))
+                    ts.lastDecay = now
                     peerTopics[topic] = ts
                 }
                 states[peer] = peerTopics

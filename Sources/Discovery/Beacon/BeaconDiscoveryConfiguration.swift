@@ -35,6 +35,11 @@ public struct BeaconDiscoveryConfiguration: Sendable {
     /// Default is `InMemoryBeaconPeerStore`.
     public var store: any BeaconPeerStore
 
+    /// Interval for periodic garbage collection of expired confirmed records
+    /// (`store.removeExpired()`) and stale Sybil-filter entries
+    /// (`filter.pruneExpired()`). `nil` disables scheduled GC. Default is 60s.
+    public var gcInterval: Duration?
+
     public init(
         keyPair: KeyPair,
         powDifficulty: Int = MicroPoW.defaultDifficulty,
@@ -43,7 +48,8 @@ public struct BeaconDiscoveryConfiguration: Sendable {
         beaconRateLimit: Duration = .seconds(5),
         ephIDRotationInterval: Duration = .seconds(600),
         capabilityBloom: Data = Data(repeating: 0, count: 10),
-        store: (any BeaconPeerStore)? = nil
+        store: (any BeaconPeerStore)? = nil,
+        gcInterval: Duration? = .seconds(60)
     ) {
         self.keyPair = keyPair
         self.powDifficulty = powDifficulty
@@ -53,5 +59,6 @@ public struct BeaconDiscoveryConfiguration: Sendable {
         self.ephIDRotationInterval = ephIDRotationInterval
         self.capabilityBloom = capabilityBloom
         self.store = store ?? InMemoryBeaconPeerStore()
+        self.gcInterval = gcInterval
     }
 }

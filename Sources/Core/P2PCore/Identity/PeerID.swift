@@ -52,25 +52,44 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
         self.multihash = try Multihash(bytes: bytes)
     }
 
-    /// Creates a PeerID from a Base58-encoded string.
+    /// Creates a PeerID from a Base58- or multibase-encoded string.
     ///
-    /// - Parameter string: The Base58-encoded PeerID string
-    /// - Throws: `PeerIDError` if the string is invalid
+    /// ## Prefix handling
+    ///
+    /// libp2p PeerID strings come in two forms:
+    /// - Legacy base58btc multihash, no multibase prefix. These begin with `Qm`
+    ///   (SHA-256 multihash) or `1` (identity multihash) — both are
+    ///   unambiguous base58btc length/version markers.
+    /// - CIDv1 multibase, with a single-character base prefix: `z` (base58btc),
+    ///   `f` (base16/hex), `b` (base32).
+    ///
+    /// ### The `z` assumption
+    ///
+    /// A leading `z` is treated as the multibase base58btc prefix and stripped.
+    /// This is unambiguous in practice because legacy (prefix-less) PeerIDs only
+    /// ever start with `Qm` or `1` (their multihash version/length bytes encode
+    /// to those leading characters). A raw base58btc multihash does not begin
+    /// with `z`, so stripping is safe. If decoding the stripped remainder fails
+    /// to produce a valid multihash, the error is surfaced rather than retried
+    /// as a prefix-less string (no silent fallback).
+    ///
+    /// - Parameter string: The encoded PeerID string
+    /// - Throws: `PeerIDError`/`MultihashError` if the string is invalid, or
+    ///   `PeerIDError.unsupportedEncoding` for the `f`/`b` multibase prefixes.
     public init(string: String) throws {
-        // Handle CIDv1 multibase prefix if present
         let data: Data
-        if string.hasPrefix("1") || string.hasPrefix("Qm") {
-            // Legacy Base58btc encoded (no multibase prefix)
+        if string.hasPrefix("Qm") || string.hasPrefix("1") {
+            // Legacy base58btc multihash (no multibase prefix).
             data = try Data(base58Encoded: string)
         } else if string.hasPrefix("z") {
-            // Multibase Base58btc prefix
+            // Multibase base58btc prefix — strip the single-char prefix.
             let base58Part = String(string.dropFirst())
             data = try Data(base58Encoded: base58Part)
         } else if string.hasPrefix("f") || string.hasPrefix("b") {
-            // Multibase hex or base32 - not yet supported
+            // Multibase hex (f) or base32 (b) — not yet supported.
             throw PeerIDError.unsupportedEncoding
         } else {
-            // Try as plain Base58
+            // Try as plain base58btc.
             data = try Data(base58Encoded: string)
         }
 

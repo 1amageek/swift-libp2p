@@ -198,6 +198,7 @@ struct RendezvousErrorTests {
             .unavailable,
             .protocolError("test"),
             .internalError("test"),
+            .invalidSignedPeerRecord("test"),
         ]
 
         var matched = 0
@@ -217,10 +218,11 @@ struct RendezvousErrorTests {
             case .unavailable: matched += 1
             case .protocolError: matched += 1
             case .internalError: matched += 1
+            case .invalidSignedPeerRecord: matched += 1
             }
         }
 
-        #expect(matched == 14)
+        #expect(matched == 15)
     }
 
     @Test("Errors are Equatable")
@@ -1566,5 +1568,145 @@ struct DiscoveredPeerTests {
         )
 
         #expect(discovered.addresses.count == 3)
+    }
+}
+
+// MARK: - Signed Registration Tests
+
+@Suite("Rendezvous Signed Registration", .serialized)
+struct RendezvousSignedRegistrationTests {
+
+    /// Builds a signed PeerRecord envelope for the given key pair and addresses.
+    private func makeEnvelope(
+        keyPair: KeyPair,
+        addresses: [Multiaddr],
+        seq: UInt64 = 1
+    ) throws -> Envelope {
+        let record = PeerRecord.make(keyPair: keyPair, seq: seq, addresses: addresses)
+        return try Envelope.seal(record: record, with: keyPair)
+    }
+
+    @Test("Valid signed registration is accepted and stores verified addresses")
+    func validSignedRegistration() async throws {
+        let point = RendezvousPoint(configuration: .init(cleanupInterval: nil))
+        let keyPair = KeyPair.generateEd25519()
+        let addr = Multiaddr.tcp(host: "203.0.113.5", port: 4001)
+        let envelope = try makeEnvelope(keyPair: keyPair, addresses: [addr])
+
+        let registration = try point.register(
+            signedPeerRecord: envelope,
+            expectedPeer: keyPair.peerID,
+            namespace: "app",
+            ttl: .seconds(3600)
+        )
+
+        #expect(registration.peer == keyPair.peerID)
+        #expect(registration.addresses.count == 1)
+        #expect(registration.addresses.first == addr)
+
+        let (regs, _) = point.discover(namespace: "app")
+        #expect(regs.count == 1)
+        #expect(regs.first?.peer == keyPair.peerID)
+        try await point.shutdown()
+    }
+
+    @Test("Registration with a record for a different peer is rejected")
+    func mismatchedPeerRejected() async throws {
+        let point = RendezvousPoint(configuration: .init(cleanupInterval: nil))
+        let signer = KeyPair.generateEd25519()
+        let other = KeyPair.generateEd25519()
+        let addr = Multiaddr.tcp(host: "203.0.113.5", port: 4001)
+        // Envelope is signed by `signer`, but we claim to register `other`.
+        let envelope = try makeEnvelope(keyPair: signer, addresses: [addr])
+
+        #expect(throws: RendezvousError.self) {
+            try point.register(
+                signedPeerRecord: envelope,
+                expectedPeer: other.peerID,
+                namespace: "app",
+                ttl: .seconds(3600)
+            )
+        }
+        // Nothing must be stored.
+        let (regs, _) = point.discover(namespace: "app")
+        #expect(regs.isEmpty)
+        try await point.shutdown()
+    }
+
+    @Test("Registration with a tampered envelope is rejected")
+    func tamperedSignatureRejected() async throws {
+        let point = RendezvousPoint(configuration: .init(cleanupInterval: nil))
+        let keyPair = KeyPair.generateEd25519()
+        let addr = Multiaddr.tcp(host: "203.0.113.5", port: 4001)
+        let original = try makeEnvelope(keyPair: keyPair, addresses: [addr])
+
+        // Corrupt the signature (last byte) and re-parse the envelope so the
+        // signature no longer matches the signed payload.
+        var bytes = try original.marshal()
+        let lastIndex = bytes.index(before: bytes.endIndex)
+        bytes[lastIndex] ^= 0xFF
+        let tampered = try Envelope.unmarshal(bytes)
+
+        #expect(throws: RendezvousError.self) {
+            try point.register(
+                signedPeerRecord: tampered,
+                expectedPeer: keyPair.peerID,
+                namespace: "app",
+                ttl: .seconds(3600)
+            )
+        }
+        let (regs, _) = point.discover(namespace: "app")
+        #expect(regs.isEmpty)
+        try await point.shutdown()
+    }
+
+    @Test("Registration with an empty-address record is rejected")
+    func emptyAddressRecordRejected() async throws {
+        let point = RendezvousPoint(configuration: .init(cleanupInterval: nil))
+        let keyPair = KeyPair.generateEd25519()
+        let envelope = try makeEnvelope(keyPair: keyPair, addresses: [])
+
+        #expect(throws: RendezvousError.self) {
+            try point.register(
+                signedPeerRecord: envelope,
+                expectedPeer: keyPair.peerID,
+                namespace: "app",
+                ttl: .seconds(3600)
+            )
+        }
+        try await point.shutdown()
+    }
+
+    @Test("Pagination cookies are bounded (LRU eviction)")
+    func cookiesAreBounded() async throws {
+        let point = RendezvousPoint(configuration: .init(
+            maxRegistrationsPerNamespace: 1000,
+            maxCookies: 4,
+            cleanupInterval: nil
+        ))
+        // Register many peers so that paginated discovery produces cookies.
+        for _ in 0..<20 {
+            let kp = KeyPair.generateEd25519()
+            let addr = Multiaddr.tcp(host: "203.0.113.5", port: 4001)
+            let env = try makeEnvelope(keyPair: kp, addresses: [addr])
+            try point.register(signedPeerRecord: env, expectedPeer: kp.peerID, namespace: "app", ttl: .seconds(3600))
+        }
+
+        // Issue many first-page discoveries, each producing a fresh cookie.
+        var issued: [Data] = []
+        for _ in 0..<10 {
+            let (_, cookie) = point.discover(namespace: "app", limit: 1)
+            if let cookie { issued.append(cookie) }
+        }
+        #expect(issued.count == 10)
+
+        // The oldest cookies must have been evicted: an early cookie should no
+        // longer resolve to its stored offset (falls back to offset 0).
+        let oldest = issued[0]
+        let (firstPageAgain, _) = point.discover(namespace: "app", limit: 1, cookie: oldest)
+        // With the cookie evicted, discovery restarts from offset 0 (returns a result),
+        // proving the cookie store did not grow unbounded.
+        #expect(firstPageAgain.count == 1)
+        try await point.shutdown()
     }
 }

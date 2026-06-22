@@ -568,3 +568,98 @@ struct ProtocolIDConstantsTests {
         #expect(ProtocolID.identifyPush == "/ipfs/id/push/1.0.0")
     }
 }
+
+// MARK: - Identify Push Address Verification Tests
+
+import NIOCore
+
+/// Mock stream that delivers one fixed payload then EOF (for push handler).
+private final class IdentifyPushMockStream: MuxedStream, Sendable {
+    let id: UInt64 = 1
+    let protocolID: String? = ProtocolID.identifyPush
+
+    private let state: Mutex<[ByteBuffer]>
+    init(payload: Data) { self.state = Mutex([ByteBuffer(bytes: payload)]) }
+
+    func read() async throws -> ByteBuffer {
+        state.withLock { q in q.isEmpty ? ByteBuffer() : q.removeFirst() }
+    }
+    func write(_ data: ByteBuffer) async throws {}
+    func closeWrite() async throws {}
+    func closeRead() async throws {}
+    func close() async throws {}
+    func reset() async throws {}
+}
+
+@Suite("Identify Push Address Verification", .serialized)
+struct IdentifyPushVerificationTests {
+
+    private func pushContext(_ stream: MuxedStream, from peer: PeerID) -> StreamContext {
+        StreamContext(
+            stream: stream,
+            remotePeer: peer,
+            remoteAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4001),
+            localPeer: KeyPair.generateEd25519().peerID,
+            localAddress: nil,
+            protocolID: ProtocolID.identifyPush
+        )
+    }
+
+    @Test("Unsigned address-bearing push does not overwrite cached addresses", .timeLimit(.minutes(1)))
+    func unsignedPushDoesNotOverwrite() async throws {
+        let service = IdentifyService(configuration: .init(cleanupInterval: nil))
+        let peerKey = KeyPair.generateEd25519()
+        let peer = peerKey.peerID
+
+        // Seed the cache with trusted addresses.
+        let trustedAddr = Multiaddr.tcp(host: "203.0.113.9", port: 4001)
+        service.mergePushInfo(IdentifyInfo(listenAddresses: [trustedAddr]), for: peer)
+        #expect(service.cachedInfo(for: peer)?.listenAddresses == [trustedAddr])
+
+        // Craft an UNSIGNED push advertising an attacker address (no signed record).
+        let attackerAddr = Multiaddr.tcp(host: "10.0.0.1", port: 9999)
+        let maliciousInfo = IdentifyInfo(listenAddresses: [attackerAddr])
+        let encoded = try IdentifyProtobuf.encode(maliciousInfo)
+
+        // Collect error events.
+        let gotError = Mutex(false)
+        let eventTask = Task {
+            for await event in service.events {
+                if case .error = event { gotError.withLock { $0 = true } }
+            }
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        let stream = IdentifyPushMockStream(payload: encoded)
+        await service.handleInboundStream(pushContext(stream, from: peer))
+        try await Task.sleep(for: .milliseconds(20))
+
+        // The cache must still hold the original trusted address, not the attacker's.
+        let cached = service.cachedInfo(for: peer)
+        #expect(cached?.listenAddresses == [trustedAddr], "Unsigned push must not overwrite addresses")
+        #expect(gotError.withLock { $0 }, "Unsigned address-bearing push must be rejected with an error")
+
+        eventTask.cancel()
+        try await service.shutdown()
+    }
+
+    @Test("Signed address-bearing push is accepted and updates the cache", .timeLimit(.minutes(1)))
+    func signedPushAccepted() async throws {
+        let service = IdentifyService(configuration: .init(cleanupInterval: nil))
+        let peerKey = KeyPair.generateEd25519()
+        let peer = peerKey.peerID
+
+        let newAddr = Multiaddr.tcp(host: "203.0.113.20", port: 4001)
+        let record = PeerRecord.make(keyPair: peerKey, seq: 1, addresses: [newAddr])
+        let envelope = try Envelope.seal(record: record, with: peerKey)
+        let info = IdentifyInfo(listenAddresses: [newAddr], signedPeerRecord: envelope)
+        let encoded = try IdentifyProtobuf.encode(info)
+
+        let stream = IdentifyPushMockStream(payload: encoded)
+        await service.handleInboundStream(pushContext(stream, from: peer))
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(service.cachedInfo(for: peer)?.listenAddresses == [newAddr])
+        try await service.shutdown()
+    }
+}

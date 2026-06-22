@@ -213,7 +213,38 @@ public final class PlumtreeRouter: Sendable {
     /// - Moves sender to lazy set
     /// - Returns PRUNE indication
     public func handleGossip(_ gossip: PlumtreeGossip, from peer: PeerID) -> HandleGossipResult {
-        state.withLock { s -> HandleGossipResult in
+        // Validate the message before touching any shared state. These checks do
+        // not require the lock and reject hostile messages early.
+
+        // 1. The message ID must be cryptographically bound to the claimed
+        //    source (ID == compute(source, seqno)). Otherwise an attacker could
+        //    poison the seen-cache with arbitrary IDs for other sources.
+        guard gossip.messageID.isBound(to: gossip.source) else {
+            return HandleGossipResult(
+                events: [.messageDropped(
+                    messageID: gossip.messageID, from: peer, reason: .messageIDSourceMismatch
+                )],
+                deliverToSubscribers: nil,
+                forwardTo: [],
+                lazyNotify: [],
+                pruneSender: false
+            )
+        }
+
+        // 2. Enforce a maximum hop count to bound forwarding amplification.
+        if gossip.hopCount > configuration.maxHopCount {
+            return HandleGossipResult(
+                events: [.messageDropped(
+                    messageID: gossip.messageID, from: peer, reason: .hopCountExceeded(gossip.hopCount)
+                )],
+                deliverToSubscribers: nil,
+                forwardTo: [],
+                lazyNotify: [],
+                pruneSender: false
+            )
+        }
+
+        return state.withLock { s -> HandleGossipResult in
             var events: [PlumtreeEvent] = []
 
             // Check if we've seen this message

@@ -153,36 +153,10 @@ public protocol ResourceManager: Sendable {
     func releaseServiceMemory(_ bytes: Int, service: String)
 }
 
-// MARK: - Default implementations for backward compatibility
-
-extension ResourceManager {
-    public func protocolScope(for protocolID: String) -> ResourceScope {
-        DefaultUnlimitedScope(name: "protocol:\(protocolID)")
-    }
-
-    public func reserveStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) throws {
-        switch direction {
-        case .inbound: try reserveInboundStream(from: peer)
-        case .outbound: try reserveOutboundStream(to: peer)
-        }
-    }
-
-    public func releaseStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) {
-        releaseStream(peer: peer, direction: direction)
-    }
-
-    public func serviceScope(for service: String) -> ResourceScope {
-        DefaultUnlimitedScope(name: "service:\(service)")
-    }
-
-    public func reserveServiceMemory(_ bytes: Int, service: String) throws {}
-
-    public func releaseServiceMemory(_ bytes: Int, service: String) {}
-}
-
-/// Internal unlimited scope used by default implementations.
-internal struct DefaultUnlimitedScope: ResourceScope, Sendable {
-    let name: String
-    var stat: ResourceStat { ResourceStat() }
-    var limits: ScopeLimits { .unlimited }
-}
+// NOTE: This protocol intentionally provides NO default implementations for the
+// protocol-scoped and service-scoped reserve/release methods. Earlier defaults
+// were fail-open (they silently dropped the protocol dimension to peer scope and
+// made service-memory reservation a no-op), which is a silent fallback: a
+// configured per-protocol or per-service limit would never be enforced. Every
+// conformer must implement these explicitly so "no limit" is a deliberate choice
+// (see `NullResourceManager`) rather than an accidental gap.

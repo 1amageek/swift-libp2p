@@ -40,8 +40,12 @@ public struct KademliaKey: Sendable, Hashable {
     ///
     /// - Parameter bytes: The raw key bytes (must be 32 bytes).
     /// - Precondition: `bytes.count == 32`
+    ///
+    /// This crashing initializer is `internal` on purpose: untrusted wire input
+    /// MUST go through the throwing `init(validating:)` so a malformed key length
+    /// becomes a typed error instead of a remote-triggerable crash.
     @inlinable
-    public init(bytes: Data) {
+    internal init(bytes: Data) {
         precondition(bytes.count == 32, "KademliaKey must be 32 bytes")
         self = bytes.withUnsafeBytes { ptr in
             KademliaKey(from: ptr)

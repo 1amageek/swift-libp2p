@@ -70,4 +70,29 @@ public struct ResourceLimitsConfiguration: Sendable {
 
     /// Default configuration with standard limits.
     public static let `default` = ResourceLimitsConfiguration()
+
+    /// Development configuration with looser limits.
+    ///
+    /// Development nodes still enforce limits (no silent "unlimited"), but the
+    /// ceilings are raised so local multi-node test setups are not throttled.
+    public static let development = ResourceLimitsConfiguration(
+        system: ScopeLimits(
+            maxInboundConnections: 512,
+            maxOutboundConnections: 512,
+            maxTotalConnections: 1024,
+            maxInboundStreams: 16384,
+            maxOutboundStreams: 16384,
+            maxTotalStreams: 32768,
+            maxMemory: nil
+        ),
+        peer: ScopeLimits(
+            maxInboundConnections: 8,
+            maxOutboundConnections: 8,
+            maxTotalConnections: 16,
+            maxInboundStreams: 1024,
+            maxOutboundStreams: 1024,
+            maxTotalStreams: 2048,
+            maxMemory: nil
+        )
+    )
 }

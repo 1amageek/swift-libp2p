@@ -7,6 +7,13 @@ import Synchronization
 
 private let logger = Logger(label: "p2p.mux.mplex.connection")
 
+/// Maximum number of control frames buffered by the control-frame queue.
+///
+/// Decouples RST sends from the read loop so a back-pressured transport cannot
+/// wedge frame draining. Bounded so a peer cannot grow the queue without limit
+/// by flooding frames that trigger RST responses.
+private let mplexControlFrameQueueCapacity = 1024
+
 /// Actor for serializing frame writes to the underlying connection.
 ///
 /// This ensures that concurrent writes from multiple streams don't interleave
@@ -74,10 +81,13 @@ public final class MplexConnection: MuxedConnection, Sendable {
     private let state: Mutex<MplexConnectionState>
     /// Serializes frame writes to prevent interleaving
     private let frameWriter: MplexFrameWriter
+    /// Decouples control-frame (RST) sends from the read loop.
+    private let controlQueue: MplexControlFrameQueue
 
     public let inboundStreams: AsyncStream<MuxedStream>
 
     private let readTask: Mutex<Task<Void, Never>?>
+    private let controlDrainTask: Mutex<Task<Void, Never>?>
 
     init(
         underlying: any SecuredConnection,
@@ -92,6 +102,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
         self.isInitiator = isInitiator
         self.configuration = configuration
         self.frameWriter = MplexFrameWriter(connection: underlying)
+        self.controlQueue = MplexControlFrameQueue(capacity: mplexControlFrameQueueCapacity)
 
         var initialState = MplexConnectionState()
 
@@ -104,6 +115,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
         self.state = Mutex(initialState)
         self.readTask = Mutex(nil)
+        self.controlDrainTask = Mutex(nil)
     }
 
     /// Starts the read loop. Must be called after init.
@@ -118,6 +130,13 @@ public final class MplexConnection: MuxedConnection, Sendable {
         }
 
         guard shouldStart else { return }
+
+        // Start control-frame drain loop first so the read loop can enqueue
+        // control responses immediately without blocking.
+        let drain: Task<Void, Never> = Task { [weak self] in
+            await self?.controlDrainLoop()
+        }
+        controlDrainTask.withLock { $0 = drain }
 
         // Start read loop
         let task: Task<Void, Never> = Task { [weak self] in
@@ -163,7 +182,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
         // We initiate this stream
         let key = MplexStreamKey(id: streamID, initiatedLocally: true)
-        let stream = MplexStream(id: streamID, connection: self, isInitiator: true, maxReadBufferSize: configuration.maxFrameSize)
+        let stream = MplexStream(id: streamID, connection: self, isInitiator: true, maxReadBufferSize: configuration.maxReadBufferSizePerStream)
         state.withLock { state in
             state.streams[key] = stream
         }
@@ -202,6 +221,9 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
         // Cancel read task
         readTask.withLock { $0?.cancel() }
+        // Terminate the control-frame drain loop and cancel its task.
+        controlQueue.finish()
+        controlDrainTask.withLock { $0?.cancel() }
 
         // Notify continuations
         capture.notifyContinuations(error: MplexError.connectionClosed)
@@ -311,7 +333,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
             }
 
             // Remote initiated this stream, so we are not the initiator
-            let stream = MplexStream(id: streamID, connection: self, isInitiator: false, maxReadBufferSize: configuration.maxFrameSize)
+            let stream = MplexStream(id: streamID, connection: self, isInitiator: false, maxReadBufferSize: configuration.maxReadBufferSizePerStream)
             state.streams[key] = stream
             return .accept(stream)
         }
@@ -320,7 +342,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
         let stream: MplexStream
         switch result {
         case .rejectReuse:
-            await sendResetBestEffort(
+            try enqueueReset(
                 streamID: streamID,
                 initiatedLocally: false,
                 context: "reject reused remote stream ID"
@@ -328,7 +350,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
             return
 
         case .rejectLimit:
-            await sendResetBestEffort(
+            try enqueueReset(
                 streamID: streamID,
                 initiatedLocally: false,
                 context: "reject stream over limit"
@@ -360,7 +382,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
         case .bufferDelivery(let continuation, let deliveredStream):
             guard let continuation = continuation else {
                 // No consumer - reject stream
-                await sendResetBestEffort(
+                try enqueueReset(
                     streamID: streamID,
                     initiatedLocally: false,
                     context: "reject inbound stream with no continuation"
@@ -377,7 +399,7 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
             case .dropped:
                 // Buffer full - reject
-                await sendResetBestEffort(
+                try enqueueReset(
                     streamID: streamID,
                     initiatedLocally: false,
                     context: "reject dropped inbound stream"
@@ -453,6 +475,40 @@ public final class MplexConnection: MuxedConnection, Sendable {
         }
     }
 
+    // MARK: - Control-Frame Queue
+
+    /// Enqueues a control RST from the read loop.
+    ///
+    /// - Throws: `MplexError.readBufferOverflow` if the bounded control queue
+    ///   is full — the read loop converts this into an abrupt shutdown rather
+    ///   than silently dropping a required RST.
+    private func enqueueReset(
+        streamID: UInt64,
+        initiatedLocally: Bool,
+        context: String
+    ) throws {
+        let rstFrame = MplexFrame.reset(id: streamID, isInitiator: initiatedLocally)
+        guard controlQueue.enqueue(rstFrame) else {
+            logger.debug("Mplex control-frame queue full, tearing down connection (RST: \(context))")
+            throw MplexError.readBufferOverflow
+        }
+    }
+
+    /// Drains queued control frames, writing each through the FrameWriter.
+    ///
+    /// Runs on its own task; only this task blocks on transport back-pressure,
+    /// leaving the read loop free to keep draining inbound frames.
+    private func controlDrainLoop() async {
+        while let frame = await controlQueue.next() {
+            if Task.isCancelled { return }
+            do {
+                try await sendFrame(frame)
+            } catch {
+                logger.debug("Mplex control-frame drain send failed: \(error)")
+            }
+        }
+    }
+
     // MARK: - Shutdown Infrastructure
 
     /// Captured state during shutdown
@@ -509,6 +565,11 @@ public final class MplexConnection: MuxedConnection, Sendable {
     /// Abrupt shutdown for error conditions.
     private func abruptShutdown(error: MplexError) {
         guard let capture = captureForShutdown() else { return }
+
+        // Terminate the control-frame drain loop and cancel its task. The read
+        // loop is the caller (or already exiting), so it unwinds on its own.
+        controlQueue.finish()
+        controlDrainTask.withLock { $0?.cancel() }
 
         capture.notifyContinuations(error: error)
         capture.resetAllStreams()

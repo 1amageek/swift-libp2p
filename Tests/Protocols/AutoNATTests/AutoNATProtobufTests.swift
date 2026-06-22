@@ -202,4 +202,15 @@ struct AutoNATProtobufTests {
         #expect(decoded.dialResponse?.status == .dialError)
         #expect(decoded.dialResponse?.statusText == "Connection refused")
     }
+
+    @Test("decode rejects an oversized varint length without crashing")
+    func decodeOversizedVarintRejected() {
+        // Field 2 (dial), wire type 2 -> tag 0x12, then a 10-byte varint near UInt64.max.
+        var data = Data([0x12])
+        data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
+        #expect(throws: (any Error).self) {
+            _ = try AutoNATProtobuf.decode(data)
+        }
+    }
+
 }

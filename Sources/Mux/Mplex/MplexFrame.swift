@@ -271,22 +271,34 @@ public struct MplexConfiguration: Sendable {
     /// Default: 1MB
     public var maxFrameSize: Int
 
-    /// Maximum read buffer size.
+    /// Maximum connection-level read buffer size.
     ///
     /// Default: 8MB
     public var maxReadBufferSize: Int
+
+    /// Maximum per-stream receive buffer size before the stream is reset.
+    ///
+    /// Mplex has no flow control, so an unread stream's buffer is bounded by
+    /// resetting the stream when it overflows. This is a distinct concern from
+    /// `maxFrameSize` (the size of a single wire frame): a stream may receive
+    /// many in-bound frames before the application reads, so its buffer cap must
+    /// be configured independently rather than borrowing the frame-size limit.
+    /// Default: 1MB
+    public var maxReadBufferSizePerStream: Int
 
     /// Creates a Mplex configuration.
     public init(
         maxConcurrentStreams: Int = 1000,
         maxPendingInboundStreams: Int = 100,
         maxFrameSize: Int = 1024 * 1024,
-        maxReadBufferSize: Int = 8 * 1024 * 1024
+        maxReadBufferSize: Int = 8 * 1024 * 1024,
+        maxReadBufferSizePerStream: Int = 1024 * 1024
     ) {
         self.maxConcurrentStreams = maxConcurrentStreams
         self.maxPendingInboundStreams = maxPendingInboundStreams
         self.maxFrameSize = maxFrameSize
         self.maxReadBufferSize = maxReadBufferSize
+        self.maxReadBufferSizePerStream = maxReadBufferSizePerStream
     }
 
     /// Default configuration.

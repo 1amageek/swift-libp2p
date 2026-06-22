@@ -79,12 +79,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.29.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.1.2"),
-        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.1.0"),
-        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.1"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.1.4"),
-        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.2.1"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.4.0"),
+        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.2.0"),
+        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.2.0"),
+        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.2"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.2.0"),
+        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.0"),
+        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -372,6 +372,7 @@ let package = Package(
                 "P2PCore",
                 "P2PProtocols",
                 .product(name: "mDNS", package: "swift-mDNS"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/Discovery/MDNS"
         ),
@@ -395,7 +396,10 @@ let package = Package(
         ),
         .target(
             name: "P2PDiscoveryPlumtree",
-            dependencies: ["P2PDiscovery", "P2PCore", "P2PMux", "P2PProtocols", "P2PPlumtree"],
+            dependencies: [
+                "P2PDiscovery", "P2PCore", "P2PMux", "P2PProtocols", "P2PPlumtree",
+                .product(name: "Logging", package: "swift-log"),
+            ],
             path: "Sources/Discovery/Plumtree",
             exclude: ["CONTEXT.md"]
         ),
@@ -664,6 +668,7 @@ let package = Package(
                 "P2PDiscoveryCYCLON",
                 "P2PDiscoveryPlumtree",
                 "P2PDiscoveryBeacon",
+                "P2PPnet",
             ],
             path: "Sources/Integration/P2P",
             exclude: ["CONTEXT.md", "Connection/CONTEXT.md"]
@@ -677,6 +682,7 @@ let package = Package(
                 "P2PMuxYamux",
                 "P2PPing",
                 "P2PIdentify",
+                "P2PPnet",
             ],
             path: "Tests/Integration/P2PTests"
         ),
@@ -740,6 +746,7 @@ let package = Package(
             name: "PingPongDemo",
             dependencies: [
                 "P2P",
+                "P2PSecurityPlaintext",
             ],
             path: "Examples/PingPongDemo"
         ),

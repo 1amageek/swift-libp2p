@@ -45,7 +45,14 @@ struct NATPMPHandler: NATProtocolHandler {
         }
 
         // Extract IP address (bytes 8-11)
-        return "\(response[8]).\(response[9]).\(response[10]).\(response[11])"
+        let externalAddress = "\(response[8]).\(response[9]).\(response[10]).\(response[11])"
+
+        // Validate: a gateway can return a bogus / bogon external address.
+        // Reject anything that is not a routable public IP.
+        guard IPAddressValidator.isRoutableExternalAddress(externalAddress) else {
+            throw NATPortMapperError.invalidExternalAddress(externalAddress)
+        }
+        return externalAddress
     }
 
     func requestMapping(
@@ -97,12 +104,22 @@ struct NATPMPHandler: NATProtocolHandler {
         let assignedPort = UInt16(response[10]) << 8 | UInt16(response[11])
         let assignedLifetime = UInt32(response[12]) << 24 | UInt32(response[13]) << 16 | UInt32(response[14]) << 8 | UInt32(response[15])
 
+        // Clamp the gateway-assigned lifetime for real mappings. A release
+        // (duration == 0) keeps a zero expiration so the mapping is treated as
+        // immediately expired.
+        let effectiveLifetime: Duration
+        if duration == .zero {
+            effectiveLifetime = .seconds(Int64(assignedLifetime))
+        } else {
+            effectiveLifetime = configuration.clampedLifetime(seconds: assignedLifetime)
+        }
+
         return PortMapping(
             internalPort: internalPort,
             externalPort: assignedPort,
             externalAddress: externalAddress,
             protocol: `protocol`,
-            expiration: ContinuousClock.now + .seconds(Int64(assignedLifetime)),
+            expiration: ContinuousClock.now + effectiveLifetime,
             gatewayType: gateway
         )
     }

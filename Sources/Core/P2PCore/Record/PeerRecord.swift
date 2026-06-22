@@ -78,7 +78,15 @@ public struct PeerRecord: SignedRecord, Sendable, Equatable {
     fileprivate static let tagSequence: UInt8 = 0x10
     fileprivate static let tagAddresses: UInt8 = 0x1A
 
-    public static func unmarshal(_ data: Data) throws -> PeerRecord {
+    public static func unmarshal(_ input: Data) throws -> PeerRecord {
+        // Normalize to a zero-based buffer. Decoding uses 0-based offsets and
+        // `data.count`, but a `Data` slice (e.g. `Envelope.payload`, which has a
+        // non-zero `startIndex`) indexes by its own indices — `data[offset..<end]`
+        // on such a slice reads out of bounds and traps. Rebasing once here makes
+        // all subsequent 0-based indexing correct (and is a no-op when already
+        // zero-based).
+        let data = input.startIndex == 0 ? input : Data(input)
+
         var peerID: PeerID?
         var seq: UInt64 = 0
         var addresses: [AddressInfo] = []

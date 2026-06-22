@@ -5,6 +5,7 @@ import P2PDiscovery
 import P2PProtocols
 import mDNS
 import Synchronization
+import Logging
 
 /// mDNS-based peer discovery for local area networks.
 ///
@@ -30,6 +31,7 @@ public actor MDNSDiscovery: DiscoveryService {
     private var forwardTask: Task<Void, Never>?
 
     private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
+    private nonisolated let logger = Logger(label: "p2p.discovery.mdns")
 
     // MARK: - Initialization
 
@@ -342,7 +344,11 @@ extension MDNSDiscovery {
         do {
             try await start()
         } catch {
-            // mDNS start failure is non-fatal — service simply won't discover peers
+            // mDNS start failure is non-fatal (the service simply won't discover
+            // peers) but must not be swallowed silently.
+            logger.warning("mDNS discovery failed to start", metadata: [
+                "error": "\(error)",
+            ])
         }
     }
 

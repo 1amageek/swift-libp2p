@@ -38,7 +38,7 @@ public final class InMemoryRecordStorage: RecordStorage, Sendable {
         let expiresAt = now.advanced(by: ttl)
         let stored = StoredRecord(record: record, storedAt: now, expiresAt: expiresAt)
 
-        state.withLock { s in
+        try state.withLock { s in
             // If already exists, update it
             if s.records[record.key] != nil {
                 s.records[record.key] = stored
@@ -50,9 +50,10 @@ public final class InMemoryRecordStorage: RecordStorage, Sendable {
                 // Try to evict expired records first
                 s.records = s.records.filter { $0.value.expiresAt > now }
 
-                // If still full, do not store
+                // If still full, surface store-full as a real failure rather
+                // than silently dropping the record.
                 if s.records.count >= maxRecords {
-                    return
+                    throw KademliaError.storeFull("record store full (\(maxRecords) records)")
                 }
             }
 

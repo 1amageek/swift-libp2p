@@ -33,6 +33,12 @@ internal actor NodeRuntime {
     private var lifecycleState: LifecycleState = .idle
     private var startTask: Task<Void, any Error>?
     private var eventForwardingTask: Task<Void, Never>?
+
+    /// Fire-and-forget health-monitor start/stop tasks, tracked so they are
+    /// cancelled at shutdown and self-removed on completion (no leak across the
+    /// node lifetime).
+    private var healthMonitorTasks: [UInt64: Task<Void, Never>] = [:]
+    private var nextHealthMonitorTaskToken: UInt64 = 0
     private var activeServices: [any LifecycleService] = []
     private var activePeerObservers: [any PeerObserver] = []
     private var traversalCoordinator: TraversalCoordinator?
@@ -50,8 +56,8 @@ internal actor NodeRuntime {
         keyBook: any KeyBook
     ) {
         let runtime = configuration.runtime
-        let connectionResources = configuration.resourceManager.map { ResourceManagerConnectionAccounting(base: $0) }
-        let streamResources = configuration.resourceManager.map { ResourceManagerStreamAccounting(base: $0) }
+        let connectionResources = ResourceManagerConnectionAccounting(base: configuration.resourceManager)
+        let streamResources = ResourceManagerStreamAccounting(base: configuration.resourceManager)
         let streamLifecycle = DefaultStreamLifecycleCoordinator(resources: streamResources)
         let reconnectPlanner = DefaultReconnectPlanner(policy: runtime.pool.reconnectionPolicy)
         let conflictResolver = DeterministicConnectionConflictResolver()
@@ -290,6 +296,7 @@ internal actor NodeRuntime {
         }
         bootstrap = nil
 
+        cancelHealthMonitorTasks()
         await healthMonitor?.stopAll()
 
         for service in activeServices {
@@ -435,13 +442,13 @@ internal actor NodeRuntime {
                 await observer.peerConnected(peer)
             }
             emit(.peerConnected(peer))
-            Task { await healthMonitor?.startMonitoring(peer: peer) }
+            trackHealthMonitorTask { await $0.healthMonitor?.startMonitoring(peer: peer) }
         case .peerDisconnected(let peer):
             for observer in activePeerObservers {
                 await observer.peerDisconnected(peer)
             }
             emit(.peerDisconnected(peer))
-            Task { await healthMonitor?.stopMonitoring(peer: peer) }
+            trackHealthMonitorTask { await $0.healthMonitor?.stopMonitoring(peer: peer) }
         case .connection(let connectionEvent):
             emit(.connection(connectionEvent))
         case .listenError(let addr, let error):
@@ -464,6 +471,31 @@ internal actor NodeRuntime {
         await closePeer(peer)
     }
 
+    /// Spawns a tracked health-monitor task that self-removes on completion and
+    /// is cancelled at shutdown.
+    private func trackHealthMonitorTask(_ operation: @escaping @Sendable (isolated NodeRuntime) async -> Void) {
+        let token = nextHealthMonitorTaskToken
+        nextHealthMonitorTaskToken &+= 1
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await operation(self)
+            await self.removeHealthMonitorTask(token)
+        }
+        healthMonitorTasks[token] = task
+    }
+
+    private func removeHealthMonitorTask(_ token: UInt64) {
+        healthMonitorTasks.removeValue(forKey: token)
+    }
+
+    private func cancelHealthMonitorTasks() {
+        let tasks = healthMonitorTasks
+        healthMonitorTasks.removeAll()
+        for (_, task) in tasks {
+            task.cancel()
+        }
+    }
+
     private func rollbackStartFailure() async {
         do {
             try await traversalCoordinator?.shutdown()
@@ -482,6 +514,7 @@ internal actor NodeRuntime {
         }
         bootstrap = nil
 
+        cancelHealthMonitorTasks()
         await healthMonitor?.stopAll()
         healthMonitor = nil
 

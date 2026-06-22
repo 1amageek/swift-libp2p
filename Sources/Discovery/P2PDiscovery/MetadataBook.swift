@@ -54,6 +54,10 @@ public enum MetadataBookEvent: Sendable {
     case metadataRemoved(PeerID, key: String)
     /// All metadata for a peer was removed.
     case peerRemoved(PeerID)
+    /// A `set` was rejected by a bound (value too large, or per-peer key cap
+    /// reached). Surfaced rather than dropped silently so callers can observe
+    /// DoS-protection enforcement.
+    case metadataRejected(PeerID, key: String, reason: String)
 }
 
 // MARK: - MetadataBook Protocol

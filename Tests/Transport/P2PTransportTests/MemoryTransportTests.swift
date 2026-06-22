@@ -413,4 +413,76 @@ struct MemoryTransportTests {
         try await listener.close()
         do { _ = try await firstAcceptTask.value } catch { }
     }
+
+    // MARK: - Backpressure / Bounded Buffer Tests
+
+    @Test("Write fails with backpressure when peer never reads (bounded buffer)")
+    func testBoundedBufferUnderNoReadFlooding() async throws {
+        let hub = MemoryHub()
+        let transport = MemoryTransport(hub: hub)
+
+        let listener = try await transport.listen(.memory(id: "flood"))
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(.memory(id: "flood"))
+        let serverConn = try await acceptTask
+
+        // The server never reads. The client floods the channel; the
+        // per-direction buffer is bounded, so write must eventually surface
+        // backpressure rather than buffering unboundedly (memory DoS).
+        let chunk = ByteBuffer(bytes: Data(repeating: 0x7F, count: 64 * 1024))
+        var threw = false
+        var writesAccepted = 0
+        // Far more than the 1MB cap (1024KB / 64KB = 16 chunks); bound the loop.
+        for _ in 0..<256 {
+            do {
+                try await clientConn.write(chunk)
+                writesAccepted += 1
+            } catch let error as TransportError {
+                // Backpressure surfaced as connectionFailed wrapping the detail.
+                if case .connectionFailed = error {
+                    threw = true
+                    break
+                }
+                throw error
+            }
+        }
+
+        #expect(threw, "Flooding an unread channel must eventually fail with backpressure")
+        // The buffer admits roughly the cap before rejecting; never all 256.
+        #expect(writesAccepted < 256, "Buffer must be bounded, not unbounded")
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
+
+    @Test("Reading drains the buffer so writes resume after backpressure")
+    func testBufferDrainsOnRead() async throws {
+        let hub = MemoryHub()
+        let transport = MemoryTransport(hub: hub)
+
+        let listener = try await transport.listen(.memory(id: "drain"))
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(.memory(id: "drain"))
+        let serverConn = try await acceptTask
+
+        let chunk = ByteBuffer(bytes: Data(repeating: 0x55, count: 64 * 1024))
+
+        // Fill until backpressure.
+        while true {
+            do {
+                try await clientConn.write(chunk)
+            } catch is TransportError {
+                break
+            }
+        }
+
+        // Drain one message; a subsequent write must now be accepted.
+        _ = try await serverConn.read()
+        try await clientConn.write(chunk)
+
+        try await clientConn.close()
+        try await serverConn.close()
+        try await listener.close()
+    }
 }

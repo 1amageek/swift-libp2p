@@ -201,36 +201,86 @@ public final class PnetProtector: Sendable {
     /// - Returns: A new RawConnection that encrypts all traffic.
     /// - Throws: `PnetError` if the handshake fails.
     public func protect(_ connection: any RawConnection) async throws -> any RawConnection {
-        // Step 1: Generate random 24-byte nonce
-        var localNonce = [UInt8](repeating: 0, count: pnetNonceSize)
-        for i in 0..<pnetNonceSize {
-            localNonce[i] = UInt8.random(in: 0...255)
-        }
+        // Step 1: Generate a random 24-byte nonce.
+        // Drawn from a CSPRNG: SystemRandomNumberGenerator is documented to be
+        // cryptographically secure on the platforms we target, so we fill all 24
+        // bytes from 64-bit draws in a few calls rather than per-byte.
+        let localNonce = Self.generateNonce()
 
         // Step 2: Send our nonce
         var localNonceBuffer = ByteBuffer()
         localNonceBuffer.writeBytes(localNonce)
         try await connection.write(localNonceBuffer)
 
-        // Step 3: Read remote nonce
-        let remoteBuffer = try await connection.read()
-        let remoteNonce = Array(remoteBuffer.readableBytesView)
+        // Step 3: Read remote nonce.
+        // TCP does not preserve message boundaries: a single read() may deliver
+        // fewer than 24 bytes (split) or more (coalesced with subsequent
+        // application data). Loop until exactly the nonce is accumulated, then
+        // retain any surplus bytes for decrypted delivery to PnetConnection.
+        var accumulated = ByteBuffer()
+        while accumulated.readableBytes < pnetNonceSize {
+            let chunk = try await connection.read()
+            guard chunk.readableBytes > 0 else {
+                throw PnetError.invalidNonceLength(
+                    expected: pnetNonceSize,
+                    got: accumulated.readableBytes
+                )
+            }
+            var mutableChunk = chunk
+            accumulated.writeBuffer(&mutableChunk)
+        }
 
-        guard remoteNonce.count == pnetNonceSize else {
-            throw PnetError.invalidNonceLength(expected: pnetNonceSize, got: remoteNonce.count)
+        guard let remoteNonce = accumulated.readBytes(length: pnetNonceSize) else {
+            // Unreachable: the loop above guarantees at least pnetNonceSize bytes.
+            throw PnetError.invalidNonceLength(
+                expected: pnetNonceSize,
+                got: accumulated.readableBytes
+            )
         }
 
         // Step 4: Create cipher states
         // Writer cipher: XSalsa20(psk, local_nonce)
         // Reader cipher: XSalsa20(psk, remote_nonce)
         let sendCipher = try XSalsa20(key: psk, nonce: localNonce)
-        let recvCipher = try XSalsa20(key: psk, nonce: remoteNonce)
+        var recvCipher = try XSalsa20(key: psk, nonce: remoteNonce)
 
-        // Step 5: Return wrapped connection
+        // Step 5: Surplus bytes after the nonce are the first application bytes.
+        // Decrypt them now with recvCipher (the stream cipher must advance its
+        // keystream in wire order) and hand the plaintext to PnetConnection as
+        // an initial buffer so it is delivered before any further network read.
+        var initialPlaintext = ByteBuffer()
+        if accumulated.readableBytes > 0 {
+            var surplus = accumulated
+            recvCipher.process(&surplus)
+            initialPlaintext = surplus
+        }
+
+        // Step 6: Return wrapped connection
         return PnetConnection(
             inner: connection,
             sendCipher: sendCipher,
-            recvCipher: recvCipher
+            recvCipher: recvCipher,
+            initialPlaintext: initialPlaintext
         )
+    }
+
+    /// Generates a 24-byte XSalsa20 nonce from a CSPRNG.
+    ///
+    /// Uses `SystemRandomNumberGenerator`, which is cryptographically secure on
+    /// Apple platforms and Linux, drawing 64-bit words to fill the buffer in a
+    /// few calls instead of one per byte.
+    private static func generateNonce() -> [UInt8] {
+        var rng = SystemRandomNumberGenerator()
+        var nonce = [UInt8]()
+        nonce.reserveCapacity(pnetNonceSize)
+        while nonce.count < pnetNonceSize {
+            let word = rng.next()  // UInt64 from a CSPRNG
+            withUnsafeBytes(of: word) { raw in
+                for byte in raw where nonce.count < pnetNonceSize {
+                    nonce.append(byte)
+                }
+            }
+        }
+        return nonce
     }
 }

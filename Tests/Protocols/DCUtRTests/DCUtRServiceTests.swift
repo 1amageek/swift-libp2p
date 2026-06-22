@@ -180,7 +180,8 @@ struct DCUtRErrorTests {
         let errors: [DCUtRError] = [
             noAddresses, allDialsFailed, holePunchFailed,
             protocolViolation, timeout, notRelayedConnection, encodingError,
-            maxAttemptsExceeded
+            maxAttemptsExceeded,
+            .unknownMessageType(999), .invalidAddress("bad"), .concurrencyLimitReached
         ]
         var matched = 0
 
@@ -194,10 +195,13 @@ struct DCUtRErrorTests {
             case .notRelayedConnection: matched += 1
             case .encodingError: matched += 1
             case .maxAttemptsExceeded: matched += 1
+            case .unknownMessageType: matched += 1
+            case .invalidAddress: matched += 1
+            case .concurrencyLimitReached: matched += 1
             }
         }
 
-        #expect(matched == 8)
+        #expect(matched == 11)
     }
 
     @Test("MaxAttemptsExceeded contains underlying error")

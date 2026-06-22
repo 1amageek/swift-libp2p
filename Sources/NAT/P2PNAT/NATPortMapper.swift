@@ -134,18 +134,36 @@ public final class NATPortMapper: EventEmitting, Sendable {
     }
 
     /// Shuts down the mapper and cancels all renewal tasks.
+    ///
+    /// Best-effort releases all active mappings on the gateway before clearing
+    /// state so that ports are not left mapped until their lease expires.
     public func shutdown() async throws {
-        let tasks = state.withLock { state -> [Task<Void, Never>] in
-            guard !state.isShutdown else { return [] }
+        let (tasks, mappings) = state.withLock { state -> ([Task<Void, Never>], [PortMapping]) in
+            guard !state.isShutdown else { return ([], []) }
             state.isShutdown = true
             let t = Array(state.renewalTasks.values)
+            let m = Array(state.activeMappings.values)
             state.activeMappings.removeAll()
             state.renewalTasks.removeAll()
-            return t
+            return (t, m)
         }
 
         for task in tasks {
             task.cancel()
+        }
+
+        // Best-effort release of each active mapping. Failures are reported via
+        // events but must not prevent shutdown from completing.
+        for mapping in mappings {
+            do {
+                let handler = try handlerForGateway(mapping.gatewayType)
+                try await handler.releaseMapping(mapping, configuration: configuration)
+            } catch {
+                emit(.portMappingFailed(
+                    internalPort: mapping.internalPort,
+                    error: .mappingFailed("Release on shutdown failed: \(error)")
+                ))
+            }
         }
 
         channel.finish()
@@ -211,8 +229,16 @@ public final class NATPortMapper: EventEmitting, Sendable {
     }
 
     private func scheduleRenewal(for mapping: PortMapping) {
-        let renewalTime = mapping.expiration - configuration.renewalBuffer
         let port = mapping.internalPort
+
+        // Compute the renewal time but floor the delay so a short/zero-lifetime
+        // lease cannot drive an immediate renewal hot-loop. If the lease is
+        // shorter than the renewal buffer, the buffer subtraction would put the
+        // renewal time in the past; clamp the sleep to at least minRenewalDelay.
+        let now = ContinuousClock.now
+        let bufferedRenewalTime = mapping.expiration - configuration.renewalBuffer
+        let floorRenewalTime = now + configuration.minRenewalDelay
+        let renewalTime = max(bufferedRenewalTime, floorRenewalTime)
 
         // Cancel any existing renewal for this port before creating a new one
         let existing = state.withLock { $0.renewalTasks.removeValue(forKey: port) }
@@ -236,21 +262,47 @@ public final class NATPortMapper: EventEmitting, Sendable {
             }
             guard isActive else { return }
 
-            do {
-                let renewed = try await self.performMapping(
-                    internalPort: mapping.internalPort,
-                    externalPort: mapping.externalPort,
-                    protocol: mapping.protocol,
-                    duration: self.configuration.defaultLeaseDuration
-                )
-                self.emit(.portMappingRenewed(mapping: renewed))
-            } catch {
-                self.emit(.portMappingFailed(
-                    internalPort: mapping.internalPort,
-                    error: .mappingFailed("Renewal failed: \(error)")
-                ))
-                self.emit(.portMappingExpired(mapping: mapping))
+            // Bounded retry-with-backoff: a single transient failure must not
+            // silently abandon the mapping. Only declare expiry after exhausting
+            // all retries.
+            var lastError: Error?
+            for attempt in 0...self.configuration.renewalMaxRetries {
+                if attempt > 0 {
+                    // Backoff before retrying. The mapping must still be active
+                    // and the service not shut down.
+                    let backoff = self.configuration.renewalRetryBackoff * attempt
+                    do {
+                        try await Task.sleep(for: backoff)
+                    } catch {
+                        return // Cancelled
+                    }
+                    let stillActive = self.state.withLock { state -> Bool in
+                        guard !state.isShutdown else { return false }
+                        return state.activeMappings[port] != nil
+                    }
+                    guard stillActive else { return }
+                }
+
+                do {
+                    let renewed = try await self.performMapping(
+                        internalPort: mapping.internalPort,
+                        externalPort: mapping.externalPort,
+                        protocol: mapping.protocol,
+                        duration: self.configuration.defaultLeaseDuration
+                    )
+                    self.emit(.portMappingRenewed(mapping: renewed))
+                    return
+                } catch {
+                    lastError = error
+                }
             }
+
+            // All retries exhausted: declare expiry explicitly (not silently).
+            self.emit(.portMappingFailed(
+                internalPort: mapping.internalPort,
+                error: .mappingFailed("Renewal failed after \(self.configuration.renewalMaxRetries) retries: \(lastError.map { "\($0)" } ?? "unknown")")
+            ))
+            self.emit(.portMappingExpired(mapping: mapping))
         }
 
         state.withLock { $0.renewalTasks[port] = task }

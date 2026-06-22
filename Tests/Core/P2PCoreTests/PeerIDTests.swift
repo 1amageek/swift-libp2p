@@ -255,4 +255,40 @@ struct KeyPairTests {
             #expect(peers[i] <= peers[i + 1])
         }
     }
+
+    // MARK: - Unsupported key types fail fast at derivation
+
+    @Test("Unsupported key types are rejected at PublicKey construction")
+    func unsupportedKeyTypesRejectedAtConstruction() {
+        // RSA / secp256k1 are unsupported by design: they fail at construction
+        // (the earliest point) rather than producing an unverifiable key whose
+        // PeerID can be derived but never validated.
+        #expect(throws: PublicKeyError.self) {
+            _ = try PublicKey(keyType: .secp256k1, rawBytes: Data(repeating: 0x02, count: 33))
+        }
+        #expect(throws: PublicKeyError.self) {
+            _ = try PublicKey(keyType: .rsa, rawBytes: Data(repeating: 0x01, count: 128))
+        }
+    }
+
+    @Test("Supported key types still derive a PeerID")
+    func supportedKeyTypesDerivePeerID() throws {
+        let ed = KeyPair.generateEd25519().publicKey
+        _ = PeerID(publicKey: ed)
+        // ECDSA P-256 also derives a PeerID.
+        let ecdsa = KeyPair.generateECDSA().publicKey
+        _ = PeerID(publicKey: ecdsa)
+    }
+
+    @Test("Multibase z-prefix is stripped for base58btc PeerIDs")
+    func multibaseZPrefixParsing() throws {
+        let peerID = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        let legacy = peerID.description  // base58btc, no multibase prefix
+        let multibase = "z" + legacy     // CIDv1 multibase base58btc
+
+        let parsedLegacy = try PeerID(string: legacy)
+        let parsedMultibase = try PeerID(string: multibase)
+        #expect(parsedLegacy == peerID)
+        #expect(parsedMultibase == peerID)
+    }
 }

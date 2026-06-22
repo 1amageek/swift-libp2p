@@ -20,6 +20,11 @@ private struct PnetRecvState: Sendable {
     var isClosed: Bool = false
     /// Guards against concurrent read() calls which would corrupt the stream cipher.
     var isReading: Bool = false
+    /// Already-decrypted plaintext that arrived coalesced with the nonce during
+    /// the pnet handshake. It was decrypted with `cipher` in wire order before
+    /// the cipher was handed to this connection, so it must be delivered as-is
+    /// (NOT re-processed through `cipher`) before any network read.
+    var initialPlaintext: ByteBuffer
 }
 
 // MARK: - PnetConnection
@@ -57,32 +62,48 @@ public final class PnetConnection: RawConnection, Sendable {
     ///   - inner: The underlying raw connection to encrypt
     ///   - sendCipher: XSalsa20 cipher initialized with PSK + local nonce (for outgoing data)
     ///   - recvCipher: XSalsa20 cipher initialized with PSK + remote nonce (for incoming data)
+    ///   - initialPlaintext: Already-decrypted application bytes that arrived
+    ///     coalesced with the remote nonce during the pnet handshake. Delivered
+    ///     before any network read; must NOT be re-decrypted.
     init(
         inner: any RawConnection,
         sendCipher: XSalsa20,
-        recvCipher: XSalsa20
+        recvCipher: XSalsa20,
+        initialPlaintext: ByteBuffer = ByteBuffer()
     ) {
         self.inner = inner
         self.localAddress = inner.localAddress
         self.remoteAddress = inner.remoteAddress
         self.sendState = Mutex(PnetSendState(cipher: sendCipher))
-        self.recvState = Mutex(PnetRecvState(cipher: recvCipher))
+        self.recvState = Mutex(PnetRecvState(cipher: recvCipher, initialPlaintext: initialPlaintext))
     }
 
     // MARK: - RawConnection
 
     public func read() async throws -> ByteBuffer {
-        // Atomically check closed state and set the isReading flag.
-        // This fails fast if another task is already reading, preventing
-        // stream cipher keystream desynchronization.
-        try recvState.withLock { state in
+        // Atomically check closed state, drain any buffered handshake-overlap
+        // plaintext, and set the isReading flag. Draining the initial plaintext
+        // happens under the same lock so it is delivered exactly once and ahead
+        // of any network read. This fails fast if another task is already
+        // reading, preventing stream cipher keystream desynchronization.
+        let buffered: ByteBuffer? = try recvState.withLock { state in
             if state.isClosed {
                 throw PnetError.connectionFailed("Connection is closed")
             }
             if state.isReading {
                 throw PnetError.concurrentAccess("Concurrent read() calls are not supported on PnetConnection")
             }
+            if state.initialPlaintext.readableBytes > 0 {
+                let plaintext = state.initialPlaintext
+                state.initialPlaintext = ByteBuffer()
+                return plaintext
+            }
             state.isReading = true
+            return nil
+        }
+
+        if let buffered {
+            return buffered
         }
 
         defer {

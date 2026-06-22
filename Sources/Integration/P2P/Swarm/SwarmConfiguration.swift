@@ -10,8 +10,8 @@ internal struct SwarmConfiguration: Sendable {
     let reconnectionPolicy: ReconnectionPolicy
     let maxNegotiatingInboundStreams: Int
     let connectionGater: (any ConnectionGater)?
-    let connectionResources: (any ConnectionResourceAccounting)?
-    let streamResources: (any StreamResourceAccounting)?
+    let connectionResources: any ConnectionResourceAccounting
+    let streamResources: any StreamResourceAccounting
     let streamLifecycle: any StreamLifecycleCoordinator
     let reconnectPlanner: any ReconnectPlanner
     let conflictResolver: any ConnectionConflictResolver

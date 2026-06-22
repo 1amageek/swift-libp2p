@@ -498,3 +498,126 @@ struct PlumtreeIntegrationTests {
         #expect(router.pendingIHaveCount == 3)
     }
 }
+
+// MARK: - Security: Message Binding & Hop-Count & RPC Caps
+
+@Suite("Plumtree Security Hardening", .serialized)
+struct PlumtreeSecurityTests {
+
+    private func makePeer() -> PeerID {
+        PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+    }
+
+    private func makeRouter() -> PlumtreeRouter {
+        PlumtreeRouter(localPeerID: makePeer(), configuration: .testing)
+    }
+
+    @Test("Gossip whose message ID is not bound to the source is dropped")
+    func messageIDSourceMismatchDropped() {
+        let router = makeRouter()
+        _ = router.subscribe(to: "t")
+        let realSource = makePeer()
+        let attacker = makePeer()
+        let sender = makePeer()
+        _ = router.handlePeerConnected(sender)
+
+        // Message ID computed for `realSource`, but the gossip claims `attacker`.
+        let mismatched = PlumtreeGossip(
+            messageID: PlumtreeMessageID.compute(source: realSource, sequenceNumber: 1),
+            topic: "t",
+            data: Data([0x01]),
+            source: attacker,
+            hopCount: 0
+        )
+
+        let result = router.handleGossip(mismatched, from: sender)
+        #expect(result.deliverToSubscribers == nil, "Mismatched message must not be delivered")
+        #expect(result.forwardTo.isEmpty, "Mismatched message must not be forwarded")
+        let dropped = result.events.contains { event in
+            if case .messageDropped(_, _, .messageIDSourceMismatch) = event { return true }
+            return false
+        }
+        #expect(dropped, "Expected messageDropped(.messageIDSourceMismatch)")
+    }
+
+    @Test("Gossip exceeding the max hop count is dropped")
+    func hopCountExceededDropped() {
+        let config = PlumtreeConfiguration(maxHopCount: 4)
+        let router = PlumtreeRouter(localPeerID: makePeer(), configuration: config)
+        _ = router.subscribe(to: "t")
+        let source = makePeer()
+        let sender = makePeer()
+        _ = router.handlePeerConnected(sender)
+
+        let overLimit = PlumtreeGossip(
+            messageID: PlumtreeMessageID.compute(source: source, sequenceNumber: 1),
+            topic: "t",
+            data: Data([0x01]),
+            source: source,
+            hopCount: 5  // > maxHopCount (4)
+        )
+
+        let result = router.handleGossip(overLimit, from: sender)
+        #expect(result.deliverToSubscribers == nil)
+        #expect(result.forwardTo.isEmpty)
+        let dropped = result.events.contains { event in
+            if case .messageDropped(_, _, .hopCountExceeded(5)) = event { return true }
+            return false
+        }
+        #expect(dropped, "Expected messageDropped(.hopCountExceeded)")
+    }
+
+    @Test("A valid bound gossip within hop limit is accepted")
+    func validGossipAccepted() {
+        let router = makeRouter()
+        _ = router.subscribe(to: "t")
+        let source = makePeer()
+        let sender = makePeer()
+        _ = router.handlePeerConnected(sender)
+
+        let valid = PlumtreeGossip(
+            messageID: PlumtreeMessageID.compute(source: source, sequenceNumber: 1),
+            topic: "t",
+            data: Data([0x01]),
+            source: source,
+            hopCount: 0
+        )
+
+        let result = router.handleGossip(valid, from: sender)
+        #expect(result.deliverToSubscribers != nil, "Valid gossip should be delivered")
+    }
+
+    @Test("RPC decode rejects more than the per-RPC element cap")
+    func rpcElementCapEnforced() throws {
+        // Build an oversized RPC by concatenating many encoded gossip messages.
+        let source = PeerID(publicKey: KeyPair.generateEd25519().publicKey)
+        var oversized: [PlumtreeGossip] = []
+        let over = PlumtreeProtobuf.maxElementsPerRPC + 1
+        for i in 0..<over {
+            oversized.append(PlumtreeGossip(
+                messageID: PlumtreeMessageID.compute(source: source, sequenceNumber: UInt64(i)),
+                topic: "t",
+                data: Data([0x01]),
+                source: source,
+                hopCount: 0
+            ))
+        }
+        let rpc = PlumtreeRPC(gossipMessages: oversized)
+        let encoded = PlumtreeProtobuf.encode(rpc)
+
+        #expect(throws: PlumtreeError.self) {
+            _ = try PlumtreeProtobuf.decode(encoded)
+        }
+    }
+
+    @Test("Decode rejects an oversized varint length without crashing")
+    func decodeRejectsOversizedVarintLength() {
+        // Field 1 (gossip), wire type 2, with a length varint encoding a huge value.
+        // Tag 0x0A, then a 10-byte varint for ~UInt64.max.
+        var data = Data([0x0A])
+        data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
+        #expect(throws: (any Error).self) {
+            _ = try PlumtreeProtobuf.decode(data)
+        }
+    }
+}

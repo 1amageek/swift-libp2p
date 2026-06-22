@@ -55,7 +55,17 @@ struct UDPSocket: ~Copyable {
         close(fd)
     }
 
-    /// Sends data to the specified address and waits for a response.
+    /// Sends data to the specified address and waits for a response, verifying
+    /// that the response originates from that exact address.
+    ///
+    /// The source is verified two ways:
+    /// 1. The socket is `connect()`-ed to the destination, so the kernel drops
+    ///    datagrams whose source does not match the connected peer.
+    /// 2. The reply is read with `recvfrom` and the source address is compared
+    ///    against the destination, rejecting any spoofed-source response.
+    ///
+    /// This blocks responses injected by off-path attackers on the LAN/multicast
+    /// segment (NAT-PMP/PCP/SSDP are unauthenticated UDP).
     ///
     /// - Parameters:
     ///   - address: The IPv4 address to send to.
@@ -78,15 +88,23 @@ struct UDPSocket: ~Copyable {
         guard inet_pton(AF_INET, address, &addr.sin_addr) == 1 else {
             throw NATPortMapperError.networkError("Invalid IPv4 address: \(address)")
         }
+        let expectedAddr = addr.sin_addr
 
-        // Send
-        var mutableData = data
-        let sent = withUnsafePointer(to: &addr) { addrPtr in
+        // Connect the socket to the destination. After connect(), the kernel
+        // only delivers datagrams from the connected peer, dropping off-path
+        // injected packets at the source-verification layer.
+        let connectResult = withUnsafePointer(to: &addr) { addrPtr in
             addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                sendto(fd, &mutableData, mutableData.count, 0, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        if connectResult < 0 {
+            throw NATPortMapperError.networkError("Failed to connect UDP socket")
+        }
 
+        // Send (connected socket → use send)
+        var mutableData = data
+        let sent = send(fd, &mutableData, mutableData.count, 0)
         if sent < 0 {
             throw NATPortMapperError.networkError("Failed to send UDP request")
         }
@@ -109,11 +127,23 @@ struct UDPSocket: ~Copyable {
             throw NATPortMapperError.discoveryTimeout
         }
 
-        // Read response
+        // Read response with explicit source capture for a second-layer check.
         var buffer = [UInt8](repeating: 0, count: responseSize)
-        let received = recv(fd, &buffer, buffer.count, 0)
+        var sourceAddr = sockaddr_in()
+        var sourceLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let received = withUnsafeMutablePointer(to: &sourceAddr) { srcPtr in
+            srcPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                recvfrom(fd, &buffer, buffer.count, 0, sockaddrPtr, &sourceLen)
+            }
+        }
         if received <= 0 {
             throw NATPortMapperError.invalidResponse
+        }
+
+        // Defense in depth: explicitly reject a spoofed source even though the
+        // connected socket should already have filtered it.
+        if sourceAddr.sin_addr.s_addr != expectedAddr.s_addr {
+            throw NATPortMapperError.unexpectedResponseSource(address)
         }
 
         return Array(buffer.prefix(received))

@@ -2,6 +2,17 @@
 ///
 /// Defines maximum allowed usage for connections, streams, and memory
 /// within a single scope. Used for both system-wide and per-peer limits.
+///
+/// ## Out of scope: file descriptors
+///
+/// There is intentionally NO file-descriptor (FD) dimension here. FDs are not
+/// tracked by this layer: sockets are owned by the transport (SwiftNIO) and
+/// streams are multiplexed over a single transport connection, so there is no
+/// 1:1 stream-to-FD relationship to account for. Connection limits
+/// (`max*Connections`) are the meaningful proxy for socket pressure. If a future
+/// transport needs explicit FD accounting it must add a dedicated dimension here
+/// and wire reserve/release at the socket layer — it is deliberately omitted
+/// rather than silently approximated.
 
 /// Maximum allowed resource usage for a scope.
 ///
@@ -48,6 +59,11 @@ public struct ScopeLimits: Sendable, Equatable {
     }
 
     /// Default system-wide limits.
+    ///
+    /// Memory (`maxMemory`) is intentionally `nil`: the runtime does not yet
+    /// reserve memory on the buffer paths, so advertising a memory limit would
+    /// be false protection. It is only set when a caller wires
+    /// `reserveMemory`/`reserveServiceMemory` into their own buffers.
     public static let defaultSystem = ScopeLimits(
         maxInboundConnections: 128,
         maxOutboundConnections: 128,
@@ -55,10 +71,12 @@ public struct ScopeLimits: Sendable, Equatable {
         maxInboundStreams: 4096,
         maxOutboundStreams: 4096,
         maxTotalStreams: 8192,
-        maxMemory: 128 * 1024 * 1024  // 128 MB
+        maxMemory: nil
     )
 
     /// Default per-peer limits.
+    ///
+    /// See `defaultSystem` for why `maxMemory` is `nil`.
     public static let defaultPeer = ScopeLimits(
         maxInboundConnections: 2,
         maxOutboundConnections: 2,
@@ -66,18 +84,26 @@ public struct ScopeLimits: Sendable, Equatable {
         maxInboundStreams: 256,
         maxOutboundStreams: 256,
         maxTotalStreams: 512,
-        maxMemory: 16 * 1024 * 1024  // 16 MB
+        maxMemory: nil
     )
 
     /// Default per-protocol limits.
+    ///
+    /// See `defaultSystem` for why `maxMemory` is `nil`.
     public static let defaultProtocol = ScopeLimits(
+        maxInboundStreams: 2048,
+        maxOutboundStreams: 2048,
         maxTotalStreams: 4096,
-        maxMemory: 64 * 1024 * 1024  // 64 MB
+        maxMemory: nil
     )
 
     /// Default per-service limits.
+    ///
+    /// See `defaultSystem` for why `maxMemory` is `nil`. With no enforced
+    /// dimension this is currently equivalent to `.unlimited`, but it is kept
+    /// as a distinct constant so a future memory wiring has a place to land.
     public static let defaultService = ScopeLimits(
-        maxMemory: 32 * 1024 * 1024  // 32 MB
+        maxMemory: nil
     )
 
     /// No limits (unlimited).

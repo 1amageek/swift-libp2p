@@ -27,6 +27,10 @@ extension Multiaddr {
     /// - A UDP port
     /// - A QUIC protocol (quic or quic-v1)
     ///
+    /// Port 0 is accepted here because it is a legitimate *listen* address
+    /// (ephemeral bind — the OS assigns a port). Callers that need a concrete
+    /// dial/connect target must reject port 0 via `toQUICDialSocketAddress()`.
+    ///
     /// - Returns: The SocketAddress, or nil if conversion is not possible.
     public func toQUICSocketAddress() -> QUIC.SocketAddress? {
         guard let ip = ipAddress,
@@ -35,6 +39,22 @@ extension Multiaddr {
             return nil
         }
         return QUIC.SocketAddress(ipAddress: ip, port: port)
+    }
+
+    /// Converts this Multiaddr to a QUIC SocketAddress for dialing.
+    ///
+    /// Unlike `toQUICSocketAddress()`, this rejects port 0: a dial/connect
+    /// target must specify a concrete port. The port is never silently
+    /// substituted. `udpPort` is `UInt16`, so the upper bound (65535) is
+    /// already enforced by the type.
+    ///
+    /// - Returns: The SocketAddress, or nil if conversion is not possible or
+    ///   the port is 0.
+    public func toQUICDialSocketAddress() -> QUIC.SocketAddress? {
+        guard let socketAddress = toQUICSocketAddress(), socketAddress.port > 0 else {
+            return nil
+        }
+        return socketAddress
     }
 }
 

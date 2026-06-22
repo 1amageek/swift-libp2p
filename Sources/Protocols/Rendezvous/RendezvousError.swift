@@ -45,4 +45,8 @@ public enum RendezvousError: Error, Sendable, Equatable {
 
     /// An internal error occurred.
     case internalError(String)
+
+    /// The signed peer record is missing, has an invalid signature, does not
+    /// match the registering peer, or does not cover an advertised address.
+    case invalidSignedPeerRecord(String)
 }

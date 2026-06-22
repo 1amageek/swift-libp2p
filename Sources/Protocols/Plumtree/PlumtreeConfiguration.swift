@@ -33,6 +33,12 @@ public struct PlumtreeConfiguration: Sendable {
     /// Maximum number of messages stored for GRAFT re-sends.
     public var maxStoredMessages: Int
 
+    /// Maximum hop count before a gossip message is dropped.
+    ///
+    /// Bounds forwarding amplification: a message that has traveled more than
+    /// this many hops is dropped rather than re-forwarded.
+    public var maxHopCount: UInt32
+
     /// Creates a configuration with the specified parameters.
     public init(
         ihaveTimeout: Duration = .seconds(3),
@@ -42,7 +48,8 @@ public struct PlumtreeConfiguration: Sendable {
         seenTTL: Duration = .seconds(120),
         maxSeenEntries: Int = 10000,
         messageStoreTTL: Duration = .seconds(60),
-        maxStoredMessages: Int = 1000
+        maxStoredMessages: Int = 1000,
+        maxHopCount: UInt32 = 64
     ) {
         self.ihaveTimeout = ihaveTimeout
         self.lazyPushDelay = lazyPushDelay
@@ -52,6 +59,7 @@ public struct PlumtreeConfiguration: Sendable {
         self.maxSeenEntries = maxSeenEntries
         self.messageStoreTTL = messageStoreTTL
         self.maxStoredMessages = maxStoredMessages
+        self.maxHopCount = maxHopCount
     }
 }
 

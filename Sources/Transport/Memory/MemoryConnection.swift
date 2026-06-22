@@ -8,6 +8,17 @@ import Synchronization
 import P2PCore
 import P2PTransport
 
+/// Internal error detail for memory connection failures.
+internal enum MemoryConnectionDetailError: Error, CustomStringConvertible, Sendable {
+    /// The peer's receive buffer is full (backpressure; the peer is not reading).
+    case receiveBufferFull
+    var description: String {
+        switch self {
+        case .receiveBufferFull: return "Peer receive buffer is full (backpressure)"
+        }
+    }
+}
+
 /// An in-memory connection that implements RawConnection.
 ///
 /// Data written to one end of the connection can be read from the other end.
@@ -89,24 +100,36 @@ public final class MemoryConnection: RawConnection, Sendable {
     /// Writes data to the connection.
     ///
     /// - Parameter data: The data to write
-    /// - Throws: `TransportError.connectionClosed` if the connection is closed (locally or remotely)
+    /// - Throws: `TransportError.connectionClosed` if the connection is closed
+    ///   (locally or remotely); `TransportError.connectionFailed` wrapping
+    ///   `MemoryConnectionDetailError.receiveBufferFull` if the peer's receive
+    ///   buffer is full (backpressure — the peer is not reading).
     public func write(_ data: ByteBuffer) async throws {
         let isClosed = state.withLock { $0.isClosed }
         if isClosed {
             throw TransportError.connectionClosed
         }
 
-        let success: Bool
+        let result: MemorySendResult
         switch side {
         case .a:
-            success = channel.sendFromA(data)
+            result = channel.sendFromA(data)
         case .b:
-            success = channel.sendFromB(data)
+            result = channel.sendFromB(data)
         }
 
-        // Channel was closed by remote side
-        if !success {
+        switch result {
+        case .accepted:
+            return
+        case .closed:
+            // Channel was closed by remote side
             throw TransportError.connectionClosed
+        case .bufferFull:
+            // Peer is not draining; surface backpressure explicitly rather than
+            // buffering unboundedly (memory-exhaustion DoS) or dropping silently.
+            throw TransportError.connectionFailed(
+                underlying: MemoryConnectionDetailError.receiveBufferFull
+            )
         }
     }
 

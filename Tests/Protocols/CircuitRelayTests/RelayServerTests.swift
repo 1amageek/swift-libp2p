@@ -30,8 +30,8 @@ func makeStreamContext(
 }
 
 private struct MockRelayIdentityContext: NodeIdentityContext {
-    let localPeer: PeerID
-    let localKeyPair: KeyPair = .generateEd25519()
+    let localKeyPair: KeyPair
+    var localPeer: PeerID { localKeyPair.peerID }
 }
 
 private struct MockRelayListenAddressContext: ListenAddressContext {
@@ -40,14 +40,16 @@ private struct MockRelayListenAddressContext: ListenAddressContext {
     func listenAddresses() async -> [Multiaddr] { addresses }
 }
 
+/// Configures a relay server with the relay's own key pair so issued vouchers
+/// are signed by the relay peer (`relayKey.peerID`).
 private func configureRelayServer(
     _ server: RelayServer,
-    localPeer: PeerID,
+    relayKey: KeyPair,
     opener: any StreamOpener,
     listenAddresses: [Multiaddr] = []
 ) async {
     await server.attachStreamOpening(opener)
-    await server.attachIdentityContext(MockRelayIdentityContext(localPeer: localPeer))
+    await server.attachIdentityContext(MockRelayIdentityContext(localKeyPair: relayKey))
     await server.attachListenAddressContext(MockRelayListenAddressContext(addresses: listenAddresses))
 }
 
@@ -95,7 +97,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
+        await configureRelayServer(server, relayKey: serverKey, opener: opener, listenAddresses: [Multiaddr.tcp(host: "127.0.0.1", port: 4001)])
 
         // Set up event collection
         let collector = TestEventCollector()
@@ -149,7 +151,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 0))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Set up event collection BEFORE any operations
         // Access events property first to initialize the stream
@@ -207,7 +209,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10, maxCircuitsPerPeer: 10))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // First, create a reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -288,7 +290,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create stream pair for connect
         let (clientStream, serverStream) = MockMuxedStream.createPair()
@@ -319,7 +321,7 @@ struct RelayServerEventTests {
         let server = RelayServer(configuration: .init(maxReservations: 10, maxCircuitsPerPeer: 0))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // First, create a reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -381,7 +383,7 @@ struct RelayServerReservationTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         #expect(server.reservationCount == 0)
 
@@ -409,7 +411,7 @@ struct RelayServerReservationTests {
         ))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservation
         let (clientStream, serverStream) = MockMuxedStream.createPair()
@@ -442,7 +444,7 @@ struct RelayServerReservationTests {
         ))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -489,7 +491,7 @@ struct RelayServerCircuitLimitTests {
         ))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservations for both targets
         for targetKey in [target1Key, target2Key] {
@@ -566,7 +568,7 @@ struct RelayServerCircuitLimitTests {
         ))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -668,7 +670,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer()
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -732,7 +734,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer()
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Send an invalid/unexpected message (status response instead of request)
         let (clientStream, serverStream) = MockMuxedStream.createPair()
@@ -754,7 +756,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer(configuration: .init(maxReservations: 10))
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // First reservation
         let (reserve1ClientStream, reserve1ServerStream) = MockMuxedStream.createPair()
@@ -787,7 +789,7 @@ struct RelayServerErrorScenarioTests {
         let opener = MockStreamOpener()
         // Note: opener has no streams configured - will fail to connect to target
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservation for target
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -815,7 +817,7 @@ struct RelayServerErrorScenarioTests {
         let server = RelayServer()
         let opener = MockStreamOpener()
 
-        await configureRelayServer(server, localPeer: serverKey.peerID, opener: opener)
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
 
         // Create reservation for client
         let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
@@ -829,6 +831,155 @@ struct RelayServerErrorScenarioTests {
 
         // Handler should complete without hanging
         // Response could be connectionFailed or similar - the point is it doesn't hang
+        try await server.shutdown()
+    }
+}
+
+// MARK: - Reservation Voucher Tests
+
+@Suite("RelayServer Voucher Tests", .serialized)
+struct RelayServerVoucherTests {
+
+    @Test("Server issues a voucher verifiable by the client", .timeLimit(.minutes(1)))
+    func serverIssuesVerifiableVoucher() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let requesterKey = KeyPair.generateEd25519()
+
+        let server = RelayServer(configuration: .init(maxReservations: 10))
+        let opener = MockStreamOpener()
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
+
+        let (clientStream, serverStream) = MockMuxedStream.createPair(protocolID: CircuitRelayProtocol.hopProtocolID)
+        try await clientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(HopMessage.reserve())))
+        await server.handleInboundStream(makeStreamContext(stream: serverStream, remotePeer: requesterKey.peerID, localPeer: serverKey.peerID))
+
+        // Read the server response and verify the voucher it issued.
+        let responseBuffer = try await clientStream.readLengthPrefixedMessage(maxSize: 8192)
+        let response = try CircuitRelayProtobuf.decodeHop(Data(buffer: responseBuffer))
+        let voucherData = try #require(response.reservation?.voucher, "Server must issue a voucher")
+
+        let envelope = try Envelope.unmarshal(voucherData)
+        let voucher = try envelope.record(as: ReservationVoucher.self)
+        #expect(envelope.peerID == serverKey.peerID, "Voucher must be signed by the relay")
+        #expect(voucher.relay == serverKey.peerID)
+        #expect(voucher.peer == requesterKey.peerID, "Voucher must name the reserving peer")
+
+        try await server.shutdown()
+    }
+
+    @Test("Client rejects a reservation with no voucher when one is required", .timeLimit(.minutes(1)))
+    func clientRejectsMissingVoucher() async throws {
+        // Server with NO identity context cannot issue a voucher.
+        let serverKey = KeyPair.generateEd25519()
+        let clientKey = KeyPair.generateEd25519()
+        let server = RelayServer(configuration: .init(maxReservations: 10))
+        // Intentionally do NOT attach an identity context, so no voucher is issued.
+        await server.attachStreamOpening(MockStreamOpener())
+
+        let client = RelayClient(configuration: .init(requireVoucher: true))
+        client.setLocalPeer(clientKey.peerID)
+
+        let (clientStream, serverStream) = MockMuxedStream.createPair(protocolID: CircuitRelayProtocol.hopProtocolID)
+        let clientOpener = MockStreamOpener()
+        clientOpener.setStream(clientStream, for: CircuitRelayProtocol.hopProtocolID)
+
+        let serverTask = Task {
+            await server.handleInboundStream(makeStreamContext(stream: serverStream, remotePeer: clientKey.peerID, localPeer: serverKey.peerID))
+        }
+
+        await #expect(throws: CircuitRelayError.self) {
+            _ = try await client.reserve(on: serverKey.peerID, using: clientOpener)
+        }
+
+        await serverTask.value
+        try await server.shutdown()
+        try await client.shutdown()
+    }
+}
+
+// MARK: - Circuit Data Limit Enforcement Tests
+
+@Suite("RelayServer Data Limit Enforcement", .serialized)
+struct RelayServerDataLimitTests {
+
+    @Test("Over-budget circuit is terminated before exceeding the data limit", .timeLimit(.minutes(1)))
+    func dataLimitTerminatesCircuit() async throws {
+        let serverKey = KeyPair.generateEd25519()
+        let sourceKey = KeyPair.generateEd25519()
+        let targetKey = KeyPair.generateEd25519()
+
+        // A small per-circuit data limit (sub-8KB) that the old batched logic
+        // would never enforce.
+        let server = RelayServer(configuration: .init(
+            maxReservations: 10,
+            maxCircuitsPerPeer: 10,
+            circuitLimit: CircuitLimit(duration: .seconds(30), data: 100)
+        ))
+        let opener = MockStreamOpener()
+        await configureRelayServer(server, relayKey: serverKey, opener: opener)
+
+        // Reserve for target.
+        let (reserveClientStream, reserveServerStream) = MockMuxedStream.createPair()
+        try await reserveClientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(HopMessage.reserve())))
+        await server.handleInboundStream(makeStreamContext(stream: reserveServerStream, remotePeer: targetKey.peerID, localPeer: serverKey.peerID))
+
+        let collector = TestEventCollector()
+        let eventTask = Task {
+            for await event in server.events { collector.collect(event) }
+        }
+
+        // Wire the relay -> target STOP stream.
+        let (relayToTarget, targetToRelay) = MockMuxedStream.createPair(protocolID: CircuitRelayProtocol.stopProtocolID)
+        opener.setStream(relayToTarget, for: CircuitRelayProtocol.stopProtocolID)
+
+        // Target responds STOP OK, then drains any relayed data.
+        let targetTask = Task {
+            do { _ = try await targetToRelay.readLengthPrefixedMessage(maxSize: 4096) } catch { }
+            let ok = StopMessage.statusResponse(.ok)
+            do { try await targetToRelay.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(ok))) } catch { }
+            // Drain whatever the relay forwards until the stream closes.
+            while true {
+                do {
+                    let chunk = try await targetToRelay.read()
+                    if chunk.readableBytes == 0 { break }
+                } catch { break }
+            }
+        }
+
+        // Source CONNECTs.
+        let (connectClientStream, connectServerStream) = MockMuxedStream.createPair()
+        try await connectClientStream.writeLengthPrefixedMessage(ByteBuffer(bytes: CircuitRelayProtobuf.encode(HopMessage.connect(to: targetKey.peerID))))
+
+        let handlerTask = Task {
+            await server.handleInboundStream(makeStreamContext(stream: connectServerStream, remotePeer: sourceKey.peerID, localPeer: serverKey.peerID))
+        }
+
+        // Wait for the circuit to open (read the OK hop response on the source side).
+        _ = try? await connectClientStream.readLengthPrefixedMessage(maxSize: 4096)
+
+        // Source floods data well beyond the 100-byte limit.
+        for _ in 0..<10 {
+            do {
+                try await connectClientStream.write(ByteBuffer(bytes: Data(repeating: 0xAA, count: 200)))
+            } catch { break }
+        }
+
+        // The circuit must be terminated by the limit, emitting circuitLimitExceeded.
+        let events = await collector.waitForEvents(count: 2, timeout: .seconds(3))
+        let limitEvent = events.first { if case .circuitLimitExceeded = $0 { return true }; return false }
+        #expect(limitEvent != nil, "Server must terminate the over-budget circuit")
+
+        // The recorded bytesTransferred must not exceed the configured limit.
+        let completed = events.first { if case .circuitCompleted = $0 { return true }; return false }
+        if case .circuitCompleted(_, _, let bytes) = completed {
+            #expect(bytes <= 100, "Forwarded bytes must not exceed the data limit, got \(bytes)")
+        }
+
+        // Cleanup.
+        do { try await connectClientStream.close() } catch { }
+        handlerTask.cancel()
+        targetTask.cancel()
+        eventTask.cancel()
         try await server.shutdown()
     }
 }

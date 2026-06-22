@@ -253,10 +253,39 @@ public final class RelayServer: EventEmitting, Sendable {
 
         // Build reservation info for response
         let expirationTimestamp = UInt64(Date().timeIntervalSince1970) + UInt64(configuration.reservationDuration.components.seconds)
+
+        // Issue a signed reservation voucher proving this relay granted the
+        // reservation to `requester`. Requires an injected identity context.
+        var voucherData: Data? = nil
+        if let identity = identityContextRef.withLock({ $0 }) {
+            do {
+                let voucher = ReservationVoucher(
+                    relay: identity.localPeer,
+                    peer: requester,
+                    expiration: expirationTimestamp
+                )
+                let envelope = try Envelope.seal(record: voucher, with: identity.localKeyPair)
+                voucherData = try envelope.marshal()
+            } catch {
+                logger.debug("Failed to issue reservation voucher: \(error)")
+                // Without a voucher we cannot honor the reservation securely.
+                do {
+                    try await sendHopStatus(stream: stream, status: .resourceLimitExceeded)
+                } catch {
+                    logger.debug("Failed to send voucher-failure status: \(error)")
+                }
+                _ = serverState.withLock { s in s.reservations.removeValue(forKey: requester) }
+                emit(.reservationDenied(from: requester, reason: .resourceLimitExceeded))
+                return
+            }
+        } else {
+            logger.debug("RelayServer has no identity context; cannot issue reservation voucher")
+        }
+
         let resInfo = ReservationInfo(
             expiration: expirationTimestamp,
             addresses: addresses,
-            voucher: nil
+            voucher: voucherData
         )
 
         // Send response
@@ -451,52 +480,95 @@ public final class RelayServer: EventEmitting, Sendable {
         let durationLimit = configuration.circuitLimit.duration
         let dataLimit = configuration.circuitLimit.data
 
-        // Track bytes locally to reduce lock contention
-        var localBytesTransferred: UInt64 = 0
-        let batchSize: UInt64 = 8192  // Sync to shared state every 8KB
-
         do {
             while true {
-                // Check duration limit (no lock needed)
+                // Compute the remaining duration budget. The read is raced against
+                // this deadline so a slow/blocking read cannot keep a circuit alive
+                // past its duration limit.
                 if let limit = durationLimit {
-                    if ContinuousClock.now - startTime >= limit {
+                    let elapsed = ContinuousClock.now - startTime
+                    if elapsed >= limit {
+                        emit(.circuitLimitExceeded(
+                            source: circuitID.source,
+                            destination: circuitID.destination,
+                            limit: configuration.circuitLimit
+                        ))
                         break
                     }
                 }
 
-                // Check data limit using local counter (reduces lock frequency)
-                if let limit = dataLimit {
-                    // Sync and check periodically
-                    if localBytesTransferred >= batchSize {
-                        let totalBytes = serverState.withLock { s -> UInt64 in
-                            s.activeCircuits[circuitID]?.bytesTransferred += localBytesTransferred
-                            localBytesTransferred = 0
-                            return s.activeCircuits[circuitID]?.bytesTransferred ?? 0
-                        }
-                        if totalBytes >= limit {
-                            break
-                        }
+                // Read, racing against the remaining duration if a limit is set.
+                let data: ByteBuffer
+                if let limit = durationLimit {
+                    let remaining = limit - (ContinuousClock.now - startTime)
+                    let raced = try await readWithDeadline(source, within: remaining)
+                    guard let chunk = raced else {
+                        // Deadline elapsed before a read completed.
+                        emit(.circuitLimitExceeded(
+                            source: circuitID.source,
+                            destination: circuitID.destination,
+                            limit: configuration.circuitLimit
+                        ))
+                        break
                     }
+                    data = chunk
+                } else {
+                    data = try await source.read()
                 }
 
-                // Read and forward
-                let data = try await source.read()
                 if data.readableBytes == 0 {
                     break
                 }
 
+                // Enforce the data limit BEFORE forwarding this chunk, against the
+                // shared per-circuit total. This bounds total forwarded bytes even
+                // for sub-chunk limits and never forwards a chunk that would exceed.
+                if let limit = dataLimit {
+                    let chunkSize = UInt64(data.readableBytes)
+                    let wouldExceed = serverState.withLock { s -> Bool in
+                        let current = s.activeCircuits[circuitID]?.bytesTransferred ?? 0
+                        return current + chunkSize > limit
+                    }
+                    if wouldExceed {
+                        emit(.circuitLimitExceeded(
+                            source: circuitID.source,
+                            destination: circuitID.destination,
+                            limit: configuration.circuitLimit
+                        ))
+                        break
+                    }
+                }
+
                 try await target.write(data)
-                localBytesTransferred += UInt64(data.readableBytes)
+
+                // Account for the forwarded bytes in shared state.
+                serverState.withLock { s in
+                    s.activeCircuits[circuitID]?.bytesTransferred += UInt64(data.readableBytes)
+                }
             }
         } catch {
             // Stream closed or error
         }
+    }
 
-        // Final sync of bytes transferred
-        if localBytesTransferred > 0 {
-            serverState.withLock { s in
-                s.activeCircuits[circuitID]?.bytesTransferred += localBytesTransferred
+    /// Reads from a stream, returning `nil` if the deadline elapses first.
+    ///
+    /// Races the blocking read against a sleep so that a circuit's duration
+    /// limit is enforced even while a read is in flight.
+    private func readWithDeadline(_ stream: MuxedStream, within remaining: Duration) async throws -> ByteBuffer? {
+        if remaining <= .zero { return nil }
+        return try await withThrowingTaskGroup(of: ByteBuffer?.self) { group in
+            group.addTask {
+                try await stream.read()
             }
+            group.addTask {
+                try await Task.sleep(for: remaining)
+                return nil  // sentinel: deadline elapsed
+            }
+            defer { group.cancelAll() }
+            // The first task to finish wins.
+            let result = try await group.next() ?? nil
+            return result
         }
     }
 

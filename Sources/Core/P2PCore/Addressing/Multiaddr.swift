@@ -268,6 +268,73 @@ public struct Multiaddr: Sendable, Hashable, CustomStringConvertible {
         return false
     }
 
+    /// Whether this address's IP component is a loopback address
+    /// (127.0.0.0/8 for IPv4, ::1 for IPv6).
+    ///
+    /// Returns `false` for addresses without an IP component (e.g. DNS, memory).
+    public var isLoopbackIP: Bool {
+        guard let ip = ipAddress else { return false }
+        return Self.isLoopbackIPString(ip)
+    }
+
+    /// Whether this address's IP component is a link-local address
+    /// (169.254.0.0/16 for IPv4, fe80::/10 for IPv6).
+    public var isLinkLocalIP: Bool {
+        guard let ip = ipAddress else { return false }
+        return Self.isLinkLocalIPString(ip)
+    }
+
+    /// Whether this address's IP component is a private/RFC1918 address
+    /// (10/8, 172.16/12, 192.168/16 for IPv4; fc00::/7 unique-local for IPv6).
+    public var isPrivateIP: Bool {
+        guard let ip = ipAddress else { return false }
+        return Self.isPrivateIPString(ip)
+    }
+
+    /// Whether this address is safe to auto-dial from a discovery hint:
+    /// it has a routable IP component and is not loopback, link-local, or
+    /// unspecified. Private (RFC1918) addresses ARE considered dialable on a
+    /// LAN, so they are not excluded here.
+    public var isGloballyDialableHint: Bool {
+        guard ipAddress != nil else {
+            // No IP component (DNS / memory / relay): leave the decision to the
+            // resolver; do not classify here.
+            return !isUnspecifiedIP
+        }
+        return !isLoopbackIP && !isLinkLocalIP && !isUnspecifiedIP
+    }
+
+    static func isLoopbackIPString(_ ip: String) -> Bool {
+        if ip == "::1" || ip == "0:0:0:0:0:0:0:1" { return true }
+        return ip.hasPrefix("127.")
+    }
+
+    static func isLinkLocalIPString(_ ip: String) -> Bool {
+        if ip.hasPrefix("169.254.") { return true }
+        // IPv6 link-local fe80::/10: fe80..febf
+        let lower = ip.lowercased()
+        if lower.hasPrefix("fe8") || lower.hasPrefix("fe9")
+            || lower.hasPrefix("fea") || lower.hasPrefix("feb") {
+            return true
+        }
+        return false
+    }
+
+    static func isPrivateIPString(_ ip: String) -> Bool {
+        if ip.hasPrefix("10.") || ip.hasPrefix("192.168.") { return true }
+        // 172.16.0.0 – 172.31.255.255
+        if ip.hasPrefix("172.") {
+            let parts = ip.split(separator: ".")
+            if parts.count >= 2, let second = Int(parts[1]), (16...31).contains(second) {
+                return true
+            }
+        }
+        // IPv6 unique-local fc00::/7 (fc.. / fd..)
+        let lower = ip.lowercased()
+        if lower.hasPrefix("fc") || lower.hasPrefix("fd") { return true }
+        return false
+    }
+
     /// Creates a new Multiaddr by replacing the IP component with the given address.
     public func replacingIPAddress(_ newIP: String) -> Multiaddr {
         let newProtocols = protocols.map { proto -> MultiaddrProtocol in

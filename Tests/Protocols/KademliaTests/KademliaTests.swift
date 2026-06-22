@@ -1103,12 +1103,15 @@ struct RecordValidatorTests {
         #expect(config.onValidationFailure == .reject)
     }
 
-    @Test("KademliaConfiguration default has DefaultRecordValidator")
+    @Test("KademliaConfiguration default has secure NamespacedValidator")
     func configurationDefaultHasValidator() {
         let config = KademliaConfiguration()
 
+        // The secure default is a NamespacedValidator that cryptographically
+        // validates /ipns/ and /pk/ records and rejects unknown namespaces,
+        // NOT a size-only DefaultRecordValidator (which did no signature checks).
         #expect(config.recordValidator != nil)
-        #expect(config.recordValidator is DefaultRecordValidator)
+        #expect(config.recordValidator is NamespacedValidator)
         #expect(config.onValidationFailure == .reject)
     }
 

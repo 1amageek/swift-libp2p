@@ -57,6 +57,60 @@ final class FlowController: Sendable {
         }
     }
 
+    /// Called when received data is discarded without being delivered to the
+    /// application (e.g. the read side was closed via `closeRead()`).
+    ///
+    /// The bytes were counted against the receive window by `dataReceived`,
+    /// but since they are dropped they will never be consumed by `dataConsumed`.
+    /// To avoid permanently shrinking the window (which would stall the peer
+    /// on a half-closed stream), immediately return the window for the
+    /// discarded bytes.
+    ///
+    /// - Returns: The delta for a window update that restores the discarded
+    ///   bytes, or `nil` if there is nothing to restore.
+    func dataDiscarded(count: UInt32) -> UInt32? {
+        state.withLock { state in
+            guard count <= state.bufferedBytes else { return nil }
+            state.bufferedBytes -= count
+            // Restore exactly the discarded bytes to the receive window.
+            // Cap at maxReceiveWindow to preserve the invariant
+            // receiveWindow <= maxReceiveWindow.
+            let restored = min(count, state.maxReceiveWindow - state.receiveWindow)
+            guard restored > 0 else { return nil }
+            state.receiveWindow += restored
+            return restored
+        }
+    }
+
+    /// Called when the read side is being closed and any outstanding receive
+    /// window must be returned to the peer in a single update.
+    ///
+    /// This covers bytes that were received but neither consumed nor discarded
+    /// individually (e.g. data still sitting in the stream's read buffer when
+    /// `closeRead()` clears it). Returning the window prevents a peer that
+    /// keeps writing to a half-closed stream from driving the window to zero.
+    ///
+    /// - Returns: A tuple of:
+    ///   - `streamDelta`: the per-stream window-update delta (or `nil` if the
+    ///     per-stream window is already full), and
+    ///   - `outstandingBytes`: the number of received-but-unconsumed bytes that
+    ///     were still counted against the connection budget for this stream.
+    func windowForClose() -> (streamDelta: UInt32?, outstandingBytes: UInt32) {
+        state.withLock { state in
+            // Bytes still held by this stream's buffer = outstanding against
+            // the connection budget (received but neither consumed nor
+            // discarded yet).
+            let outstanding = state.bufferedBytes
+            state.bufferedBytes = 0
+            let delta = state.maxReceiveWindow - state.receiveWindow
+            if delta > 0 {
+                state.receiveWindow = state.maxReceiveWindow
+                return (delta, outstanding)
+            }
+            return (nil, outstanding)
+        }
+    }
+
     /// Called when the application reads data from the buffer (OnRead mode).
     /// Returns the delta for a window update if one should be sent.
     func dataConsumed(count: UInt32) -> UInt32? {
@@ -96,6 +150,23 @@ final class FlowController: Sendable {
             state.lastWindowUpdate = .now
 
             return delta
+        }
+    }
+
+    /// Drains and returns the bytes still outstanding against the connection
+    /// budget for this stream (received but neither consumed nor discarded).
+    ///
+    /// Used when the stream is abruptly terminated (RST) so the shared
+    /// connection window does not leak the dropped buffer. Does not emit a
+    /// per-stream window update — the stream is gone.
+    ///
+    /// - Returns: The outstanding byte count, which the caller returns to the
+    ///   connection-level controller.
+    func drainOutstanding() -> UInt32 {
+        state.withLock { state in
+            let outstanding = state.bufferedBytes
+            state.bufferedBytes = 0
+            return outstanding
         }
     }
 

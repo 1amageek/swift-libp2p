@@ -204,22 +204,56 @@ public final class BlocklistGater: ConnectionGater, Sendable {
             }
         }
 
-        // Check address blocklist
-        let addrString = address.description
-        return !blockedAddresses.withLock { blocked in
-            blocked.contains(addrString) || blocked.contains(where: { addrString.contains($0) })
-        }
+        return !isAddressBlocked(address)
     }
 
     public func interceptAccept(address: Multiaddr) -> Bool {
-        let addrString = address.description
-        return !blockedAddresses.withLock { blocked in
-            blocked.contains(addrString) || blocked.contains(where: { addrString.contains($0) })
-        }
+        !isAddressBlocked(address)
     }
 
     public func interceptSecured(peer: PeerID, direction: ConnectionDirection) -> Bool {
         !blockedPeers.withLock { $0.contains(peer) }
+    }
+
+    // MARK: - Structured Matching
+
+    /// Determines whether an address is blocked using structured multiaddr
+    /// component matching rather than substring matching.
+    ///
+    /// A blocked entry matches when it equals one of the address's structured
+    /// components — its IP address, its DNS host, or its full canonical
+    /// description. Substring matching is intentionally NOT used: it both
+    /// over-blocks (a blocked "10.0.0.1" would match "110.0.0.1") and is
+    /// bypassable (encapsulation/encoding tricks change the surrounding text).
+    private func isAddressBlocked(_ address: Multiaddr) -> Bool {
+        let components = Self.matchableComponents(of: address)
+        return blockedAddresses.withLock { blocked in
+            for component in components where blocked.contains(component) {
+                return true
+            }
+            return false
+        }
+    }
+
+    /// The set of strings that a blocklist entry may match exactly:
+    /// the full canonical description plus each addressing component
+    /// (IP address, DNS host).
+    private static func matchableComponents(of address: Multiaddr) -> [String] {
+        var components: [String] = [address.description]
+        if let ip = address.ipAddress {
+            components.append(ip)
+        }
+        for proto in address.protocols {
+            switch proto {
+            case .dns(let host), .dns4(let host), .dns6(let host), .dnsaddr(let host):
+                components.append(host)
+            case .memory(let id):
+                components.append(id)
+            default:
+                continue
+            }
+        }
+        return components
     }
 }
 

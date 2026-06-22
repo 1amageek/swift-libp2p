@@ -12,6 +12,10 @@ final class CYCLONPartialView: Sendable {
 
     struct ViewState: Sendable {
         var entries: [PeerID: CYCLONEntry]
+        /// Local insertion order. Eviction uses THIS (oldest insertion first),
+        /// never the attacker-supplied `age` field, so a remote peer cannot
+        /// poison eviction by claiming a huge age for legitimate peers.
+        var insertionOrder = LRUOrder<PeerID>()
     }
 
     init(cacheSize: Int) {
@@ -80,20 +84,22 @@ final class CYCLONPartialView: Sendable {
         }
     }
 
-    /// Adds an entry. If the view exceeds cacheSize, evicts the oldest.
+    /// Adds an entry. If the view exceeds cacheSize, evicts the oldest insertion.
     func add(_ entry: CYCLONEntry) {
         state.withLock { s in
-            s.entries[entry.peerID] = entry
+            insert(entry, &s)
             evictIfNeeded(&s)
         }
     }
 
     /// Adds multiple entries. Skips self and duplicates.
+    /// Received `age` is reset to 0: age is a LOCAL freshness counter advanced
+    /// by `incrementAges()`, never a value to be trusted from a remote peer.
     func addAll(_ entries: [CYCLONEntry], selfID: PeerID) {
         state.withLock { s in
             for entry in entries {
                 guard entry.peerID != selfID else { continue }
-                s.entries[entry.peerID] = entry
+                insert(sanitized(entry), &s)
             }
             evictIfNeeded(&s)
         }
@@ -102,56 +108,83 @@ final class CYCLONPartialView: Sendable {
     /// Removes an entry.
     @discardableResult
     func remove(_ peerID: PeerID) -> CYCLONEntry? {
-        state.withLock { $0.entries.removeValue(forKey: peerID) }
+        state.withLock { s in
+            s.insertionOrder.remove(peerID)
+            return s.entries.removeValue(forKey: peerID)
+        }
     }
 
     /// Merges received entries after a shuffle exchange.
     ///
     /// Algorithm:
     /// 1. Remove entries we sent (they are now at the other node)
-    /// 2. Add received entries (excluding self and already-known peers)
-    /// 3. If over capacity, evict oldest entries
+    /// 2. Add received entries (excluding self and already-known peers), with
+    ///    their `age` reset to 0 (local-only freshness; never trust remote age)
+    /// 3. If over capacity, evict by LOCAL insertion order (oldest first)
+    ///
+    /// Eviction by insertion order (rather than by the wire `age`) prevents an
+    /// eclipse attack where a malicious peer claims a huge age for our existing
+    /// legitimate peers to force them all out of the view.
     func merge(
         received: [CYCLONEntry],
         sent: [CYCLONEntry],
         selfID: PeerID
     ) {
         state.withLock { s in
-            // Step 1: Make room by removing entries we sent (that aren't in the received set)
+            // Dedupe received against self and the entries we sent: an attacker
+            // could otherwise echo our own sent entries back to inflate churn.
+            let sentIDs = Set(sent.map(\.peerID))
             let receivedIDs = Set(received.map(\.peerID))
+
+            // Step 1: Make room by removing entries we sent (that aren't in the received set)
             for entry in sent {
                 if !receivedIDs.contains(entry.peerID) && s.entries.count >= cacheSize {
+                    s.insertionOrder.remove(entry.peerID)
                     s.entries.removeValue(forKey: entry.peerID)
                 }
             }
 
-            // Step 2: Add received entries
+            // Step 2: Add received entries (skip self, skip ones we just sent,
+            // skip already-known peers), resetting age to 0.
             for entry in received {
                 guard entry.peerID != selfID else { continue }
+                guard !sentIDs.contains(entry.peerID) else { continue }
                 if s.entries[entry.peerID] == nil {
-                    s.entries[entry.peerID] = entry
+                    insert(sanitized(entry), &s)
                 }
             }
 
-            // Step 3: Evict if still over capacity
+            // Step 3: Evict if still over capacity (by insertion order)
             evictIfNeeded(&s)
         }
     }
 
     /// Removes all entries.
     func clear() {
-        state.withLock { $0.entries.removeAll() }
+        state.withLock { s in
+            s.entries.removeAll()
+            s.insertionOrder.removeAll()
+        }
     }
 
     // MARK: - Private
 
+    /// Inserts/updates an entry and records its local insertion order.
+    private func insert(_ entry: CYCLONEntry, _ s: inout ViewState) {
+        s.entries[entry.peerID] = entry
+        s.insertionOrder.insert(entry.peerID)
+    }
+
+    /// Returns a copy of the entry with `age` reset to 0 so remote-supplied age
+    /// can never influence local eviction or scoring.
+    private func sanitized(_ entry: CYCLONEntry) -> CYCLONEntry {
+        CYCLONEntry(peerID: entry.peerID, addresses: entry.addresses, age: 0)
+    }
+
+    /// Evicts entries over capacity by local insertion order (oldest first).
     private func evictIfNeeded(_ s: inout ViewState) {
-        let excess = s.entries.count - cacheSize
-        guard excess > 0 else { return }
-        // Sort once O(n log n) instead of repeated max() scans O(n²)
-        let sorted = s.entries.values.sorted { $0.age > $1.age }
-        for entry in sorted.prefix(excess) {
-            s.entries.removeValue(forKey: entry.peerID)
+        while s.entries.count > cacheSize, let oldest = s.insertionOrder.removeOldest() {
+            s.entries.removeValue(forKey: oldest)
         }
     }
 }

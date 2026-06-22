@@ -33,6 +33,24 @@ public final class NullResourceManager: ResourceManager, Sendable {
     public func reserveMemory(_ bytes: Int, for peer: PeerID) throws {}
     public func releaseMemory(_ bytes: Int, for peer: PeerID) {}
 
+    // Protocol scope — deliberately unlimited (this is the explicit opt-out).
+    public func protocolScope(for protocolID: String) -> ResourceScope {
+        NullScope(name: "protocol:\(protocolID)")
+    }
+
+    public func reserveStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) throws {}
+
+    public func releaseStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) {}
+
+    // Service scope — deliberately unlimited (this is the explicit opt-out).
+    public func serviceScope(for service: String) -> ResourceScope {
+        NullScope(name: "service:\(service)")
+    }
+
+    public func reserveServiceMemory(_ bytes: Int, service: String) throws {}
+
+    public func releaseServiceMemory(_ bytes: Int, service: String) {}
+
     public func snapshot() -> ResourceSnapshot {
         ResourceSnapshot(system: ResourceStat(), peers: [:])
     }

@@ -51,17 +51,16 @@ struct DCUtRProtobufTests {
 
     // MARK: - Malformed Message Tests
 
-    @Test("Decode empty data returns default message")
-    func decodeEmptyData() throws {
-        let decoded = try DCUtRProtobuf.decode(Data())
-
-        // Empty data should produce a message with default type (connect)
-        #expect(decoded.type == .connect)
-        #expect(decoded.observedAddresses.isEmpty)
+    @Test("Decode empty data throws (missing required type field)")
+    func decodeEmptyData() {
+        // A message with no type field must be rejected, not silently defaulted.
+        #expect(throws: DCUtRError.self) {
+            _ = try DCUtRProtobuf.decode(Data())
+        }
     }
 
-    @Test("Decode with invalid Multiaddr bytes skips invalid addresses")
-    func decodeInvalidMultiaddrSkipped() throws {
+    @Test("Decode with invalid Multiaddr bytes is rejected (no silent skip)")
+    func decodeInvalidMultiaddrRejected() throws {
         // Create a valid CONNECT message
         let addresses = [
             try Multiaddr("/ip4/127.0.0.1/tcp/4001"),
@@ -75,10 +74,10 @@ struct DCUtRProtobufTests {
         encoded.append(5)   // length
         encoded.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF])  // invalid multiaddr bytes
 
-        let decoded = try DCUtRProtobuf.decode(encoded)
-
-        // Valid address should be decoded, invalid one silently skipped
-        #expect(decoded.observedAddresses.count == 1)
+        // A malformed address indicates a hostile/corrupt message and must surface.
+        #expect(throws: DCUtRError.self) {
+            _ = try DCUtRProtobuf.decode(encoded)
+        }
     }
 
     @Test("Decode message with unknown field numbers skips them")
@@ -112,18 +111,18 @@ struct DCUtRProtobufTests {
         }
     }
 
-    @Test("Decode message with unknown type defaults to connect")
-    func decodeUnknownMessageType() throws {
+    @Test("Decode message with unknown type is rejected (no silent default)")
+    func decodeUnknownMessageType() {
         // Create raw protobuf with unknown type value (999)
         var data = Data()
         data.append(0x08)  // Field 1, wire type 0
         // Varint encode 999: 0xE7 0x07
         data.append(contentsOf: [0xE7, 0x07])
 
-        let decoded = try DCUtRProtobuf.decode(data)
-
-        // Unknown type should default to connect
-        #expect(decoded.type == .connect)
+        // An unknown type must throw rather than default to CONNECT.
+        #expect(throws: DCUtRError.self) {
+            _ = try DCUtRProtobuf.decode(data)
+        }
     }
 
     @Test("Decode message with mixed valid and invalid addresses")
@@ -183,5 +182,70 @@ struct DCUtRProtobufTests {
         let decoded = try DCUtRProtobuf.decode(data)
 
         #expect(decoded.type == .connect)
+    }
+}
+
+// MARK: - Address Filtering (isPrivateAddress) Matrix
+
+@Suite("DCUtR isPrivateAddress Matrix")
+struct DCUtRAddressFilteringTests {
+
+    @Test("Public IPv4 addresses are not private")
+    func publicIPv4() {
+        #expect(!isPrivateAddress("8.8.8.8"))
+        #expect(!isPrivateAddress("1.1.1.1"))
+        #expect(!isPrivateAddress("203.0.113.10"))
+    }
+
+    @Test("Private / loopback / link-local / CGNAT IPv4 are private")
+    func privateIPv4() {
+        #expect(isPrivateAddress("127.0.0.1"))
+        #expect(isPrivateAddress("10.1.2.3"))
+        #expect(isPrivateAddress("172.16.0.1"))
+        #expect(isPrivateAddress("172.31.255.255"))
+        #expect(isPrivateAddress("192.168.0.1"))
+        #expect(isPrivateAddress("169.254.0.1"))
+        #expect(isPrivateAddress("169.254.169.254")) // cloud metadata
+        #expect(isPrivateAddress("100.64.0.1"))      // CGNAT
+        #expect(isPrivateAddress("0.0.0.0"))
+        #expect(isPrivateAddress("224.0.0.1"))       // multicast
+        #expect(isPrivateAddress("255.255.255.255"))
+    }
+
+    @Test("IPv4-mapped IPv6 to private is private (bypass closed)")
+    func ipv4MappedPrivate() {
+        #expect(isPrivateAddress("::ffff:127.0.0.1"))
+        #expect(isPrivateAddress("::ffff:192.168.1.1"))
+        #expect(isPrivateAddress("::ffff:169.254.169.254"))
+        // IPv4-mapped to a public address is NOT private.
+        #expect(!isPrivateAddress("::ffff:8.8.8.8"))
+    }
+
+    @Test("NAT64 / link-local / ULA / multicast IPv6 are private")
+    func privateIPv6() {
+        #expect(isPrivateAddress("::1"))             // loopback
+        #expect(isPrivateAddress("::"))              // unspecified
+        #expect(isPrivateAddress("fe80::1"))         // link-local
+        #expect(isPrivateAddress("febf::1"))         // fe80::/10 upper edge
+        #expect(isPrivateAddress("fc00::1"))         // ULA
+        #expect(isPrivateAddress("fd00::1"))         // ULA
+        #expect(isPrivateAddress("ff02::1"))         // multicast
+        #expect(isPrivateAddress("64:ff9b::1.2.3.4")) // NAT64
+    }
+
+    @Test("Public IPv6 is not private")
+    func publicIPv6() {
+        #expect(!isPrivateAddress("2606:4700:4700::1111"))
+    }
+
+    @Test("Malformed addresses fail closed (treated as private)")
+    func malformedFailClosed() {
+        #expect(isPrivateAddress(""))
+        #expect(isPrivateAddress("not-an-ip"))
+        #expect(isPrivateAddress("999.1.1.1"))
+        #expect(isPrivateAddress("1.2.3"))
+        #expect(isPrivateAddress("example.com"))     // DNS host string
+        #expect(isPrivateAddress("gggg::1"))
+        #expect(isPrivateAddress("::ffff:999.0.0.0"))
     }
 }

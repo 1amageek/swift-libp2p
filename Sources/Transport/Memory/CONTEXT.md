@@ -81,6 +81,13 @@ async let a2 = listener.accept()  // Error!
 
 ### リスナーのライフサイクル
 MemoryHub は weak reference を使用。リスナーへの strong reference を保有しなければ自動削除される。
+`register` 時に死んだ weak エントリを prune し、tombstone の無制限蓄積を防ぐ（2026-06）。
+
+### 有界バッファ（バックプレッシャー）
+`MemoryChannel` は方向ごとにバッファを有界化（デフォルト 1MB、`memoryChannelMaxBufferedBytes`）。
+ピアが読まずに送信し続けるとメモリ枯渇 DoS になるため、上限超過時は送信を `MemorySendResult.bufferFull` で拒否し、
+`MemoryConnection.write` が `TransportError.connectionFailed(underlying: MemoryConnectionDetailError.receiveBufferFull)` を投げる。
+ピアが read してバッファが空けば書き込みは再開する。サイレントドロップ・サイレント切替は禁止（2026-06）。
 
 ## 使用例
 ```swift

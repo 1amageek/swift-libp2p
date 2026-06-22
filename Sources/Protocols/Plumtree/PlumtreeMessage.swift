@@ -27,6 +27,28 @@ public struct PlumtreeMessageID: Hashable, Sendable, CustomStringConvertible {
         return PlumtreeMessageID(bytes: data)
     }
 
+    /// Verifies that this message ID is bound to the given source peer.
+    ///
+    /// A valid ID is `source.bytes` followed by an 8-byte big-endian sequence
+    /// number, i.e. `messageID == compute(source, seqno)` for the embedded
+    /// `seqno`. This prevents seen-cache poisoning where an attacker crafts a
+    /// message ID that does not correspond to the claimed source.
+    ///
+    /// - Parameter source: The claimed source peer.
+    /// - Returns: `true` if the ID is consistent with `source`.
+    public func isBound(to source: PeerID) -> Bool {
+        let sourceBytes = source.bytes
+        // ID must be exactly source bytes + 8-byte sequence number.
+        guard bytes.count == sourceBytes.count + 8 else { return false }
+        guard bytes.prefix(sourceBytes.count).elementsEqual(sourceBytes) else { return false }
+        // Reconstruct and compare to be fully equivalent to compute().
+        var seqno: UInt64 = 0
+        for byte in bytes.suffix(8) {
+            seqno = (seqno << 8) | UInt64(byte)
+        }
+        return self == Self.compute(source: source, sequenceNumber: seqno)
+    }
+
     public var description: String {
         bytes.prefix(8).map { String(format: "%02x", $0) }.joined()
     }

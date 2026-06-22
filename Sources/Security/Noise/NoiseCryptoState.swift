@@ -299,21 +299,39 @@ struct NoiseSymmetricState: Sendable {
 
 /// Performs X25519 Diffie-Hellman key agreement.
 ///
+/// This is the AUTHORITATIVE guard against small-order / invalid public keys.
+/// Two independent layers both reject a malicious point, and both surface the
+/// SAME typed error (`NoiseError.invalidKey`) — never a silent fallback:
+///
+/// 1. CryptoKit's `sharedSecretFromKeyAgreement` itself rejects several
+///    small-order encodings (throwing `CryptoKitError`); we translate that into
+///    `NoiseError.invalidKey` since it means the peer presented an invalid key.
+/// 2. The all-zero shared-secret check below catches any contributory point that
+///    CryptoKit nevertheless accepts, yielding an all-zero secret.
+///
 /// - Parameters:
 ///   - privateKey: Local private key
 ///   - publicKey: Remote public key
 /// - Returns: Shared secret (32 bytes)
-/// - Throws: `NoiseError.invalidKey` if the public key is a small-order point
-///   resulting in a zero shared secret.
+/// - Throws: `NoiseError.invalidKey` if the public key is rejected by CryptoKit
+///   or is a small-order point resulting in a zero shared secret.
 func noiseKeyAgreement(
     privateKey: Curve25519.KeyAgreement.PrivateKey,
     publicKey: Curve25519.KeyAgreement.PublicKey
 ) throws -> Data {
-    let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+    let sharedSecret: SharedSecret
+    do {
+        sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+    } catch {
+        // CryptoKit rejected the public key (e.g. a small-order point). Surface
+        // the libp2p-typed error rather than leaking CryptoKitError. This is a
+        // rejection, NOT a fallback — agreement does not proceed.
+        throw NoiseError.invalidKey
+    }
     let secretData = sharedSecret.withUnsafeBytes { Data($0) }
 
-    // Reject small-order points that result in all-zero shared secret.
-    // This prevents attacks using crafted public keys.
+    // Authoritative guard: reject small-order points that result in an all-zero
+    // shared secret. This catches crafted public keys CryptoKit accepts.
     guard !secretData.allSatisfy({ $0 == 0 }) else {
         throw NoiseError.invalidKey
     }
@@ -323,73 +341,54 @@ func noiseKeyAgreement(
 
 // MARK: - Small-Order Point Validation
 
-/// Known small-order points for X25519 (little-endian, 32 bytes).
-/// These points result in a shared secret of all zeros and must be rejected.
-/// Reference: https://cr.yp.to/ecdh.html#validate
+/// Canonical X25519 small-order points (little-endian, 32 bytes).
+///
+/// This is the 7-element blocklist used by libsodium's `has_small_order`
+/// (`crypto_scalarmult_curve25519`). These are the canonical (reduced)
+/// representatives of points whose order divides 8; agreeing against any of
+/// them yields an all-zero shared secret.
+///
+/// IMPORTANT: This static blocklist is a defense-in-depth fast-reject only.
+/// The *authoritative* guard against small-order / contributory-behaviour
+/// attacks is the all-zero shared-secret rejection in `noiseKeyAgreement`,
+/// which catches every malicious point — including non-canonical encodings
+/// (e.g. unreduced twist representatives) that are NOT listed here. We
+/// deliberately do not enumerate non-standard high-bit/unreduced variants in
+/// this set; the runtime zero-check covers them.
+///
+/// Reference: libsodium `ed25519_ref10.c` blacklist; https://cr.yp.to/ecdh.html#validate
 private let x25519SmallOrderPoints: Set<Data> = {
-    // The 8 small-order points in X25519 that yield all-zero shared secrets.
-    // We check for these explicitly in addition to the zero-check in noiseKeyAgreement.
+    let canonicalHex = [
+        "0000000000000000000000000000000000000000000000000000000000000000", // 0, order 1
+        "0100000000000000000000000000000000000000000000000000000000000000", // 1, order 1
+        "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800", // order 8
+        "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157", // order 8
+        "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p-1, order 2
+        "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p, order 4
+        "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p+1, order 1
+    ]
     var points = Set<Data>()
-
-    // Point 1: 0 (order 1 - neutral element)
-    points.insert(Data(repeating: 0, count: 32))
-
-    // Point 2: 1 (order 4)
-    var one = Data(repeating: 0, count: 32)
-    one[0] = 1
-    points.insert(one)
-
-    // Point 3: order 8 point (little-endian hex)
-    // ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
-    guard let p3 = Data(hexString: "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") else {
-        preconditionFailure("Invalid hex constant for X25519 small-order point 3")
+    for hex in canonicalHex {
+        guard let point = Data(hexString: hex) else {
+            preconditionFailure("Invalid hex constant for X25519 small-order point: \(hex)")
+        }
+        points.insert(point)
     }
-    points.insert(p3)
-
-    // Point 4: order 8 point
-    // e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800
-    guard let p4 = Data(hexString: "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800") else {
-        preconditionFailure("Invalid hex constant for X25519 small-order point 4")
-    }
-    points.insert(p4)
-
-    // Point 5: order 8 point
-    // 5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157
-    guard let p5 = Data(hexString: "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157") else {
-        preconditionFailure("Invalid hex constant for X25519 small-order point 5")
-    }
-    points.insert(p5)
-
-    // Point 6: order 2 point (p-1 clamped)
-    // edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
-    guard let p6 = Data(hexString: "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") else {
-        preconditionFailure("Invalid hex constant for X25519 small-order point 6")
-    }
-    points.insert(p6)
-
-    // Point 7: order 8 point on twist
-    // daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-    guard let p7 = Data(hexString: "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") else {
-        preconditionFailure("Invalid hex constant for X25519 small-order point 7")
-    }
-    points.insert(p7)
-
-    // Point 8: order 8 point on twist
-    // dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-    guard let p8 = Data(hexString: "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff") else {
-        preconditionFailure("Invalid hex constant for X25519 small-order point 8")
-    }
-    points.insert(p8)
-
     return points
 }()
 
-/// Validates that an X25519 public key is not a small-order point.
+/// Performs a fast static check that an X25519 public key is not one of the
+/// canonical small-order points.
+///
+/// This is a defense-in-depth pre-check, NOT the authoritative guard. A `true`
+/// result does NOT prove the key is safe for key agreement — the all-zero
+/// shared-secret rejection in `noiseKeyAgreement` is the authoritative guarantee
+/// and catches small-order points (canonical or not) that this static set omits.
 ///
 /// - Parameter publicKey: The raw public key bytes (32 bytes)
-/// - Returns: True if the key is valid (not a small-order point)
+/// - Returns: False if the key is a known canonical small-order point.
 func validateX25519PublicKey<PublicKeyBytes: DataProtocol>(_ publicKey: PublicKeyBytes) -> Bool {
-    // Check against known small-order points
+    // Check against the canonical small-order points
     guard !x25519SmallOrderPoints.contains(Data(publicKey)) else {
         return false
     }

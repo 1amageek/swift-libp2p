@@ -4,6 +4,8 @@ import Foundation
 import Synchronization
 import P2PCore
 
+private let providerStoreLogger = Logger(label: "p2p.kademlia.providerstore")
+
 /// A provider record.
 public struct ProviderRecord: Sendable, Equatable {
     /// The provider's peer ID.
@@ -85,6 +87,27 @@ public final class ProviderStore: Sendable {
     ///   - addresses: Known addresses for the provider.
     ///   - ttl: Time-to-live (uses default if nil).
     /// - Returns: True if added, false if rejected.
+    /// Adds a provider, propagating any backend failure.
+    ///
+    /// - Returns: True if added, false if the backend declined (e.g. per-key or
+    ///   total-key cap reached — a legitimate bounded-capacity signal).
+    /// - Throws: A backend error if the store operation itself failed.
+    @discardableResult
+    public func addProviderThrowing(
+        for key: Data,
+        peerID: PeerID,
+        addresses: [Multiaddr] = [],
+        ttl: Duration? = nil
+    ) throws -> Bool {
+        let effectiveTTL = ttl ?? defaultTTL
+        let record = ProviderRecord(peerID: peerID, addresses: addresses)
+        return try backend.addProvider(for: key, record: record, ttl: effectiveTTL)
+    }
+
+    /// Adds a provider for a content key (non-throwing convenience).
+    ///
+    /// Backend errors are logged (not silently swallowed) and surface as `false`.
+    /// Prefer `addProviderThrowing` where the result matters.
     @discardableResult
     public func addProvider(
         for key: Data,
@@ -92,11 +115,10 @@ public final class ProviderStore: Sendable {
         addresses: [Multiaddr] = [],
         ttl: Duration? = nil
     ) -> Bool {
-        let effectiveTTL = ttl ?? defaultTTL
-        let record = ProviderRecord(peerID: peerID, addresses: addresses)
         do {
-            return try backend.addProvider(for: key, record: record, ttl: effectiveTTL)
+            return try addProviderThrowing(for: key, peerID: peerID, addresses: addresses, ttl: ttl)
         } catch {
+            providerStoreLogger.warning("ProviderStore.addProvider failed: \(error)")
             return false
         }
     }
@@ -109,6 +131,7 @@ public final class ProviderStore: Sendable {
         do {
             return try backend.getProviders(for: key)
         } catch {
+            providerStoreLogger.warning("ProviderStore.getProviders failed: \(error)")
             return []
         }
     }
@@ -127,6 +150,7 @@ public final class ProviderStore: Sendable {
             try backend.removeProvider(for: key, peerID: peerID)
             return existing
         } catch {
+            providerStoreLogger.warning("ProviderStore.removeProvider failed: \(error)")
             return nil
         }
     }
@@ -144,6 +168,7 @@ public final class ProviderStore: Sendable {
             }
             return providers.count
         } catch {
+            providerStoreLogger.warning("ProviderStore.removeAllProviders failed: \(error)")
             return 0
         }
     }
@@ -185,6 +210,7 @@ public final class ProviderStore: Sendable {
         do {
             return try backend.cleanup()
         } catch {
+            providerStoreLogger.warning("ProviderStore.cleanup failed: \(error)")
             return 0
         }
     }
@@ -194,7 +220,7 @@ public final class ProviderStore: Sendable {
         do {
             try backend.removeAll()
         } catch {
-            // Best effort
+            providerStoreLogger.warning("ProviderStore.clear failed: \(error)")
         }
     }
 
@@ -211,6 +237,7 @@ public final class ProviderStore: Sendable {
         do {
             return try backend.keysNeedingRepublish(localPeerID: localPeerID, threshold: threshold)
         } catch {
+            providerStoreLogger.warning("ProviderStore.keysNeedingRepublish failed: \(error)")
             return []
         }
     }

@@ -3,6 +3,10 @@
 /// Run with: swift run PingPongDemo [server|client]
 import Foundation
 import P2P
+// Plaintext is no longer re-exported by `import P2P` (it provides no
+// confidentiality and must be an explicit choice). This localhost demo opts
+// into it deliberately.
+import P2PSecurityPlaintext
 
 @main
 struct PingPongDemo {

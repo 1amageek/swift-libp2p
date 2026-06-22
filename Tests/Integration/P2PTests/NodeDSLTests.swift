@@ -326,22 +326,26 @@ struct NodeDSLTests {
 
         #expect(configuration.runtime.pool == .development)
         #expect(configuration.healthCheck == .development)
-        #expect(configuration.resourceManager == nil)
+        // Development still enforces resource limits (no silent "unlimited") —
+        // a real DefaultResourceManager, not nil/NullResourceManager.
+        #expect(configuration.resourceManager is DefaultResourceManager)
     }
 
     @Test("Production validation reports disabled operational safeguards", .timeLimit(.minutes(1)))
     func productionValidationReportsDisabledOperationalSafeguards() async throws {
+        // An explicit NullResourceManager is the deliberate "no limits" opt-out.
+        // In production this is an ERROR (not a silent warning); a disabled
+        // health check remains a warning.
         let configuration = NodeConfiguration(
             keyPair: .generateEd25519(),
             healthCheck: nil,
-            resourceManager: nil
+            resourceManager: NullResourceManager()
         )
 
         let report = configuration.validationReport(for: .production)
 
-        #expect(report.errors.isEmpty)
+        #expect(report.errors.contains(.disabledResourceManagerInProduction))
         #expect(report.warnings.contains(.disabledHealthChecksInProduction))
-        #expect(report.warnings.contains(.disabledResourceManagerInProduction))
     }
 
     @Test("Production input validation rejects plaintext security", .timeLimit(.minutes(1)))
@@ -354,7 +358,7 @@ struct NodeDSLTests {
             transports: [MemoryTransport(hub: hub)],
             security: [PlaintextUpgrader()],
             healthCheck: .production,
-            resourceManager: NullResourceManager()
+            resourceManager: DefaultResourceManager()
         )
 
         #expect(report.errors.contains(.plaintextSecurityInProduction))
@@ -370,7 +374,7 @@ struct NodeDSLTests {
             transports: [],
             security: [],
             healthCheck: .production,
-            resourceManager: NullResourceManager()
+            resourceManager: DefaultResourceManager()
         )
 
         #expect(report.errors.contains(.opaqueConnectionProvidersRequireManualSecurityAudit))
@@ -386,7 +390,7 @@ struct NodeDSLTests {
             transports: [],
             security: [],
             healthCheck: .production,
-            resourceManager: NullResourceManager()
+            resourceManager: DefaultResourceManager()
         )
 
         #expect(report.errors.isEmpty)
@@ -395,10 +399,12 @@ struct NodeDSLTests {
 
     @Test("Strict production start validation rejects warning-only configurations", .timeLimit(.minutes(1)))
     func strictProductionStartValidationRejectsWarningOnlyConfigurations() async throws {
+        // healthCheck: nil is a warning; an explicit NullResourceManager is an
+        // error. Strict validation rejects on either.
         let node = try Node(
             keyPair: .generateEd25519(),
             healthCheck: nil,
-            resourceManager: nil
+            resourceManager: NullResourceManager()
         ) {
             Ping()
         }
@@ -409,7 +415,7 @@ struct NodeDSLTests {
         } catch let error as NodeStartValidationError {
             #expect(error.profile == .production)
             #expect(error.validation.warnings.contains(.disabledHealthChecksInProduction))
-            #expect(error.validation.warnings.contains(.disabledResourceManagerInProduction))
+            #expect(error.validation.errors.contains(.disabledResourceManagerInProduction))
         } catch {
             Issue.record("Unexpected error: \(error)")
         }

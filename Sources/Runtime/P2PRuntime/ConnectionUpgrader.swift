@@ -112,14 +112,30 @@ public protocol ConnectionUpgrader: Sendable {
     ) async throws -> UpgradeResult
 }
 
+/// Wraps a raw connection with a pre-security transform (e.g. pnet PSK
+/// encryption) that must run before security negotiation.
+///
+/// When a protector is configured it is applied unconditionally and MUST
+/// fail closed: if `protect` throws, the upgrade fails and the connection is
+/// closed. There is no unprotected fallback.
+public protocol ConnectionProtector: Sendable {
+    func protect(_ raw: any RawConnection) async throws -> any RawConnection
+}
+
 public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
     private let securityUpgraders: [any SecurityUpgrader]
     private let muxers: [any Muxer]
+    private let protector: (any ConnectionProtector)?
     private static let maxMessageSize = 64 * 1024
 
-    public init(security: [any SecurityUpgrader], muxers: [any Muxer]) {
+    public init(
+        security: [any SecurityUpgrader],
+        muxers: [any Muxer],
+        protector: (any ConnectionProtector)? = nil
+    ) {
         self.securityUpgraders = security
         self.muxers = muxers
+        self.protector = protector
     }
 
     public func upgrade(
@@ -128,10 +144,20 @@ public final class NegotiatingUpgrader: ConnectionUpgrader, Sendable {
         role: SecurityRole,
         expectedPeer: PeerID?
     ) async throws -> UpgradeResult {
+        // Apply the pre-security protector (e.g. pnet PSK) before any security
+        // negotiation. Fail closed: if protection cannot be applied, the upgrade
+        // fails — there is no unprotected fallback.
+        let base: any RawConnection
+        if let protector {
+            base = try await protector.protect(raw)
+        } else {
+            base = raw
+        }
+
         do {
             let muxerProtocolIDs = muxers.map(\.protocolID)
             let (secured, securityProtocol, earlyMuxer) = try await upgradeToSecured(
-                raw,
+                base,
                 localKeyPair: localKeyPair,
                 role: role,
                 expectedPeer: expectedPeer,

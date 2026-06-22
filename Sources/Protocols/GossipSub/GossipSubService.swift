@@ -60,6 +60,20 @@ public final class GossipSubService: Sendable {
         var isStarted: Bool = false
         var peerStreams: [PeerID: MuxedStream] = [:]
         var opener: (any StreamOpener)?
+        /// Tracked unstructured tasks (e.g. subscription sends) so they can be
+        /// cancelled on shutdown rather than leaking.
+        var pendingTasks: [UUID: Task<Void, Never>] = [:]
+    }
+
+    /// Spawns a tracked unstructured task and removes it from tracking on
+    /// completion. Tracked tasks are cancelled during `shutdown()`.
+    private func trackTask(_ body: @escaping @Sendable () async -> Void) {
+        let id = UUID()
+        let task = Task { [weak self] in
+            await body()
+            self?.serviceState.withLock { _ = $0.pendingTasks.removeValue(forKey: id) }
+        }
+        serviceState.withLock { $0.pendingTasks[id] = task }
     }
 
     // MARK: - Initialization
@@ -137,10 +151,17 @@ public final class GossipSubService: Sendable {
 
     /// Shuts down the GossipSub service.
     public func shutdown() async throws {
-        serviceState.withLock { s in
+        let pending = serviceState.withLock { s -> [Task<Void, Never>] in
             s.isStarted = false
             s.opener = nil
             s.peerStreams.removeAll()
+            let tasks = Array(s.pendingTasks.values)
+            s.pendingTasks.removeAll()
+            return tasks
+        }
+        // Cancel any tracked unstructured tasks (e.g. in-flight subscription sends).
+        for task in pending {
+            task.cancel()
         }
 
         heartbeat.withLock { hb in
@@ -360,9 +381,9 @@ public final class GossipSubService: Sendable {
         // Store stream
         serviceState.withLock { $0.peerStreams[peerID] = stream }
 
-        // Send our subscriptions
-        Task {
-            await sendSubscriptions(to: peerID)
+        // Send our subscriptions (tracked so it is cancelled on shutdown).
+        trackTask { [weak self] in
+            await self?.sendSubscriptions(to: peerID)
         }
     }
 
@@ -526,7 +547,7 @@ public final class GossipSubService: Sendable {
         if data.readerIndex > Self.maxBufferSize {
             data.discardReadBytes()
         }
-        return try GossipSubProtobuf.decode(rpcBuffer)
+        return try GossipSubProtobuf.decode(rpcBuffer, limits: configuration.decodingLimits)
     }
 
     /// Encodes an RPC with length prefix.

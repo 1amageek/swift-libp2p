@@ -133,4 +133,24 @@ struct CircuitRelayProtobufTests {
         #expect(decoded.limit?.duration == nil)
         #expect(decoded.limit?.data == 32768)
     }
+
+    @Test("decodeHop rejects an oversized varint length without crashing")
+    func hopOversizedVarintRejected() {
+        // Field 2 (peer), wire type 2 -> tag 0x12, then a 10-byte varint near UInt64.max.
+        var data = Data([0x12])
+        data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
+        #expect(throws: (any Error).self) {
+            _ = try CircuitRelayProtobuf.decodeHop(data)
+        }
+    }
+
+    @Test("decodeStop rejects an oversized varint length without crashing")
+    func stopOversizedVarintRejected() {
+        var data = Data([0x12])
+        data.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])
+        #expect(throws: (any Error).self) {
+            _ = try CircuitRelayProtobuf.decodeStop(data)
+        }
+    }
+
 }

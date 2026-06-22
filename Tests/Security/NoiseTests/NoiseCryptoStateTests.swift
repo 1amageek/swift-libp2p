@@ -327,16 +327,26 @@ struct NoiseCryptoStateTests {
         #expect(!validateX25519PublicKey(point))
     }
 
-    @Test("validateX25519PublicKey rejects twist point (da...ff)")
-    func testValidateRejectsTwistPoint1() {
-        let point = Data(hexString: "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")!
-        #expect(!validateX25519PublicKey(point))
-    }
-
-    @Test("validateX25519PublicKey rejects twist point (db...ff)")
-    func testValidateRejectsTwistPoint2() {
-        let point = Data(hexString: "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")!
-        #expect(!validateX25519PublicKey(point))
+    @Test("Non-canonical high-bit twist encodings (da/db...ff) are safe under X25519")
+    func testNonCanonicalTwistEncodingsAreSafe() throws {
+        // These two values were previously in the static blocklist but are NOT
+        // genuine small-order points: with the high bit set and unreduced, X25519
+        // clamping/reduction maps them to ordinary points that yield a NON-ZERO
+        // shared secret. They are not a security threat, so rejecting them would
+        // be incorrect. This documents that the canonical-7 alignment (Finding 4)
+        // does not weaken any real guarantee — the all-zero guard rejects every
+        // point that actually produces a zero secret.
+        let nonCanonical = [
+            "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        ]
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        for hex in nonCanonical {
+            let raw = Data(hexString: hex)!
+            let publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: raw)
+            let secret = try noiseKeyAgreement(privateKey: privateKey, publicKey: publicKey)
+            #expect(!secret.allSatisfy { $0 == 0 }, "Non-canonical encoding \(hex) should yield a non-zero secret")
+        }
     }
 
     @Test("validateX25519PublicKey accepts valid public key")
@@ -356,23 +366,73 @@ struct NoiseCryptoStateTests {
         }
     }
 
-    @Test("All 8 small-order points are rejected")
-    func testAllSmallOrderPointsRejected() {
-        // Complete list of X25519 small-order points
-        let smallOrderPointsHex = [
-            "0000000000000000000000000000000000000000000000000000000000000000", // order 1
-            "0100000000000000000000000000000000000000000000000000000000000000", // order 4
-            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // order 8
+    @Test("Canonical small-order points are rejected by the static fast-check")
+    func testCanonicalSmallOrderPointsRejectedByStaticCheck() {
+        // The canonical libsodium 7-element blocklist. These are caught by the
+        // static defense-in-depth fast-check validateX25519PublicKey.
+        let canonicalHex = [
+            "0000000000000000000000000000000000000000000000000000000000000000", // 0, order 1
+            "0100000000000000000000000000000000000000000000000000000000000000", // 1, order 1
             "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800", // order 8
             "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157", // order 8
-            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // order 2
-            "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", // order 8 (twist)
-            "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", // order 8 (twist)
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p-1, order 2
+            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p, order 4
+            "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p+1, order 1
+        ]
+
+        for hex in canonicalHex {
+            let point = Data(hexString: hex)!
+            #expect(!validateX25519PublicKey(point), "Canonical small-order point \(hex) should be rejected by the static check")
+        }
+    }
+
+    @Test("All canonical small-order points are rejected by the authoritative key-agreement guard")
+    func testAllSmallOrderPointsRejected() {
+        // The genuine X25519 small-order points (canonical libsodium 7-element
+        // set). Each yields an all-zero shared secret or is rejected outright by
+        // CryptoKit; the authoritative guard in noiseKeyAgreement rejects ALL of
+        // them with the typed NoiseError.invalidKey — never a silent fallback.
+        let smallOrderPointsHex = [
+            "0000000000000000000000000000000000000000000000000000000000000000", // 0, order 1
+            "0100000000000000000000000000000000000000000000000000000000000000", // 1, order 1
+            "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800", // order 8
+            "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157", // order 8
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p-1, order 2
+            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p, order 4
+            "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // p+1, order 1
         ]
 
         for hex in smallOrderPointsHex {
             let point = Data(hexString: hex)!
-            #expect(!validateX25519PublicKey(point), "Small-order point \(hex) should be rejected")
+            expectKeyAgreementRejects(point, label: hex)
+        }
+    }
+
+    // MARK: - Small-Order Test Helpers
+
+    /// Asserts that agreeing a freshly generated private key against `rawPublicKey`
+    /// is rejected by the authoritative all-zero shared-secret guard in
+    /// noiseKeyAgreement (NoiseError.invalidKey).
+    private func expectKeyAgreementRejects(_ rawPublicKey: Data, label: String = "") {
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        let publicKey: Curve25519.KeyAgreement.PublicKey
+        do {
+            publicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: rawPublicKey)
+        } catch {
+            // CryptoKit rejected the encoding outright — that is also a valid
+            // rejection of the malicious point.
+            return
+        }
+        do {
+            _ = try noiseKeyAgreement(privateKey: privateKey, publicKey: publicKey)
+            Issue.record("Expected NoiseError.invalidKey for small-order point \(label)")
+        } catch let error as NoiseError {
+            guard case .invalidKey = error else {
+                Issue.record("Expected NoiseError.invalidKey, got \(error) for \(label)")
+                return
+            }
+        } catch {
+            Issue.record("Expected NoiseError.invalidKey, got \(error) for \(label)")
         }
     }
 }

@@ -265,7 +265,7 @@ public enum AutoNATv2Codec {
             case (2, wireTypeLengthDelimited): // dialRequest
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATv2Error.protocolViolation("DialRequest field truncated")
                 }
@@ -275,7 +275,7 @@ public enum AutoNATv2Codec {
             case (3, wireTypeLengthDelimited): // dialResponse
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATv2Error.protocolViolation("DialResponse field truncated")
                 }
@@ -285,7 +285,7 @@ public enum AutoNATv2Codec {
             case (4, wireTypeLengthDelimited): // dialBack
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATv2Error.protocolViolation("DialBack field truncated")
                 }
@@ -341,7 +341,7 @@ public enum AutoNATv2Codec {
             case (1, wireTypeLengthDelimited): // address
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATv2Error.protocolViolation("Address field truncated")
                 }
@@ -389,7 +389,7 @@ public enum AutoNATv2Codec {
             case (2, wireTypeLengthDelimited): // address
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATv2Error.protocolViolation("Address field truncated in DialResponse")
                 }
@@ -460,7 +460,7 @@ public enum AutoNATv2Codec {
             newOffset += 8
         case 2: // Length-delimited
             let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += lengthBytes + Int(length)
+            newOffset += lengthBytes + (try Varint.toInt(length))
         case 5: // 32-bit
             newOffset += 4
         default:

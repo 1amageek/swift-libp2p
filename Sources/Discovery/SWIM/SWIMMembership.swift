@@ -6,6 +6,7 @@ import P2PProtocols
 import SWIM
 import NIOUDPTransport
 import Synchronization
+import Logging
 
 /// Configuration for SWIM-based membership.
 public struct SWIMMembershipConfiguration: Sendable {
@@ -73,6 +74,7 @@ public actor SWIMMembership: DiscoveryService {
     private var forwardTask: Task<Void, Never>?
 
     private nonisolated let broadcaster = EventBroadcaster<PeerObservation>()
+    private nonisolated let logger = Logger(label: "p2p.discovery.swim")
 
     // MARK: - Initialization
 
@@ -368,7 +370,11 @@ extension SWIMMembership {
         do {
             try await start()
         } catch {
-            // SWIM start failure is non-fatal — service simply won't detect membership
+            // SWIM start failure is non-fatal (the service simply won't detect
+            // membership) but must not be swallowed silently.
+            logger.warning("SWIM membership failed to start", metadata: [
+                "error": "\(error)",
+            ])
         }
     }
 

@@ -308,6 +308,118 @@ struct NegotiationEdgeCaseTests {
 
         #expect(equalBytes(result.remainderBuffer, extraBytes))
     }
+
+    // MARK: - Negotiation-Phase Budget / Deadline (Finding 3)
+
+    @Test("Handle caps the number of ls responses (pre-auth amplification)")
+    func handleLsResponseBudget() async throws {
+        // A peer that repeatedly requests `ls` would force the responder to
+        // serialize the full protocol list each time (output amplification).
+        // The maxListResponses budget must stop this.
+        var readIndex = 0
+        var lsResponsesWritten = 0
+        let limits = MultistreamSelect.HandleLimits(maxListResponses: 3)
+
+        await #expect(throws: NegotiationError.negotiationBudgetExceeded) {
+            _ = try await MultistreamSelect.handle(
+                supported: ["/proto/a", "/proto/b", "/proto/c"],
+                limits: limits,
+                read: {
+                    if readIndex == 0 {
+                        readIndex += 1
+                        return MultistreamSelect.encode(MultistreamSelect.protocolID)
+                    }
+                    readIndex += 1
+                    return MultistreamSelect.encode("ls")  // endless ls requests
+                },
+                write: { written in
+                    // Count ls-list responses (they are larger than a header/na).
+                    if let (decoded, _) = try? MultistreamSelect.decode(written),
+                       decoded.contains("/proto/a") {
+                        lsResponsesWritten += 1
+                    }
+                }
+            )
+        }
+
+        // The responder served at most the budgeted number of ls replies.
+        #expect(lsResponsesWritten <= limits.maxListResponses)
+    }
+
+    @Test("Handle caps total received bytes during negotiation")
+    func handleReceivedByteBudget() async throws {
+        // A peer dribbling unbounded junk (here: oversized unsupported protocol
+        // names) must be cut off by the received-byte budget.
+        let limits = MultistreamSelect.HandleLimits(maxReceivedBytes: 256)
+        var readIndex = 0
+        // A long but individually valid (<= maxMessageSize) protocol name.
+        let longProto = "/" + String(repeating: "x", count: 200)
+
+        await #expect(throws: NegotiationError.negotiationBudgetExceeded) {
+            _ = try await MultistreamSelect.handle(
+                supported: ["/supported"],
+                limits: limits,
+                read: {
+                    if readIndex == 0 {
+                        readIndex += 1
+                        return MultistreamSelect.encode(MultistreamSelect.protocolID)
+                    }
+                    readIndex += 1
+                    return MultistreamSelect.encode(longProto)
+                },
+                write: { _ in }
+            )
+        }
+    }
+
+    @Test("Handle enforces a wall-clock negotiation deadline")
+    func handleDeadline() async throws {
+        // A peer that makes slow incremental progress must be cut off by the
+        // deadline. We use a tiny deadline and a read that returns the header,
+        // then delays past the deadline before the next fragment.
+        let limits = MultistreamSelect.HandleLimits(deadline: .milliseconds(50))
+        var readIndex = 0
+
+        await #expect(throws: NegotiationError.negotiationTimeout) {
+            _ = try await MultistreamSelect.handle(
+                supported: ["/supported"],
+                limits: limits,
+                read: {
+                    if readIndex == 0 {
+                        readIndex += 1
+                        return MultistreamSelect.encode(MultistreamSelect.protocolID)
+                    }
+                    // Sleep past the deadline before returning the next chunk.
+                    try await Task.sleep(for: .milliseconds(120))
+                    readIndex += 1
+                    return MultistreamSelect.encode("/unsupported")
+                },
+                write: { _ in }
+            )
+        }
+    }
+
+    @Test("Handle still succeeds within budgets and deadline")
+    func handleSucceedsWithinBudgets() async throws {
+        // Sanity: normal negotiation (header + one ls + accept) succeeds with
+        // the default limits applied.
+        let requests = [
+            MultistreamSelect.encode(MultistreamSelect.protocolID),
+            MultistreamSelect.encode("ls"),
+            MultistreamSelect.encode("/proto/a"),
+        ]
+        var readIndex = 0
+        let result = try await MultistreamSelect.handle(
+            supported: ["/proto/a", "/proto/b"],
+            read: {
+                guard readIndex < requests.count else { throw NegotiationError.invalidMessage }
+                defer { readIndex += 1 }
+                return requests[readIndex]
+            },
+            write: { _ in }
+        )
+        #expect(result.protocolID == "/proto/a")
+    }
 }
 
 private func slice(_ buffer: ByteBuffer, _ offset: Int, _ length: Int) -> ByteBuffer {

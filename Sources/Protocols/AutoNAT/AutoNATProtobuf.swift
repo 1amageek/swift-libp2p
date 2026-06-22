@@ -106,7 +106,7 @@ enum AutoNATProtobuf {
             case (2, wireTypeLengthDelimited): // dial
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATError.protocolViolation("Dial field truncated")
                 }
@@ -116,7 +116,7 @@ enum AutoNATProtobuf {
             case (3, wireTypeLengthDelimited): // dialResponse
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATError.protocolViolation("DialResponse field truncated")
                 }
@@ -179,7 +179,7 @@ enum AutoNATProtobuf {
             case (1, wireTypeLengthDelimited): // peer
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATError.protocolViolation("PeerInfo field truncated")
                 }
@@ -242,7 +242,7 @@ enum AutoNATProtobuf {
 
             let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
             offset += lengthBytes
-            let fieldEnd = offset + Int(length)
+            let fieldEnd = offset + (try Varint.toInt(length))
             guard fieldEnd <= data.endIndex else {
                 throw AutoNATError.protocolViolation("Field truncated")
             }
@@ -315,7 +315,7 @@ enum AutoNATProtobuf {
             case (2, wireTypeLengthDelimited): // statusText
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATError.protocolViolation("StatusText field truncated")
                 }
@@ -325,7 +325,7 @@ enum AutoNATProtobuf {
             case (3, wireTypeLengthDelimited): // addr
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw AutoNATError.protocolViolation("Addr field truncated")
                 }
@@ -353,7 +353,7 @@ enum AutoNATProtobuf {
             newOffset += 8
         case 2: // Length-delimited
             let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += lengthBytes + Int(length)
+            newOffset += lengthBytes + (try Varint.toInt(length))
         case 5: // 32-bit
             newOffset += 4
         default:

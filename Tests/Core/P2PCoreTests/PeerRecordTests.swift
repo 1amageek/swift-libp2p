@@ -57,6 +57,31 @@ struct PeerRecordTests {
         }
     }
 
+    @Test("Unmarshal from a non-zero-based Data slice does not crash")
+    func unmarshalFromNonZeroBasedSlice() throws {
+        // Reproduces the slice-indexing bug: an Envelope's `payload` is a Data slice
+        // with a non-zero startIndex. Decoding such a slice with 0-based offsets used
+        // to index out of bounds and trap. Build a marshalled record, prepend a
+        // prefix, then decode the trailing slice (startIndex > 0).
+        let keyPair = KeyPair.generateEd25519()
+        let addrs = [
+            try Multiaddr("/ip4/127.0.0.1/tcp/4001"),
+            try Multiaddr("/ip6/::1/tcp/9000"),
+        ]
+        let original = PeerRecord.make(keyPair: keyPair, seq: 77, addresses: addrs)
+        let marshalled = try original.marshal()
+
+        var framed = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22])
+        framed.append(marshalled)
+        let slice = framed[framed.startIndex.advanced(by: 7)...]
+        #expect(slice.startIndex != 0)
+
+        let restored = try PeerRecord.unmarshal(slice)
+        #expect(restored.peerID == original.peerID)
+        #expect(restored.seq == 77)
+        #expect(restored.addresses.count == 2)
+    }
+
     @Test("Marshal uses libp2p protobuf wire format")
     func marshalUsesProtobufWireFormat() throws {
         let keyPair = KeyPair.generateEd25519()

@@ -947,6 +947,160 @@ struct PnetErrorTests {
     }
 }
 
+// MARK: - Nonce Framing Tests
+
+/// Tests that the pnet nonce exchange tolerates TCP splitting/coalescing the
+/// 24-byte nonce, and that surplus bytes coalesced with the nonce are decrypted
+/// and delivered to the wrapped connection (Finding 1).
+@Suite("Pnet Nonce Framing Tests", .serialized)
+struct PnetNonceFramingTests {
+
+    private static let pnetNonceSize = 24
+
+    /// A RawConnection that returns a scripted queue of read chunks and records
+    /// all writes. Lets us simulate TCP fragmentation/coalescing deterministically.
+    private final class ScriptedRawConnection: RawConnection, Sendable {
+        let localAddress: Multiaddr? = nil
+        let remoteAddress: Multiaddr = .tcp(host: "127.0.0.1", port: 1)
+
+        private struct State: Sendable {
+            var readChunks: [ByteBuffer]
+            var writes: [ByteBuffer] = []
+            var isClosed = false
+        }
+        private let state: Mutex<State>
+
+        init(readChunks: [ByteBuffer]) {
+            self.state = Mutex(State(readChunks: readChunks))
+        }
+
+        var recordedWrites: [ByteBuffer] { state.withLock { $0.writes } }
+
+        func read() async throws -> ByteBuffer {
+            try state.withLock { state in
+                if state.isClosed { throw PnetMockError.connectionClosed }
+                guard !state.readChunks.isEmpty else {
+                    throw PnetMockError.connectionClosed
+                }
+                return state.readChunks.removeFirst()
+            }
+        }
+
+        func write(_ data: ByteBuffer) async throws {
+            state.withLock { $0.writes.append(data) }
+        }
+
+        func close() async throws {
+            state.withLock { $0.isClosed = true }
+        }
+    }
+
+    /// Builds the remote-side wire bytes: a 24-byte nonce optionally followed by
+    /// application data encrypted with XSalsa20(psk, remoteNonce). Returns the
+    /// full byte stream and the expected decrypted application plaintext.
+    private static func remoteWire(
+        psk: [UInt8],
+        remoteNonce: [UInt8],
+        appPlaintext: [UInt8]
+    ) throws -> (wire: [UInt8], expectedPlaintext: [UInt8]) {
+        var wire = remoteNonce
+        if !appPlaintext.isEmpty {
+            var cipher = try XSalsa20(key: psk, nonce: remoteNonce)
+            var ct = appPlaintext
+            cipher.process(&ct)
+            wire.append(contentsOf: ct)
+        }
+        return (wire, appPlaintext)
+    }
+
+    @Test("Split nonce delivery: nonce arrives in multiple sub-24-byte reads", .timeLimit(.minutes(1)))
+    func testSplitNonceDelivery() async throws {
+        let psk = [UInt8](repeating: 0x11, count: 32)
+        let remoteNonce = (0..<Self.pnetNonceSize).map { UInt8($0) }
+        let (wire, _) = try Self.remoteWire(psk: psk, remoteNonce: remoteNonce, appPlaintext: [])
+
+        // Split the 24-byte nonce into chunks of 10, 10, 4.
+        let chunks = [
+            ByteBuffer(bytes: Array(wire[0..<10])),
+            ByteBuffer(bytes: Array(wire[10..<20])),
+            ByteBuffer(bytes: Array(wire[20..<24])),
+        ]
+        let conn = ScriptedRawConnection(readChunks: chunks)
+        let protector = PnetProtector(configuration: try PnetConfiguration(psk: psk))
+
+        // Should accumulate all 24 bytes and succeed (no spurious failure).
+        let protected = try await protector.protect(conn)
+
+        // Our nonce was written to the wire exactly once.
+        #expect(conn.recordedWrites.count == 1)
+        #expect(conn.recordedWrites.first?.readableBytes == Self.pnetNonceSize)
+
+        // No surplus → reading should now go to the network (which is empty → closed).
+        await #expect(throws: PnetMockError.connectionClosed) {
+            _ = try await protected.read()
+        }
+    }
+
+    @Test("Coalesced delivery: nonce + app data arrive in one read", .timeLimit(.minutes(1)))
+    func testCoalescedNonceAndDataDelivery() async throws {
+        let psk = [UInt8](repeating: 0x22, count: 32)
+        let remoteNonce = (0..<Self.pnetNonceSize).map { UInt8(0xA0 &+ UInt8($0)) }
+        let appPlaintext = Array("first application bytes after the nonce".utf8)
+        let (wire, expected) = try Self.remoteWire(
+            psk: psk, remoteNonce: remoteNonce, appPlaintext: appPlaintext
+        )
+
+        // Entire wire (nonce + ciphertext) in a single coalesced read.
+        let conn = ScriptedRawConnection(readChunks: [ByteBuffer(bytes: wire)])
+        let protector = PnetProtector(configuration: try PnetConfiguration(psk: psk))
+
+        let protected = try await protector.protect(conn)
+
+        // The surplus bytes must be decrypted and delivered on the first read.
+        let firstRead = try await protected.read()
+        #expect(Array(firstRead.readableBytesView) == expected)
+    }
+
+    @Test("Split nonce followed by coalesced trailing app data", .timeLimit(.minutes(1)))
+    func testSplitNonceWithTrailingData() async throws {
+        let psk = [UInt8](repeating: 0x33, count: 32)
+        let remoteNonce = (0..<Self.pnetNonceSize).map { UInt8(0x55 &+ UInt8($0)) }
+        let appPlaintext = Array("trailing".utf8)
+        let (wire, expected) = try Self.remoteWire(
+            psk: psk, remoteNonce: remoteNonce, appPlaintext: appPlaintext
+        )
+
+        // Chunk boundaries cross the nonce/data boundary: 12, then (12 + all data).
+        let chunks = [
+            ByteBuffer(bytes: Array(wire[0..<12])),
+            ByteBuffer(bytes: Array(wire[12...])),
+        ]
+        let conn = ScriptedRawConnection(readChunks: chunks)
+        let protector = PnetProtector(configuration: try PnetConfiguration(psk: psk))
+
+        let protected = try await protector.protect(conn)
+
+        let firstRead = try await protected.read()
+        #expect(Array(firstRead.readableBytesView) == expected)
+    }
+
+    @Test("Clean EOF mid-nonce fails with invalidNonceLength", .timeLimit(.minutes(1)))
+    func testCleanEOFDuringNonce() async throws {
+        let psk = [UInt8](repeating: 0x44, count: 32)
+        // 10 of 24 nonce bytes, then a 0-byte read signalling a clean EOF. The
+        // protector must reject this as an invalid nonce, not hang or accept it.
+        let conn = ScriptedRawConnection(readChunks: [
+            ByteBuffer(bytes: [UInt8](repeating: 0x01, count: 10)),
+            ByteBuffer(),  // 0 readable bytes → clean EOF
+        ])
+        let protector = PnetProtector(configuration: try PnetConfiguration(psk: psk))
+
+        await #expect(throws: PnetError.self) {
+            _ = try await protector.protect(conn)
+        }
+    }
+}
+
 // MARK: - Mock Connection for Pnet Tests
 
 /// A mock raw connection for testing pnet, mirroring the pattern from NoiseIntegrationTests.
@@ -1063,6 +1217,6 @@ private enum PnetMockPipe {
     }
 }
 
-private enum PnetMockError: Error {
+private enum PnetMockError: Error, Equatable {
     case connectionClosed
 }

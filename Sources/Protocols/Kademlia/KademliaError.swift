@@ -37,4 +37,10 @@ public enum KademliaError: Error, Sendable, Equatable {
 
     /// Encoding error.
     case encodingError(String)
+
+    /// A storage backend is full and cannot accept a new entry.
+    case storeFull(String)
+
+    /// A storage backend operation failed.
+    case storeFailed(String)
 }

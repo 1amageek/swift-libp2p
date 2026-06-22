@@ -137,7 +137,7 @@ enum CircuitRelayProtobuf {
             case (2, wireTypeLengthDelimited): // peer
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Peer field truncated")
                 }
@@ -147,7 +147,7 @@ enum CircuitRelayProtobuf {
             case (3, wireTypeLengthDelimited): // reservation
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Reservation field truncated")
                 }
@@ -157,7 +157,7 @@ enum CircuitRelayProtobuf {
             case (4, wireTypeLengthDelimited): // limit
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Limit field truncated")
                 }
@@ -248,7 +248,7 @@ enum CircuitRelayProtobuf {
             case (2, wireTypeLengthDelimited): // peer
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Peer field truncated")
                 }
@@ -258,7 +258,7 @@ enum CircuitRelayProtobuf {
             case (3, wireTypeLengthDelimited): // limit
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Limit field truncated")
                 }
@@ -325,7 +325,7 @@ enum CircuitRelayProtobuf {
 
             let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
             offset += lengthBytes
-            let fieldEnd = offset + Int(length)
+            let fieldEnd = offset + (try Varint.toInt(length))
             guard fieldEnd <= data.endIndex else {
                 throw CircuitRelayError.encodingError("Field truncated")
             }
@@ -401,7 +401,7 @@ enum CircuitRelayProtobuf {
             case (2, wireTypeLengthDelimited): // addrs
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Address field truncated")
                 }
@@ -412,7 +412,7 @@ enum CircuitRelayProtobuf {
             case (3, wireTypeLengthDelimited): // voucher
                 let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(length))
                 guard fieldEnd <= data.endIndex else {
                     throw CircuitRelayError.encodingError("Voucher field truncated")
                 }
@@ -495,7 +495,7 @@ enum CircuitRelayProtobuf {
             newOffset += 8
         case 2: // Length-delimited
             let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += lengthBytes + Int(length)
+            newOffset += lengthBytes + (try Varint.toInt(length))
         case 5: // 32-bit
             newOffset += 4
         default:

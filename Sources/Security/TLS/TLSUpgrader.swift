@@ -3,6 +3,7 @@ import Foundation
 import Crypto
 import NIOCore
 import P2PCore
+import P2PCertificate
 import P2PSecurity
 import Synchronization
 import TLSCore
@@ -221,6 +222,37 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
         // 5. Extract PeerID from validated certificate
         guard let peerID = tlsConn.validatedPeerInfo as? PeerID else {
             throw TLSError.missingLibP2PExtension
+        }
+
+        // 5b. Post-handshake cross-check: independently re-derive the PeerID from
+        // the certificate the peer ACTUALLY presented on this connection and
+        // require it to match `peerID`. `validatedPeerInfo` is produced by the
+        // swift-tls certificateValidator callback; this cross-check ensures we do
+        // not trust a PeerID that could originate from a bypassed validator or
+        // stale validator state — the bound identity must come from the leaf cert
+        // on the wire. LibP2PCertificate.extractPeerID also re-verifies the
+        // libp2p signature over the cert SPKI.
+        guard let presentedLeaf = tlsConn.peerCertificates?.first else {
+            throw TLSError.missingLibP2PExtension
+        }
+        let rederivedPeerID: PeerID
+        do {
+            rederivedPeerID = try LibP2PCertificate.extractPeerID(from: presentedLeaf)
+        } catch {
+            throw TLSError.invalidCertificateSignature
+        }
+        guard rederivedPeerID == peerID else {
+            throw TLSError.peerIDMismatch(
+                expected: peerID.description,
+                actual: rederivedPeerID.description
+            )
+        }
+        // If an expected peer was requested, the presented cert must match it too.
+        if let expectedPeer, expectedPeer != rederivedPeerID {
+            throw TLSError.peerIDMismatch(
+                expected: expectedPeer.description,
+                actual: rederivedPeerID.description
+            )
         }
 
         // 6. Verify ALPN and extract early muxer negotiation result

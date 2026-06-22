@@ -17,6 +17,9 @@ import TLSRecord
 /// The handshake is already complete when this object is created.
 public final class TLSSecuredConnection: SecuredConnection, Sendable {
 
+    /// Logger for connection-lifecycle diagnostics.
+    private static let logger = Logger(label: "p2p.security.tls.connection")
+
     private static func makeByteBuffer<Bytes: DataProtocol>(from bytes: Bytes) -> ByteBuffer {
         var buffer = ByteBuffer()
         buffer.writeBytes(bytes)
@@ -118,11 +121,21 @@ public final class TLSSecuredConnection: SecuredConnection, Sendable {
 
     public func close() async throws {
         state.withLock { $0.isClosed = true }
+        // Sending close_notify is best-effort: the peer may have already closed
+        // the socket. We must NOT silently discard the failure, however — a
+        // missing/failed close_notify is the signal a truncation-attack detector
+        // relies on, so it is logged rather than swallowed.
         do {
             let closeData = try tlsConnection.close()
             try await underlying.write(Self.makeByteBuffer(from: closeData))
         } catch {
-            // Best effort to send close_notify
+            Self.logger.warning(
+                "Failed to send TLS close_notify; peer cannot distinguish clean close from truncation",
+                metadata: [
+                    "remotePeer": "\(remotePeer)",
+                    "error": "\(error)"
+                ]
+            )
         }
         try await underlying.close()
     }

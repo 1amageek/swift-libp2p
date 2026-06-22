@@ -28,4 +28,12 @@ public enum AutoNATv2Error: Error, Sendable, Equatable {
 
     /// No address provided for the check.
     case noAddress
+
+    /// The requested dial target is not a safe, globally-routable address
+    /// (e.g. loopback, private, link-local, multicast, or metadata address),
+    /// or the target IP does not match the connecting peer's observed IP.
+    case dialTargetRejected(String)
+
+    /// The server-side dial path has reached its concurrency limit.
+    case dialConcurrencyLimitReached
 }

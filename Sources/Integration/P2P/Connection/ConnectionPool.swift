@@ -50,6 +50,21 @@ internal struct ManagedConnection: Sendable {
     /// Whether this connection should be kept alive (C3).
     /// Set by protocols (e.g. GossipSub for mesh peers).
     var keepAlive: Bool = false
+
+    /// Whether the connection-level resource reservation has already been
+    /// released. Used to guarantee exactly-once release across the racing
+    /// close paths (closePeer / handleConnectionClosed / idle trim / shutdown).
+    var resourceReleased: Bool = false
+}
+
+/// A token returned by the pool when a connection is removed, indicating
+/// whether the caller is responsible for releasing the connection-level
+/// resource reservation. Exactly one caller observes `shouldReleaseResource ==
+/// true` per connection, even when multiple close paths race.
+internal struct ConnectionRemoval: Sendable {
+    let managed: ManagedConnection
+    /// `true` only for the single caller that must release resources.
+    let shouldReleaseResource: Bool
 }
 
 /// Central manager for all connection state.
@@ -251,6 +266,73 @@ internal final class ConnectionPool: Sendable {
         }
     }
 
+    /// Removes a connection and reports whether the caller must release its
+    /// connection-level resource reservation.
+    ///
+    /// Removal and the release decision happen atomically under the pool lock.
+    /// `shouldReleaseResource` is `true` only for the single caller that removes
+    /// a still-reserved connection — racing close paths observe `false`,
+    /// guaranteeing exactly-once release.
+    ///
+    /// - Parameter id: The connection ID to remove
+    /// - Returns: The removal token, or `nil` if the entry was already gone
+    func removeReleasing(_ id: ConnectionID) -> ConnectionRemoval? {
+        state.withLock { state in
+            guard var managed = state.connections.removeValue(forKey: id) else {
+                return nil
+            }
+            let shouldRelease = !managed.resourceReleased
+            managed.resourceReleased = true
+            state.peerConnections[managed.peer]?.remove(id)
+            if state.peerConnections[managed.peer]?.isEmpty == true {
+                state.peerConnections.removeValue(forKey: managed.peer)
+                state.connectedPeerCache.remove(managed.peer)
+            } else {
+                Self.refreshConnectedPeerCache(&state, for: managed.peer)
+            }
+            return ConnectionRemoval(managed: managed, shouldReleaseResource: shouldRelease)
+        }
+    }
+
+    /// Removes all connections for a peer, reporting per-connection whether the
+    /// caller must release the resource reservation (exactly-once semantics).
+    ///
+    /// - Parameter peer: The peer whose connections to remove
+    /// - Returns: The removal tokens
+    func removeReleasing(forPeer peer: PeerID) -> [ConnectionRemoval] {
+        state.withLock { state in
+            guard let ids = state.peerConnections.removeValue(forKey: peer) else {
+                return []
+            }
+            state.connectedPeerCache.remove(peer)
+            return ids.compactMap { id in
+                guard var managed = state.connections.removeValue(forKey: id) else { return nil }
+                let shouldRelease = !managed.resourceReleased
+                managed.resourceReleased = true
+                return ConnectionRemoval(managed: managed, shouldReleaseResource: shouldRelease)
+            }
+        }
+    }
+
+    /// Marks a connection's resource reservation as released without removing it,
+    /// returning `true` only for the single caller that performed the transition.
+    ///
+    /// Used by the close path that keeps the entry around (e.g. transitioning to
+    /// `.disconnected` for reconnection bookkeeping) but must still release the
+    /// connection-level reservation exactly once.
+    ///
+    /// - Parameter id: The connection ID
+    /// - Returns: `true` if the caller should release; `false` if already released
+    func markResourceReleased(_ id: ConnectionID) -> Bool {
+        state.withLock { state in
+            guard let managed = state.connections[id], !managed.resourceReleased else {
+                return false
+            }
+            state.connections[id]?.resourceReleased = true
+            return true
+        }
+    }
+
     /// Removes all connections for a peer.
     ///
     /// - Parameter peer: The peer whose connections to remove
@@ -331,6 +413,10 @@ internal final class ConnectionPool: Sendable {
             state.connections[id]?.state = .connected
             state.connections[id]?.lastActivity = now
             state.connections[id]?.connectedAt = now
+            // A fresh connection resource is reserved by the caller on
+            // reactivation, so this entry is reserved again — clear the
+            // released flag so the next close releases exactly once.
+            state.connections[id]?.resourceReleased = false
             state.connectedPeerCache.insert(peer)
             return true
         }
@@ -614,6 +700,45 @@ internal final class ConnectionPool: Sendable {
             }
 
             return toTrim
+        }
+    }
+
+    /// The result of an atomic trim: the plan that was applied plus the removed
+    /// connections (with exactly-once release tokens).
+    internal struct TrimOutcome: Sendable {
+        let report: ConnectionTrimReport
+        let removed: [ConnectionRemoval]
+    }
+
+    /// Computes the trim plan AND applies it under a single lock, returning the
+    /// report that actually drove the removal together with release tokens.
+    ///
+    /// This avoids the TOCTOU gap of computing a report and applying a trim in
+    /// two separate `withLock` calls (the pool could change in between, making
+    /// the report describe a different state than was trimmed).
+    func trimReleasing() -> TrimOutcome {
+        let now = ContinuousClock.now
+        return state.withLock { state in
+            let plan = Self.makeTrimPlan(state: state, limits: configuration.limits, now: now)
+            guard plan.report.requiresTrim else {
+                return TrimOutcome(report: plan.report, removed: [])
+            }
+
+            var removals: [ConnectionRemoval] = []
+            for managed in plan.toTrim {
+                guard var entry = state.connections.removeValue(forKey: managed.id) else { continue }
+                let shouldRelease = !entry.resourceReleased
+                entry.resourceReleased = true
+                state.peerConnections[entry.peer]?.remove(managed.id)
+                if state.peerConnections[entry.peer]?.isEmpty == true {
+                    state.peerConnections.removeValue(forKey: entry.peer)
+                    state.connectedPeerCache.remove(entry.peer)
+                } else {
+                    Self.refreshConnectedPeerCache(&state, for: entry.peer)
+                }
+                removals.append(ConnectionRemoval(managed: entry, shouldReleaseResource: shouldRelease))
+            }
+            return TrimOutcome(report: plan.report, removed: removals)
         }
     }
 

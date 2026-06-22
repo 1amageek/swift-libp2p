@@ -18,7 +18,11 @@ import Synchronization
 // Default implementations (batteries-included)
 @_exported import P2PTransportTCP
 @_exported import P2PSecurityNoise
-@_exported import P2PSecurityPlaintext
+// Plaintext is intentionally NOT @_exported: it provides no confidentiality and
+// must be an explicit, deliberate choice. `import P2P` no longer pulls it into
+// scope; callers that want it must `import P2PSecurityPlaintext` directly.
+// Production validation rejects plaintext security (see validateProfileInputs).
+import P2PSecurityPlaintext
 @_exported import P2PMuxYamux
 @_exported import P2PPing
 @_exported import P2PGossipSub
@@ -26,6 +30,7 @@ import Synchronization
 // Internal
 import P2PIdentify
 import P2PCircuitRelay
+import P2PPnet
 
 /// Logger for P2P operations.
 private let logger = Logger(label: "p2p.node")
@@ -187,8 +192,12 @@ public struct NodeConfiguration: Sendable {
     /// KeyBook for per-peer public key storage (nil for default MemoryKeyBook).
     public let keyBook: (any KeyBook)?
 
-    /// Resource manager for system-wide resource accounting (nil for no limits).
-    public let resourceManager: (any ResourceManager)?
+    /// Resource manager for system-wide resource accounting.
+    ///
+    /// Never `nil`: every node enforces resource limits. To deliberately
+    /// run without limits, pass an explicit `NullResourceManager()` so the
+    /// choice is visible at the call site rather than a silent default.
+    public let resourceManager: any ResourceManager
 
     /// Traversal configuration (nil to disable traversal orchestration).
     public let traversal: TraversalConfiguration?
@@ -210,7 +219,26 @@ public struct NodeConfiguration: Sendable {
     /// How strictly production validation should treat opaque providers.
     public let productionAuditPolicy: NodeProductionAuditPolicy
 
+    /// The operating profile this configuration was created for, if any.
+    ///
+    /// When set, `Node.start()` validates the configuration against this
+    /// profile so production guarantees (security, resource limits) are
+    /// enforced even when `start()` is called without an explicit profile.
+    public let operationalProfile: NodeOperationalProfile?
+
+    /// Whether the configured security set includes plaintext.
+    ///
+    /// Captured at configuration time because once transports/security are
+    /// composed into opaque `ConnectionProvider`s, the security protocol IDs are
+    /// no longer recoverable. `validationReport(for:)` uses this so a plaintext
+    /// configuration is rejected in production even after composition.
+    public let usesPlaintextSecurity: Bool
+
     private static let plaintextSecurityProtocolID = "/plaintext/2.0.0"
+
+    static func containsPlaintext(_ security: [any SecurityUpgrader]) -> Bool {
+        security.contains { $0.protocolID == plaintextSecurityProtocolID }
+    }
 
     public init(
         runtime: RuntimeConfiguration = .init(),
@@ -221,10 +249,12 @@ public struct NodeConfiguration: Sendable {
         bootstrap: BootstrapConfiguration? = nil,
         protoBook: (any ProtoBook)? = nil,
         keyBook: (any KeyBook)? = nil,
-        resourceManager: (any ResourceManager)? = nil,
+        resourceManager: any ResourceManager = DefaultResourceManager(configuration: .default),
         traversal: TraversalConfiguration? = nil,
         connectionProviderAuditMode: NodeConnectionProviderAuditMode = .opaqueProviders,
         productionAuditPolicy: NodeProductionAuditPolicy = .permissive,
+        operationalProfile: NodeOperationalProfile? = nil,
+        usesPlaintextSecurity: Bool = false,
         services: ServicePipeline = .empty,
         discovery: DiscoveryPipeline? = nil
     ) {
@@ -240,6 +270,8 @@ public struct NodeConfiguration: Sendable {
         self.traversal = traversal
         self.connectionProviderAuditMode = connectionProviderAuditMode
         self.productionAuditPolicy = productionAuditPolicy
+        self.operationalProfile = operationalProfile
+        self.usesPlaintextSecurity = usesPlaintextSecurity
         self.services = services
         self.discovery = discovery
     }
@@ -305,6 +337,8 @@ public struct NodeConfiguration: Sendable {
         self.traversal = traversal
         self.connectionProviderAuditMode = connectionProviderAuditMode
         self.productionAuditPolicy = auditPolicy
+        self.operationalProfile = profile
+        self.usesPlaintextSecurity = Self.containsPlaintext(security)
         self.services = services
         self.discovery = discovery
     }
@@ -324,8 +358,9 @@ public struct NodeConfiguration: Sendable {
         bootstrap: BootstrapConfiguration? = nil,
         protoBook: (any ProtoBook)? = nil,
         keyBook: (any KeyBook)? = nil,
-        resourceManager: (any ResourceManager)? = nil,
+        resourceManager: any ResourceManager = DefaultResourceManager(configuration: .default),
         traversal: TraversalConfiguration? = nil,
+        privateNetwork: PnetConfiguration? = nil,
         productionAuditPolicy: NodeProductionAuditPolicy = .permissive,
         maxNegotiatingInboundStreams: Int = 128,
         services: ServicePipeline = .empty,
@@ -334,6 +369,9 @@ public struct NodeConfiguration: Sendable {
         let connectionProviderAuditMode: NodeConnectionProviderAuditMode = connectionProviders.isEmpty
             ? .transparentComposition
             : .opaqueProviders
+        // A configured PSK installs a pnet protector on the composed pipeline so
+        // it runs before security and fails closed if it cannot be applied.
+        let protector: (any ConnectionProtector)? = privateNetwork.map { PnetProtector(configuration: $0) }
         self.runtime = RuntimeConfiguration(
             keyPair: keyPair,
             listenAddresses: listenAddresses,
@@ -341,7 +379,8 @@ public struct NodeConfiguration: Sendable {
                 ? ConnectionProviders.compose(
                     transports: transports,
                     security: security,
-                    muxers: muxers
+                    muxers: muxers,
+                    protector: protector
                 )
                 : connectionProviders,
             pool: pool,
@@ -358,6 +397,8 @@ public struct NodeConfiguration: Sendable {
         self.traversal = traversal
         self.connectionProviderAuditMode = connectionProviderAuditMode
         self.productionAuditPolicy = productionAuditPolicy
+        self.operationalProfile = nil
+        self.usesPlaintextSecurity = Self.containsPlaintext(security)
         self.services = services
         self.discovery = discovery
     }
@@ -384,10 +425,10 @@ public struct NodeConfiguration: Sendable {
 
     private static func defaultResourceManager(
         for profile: NodeOperationalProfile
-    ) -> (any ResourceManager)? {
+    ) -> any ResourceManager {
         switch profile {
         case .development:
-            nil
+            DefaultResourceManager(configuration: .development)
         case .production:
             DefaultResourceManager(configuration: .default)
         }
@@ -400,6 +441,9 @@ public struct NodeConfiguration: Sendable {
 
         var errors: [NodeConfigurationValidationIssue] = []
         var warnings: [NodeConfigurationValidationIssue] = []
+        if usesPlaintextSecurity {
+            errors.append(.plaintextSecurityInProduction)
+        }
         if connectionProviderAuditMode == .opaqueProviders {
             switch productionAuditPolicy {
             case .strict:
@@ -411,11 +455,18 @@ public struct NodeConfiguration: Sendable {
         if healthCheck == nil {
             warnings.append(.disabledHealthChecksInProduction)
         }
-        if resourceManager == nil {
-            warnings.append(.disabledResourceManagerInProduction)
+        if Self.isResourceManagerDisabled(resourceManager) {
+            errors.append(.disabledResourceManagerInProduction)
         }
 
         return NodeConfigurationValidation(errors: errors, warnings: warnings)
+    }
+
+    /// A resource manager is "disabled" (no enforced limits) when it is an
+    /// explicit `NullResourceManager`. In production this is treated as an
+    /// error, not a silent default — opting out of limits must be deliberate.
+    static func isResourceManagerDisabled(_ manager: any ResourceManager) -> Bool {
+        manager is NullResourceManager
     }
 
     public static func validateProfileInputs(
@@ -452,8 +503,10 @@ public struct NodeConfiguration: Sendable {
         if healthCheck == nil {
             warnings.append(.disabledHealthChecksInProduction)
         }
-        if resourceManager == nil {
-            warnings.append(.disabledResourceManagerInProduction)
+        // A missing resource manager (nil) or an explicit NullResourceManager
+        // means no enforced limits — an error in production, never a silent default.
+        if resourceManager == nil || resourceManager.map(Self.isResourceManagerDisabled) == true {
+            errors.append(.disabledResourceManagerInProduction)
         }
 
         return NodeConfigurationValidation(errors: errors, warnings: warnings)
@@ -662,7 +715,7 @@ public actor Node:
         bootstrap: BootstrapConfiguration? = nil,
         protoBook: (any ProtoBook)? = nil,
         keyBook: (any KeyBook)? = nil,
-        resourceManager: (any ResourceManager)? = nil,
+        resourceManager: any ResourceManager = DefaultResourceManager(configuration: .default),
         traversal: TraversalConfiguration? = nil,
         @NodeGroupBuilder _ content: () -> NodeGroup = { NodeGroup() }
     ) throws {
@@ -698,7 +751,7 @@ public actor Node:
         bootstrap: BootstrapConfiguration? = nil,
         protoBook: (any ProtoBook)? = nil,
         keyBook: (any KeyBook)? = nil,
-        resourceManager: (any ResourceManager)? = nil,
+        resourceManager: any ResourceManager = DefaultResourceManager(configuration: .default),
         traversal: TraversalConfiguration? = nil,
         maxNegotiatingInboundStreams: Int = 128,
         @NodeGroupBuilder _ content: () -> NodeGroup = { NodeGroup() }
@@ -764,8 +817,17 @@ public actor Node:
     // MARK: - Lifecycle
 
     /// Starts the node.
+    ///
+    /// If the configuration was created for an operating profile (e.g.
+    /// `.production`), the configuration is validated against that profile:
+    /// errors (such as plaintext security or a disabled resource manager in
+    /// production) abort the start; warnings are logged.
     public func start() async throws {
-        try await start(validating: nil, behavior: .disabled)
+        if let profile = configuration.operationalProfile {
+            try await start(validating: profile, behavior: .warn)
+        } else {
+            try await start(validating: nil, behavior: .disabled)
+        }
     }
 
     /// Starts the node with optional validation against an operating profile.
@@ -944,6 +1006,9 @@ public enum NodeError: Error, Sendable {
     case noAddressesKnown(PeerID)
     case selfDialNotAllowed
     case noListenersBound
+    /// A dial was suppressed because the peer is currently in dial backoff
+    /// after recent failures. Retry after the backoff window expires.
+    case dialBackedOff(PeerID)
 }
 
 // MARK: - AsyncSemaphore (C2)
@@ -955,6 +1020,10 @@ internal final class AsyncSemaphore: Sendable {
     private struct SemaphoreState: Sendable {
         var count: Int
         var waiters: [CheckedContinuation<Void, Never>]
+        /// Once drained (e.g. at shutdown), all current and future waits resume
+        /// immediately so no task hangs waiting on a semaphore that will never
+        /// be signalled again.
+        var isDrained: Bool = false
     }
 
     init(count: Int) {
@@ -963,6 +1032,7 @@ internal final class AsyncSemaphore: Sendable {
 
     func wait() async {
         let shouldSuspend: Bool = state.withLock { state in
+            if state.isDrained { return false }
             if state.count > 0 {
                 state.count -= 1
                 return false
@@ -974,6 +1044,9 @@ internal final class AsyncSemaphore: Sendable {
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let resumeImmediately = state.withLock { state -> Bool in
+                if state.isDrained {
+                    return true
+                }
                 if state.count > 0 {
                     state.count -= 1
                     return true
@@ -996,5 +1069,20 @@ internal final class AsyncSemaphore: Sendable {
             return nil
         }
         waiter?.resume()
+    }
+
+    /// Resumes all currently suspended waiters and marks the semaphore drained
+    /// so subsequent waits do not block. Called during shutdown so in-flight
+    /// stream-negotiation tasks can observe cancellation instead of hanging.
+    func drain() {
+        let waiters: [CheckedContinuation<Void, Never>] = state.withLock { state in
+            state.isDrained = true
+            let pending = state.waiters
+            state.waiters.removeAll()
+            return pending
+        }
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 }

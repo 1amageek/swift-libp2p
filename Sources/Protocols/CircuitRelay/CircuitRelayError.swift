@@ -43,6 +43,10 @@ public enum CircuitRelayError: Error, Sendable {
 
     /// Failed to encode or decode message.
     case encodingError(String)
+
+    /// The reservation voucher is missing, has an invalid signature, or does
+    /// not bind the expected relay/peer.
+    case invalidVoucher(String)
 }
 
 /// Status codes for Hop protocol responses.

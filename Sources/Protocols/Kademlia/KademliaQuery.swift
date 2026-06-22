@@ -141,6 +141,10 @@ public struct KademliaQuery: Sendable {
     /// S/Kademlia configuration for sibling broadcast and disjoint paths.
     public let skademliaConfig: SKademliaConfig
 
+    /// The local peer ID, used to drop self from returned peer lists.
+    /// `nil` if unknown (self is then only excluded by responder identity).
+    public let localPeerID: PeerID?
+
     /// Creates a query.
     ///
     /// - Parameters:
@@ -148,16 +152,19 @@ public struct KademliaQuery: Sendable {
     ///   - config: Query configuration.
     ///   - validator: Record validator for GET_VALUE selection (optional).
     ///   - skademliaConfig: S/Kademlia configuration (default: disabled).
+    ///   - localPeerID: The local peer ID, to exclude self from results.
     public init(
         type: KademliaQueryType,
         config: KademliaQueryConfig = .default,
         validator: (any RecordValidator)? = nil,
-        skademliaConfig: SKademliaConfig = .disabled
+        skademliaConfig: SKademliaConfig = .disabled,
+        localPeerID: PeerID? = nil
     ) {
         self.queryType = type
         self.config = config
         self.validator = validator
         self.skademliaConfig = skademliaConfig
+        self.localPeerID = localPeerID
 
         switch type {
         case .findNode(let key):
@@ -387,7 +394,21 @@ public struct KademliaQuery: Sendable {
         var collectedRecords: [(record: KademliaRecord, from: PeerID)] = []
         var foundProviders: [KademliaPeer] = []
 
-        // Iterative query loop
+        // The requested raw key (for GET_VALUE response key matching).
+        let requestedKey: Data?
+        if case .getValue(let key) = queryType {
+            requestedKey = key
+        } else {
+            requestedKey = nil
+        }
+
+        // Convergence tracking: the distance of the closest peer we have *heard
+        // back from*. A round that discovers no peer strictly closer than this
+        // means we have converged and can stop early (rather than always running
+        // maxIterations, which an adversary could otherwise steer).
+        var closestRespondedDistance: KademliaKey?
+
+        // Iterative query loop. `maxIterations` is only a safety cap.
         for _ in 0..<config.maxIterations {
             // Check for cancellation (timeout)
             try Task.checkCancellation()
@@ -408,30 +429,43 @@ public struct KademliaQuery: Sendable {
             let results = await queryPeersParallel(candidates, delegate: delegate)
 
             // Process results
+            var discoveredCloser = false
             for (peerID, result) in results {
                 switch result {
                 case .success(let response):
                     seenPeers[peerID]?.state = .succeeded
 
+                    // Update convergence tracker with this responder's distance.
+                    let respDistance = KademliaKey(from: peerID).distance(to: targetKey)
+                    if let best = closestRespondedDistance {
+                        if respDistance < best { closestRespondedDistance = respDistance }
+                    } else {
+                        closestRespondedDistance = respDistance
+                    }
+
                     switch response {
                     case .findNode(let closerPeers):
-                        // Add new peers
-                        for newPeer in closerPeers {
-                            if seenPeers[newPeer.id] == nil {
-                                seenPeers[newPeer.id] = QueryPeer(peer: newPeer, target: targetKey)
-                            }
+                        let accepted = acceptableCloserPeers(closerPeers, from: peerID, seenPeers: seenPeers)
+                        for newPeer in accepted {
+                            seenPeers[newPeer.id] = QueryPeer(peer: newPeer, target: targetKey)
+                            discoveredCloser = true
                         }
 
                     case .getValue(let record, let closerPeers):
-                        // Collect records for later selection
+                        // Collect records for later selection, but only those
+                        // whose key matches the requested key (defends against a
+                        // responder returning a record for a different key).
                         if let record = record {
-                            collectedRecords.append((record, peerID))
-                        }
-                        // Add closer peers regardless
-                        for newPeer in closerPeers {
-                            if seenPeers[newPeer.id] == nil {
-                                seenPeers[newPeer.id] = QueryPeer(peer: newPeer, target: targetKey)
+                            if let requestedKey, record.key != requestedKey {
+                                // Mismatched key — ignore this record.
+                            } else {
+                                collectedRecords.append((record, peerID))
                             }
+                        }
+                        let accepted = acceptableCloserPeers(closerPeers, from: peerID, seenPeers: seenPeers)
+                        for newPeer in accepted {
+                            seenPeers[newPeer.id] = QueryPeer(peer: newPeer, target: targetKey)
+                            discoveredCloser = true
                         }
 
                     case .getProviders(let providers, let closerPeers):
@@ -441,11 +475,10 @@ public struct KademliaQuery: Sendable {
                                 foundProviders.append(provider)
                             }
                         }
-                        // Add closer peers
-                        for newPeer in closerPeers {
-                            if seenPeers[newPeer.id] == nil {
-                                seenPeers[newPeer.id] = QueryPeer(peer: newPeer, target: targetKey)
-                            }
+                        let accepted = acceptableCloserPeers(closerPeers, from: peerID, seenPeers: seenPeers)
+                        for newPeer in accepted {
+                            seenPeers[newPeer.id] = QueryPeer(peer: newPeer, target: targetKey)
+                            discoveredCloser = true
                         }
                     }
 
@@ -454,11 +487,20 @@ public struct KademliaQuery: Sendable {
                 }
             }
 
-            // For GET_VALUE without a validator, return as soon as we have a record.
-            // With a validator, continue collecting to select the best.
-            if case .getValue = queryType, !collectedRecords.isEmpty, validator == nil {
-                let found = collectedRecords[0]
-                return .value(found.record, from: found.from)
+            // Convergence test: if this round discovered no peer strictly closer
+            // than what we've already seen, and there are no closer un-contacted
+            // peers remaining, the lookup has converged — stop early.
+            if !discoveredCloser {
+                let remaining = selectCandidates(from: seenPeers, count: config.alpha)
+                let hasCloserRemaining: Bool
+                if let best = closestRespondedDistance {
+                    hasCloserRemaining = remaining.contains { $0.distance < best }
+                } else {
+                    hasCloserRemaining = !remaining.isEmpty
+                }
+                if !hasCloserRemaining {
+                    break
+                }
             }
         }
 
@@ -507,7 +549,64 @@ public struct KademliaQuery: Sendable {
             return collectedRecords[bestIndex]
         }
 
+        // No custom validator: apply a default selection by majority/quorum
+        // rather than blindly trusting the first responder. The value returned
+        // by the most peers wins; ties break to the first occurrence.
+        if collectedRecords.count > 1 {
+            var counts: [Data: Int] = [:]
+            for entry in collectedRecords {
+                counts[entry.record.value, default: 0] += 1
+            }
+            var bestValue: Data?
+            var bestCount = 0
+            for entry in collectedRecords {
+                let c = counts[entry.record.value] ?? 0
+                if c > bestCount {
+                    bestCount = c
+                    bestValue = entry.record.value
+                }
+            }
+            if let bestValue, let winner = collectedRecords.first(where: { $0.record.value == bestValue }) {
+                return winner
+            }
+        }
+
         return collectedRecords[0]
+    }
+
+    /// Filters and bounds a list of closer peers returned by a responder.
+    ///
+    /// Hardening against eclipse/Sybil injection:
+    /// - Caps the accepted count at `k` so a single response cannot inject a
+    ///   huge peer list.
+    /// - Drops self and the responder (they are not "closer peers").
+    /// - Drops peers already seen (dedup).
+    /// - Requires each new peer to be strictly closer to the target than the
+    ///   responder; a responder must not be able to steer us toward arbitrary
+    ///   far-away peers.
+    private func acceptableCloserPeers(
+        _ closerPeers: [KademliaPeer],
+        from responder: PeerID,
+        seenPeers: [PeerID: QueryPeer]
+    ) -> [KademliaPeer] {
+        let responderDistance = KademliaKey(from: responder).distance(to: targetKey)
+        var accepted: [KademliaPeer] = []
+        var localSeen = Set<PeerID>()
+
+        for peer in closerPeers {
+            if accepted.count >= config.k { break }
+            // Drop self and the responder.
+            if peer.id == responder { continue }
+            if let local = localPeerID, peer.id == local { continue }
+            // Dedup against already-known peers and within this batch.
+            if seenPeers[peer.id] != nil { continue }
+            if !localSeen.insert(peer.id).inserted { continue }
+            // Require strictly-closer peers.
+            let peerDistance = KademliaKey(from: peer.id).distance(to: targetKey)
+            guard peerDistance < responderDistance else { continue }
+            accepted.append(peer)
+        }
+        return accepted
     }
 
     private enum QueryResponse: Sendable {

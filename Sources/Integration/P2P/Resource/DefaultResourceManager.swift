@@ -8,6 +8,29 @@ import Synchronization
 import P2PCore
 import P2PRuntime
 
+private let resourceLogger = Logger(label: "p2p.resource")
+
+/// Decrements a counter, surfacing accounting drift instead of silently masking
+/// it. An underflow means a release without a matching reserve (a real bug):
+/// it trips an assertion in debug builds and logs an error in release builds,
+/// clamping to zero only to keep the process alive.
+@inline(__always)
+private func decrement(
+    _ value: inout Int,
+    by amount: Int = 1,
+    scope: @autoclosure () -> String,
+    resource: String
+) {
+    let next = value - amount
+    if next < 0 {
+        assertionFailure("Resource accounting underflow in \(scope()).\(resource): \(value) - \(amount)")
+        resourceLogger.error("Resource accounting underflow in \(scope()).\(resource): \(value) - \(amount)")
+        value = 0
+    } else {
+        value = next
+    }
+}
+
 /// Concrete resource manager with system-wide, per-peer, per-protocol,
 /// and per-service limits.
 ///
@@ -21,7 +44,7 @@ import P2PRuntime
 ///
 /// Peer entries are automatically removed when all their counters reach zero.
 /// Protocol and service entries follow the same cleanup pattern.
-internal final class DefaultResourceManager: ResourceManager, Sendable {
+public final class DefaultResourceManager: ResourceManager, Sendable {
 
     private let config: ResourceLimitsConfiguration
     private let state: Mutex<ManagerState>
@@ -33,31 +56,31 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         var serviceStats: [String: ResourceStat] = [:]
     }
 
-    init(configuration: ResourceLimitsConfiguration = .default) {
+    public init(configuration: ResourceLimitsConfiguration = .default) {
         self.config = configuration
         self.state = Mutex(ManagerState())
     }
 
     // MARK: - Scope Access
 
-    var systemScope: ResourceScope {
+    public var systemScope: ResourceScope {
         let stat = state.withLock { $0.systemStat }
         return SnapshotScope(name: "system", stat: stat, limits: config.system)
     }
 
-    func peerScope(for peer: PeerID) -> ResourceScope {
+    public func peerScope(for peer: PeerID) -> ResourceScope {
         let stat = state.withLock { $0.peerStats[peer] ?? ResourceStat() }
         let limits = config.effectivePeerLimits(for: peer)
         return SnapshotScope(name: "peer:\(peer.shortDescription)", stat: stat, limits: limits)
     }
 
-    func protocolScope(for protocolID: String) -> ResourceScope {
+    public func protocolScope(for protocolID: String) -> ResourceScope {
         let stat = state.withLock { $0.protocolStats[protocolID] ?? ResourceStat() }
         let limits = config.effectiveProtocolLimits(for: protocolID)
         return SnapshotScope(name: "protocol:\(protocolID)", stat: stat, limits: limits)
     }
 
-    func serviceScope(for service: String) -> ResourceScope {
+    public func serviceScope(for service: String) -> ResourceScope {
         let stat = state.withLock { $0.serviceStats[service] ?? ResourceStat() }
         let limits = config.effectiveServiceLimits(for: service)
         return SnapshotScope(name: "service:\(service)", stat: stat, limits: limits)
@@ -65,7 +88,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
 
     // MARK: - Connection Reservations
 
-    func reserveInboundConnection(from peer: PeerID) throws {
+    public func reserveInboundConnection(from peer: PeerID) throws {
         try state.withLock { s in
             let peerLimits = config.effectivePeerLimits(for: peer)
             let peerStat = s.peerStats[peer] ?? ResourceStat()
@@ -92,7 +115,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func reserveOutboundConnection(to peer: PeerID) throws {
+    public func reserveOutboundConnection(to peer: PeerID) throws {
         try state.withLock { s in
             let peerLimits = config.effectivePeerLimits(for: peer)
             let peerStat = s.peerStats[peer] ?? ResourceStat()
@@ -119,19 +142,19 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func releaseConnection(peer: PeerID, direction: ConnectionDirection) {
+    public func releaseConnection(peer: PeerID, direction: ConnectionDirection) {
         state.withLock { s in
             switch direction {
             case .inbound:
-                s.systemStat.inboundConnections = max(0, s.systemStat.inboundConnections - 1)
+                decrement(&s.systemStat.inboundConnections, scope: "system", resource: "inboundConnections")
                 if var peerStat = s.peerStats[peer] {
-                    peerStat.inboundConnections = max(0, peerStat.inboundConnections - 1)
+                    decrement(&peerStat.inboundConnections, scope: "peer:\(peer.shortDescription)", resource: "inboundConnections")
                     s.peerStats[peer] = peerStat
                 }
             case .outbound:
-                s.systemStat.outboundConnections = max(0, s.systemStat.outboundConnections - 1)
+                decrement(&s.systemStat.outboundConnections, scope: "system", resource: "outboundConnections")
                 if var peerStat = s.peerStats[peer] {
-                    peerStat.outboundConnections = max(0, peerStat.outboundConnections - 1)
+                    decrement(&peerStat.outboundConnections, scope: "peer:\(peer.shortDescription)", resource: "outboundConnections")
                     s.peerStats[peer] = peerStat
                 }
             }
@@ -145,7 +168,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
 
     // MARK: - Stream Reservations
 
-    func reserveInboundStream(from peer: PeerID) throws {
+    public func reserveInboundStream(from peer: PeerID) throws {
         try state.withLock { s in
             let peerLimits = config.effectivePeerLimits(for: peer)
             let peerStat = s.peerStats[peer] ?? ResourceStat()
@@ -172,7 +195,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func reserveOutboundStream(to peer: PeerID) throws {
+    public func reserveOutboundStream(to peer: PeerID) throws {
         try state.withLock { s in
             let peerLimits = config.effectivePeerLimits(for: peer)
             let peerStat = s.peerStats[peer] ?? ResourceStat()
@@ -199,19 +222,19 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func releaseStream(peer: PeerID, direction: ConnectionDirection) {
+    public func releaseStream(peer: PeerID, direction: ConnectionDirection) {
         state.withLock { s in
             switch direction {
             case .inbound:
-                s.systemStat.inboundStreams = max(0, s.systemStat.inboundStreams - 1)
+                decrement(&s.systemStat.inboundStreams, scope: "system", resource: "inboundStreams")
                 if var peerStat = s.peerStats[peer] {
-                    peerStat.inboundStreams = max(0, peerStat.inboundStreams - 1)
+                    decrement(&peerStat.inboundStreams, scope: "peer:\(peer.shortDescription)", resource: "inboundStreams")
                     s.peerStats[peer] = peerStat
                 }
             case .outbound:
-                s.systemStat.outboundStreams = max(0, s.systemStat.outboundStreams - 1)
+                decrement(&s.systemStat.outboundStreams, scope: "system", resource: "outboundStreams")
                 if var peerStat = s.peerStats[peer] {
-                    peerStat.outboundStreams = max(0, peerStat.outboundStreams - 1)
+                    decrement(&peerStat.outboundStreams, scope: "peer:\(peer.shortDescription)", resource: "outboundStreams")
                     s.peerStats[peer] = peerStat
                 }
             }
@@ -225,7 +248,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
 
     // MARK: - Protocol-Scoped Stream Reservations
 
-    func reserveStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) throws {
+    public func reserveStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) throws {
         try state.withLock { s in
             let peerLimits = config.effectivePeerLimits(for: peer)
             let peerStat = s.peerStats[peer] ?? ResourceStat()
@@ -292,27 +315,27 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func releaseStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) {
+    public func releaseStream(protocolID: String, peer: PeerID, direction: ConnectionDirection) {
         state.withLock { s in
             switch direction {
             case .inbound:
-                s.systemStat.inboundStreams = max(0, s.systemStat.inboundStreams - 1)
+                decrement(&s.systemStat.inboundStreams, scope: "system", resource: "inboundStreams")
                 if var peerStat = s.peerStats[peer] {
-                    peerStat.inboundStreams = max(0, peerStat.inboundStreams - 1)
+                    decrement(&peerStat.inboundStreams, scope: "peer:\(peer.shortDescription)", resource: "inboundStreams")
                     s.peerStats[peer] = peerStat
                 }
                 if var protoStat = s.protocolStats[protocolID] {
-                    protoStat.inboundStreams = max(0, protoStat.inboundStreams - 1)
+                    decrement(&protoStat.inboundStreams, scope: "protocol:\(protocolID)", resource: "inboundStreams")
                     s.protocolStats[protocolID] = protoStat
                 }
             case .outbound:
-                s.systemStat.outboundStreams = max(0, s.systemStat.outboundStreams - 1)
+                decrement(&s.systemStat.outboundStreams, scope: "system", resource: "outboundStreams")
                 if var peerStat = s.peerStats[peer] {
-                    peerStat.outboundStreams = max(0, peerStat.outboundStreams - 1)
+                    decrement(&peerStat.outboundStreams, scope: "peer:\(peer.shortDescription)", resource: "outboundStreams")
                     s.peerStats[peer] = peerStat
                 }
                 if var protoStat = s.protocolStats[protocolID] {
-                    protoStat.outboundStreams = max(0, protoStat.outboundStreams - 1)
+                    decrement(&protoStat.outboundStreams, scope: "protocol:\(protocolID)", resource: "outboundStreams")
                     s.protocolStats[protocolID] = protoStat
                 }
             }
@@ -329,7 +352,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
 
     // MARK: - Memory Reservations
 
-    func reserveMemory(_ bytes: Int, for peer: PeerID) throws {
+    public func reserveMemory(_ bytes: Int, for peer: PeerID) throws {
         try state.withLock { s in
             let peerLimits = config.effectivePeerLimits(for: peer)
             let peerStat = s.peerStats[peer] ?? ResourceStat()
@@ -350,11 +373,11 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func releaseMemory(_ bytes: Int, for peer: PeerID) {
+    public func releaseMemory(_ bytes: Int, for peer: PeerID) {
         state.withLock { s in
-            s.systemStat.memory = max(0, s.systemStat.memory - bytes)
+            decrement(&s.systemStat.memory, by: bytes, scope: "system", resource: "memory")
             if var peerStat = s.peerStats[peer] {
-                peerStat.memory = max(0, peerStat.memory - bytes)
+                decrement(&peerStat.memory, by: bytes, scope: "peer:\(peer.shortDescription)", resource: "memory")
                 s.peerStats[peer] = peerStat
             }
 
@@ -367,7 +390,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
 
     // MARK: - Service Memory Reservations
 
-    func reserveServiceMemory(_ bytes: Int, service: String) throws {
+    public func reserveServiceMemory(_ bytes: Int, service: String) throws {
         try state.withLock { s in
             let svcLimits = config.effectiveServiceLimits(for: service)
             let svcStat = s.serviceStats[service] ?? ResourceStat()
@@ -388,11 +411,11 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
         }
     }
 
-    func releaseServiceMemory(_ bytes: Int, service: String) {
+    public func releaseServiceMemory(_ bytes: Int, service: String) {
         state.withLock { s in
-            s.systemStat.memory = max(0, s.systemStat.memory - bytes)
+            decrement(&s.systemStat.memory, by: bytes, scope: "system", resource: "memory")
             if var svcStat = s.serviceStats[service] {
-                svcStat.memory = max(0, svcStat.memory - bytes)
+                decrement(&svcStat.memory, by: bytes, scope: "service:\(service)", resource: "memory")
                 s.serviceStats[service] = svcStat
             }
 
@@ -405,7 +428,7 @@ internal final class DefaultResourceManager: ResourceManager, Sendable {
 
     // MARK: - Snapshot
 
-    func snapshot() -> ResourceSnapshot {
+    public func snapshot() -> ResourceSnapshot {
         state.withLock { s in
             ResourceSnapshot(
                 system: s.systemStat,

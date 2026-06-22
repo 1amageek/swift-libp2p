@@ -68,20 +68,39 @@ public final class RendezvousPoint: EventEmitting, Sendable {
         /// Maximum number of namespaces the point will track.
         public var maxNamespaces: Int
 
+        /// Maximum number of outstanding pagination cookies retained.
+        ///
+        /// Cookies are pruned in LRU order once this bound is reached, preventing
+        /// unbounded memory growth from clients that request paginated discovery
+        /// but never exhaust the pages.
+        public var maxCookies: Int
+
+        /// Interval for the internal periodic expired-registration cleanup loop.
+        ///
+        /// Set to `nil` to disable the background cleanup loop (callers must then
+        /// invoke `removeExpiredRegistrations()` themselves).
+        public var cleanupInterval: Duration?
+
         /// Creates a new configuration.
         ///
         /// - Parameters:
         ///   - maxRegistrationsPerPeer: Max registrations per peer (default: 100)
         ///   - maxRegistrationsPerNamespace: Max registrations per namespace (default: 1000)
         ///   - maxNamespaces: Max namespaces to track (default: 10000)
+        ///   - maxCookies: Max outstanding pagination cookies (default: 4096)
+        ///   - cleanupInterval: Background cleanup interval (default: 60s; nil disables)
         public init(
             maxRegistrationsPerPeer: Int = 100,
             maxRegistrationsPerNamespace: Int = 1000,
-            maxNamespaces: Int = 10000
+            maxNamespaces: Int = 10000,
+            maxCookies: Int = 4096,
+            cleanupInterval: Duration? = .seconds(60)
         ) {
             self.maxRegistrationsPerPeer = maxRegistrationsPerPeer
             self.maxRegistrationsPerNamespace = maxRegistrationsPerNamespace
             self.maxNamespaces = maxNamespaces
+            self.maxCookies = max(1, maxCookies)
+            self.cleanupInterval = cleanupInterval
         }
     }
 
@@ -112,6 +131,9 @@ public final class RendezvousPoint: EventEmitting, Sendable {
         /// Cookie data -> offset tracking.
         var cookies: [Data: CookieInfo] = [:]
 
+        /// Insertion order of live cookies (oldest first) for bounded LRU pruning.
+        var cookieOrder: [Data] = []
+
         /// Counter for generating unique cookies.
         var nextCookieID: UInt64 = 0
     }
@@ -126,6 +148,9 @@ public final class RendezvousPoint: EventEmitting, Sendable {
 
     /// Point state (separated).
     private let pointState: Mutex<PointState>
+
+    /// Background cleanup task (tracked so it can be cancelled on shutdown).
+    private let cleanupTask: Mutex<Task<Void, Never>?> = Mutex(nil)
 
     // MARK: - Events
 
@@ -143,11 +168,105 @@ public final class RendezvousPoint: EventEmitting, Sendable {
     public init(configuration: Configuration = .init()) {
         self.configuration = configuration
         self.pointState = Mutex(PointState())
+        startCleanupLoop()
+    }
+
+    /// Starts the periodic expired-registration cleanup loop, if enabled.
+    private func startCleanupLoop() {
+        guard let interval = configuration.cleanupInterval else { return }
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    break
+                }
+                self?.removeExpiredRegistrations()
+            }
+        }
+        cleanupTask.withLock { $0 = task }
     }
 
     // MARK: - Registration
 
+    /// Registers a peer under a namespace using a **signed peer record**.
+    ///
+    /// This is the secure registration entry point and the only way a peer may
+    /// advertise addresses. The signed envelope is verified before anything is
+    /// stored:
+    ///
+    /// 1. The envelope's signature is verified against the `PeerRecord` domain.
+    /// 2. The record's PeerID must equal the registering peer (`expectedPeer`)
+    ///    and the envelope's signer.
+    /// 3. Every advertised address must be covered by the verified record.
+    ///
+    /// Only the verified PeerID and the verified addresses from the record are
+    /// stored, never caller-supplied values. Any verification failure throws
+    /// `RendezvousError.invalidSignedPeerRecord` and stores nothing.
+    ///
+    /// - Parameters:
+    ///   - signedPeerRecord: The signed `Envelope` carrying a `PeerRecord`.
+    ///   - expectedPeer: The peer that opened the registration stream. The
+    ///     record must belong to this peer.
+    ///   - namespace: The namespace to register under.
+    ///   - ttl: The requested TTL for the registration.
+    /// - Returns: The created registration (with verified peer + addresses).
+    /// - Throws: `RendezvousError.invalidSignedPeerRecord` if verification fails,
+    ///   or other `RendezvousError` cases if limits are exceeded.
+    @discardableResult
+    public func register(
+        signedPeerRecord: Envelope,
+        expectedPeer: PeerID,
+        namespace: String,
+        ttl: Duration
+    ) throws -> RendezvousRegistration {
+        // Verify the envelope and extract a trusted PeerRecord.
+        let record: PeerRecord
+        do {
+            record = try signedPeerRecord.record(as: PeerRecord.self)
+        } catch EnvelopeError.invalidSignature {
+            throw RendezvousError.invalidSignedPeerRecord("Signature verification failed")
+        } catch EnvelopeError.payloadTypeMismatch {
+            throw RendezvousError.invalidSignedPeerRecord("Payload is not a peer record")
+        } catch {
+            throw RendezvousError.invalidSignedPeerRecord("Failed to decode peer record: \(error)")
+        }
+
+        // The record must belong to the peer that is registering.
+        guard record.peerID == expectedPeer else {
+            throw RendezvousError.invalidSignedPeerRecord(
+                "Record peer \(record.peerID) does not match registering peer \(expectedPeer)"
+            )
+        }
+        // The envelope must be signed by that same peer.
+        guard signedPeerRecord.peerID == expectedPeer else {
+            throw RendezvousError.invalidSignedPeerRecord(
+                "Envelope signer \(signedPeerRecord.peerID) does not match registering peer \(expectedPeer)"
+            )
+        }
+        // The record must advertise at least one address.
+        let verifiedAddresses = record.addresses.map { $0.multiaddr }
+        guard !verifiedAddresses.isEmpty else {
+            throw RendezvousError.invalidSignedPeerRecord("Record advertises no addresses")
+        }
+
+        // Store only verified data derived from the signed record.
+        return try registerVerified(
+            peer: record.peerID,
+            namespace: namespace,
+            addresses: verifiedAddresses,
+            ttl: ttl
+        )
+    }
+
     /// Registers a peer under a namespace.
+    ///
+    /// - Important: This entry point does NOT verify a signed peer record. It is
+    ///   intended only for trusted, in-process callers (e.g. tests or a local
+    ///   node registering its own already-verified addresses). Untrusted,
+    ///   wire-facing registrations MUST go through
+    ///   `register(signedPeerRecord:expectedPeer:namespace:ttl:)`, which verifies
+    ///   the peer's signature before storing any address.
     ///
     /// If the peer is already registered under this namespace, the existing
     /// registration is replaced with the new one.
@@ -160,6 +279,16 @@ public final class RendezvousPoint: EventEmitting, Sendable {
     /// - Returns: The created registration
     /// - Throws: `RendezvousError` if validation fails or limits are exceeded
     public func register(
+        peer: PeerID,
+        namespace: String,
+        addresses: [Multiaddr],
+        ttl: Duration
+    ) throws -> RendezvousRegistration {
+        try registerVerified(peer: peer, namespace: namespace, addresses: addresses, ttl: ttl)
+    }
+
+    /// Shared registration implementation operating on already-trusted inputs.
+    private func registerVerified(
         peer: PeerID,
         namespace: String,
         addresses: [Multiaddr],
@@ -392,6 +521,14 @@ public final class RendezvousPoint: EventEmitting, Sendable {
                     offset: startOffset + result.count
                 )
                 state.cookies[cookieData] = cookieInfo
+                state.cookieOrder.append(cookieData)
+
+                // Bound the cookie store: evict oldest cookies (LRU) beyond the cap.
+                while state.cookieOrder.count > configuration.maxCookies {
+                    let oldest = state.cookieOrder.removeFirst()
+                    state.cookies.removeValue(forKey: oldest)
+                }
+
                 nextCookie = cookieData
             } else {
                 nextCookie = nil
@@ -479,6 +616,12 @@ public final class RendezvousPoint: EventEmitting, Sendable {
     /// This terminates any consumers waiting on the `events` stream.
     /// This method is idempotent and safe to call multiple times.
     public func shutdown() async throws {
+        let task = cleanupTask.withLock { existing -> Task<Void, Never>? in
+            let t = existing
+            existing = nil
+            return t
+        }
+        task?.cancel()
         channel.finish()
     }
 

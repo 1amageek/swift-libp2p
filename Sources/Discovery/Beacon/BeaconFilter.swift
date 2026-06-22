@@ -16,9 +16,16 @@ import Synchronization
 /// its beacons are rejected.
 public final class BeaconFilter: Sendable {
 
+    /// Default cap on the number of (truncID, mediumID) rate-limit entries.
+    public static let defaultMaxRecentBeacons = 8192
+    /// Default cap on the number of tracked physical fingerprints.
+    public static let defaultMaxFingerprints = 8192
+
     private let state: Mutex<FilterState>
     private let sybilThreshold: Int
     private let sybilWindow: Duration
+    private let maxRecentBeacons: Int
+    private let maxFingerprints: Int
 
     struct FilterState: Sendable {
         var recentBeacons: [BeaconKey: ContinuousClock.Instant]
@@ -42,9 +49,18 @@ public final class BeaconFilter: Sendable {
     ///     physical fingerprint before beacons are rejected. Default is 5.
     ///   - sybilWindow: Duration of the sliding window for Sybil detection.
     ///     Fingerprint entries older than this are pruned. Default is 30 minutes.
-    public init(sybilThreshold: Int = 5, sybilWindow: Duration = .seconds(1800)) {
+    public init(
+        sybilThreshold: Int = 5,
+        sybilWindow: Duration = .seconds(1800),
+        maxRecentBeacons: Int = BeaconFilter.defaultMaxRecentBeacons,
+        maxFingerprints: Int = BeaconFilter.defaultMaxFingerprints
+    ) {
+        precondition(maxRecentBeacons > 0, "maxRecentBeacons must be positive")
+        precondition(maxFingerprints > 0, "maxFingerprints must be positive")
         self.sybilThreshold = sybilThreshold
         self.sybilWindow = sybilWindow
+        self.maxRecentBeacons = maxRecentBeacons
+        self.maxFingerprints = maxFingerprints
         self.state = Mutex(FilterState(
             recentBeacons: [:],
             fingerprintClusters: [:]
@@ -83,6 +99,12 @@ public final class BeaconFilter: Sendable {
                 let elapsed = now - lastSeen
                 if elapsed < minInterval {
                     return false
+                }
+            } else if s.recentBeacons.count >= maxRecentBeacons {
+                // Bound the rate-limit map: evict the oldest entry before
+                // admitting a new (truncID, mediumID) key.
+                if let oldest = s.recentBeacons.min(by: { $0.value < $1.value }) {
+                    s.recentBeacons.removeValue(forKey: oldest.key)
                 }
             }
             s.recentBeacons[key] = now
@@ -129,6 +151,11 @@ public final class BeaconFilter: Sendable {
                 }
                 return true
             } else {
+                // Bound the fingerprint map: evict the entry whose most recent
+                // activity is oldest before tracking a new fingerprint.
+                if s.fingerprintClusters.count >= maxFingerprints {
+                    evictOldestFingerprint(&s)
+                }
                 // First sighting of this fingerprint
                 s.fingerprintClusters[fingerprint] = FingerprintEntry(
                     truncIDs: [truncID: now]
@@ -160,6 +187,30 @@ public final class BeaconFilter: Sendable {
             s.recentBeacons = s.recentBeacons.filter { _, timestamp in
                 now - timestamp <= sybilWindow
             }
+        }
+    }
+
+    /// Number of tracked rate-limit entries (for tests and monitoring).
+    public func recentBeaconCount() -> Int {
+        state.withLock { $0.recentBeacons.count }
+    }
+
+    /// Number of tracked physical fingerprints (for tests and monitoring).
+    public func fingerprintCount() -> Int {
+        state.withLock { $0.fingerprintClusters.count }
+    }
+
+    // MARK: - Private
+
+    /// Evicts the fingerprint cluster whose most recent activity is oldest.
+    private func evictOldestFingerprint(_ s: inout FilterState) {
+        let oldest = s.fingerprintClusters.min { lhs, rhs in
+            let l = lhs.value.truncIDs.values.max() ?? .now
+            let r = rhs.value.truncIDs.values.max() ?? .now
+            return l < r
+        }
+        if let oldest {
+            s.fingerprintClusters.removeValue(forKey: oldest.key)
         }
     }
 }

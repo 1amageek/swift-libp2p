@@ -552,14 +552,12 @@ struct CircuitRelayE2ETests {
         let client = RelayClient()
         // Client handles Stop protocol via handleInboundStream
 
-        // Collect events using actor for thread safety
+        // Collect events using actor for thread safety. Subscribe BEFORE
+        // invoking the handler so the emitted event is never missed.
         let collector = EventCollector()
         let eventTask = Task {
             for await event in client.events {
                 await collector.append(event)
-                if await collector.count() >= 1 {
-                    break
-                }
             }
         }
 
@@ -584,18 +582,22 @@ struct CircuitRelayE2ETests {
         )
         await client.handleInboundStream(context)
 
-        // Wait for event
-        try await Task.sleep(for: .milliseconds(100))
+        // Deterministically wait (bounded) for the circuitEstablished event.
+        func hasCircuitEstablished(_ events: [CircuitRelayEvent]) -> Bool {
+            events.contains { event in
+                if case .circuitEstablished(let relay, _) = event { return relay == relayKey.peerID }
+                return false
+            }
+        }
+        let deadline = ContinuousClock.now + .seconds(2)
+        var found = false
+        while ContinuousClock.now < deadline {
+            if hasCircuitEstablished(await collector.getEvents()) { found = true; break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         eventTask.cancel()
 
-        // Verify event was emitted
-        let receivedEvents = await collector.getEvents()
-        #expect(receivedEvents.contains { event in
-            if case .circuitEstablished(let relay, _) = event {
-                return relay == relayKey.peerID
-            }
-            return false
-        }, "Should emit circuitEstablished event")
+        #expect(found, "Should emit circuitEstablished event")
 
         try await client.shutdown()
     }

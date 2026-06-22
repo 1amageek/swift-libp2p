@@ -132,6 +132,9 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         var isClosed: Bool = false
         var openStreamCount: Int = 0
         var forwardingTask: Task<Void, Never>?
+        /// Background task collecting TLS session tickets for 0-RTT. Owned here
+        /// so it is cancelled on close rather than leaking.
+        var sessionTicketTask: Task<Void, Never>?
         var inboundStream: AsyncStream<MuxedStream>?
     }
 
@@ -189,6 +192,7 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         remotePeer: PeerID,
         localAddress: Multiaddr?,
         remoteAddress: Multiaddr,
+        sessionTicketTask: Task<Void, Never>? = nil,
         onClose: (@Sendable () async -> Void)? = nil
     ) {
         self.quicConnection = quicConnection
@@ -198,7 +202,9 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
         self._initialRemoteAddress = remoteAddress
         self.onClose = onClose
         self.streamChannel = StreamChannel()
-        self.state = Mutex(ConnectionState())
+        var initialState = ConnectionState()
+        initialState.sessionTicketTask = sessionTicketTask
+        self.state = Mutex(initialState)
     }
 
     /// Starts forwarding incoming streams from the QUIC connection.
@@ -256,18 +262,23 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
 
     /// Closes all streams and the connection.
     public func close() async throws {
-        let (alreadyClosed, task) = state.withLock { s -> (Bool, Task<Void, Never>?) in
+        let (alreadyClosed, forwardingTask, ticketTask) = state.withLock { s -> (Bool, Task<Void, Never>?, Task<Void, Never>?) in
             let was = s.isClosed
             s.isClosed = true
-            let t = s.forwardingTask
+            let f = s.forwardingTask
+            let t = s.sessionTicketTask
             s.forwardingTask = nil
-            return (was, t)
+            s.sessionTicketTask = nil
+            return (was, f, t)
         }
 
         guard !alreadyClosed else { return }
 
         streamChannel.finish()
-        task?.cancel()
+        forwardingTask?.cancel()
+        // Cancel the session-ticket collection task so it does not outlive the
+        // connection.
+        ticketTask?.cancel()
         await quicConnection.close(error: nil)
         if let onClose {
             await onClose()

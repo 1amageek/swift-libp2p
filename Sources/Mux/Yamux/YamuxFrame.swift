@@ -275,6 +275,18 @@ public struct YamuxConfiguration: Sendable {
     /// Default: 16MB (same as yamuxMaxWindowSize)
     public var maxAutoTuneWindow: UInt32
 
+    /// Aggregate connection-level receive window shared across all streams.
+    ///
+    /// Bounds the total in-flight inbound data the peer may have across every
+    /// stream on the connection, independent of the per-stream windows. This is
+    /// the real backpressure signal for aggregate memory: without it, the sum of
+    /// `maxConcurrentStreams` per-stream windows can far exceed the session read
+    /// buffer. Must be >= `initialWindowSize` so at least one full stream window
+    /// fits within the connection budget. Returned to the peer via stream-0
+    /// window updates as data is consumed.
+    /// Default: 16MB
+    public var connectionReceiveWindow: UInt32
+
     /// Creates a Yamux configuration.
     ///
     /// - Parameters:
@@ -286,6 +298,7 @@ public struct YamuxConfiguration: Sendable {
     ///   - keepAliveTimeout: Timeout for ping responses (default: 60 seconds)
     ///   - enableWindowAutoTuning: Enable auto window tuning (default: true)
     ///   - maxAutoTuneWindow: Max window when auto-tuning (default: 16MB)
+    ///   - connectionReceiveWindow: Aggregate connection receive window (default: 16MB)
     public init(
         maxConcurrentStreams: Int = 1000,
         maxPendingInboundStreams: Int = 100,
@@ -294,10 +307,13 @@ public struct YamuxConfiguration: Sendable {
         keepAliveInterval: Duration = .seconds(30),
         keepAliveTimeout: Duration = .seconds(60),
         enableWindowAutoTuning: Bool = true,
-        maxAutoTuneWindow: UInt32 = 16 * 1024 * 1024
+        maxAutoTuneWindow: UInt32 = 16 * 1024 * 1024,
+        connectionReceiveWindow: UInt32 = 16 * 1024 * 1024
     ) {
         precondition(keepAliveTimeout >= keepAliveInterval,
             "keepAliveTimeout must be >= keepAliveInterval")
+        precondition(connectionReceiveWindow >= initialWindowSize,
+            "connectionReceiveWindow must be >= initialWindowSize")
         self.maxConcurrentStreams = maxConcurrentStreams
         self.maxPendingInboundStreams = maxPendingInboundStreams
         self.initialWindowSize = initialWindowSize
@@ -306,6 +322,7 @@ public struct YamuxConfiguration: Sendable {
         self.keepAliveTimeout = keepAliveTimeout
         self.enableWindowAutoTuning = enableWindowAutoTuning
         self.maxAutoTuneWindow = maxAutoTuneWindow
+        self.connectionReceiveWindow = connectionReceiveWindow
     }
 
     /// Default configuration.

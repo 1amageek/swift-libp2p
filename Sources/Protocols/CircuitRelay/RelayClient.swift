@@ -26,17 +26,34 @@ public struct RelayClientConfiguration: Sendable {
     /// Time before expiry to start renewal.
     public var renewalBuffer: Duration
 
+    /// Whether a valid signed reservation voucher is required.
+    ///
+    /// When `true`, a reservation lacking a voucher is rejected. When `false`,
+    /// an absent voucher is tolerated, but a *present* voucher is always
+    /// verified (an invalid voucher is rejected regardless of this flag).
+    public var requireVoucher: Bool
+
+    /// Maximum number of queued incoming relayed connections awaiting accept.
+    ///
+    /// Beyond this bound the oldest queued connection is closed and dropped to
+    /// prevent unbounded memory growth from connections that are never accepted.
+    public var maxQueuedIncomingConnections: Int
+
     /// Creates a new configuration.
     public init(
         reservationTimeout: Duration = .seconds(30),
         connectTimeout: Duration = .seconds(30),
         autoRenewReservations: Bool = true,
-        renewalBuffer: Duration = .seconds(300)
+        renewalBuffer: Duration = .seconds(300),
+        requireVoucher: Bool = false,
+        maxQueuedIncomingConnections: Int = 256
     ) {
         self.reservationTimeout = reservationTimeout
         self.connectTimeout = connectTimeout
         self.autoRenewReservations = autoRenewReservations
         self.renewalBuffer = renewalBuffer
+        self.requireVoucher = requireVoucher
+        self.maxQueuedIncomingConnections = max(1, maxQueuedIncomingConnections)
     }
 }
 
@@ -80,6 +97,10 @@ public final class RelayClient: EventEmitting, Sendable {
 
     /// Registered listeners per relay peer for direct connection routing.
     private let listeners: Mutex<[PeerID: WeakListenerRef]>
+
+    /// The local peer ID, used to verify that a reservation voucher was issued
+    /// to this peer. Set via `setLocalPeer(_:)` when an identity is available.
+    private let localPeerRef: Mutex<PeerID?> = Mutex(nil)
 
     private struct ClientState: Sendable {
         var reservations: [PeerID: Reservation] = [:]
@@ -157,6 +178,60 @@ public final class RelayClient: EventEmitting, Sendable {
         self.listeners = Mutex([:])
     }
 
+    /// Sets the local peer ID used for reservation voucher verification.
+    ///
+    /// When set, vouchers must name this peer as the reservation holder.
+    public func setLocalPeer(_ peer: PeerID) {
+        localPeerRef.withLock { $0 = peer }
+    }
+
+    /// Verifies a reservation voucher.
+    ///
+    /// - If no voucher is present and `requireVoucher` is `true`, throws.
+    /// - If a voucher is present, the envelope signature must verify, the
+    ///   signer must be the relay, and (when a local peer is configured) the
+    ///   voucher must name the local peer as the reservation holder.
+    private func verifyVoucher(_ voucherData: Data?, relay: PeerID) throws {
+        guard let voucherData else {
+            if configuration.requireVoucher {
+                throw CircuitRelayError.invalidVoucher("Reservation has no voucher")
+            }
+            return
+        }
+
+        let voucher: ReservationVoucher
+        do {
+            let envelope = try Envelope.unmarshal(voucherData)
+            voucher = try envelope.record(as: ReservationVoucher.self)
+            // The envelope must be signed by the relay itself.
+            guard envelope.peerID == relay else {
+                throw CircuitRelayError.invalidVoucher(
+                    "Voucher signer \(envelope.peerID) is not the relay \(relay)"
+                )
+            }
+        } catch let error as CircuitRelayError {
+            throw error
+        } catch {
+            throw CircuitRelayError.invalidVoucher("Voucher verification failed: \(error)")
+        }
+
+        // The voucher must bind the relay we are talking to.
+        guard voucher.relay == relay else {
+            throw CircuitRelayError.invalidVoucher(
+                "Voucher relay \(voucher.relay) does not match \(relay)"
+            )
+        }
+
+        // If we know our own identity, the voucher must be issued to us.
+        if let localPeer = localPeerRef.withLock({ $0 }) {
+            guard voucher.peer == localPeer else {
+                throw CircuitRelayError.invalidVoucher(
+                    "Voucher peer \(voucher.peer) does not match local peer \(localPeer)"
+                )
+            }
+        }
+    }
+
     // MARK: - Listener Registration
 
     /// Registers a listener for a specific relay.
@@ -221,6 +296,9 @@ public final class RelayClient: EventEmitting, Sendable {
             guard let resInfo = response.reservation else {
                 throw CircuitRelayError.protocolViolation("Missing reservation in response")
             }
+
+            // Verify the reservation voucher (if present / required).
+            try verifyVoucher(resInfo.voucher, relay: relay)
 
             // Create reservation
             let expiration = ContinuousClock.Instant.now + .seconds(Int64(resInfo.expiration) - Int64(Date().timeIntervalSince1970))
@@ -474,22 +552,35 @@ public final class RelayClient: EventEmitting, Sendable {
                 listener.enqueue(connection)
             } else {
                 // Fallback: Deliver to pending waiter or shared queue
-                let matchedWaiter: ConnectionWaiter? = clientState.withLock { s in
+                let (matchedWaiter, evicted): (ConnectionWaiter?, RelayedConnection?) = clientState.withLock { s in
                     // Find a waiter that matches this connection
                     for (key, waiter) in s.connectionWaiters {
                         if waiter.matches(connection) {
                             s.connectionWaiters.removeValue(forKey: key)
-                            return waiter
+                            return (waiter, nil)
                         }
                     }
-                    // No matching waiter, queue the connection
+                    // No matching waiter, queue the connection (bounded).
                     s.incomingConnections.append(connection)
-                    return nil
+                    var dropped: RelayedConnection? = nil
+                    if s.incomingConnections.count > configuration.maxQueuedIncomingConnections {
+                        // Drop the oldest queued connection to bound memory.
+                        dropped = s.incomingConnections.removeFirst()
+                    }
+                    return (nil, dropped)
                 }
 
                 if let waiter = matchedWaiter {
                     waiter.cancel()  // Cancel the timeout task
                     waiter.continuation.resume(returning: connection)
+                }
+                if let evicted {
+                    // Close the dropped connection outside the lock.
+                    do {
+                        try await evicted.close()
+                    } catch {
+                        logger.debug("Failed to close evicted queued relay connection: \(error)")
+                    }
                 }
             }
 

@@ -6,6 +6,8 @@ import P2PTransportQUIC
 import QUIC
 import NIOUDPTransport
 
+private let webTransportLogger = Logger(label: "swift-libp2p.WebTransportTransport")
+
 /// A libp2p transport using WebTransport semantics over QUIC.
 public final class WebTransportTransport: SecuredTransport, Sendable {
     public let configuration: WebTransportConfiguration
@@ -73,6 +75,15 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
         let components = try self.parseDialAddress(address)
         let socketAddress = try self.resolveDialSocketAddress(components)
 
+        // Fail fast: validate up front that the TLS provider can be created so
+        // certificate-generation failures propagate from dialSecured (async
+        // throws) instead of being deferred into the handshake.
+        _ = try SwiftQUICTLSProvider(
+            localKeyPair: localKeyPair,
+            expectedRemotePeerID: components.peerID,
+            alpnProtocols: [WebTransportProtocol.alpn]
+        )
+
         var config = quicConfiguration
         config.tlsProviderFactory = { [localKeyPair, expectedPeerID = components.peerID] _ in
             do {
@@ -82,6 +93,10 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
                     alpnProtocols: [WebTransportProtocol.alpn]
                 )
             } catch {
+                // Unreachable after up-front validation; surface loudly.
+                webTransportLogger.error(
+                    "TLS provider construction failed after validation: \(String(describing: error))"
+                )
                 return FailingTLSProvider(error: error)
             }
         }
@@ -163,6 +178,19 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
             rotationInterval: configuration.certRotationInterval
         )
 
+        // Fail fast: validate up front that both the client-side and
+        // server-side (certificate-material) providers can be created, so
+        // failures propagate from listenSecured instead of being deferred.
+        _ = try SwiftQUICTLSProvider(
+            localKeyPair: localKeyPair,
+            alpnProtocols: [WebTransportProtocol.alpn]
+        )
+        _ = try SwiftQUICTLSProvider(
+            localKeyPair: localKeyPair,
+            alpnProtocols: [WebTransportProtocol.alpn],
+            certificateMaterial: try certificateStore.currentMaterial()
+        )
+
         var config = quicConfiguration
         config.tlsProviderFactory = { [localKeyPair, certificateStore] isClient in
             do {
@@ -179,6 +207,10 @@ public final class WebTransportTransport: SecuredTransport, Sendable {
                     certificateMaterial: certificateMaterial
                 )
             } catch {
+                // Unreachable after up-front validation; surface loudly.
+                webTransportLogger.error(
+                    "TLS provider construction failed after validation: \(String(describing: error))"
+                )
                 return FailingTLSProvider(error: error)
             }
         }

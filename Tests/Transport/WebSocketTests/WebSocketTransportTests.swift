@@ -1112,4 +1112,83 @@ struct WebSocketTransportTests {
         try await listener.close()
         try await listener.close() // Must not throw
     }
+
+    // MARK: - Fragmented Message Size Cap
+
+    @Test("Fragmented message exceeding the cap closes the channel", .timeLimit(.minutes(1)))
+    func testFragmentedMessageSizeCapClosesChannel() async throws {
+        // Drive the frame handler directly via an EmbeddedChannel. A peer
+        // splitting a message across many non-fin frames must not grow the
+        // reassembly buffer without bound: once the aggregate exceeds the cap,
+        // the channel is closed.
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try channel.pipeline.syncOperations.addHandler(handler)
+        // Activate the channel so isActive reflects open/close state.
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+
+        // Attach a connection so completed messages would be delivered (we
+        // expect overflow before any completion).
+        let conn = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 1)
+        )
+        handler.setConnection(conn)
+
+        // First frame opens a fragmented message just under the 8MB cap.
+        let underCap = 8 * 1024 * 1024 - 1024
+        var firstData = channel.allocator.buffer(capacity: underCap)
+        firstData.writeBytes([UInt8](repeating: 0x41, count: underCap))
+        let firstFrame = WebSocketFrame(fin: false, opcode: .binary, data: firstData)
+        try channel.writeInbound(firstFrame)
+
+        #expect(channel.isActive, "Channel should remain open while under the fragment cap")
+
+        // A continuation frame that pushes the aggregate over the cap must
+        // trigger an overflow and close the channel.
+        var overflowData = channel.allocator.buffer(capacity: 4096)
+        overflowData.writeBytes([UInt8](repeating: 0x42, count: 4096))
+        let overflowFrame = WebSocketFrame(fin: false, opcode: .continuation, data: overflowData)
+        try channel.writeInbound(overflowFrame)
+
+        // The handler closed the channel on overflow.
+        #expect(!channel.isActive, "Channel must close when fragmented message exceeds the cap")
+
+        _ = try? channel.finish()
+    }
+
+    @Test("Fragmented message within the cap reassembles and delivers", .timeLimit(.minutes(1)))
+    func testFragmentedMessageWithinCapDelivers() async throws {
+        let channel = EmbeddedChannel()
+        let handler = WebSocketFrameHandler(isClient: false)
+        try channel.pipeline.syncOperations.addHandler(handler)
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+
+        let conn = WebSocketConnection(
+            channel: channel,
+            isClient: false,
+            localAddress: nil,
+            remoteAddress: .ws(host: "127.0.0.1", port: 1)
+        )
+        handler.setConnection(conn)
+
+        // Two small fragments well within the cap.
+        var part1 = channel.allocator.buffer(capacity: 3)
+        part1.writeBytes([0x01, 0x02, 0x03])
+        try channel.writeInbound(WebSocketFrame(fin: false, opcode: .binary, data: part1))
+
+        var part2 = channel.allocator.buffer(capacity: 2)
+        part2.writeBytes([0x04, 0x05])
+        try channel.writeInbound(WebSocketFrame(fin: true, opcode: .continuation, data: part2))
+
+        #expect(channel.isActive, "Channel must stay open for a within-cap message")
+
+        // The reassembled message is delivered to the connection.
+        let received = try await conn.read()
+        #expect(Data(buffer: received) == Data([0x01, 0x02, 0x03, 0x04, 0x05]))
+
+        _ = try? channel.finish()
+    }
 }

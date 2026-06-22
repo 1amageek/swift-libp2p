@@ -114,15 +114,12 @@ public final class YamuxStream: MuxedStream, Sendable {
 
         // OnRead mode (B2): send window update when data is consumed by the application
         let consumed = UInt32(data.readableBytes)
-        if consumed > 0, let delta = flowController.dataConsumed(count: consumed) {
-            Task { [connection, yamuxStreamID] in
-                let frame = YamuxFrame.windowUpdate(streamID: yamuxStreamID, delta: delta)
-                do {
-                    try await connection.sendFrame(frame)
-                } catch {
-                    // Window update failed - connection likely closing
-                }
+        if consumed > 0 {
+            if let delta = flowController.dataConsumed(count: consumed) {
+                sendWindowUpdateDetached(delta: delta)
             }
+            // Return the consumed bytes to the shared connection window too.
+            connection.connectionDataConsumed(consumed)
         }
 
         return data
@@ -275,6 +272,19 @@ public final class YamuxStream: MuxedStream, Sendable {
         for cont in readConts {
             cont.resume(throwing: YamuxError.streamClosed)
         }
+
+        // Return any outstanding receive window for buffered-but-unread data
+        // that we just cleared. Without this, a peer that already consumed
+        // window for in-flight data would see it permanently lost; subsequent
+        // discarded frames are handled per-frame in dataReceived().
+        let close = flowController.windowForClose()
+        if let delta = close.streamDelta {
+            sendWindowUpdateDetached(delta: delta)
+        }
+        // Also release the same bytes from the shared connection budget.
+        if close.outstandingBytes > 0 {
+            connection.connectionDataDiscarded(close.outstandingBytes)
+        }
     }
 
     public func close() async throws {
@@ -400,12 +410,40 @@ public final class YamuxStream: MuxedStream, Sendable {
             return false
 
         case .discarded:
+            // Read side is closed: the data is dropped and will never be
+            // consumed by the application. The receive window was already
+            // decremented by FlowController.dataReceived above, so return it
+            // immediately — otherwise a peer that keeps writing to a
+            // half-closed stream would drive the window to zero permanently.
+            if let delta = flowController.dataDiscarded(count: dataSize) {
+                sendWindowUpdateDetached(delta: delta)
+            }
+            // Mirror the return at the connection level so the shared budget
+            // is not drained by a half-closed stream either.
+            connection.connectionDataDiscarded(dataSize)
             return true
 
         case .accepted(let continuation):
             continuation?.resume(returning: data)
             // No window update here — OnRead mode sends updates in read()
             return true
+        }
+    }
+
+    /// Sends a window update frame without blocking the caller.
+    ///
+    /// Used from synchronous contexts (`dataReceived`, `closeRead`) where the
+    /// receive window must be returned to the peer but the call site cannot
+    /// `await`. Failure means the connection is closing, which is handled by
+    /// the readLoop's shutdown path, so it is intentionally not propagated.
+    private func sendWindowUpdateDetached(delta: UInt32) {
+        Task { [connection, yamuxStreamID] in
+            let frame = YamuxFrame.windowUpdate(streamID: yamuxStreamID, delta: delta)
+            do {
+                try await connection.sendFrame(frame)
+            } catch {
+                // Window update failed - connection likely closing
+            }
         }
     }
 
@@ -450,6 +488,14 @@ public final class YamuxStream: MuxedStream, Sendable {
         }
         for cont in windowConts {
             cont.resume(throwing: YamuxError.streamClosed)
+        }
+
+        // The connection remains alive after a single-stream RST; return this
+        // stream's dropped buffer to the shared connection budget so it is not
+        // leaked.
+        let outstanding = flowController.drainOutstanding()
+        if outstanding > 0 {
+            connection.connectionDataDiscarded(outstanding)
         }
     }
 

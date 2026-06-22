@@ -30,6 +30,12 @@ enum KademliaProtobuf {
     private static let wireTypeVarint: UInt64 = 0
     private static let wireTypeLengthDelimited: UInt64 = 2
 
+    /// Maximum number of peers accepted per repeated field (closerPeers /
+    /// providerPeers) at decode time. Bounds an attacker's ability to inject a
+    /// huge Sybil/eclipse peer list in a single response. Set generously to
+    /// ~k so legitimate responses are unaffected.
+    static let maxPeersPerMessage = KademliaProtocol.kValue * 2
+
     // MARK: - Message Field Tags
 
     private enum MessageTag {
@@ -195,7 +201,11 @@ enum KademliaProtobuf {
                     guard fieldEnd <= bytes.count else {
                         throw KademliaError.encodingError("CloserPeers field truncated")
                     }
-                    closerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
+                    // Bound the number of decoded peers; drop surplus while
+                    // still advancing the offset to stay in sync.
+                    if closerPeers.count < maxPeersPerMessage {
+                        closerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
+                    }
                     offset = fieldEnd
 
                 case (9, wireTypeLengthDelimited):
@@ -206,7 +216,11 @@ enum KademliaProtobuf {
                     guard fieldEnd <= bytes.count else {
                         throw KademliaError.encodingError("ProviderPeers field truncated")
                     }
-                    providerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
+                    // Bound the number of decoded provider peers; drop surplus
+                    // while still advancing the offset to stay in sync.
+                    if providerPeers.count < maxPeersPerMessage {
+                        providerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
+                    }
                     offset = fieldEnd
 
                 default:

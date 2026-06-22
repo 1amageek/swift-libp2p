@@ -59,9 +59,13 @@ public struct KademliaConfiguration: Sendable {
 
     /// Record validator for incoming PUT_VALUE requests.
     ///
-    /// By default, uses `DefaultRecordValidator` which limits key and value sizes
-    /// to prevent DoS attacks. Set to a custom validator for application-specific
-    /// validation, or `nil` to accept all records without validation (not recommended).
+    /// By default, uses `NamespacedValidator.secureDefault()` which performs
+    /// cryptographic validation for `/ipns/` and `/pk/` records (signature,
+    /// signer == key owner, sequence/expiry) plus size limits, and rejects
+    /// unknown namespaces. This prevents forged `/ipns/` and `/pk/` records from
+    /// being silently accepted. Set to a custom validator for application-specific
+    /// validation, or `nil` to accept all records without validation (NOT
+    /// recommended — disables all record authentication).
     public var recordValidator: (any RecordValidator)?
 
     /// Behavior when validation fails.
@@ -119,7 +123,7 @@ public struct KademliaConfiguration: Sendable {
         randomWalkCount: Int = 1,
         cleanupInterval: Duration? = .seconds(300),
         mode: KademliaMode = .automatic,
-        recordValidator: (any RecordValidator)? = DefaultRecordValidator(),
+        recordValidator: (any RecordValidator)? = NamespacedValidator.secureDefault(),
         onValidationFailure: ValidationFailureAction = .reject,
         enableDynamicAlpha: Bool = false,
         minAlpha: Int = 1,
@@ -483,7 +487,39 @@ public final class KademliaService: EventEmitting, Sendable {
             }
         }
 
+        // Liveness-driven bucket maintenance: for full buckets, probe the
+        // least-recently-seen peer. If it is dead, evict it and promote a
+        // pending newcomer. This implements ping-oldest-replace-if-dead and
+        // ensures a proven-live node is never evicted for an unverified one
+        // (live peers are kept; only dead ones are replaced).
+        for bucketIndex in staleBuckets where routingTable.isBucketFull(bucketIndex) {
+            await checkBucketLiveness(bucketIndex: bucketIndex, opener: opener)
+        }
+
         emit(.refreshCompleted(bucketsRefreshed: bucketsRefreshed))
+    }
+
+    /// Probes the oldest entry in a full bucket and evicts it if unreachable,
+    /// promoting a pending entry in its place.
+    ///
+    /// - Parameters:
+    ///   - bucketIndex: The bucket to check.
+    ///   - opener: Stream opener used to probe the oldest peer.
+    private func checkBucketLiveness(bucketIndex: Int, opener: any StreamOpener) async {
+        guard let oldest = routingTable.oldestInBucket(bucketIndex) else { return }
+
+        // Probe the oldest peer with a cheap FIND_NODE for its own key. A
+        // successful response proves liveness (and refreshes its position).
+        let probeKey = KademliaKey(from: oldest.peerID)
+        do {
+            _ = try await sendFindNode(to: oldest.peerID, key: probeKey, opener: opener)
+            // Peer is alive — leave it in place; the newcomer stays pending.
+        } catch {
+            // Peer is unreachable — evict it and promote a pending newcomer.
+            if let evicted = routingTable.evictOldestInBucket(bucketIndex) {
+                emit(.peerRemoved(evicted, bucket: bucketIndex))
+            }
+        }
     }
 
     // MARK: - Dynamic Alpha
@@ -705,11 +741,46 @@ public final class KademliaService: EventEmitting, Sendable {
                 }
             }
 
-            // Store the record
-            recordStore.put(record)
-            emit(.recordStored(key: record.key))
+            // Conflict resolution: if we already hold a record for this key,
+            // keep the better one per the validator's `select`. This prevents an
+            // IPNS downgrade/replay where an attacker re-publishes an older
+            // (lower-sequence) but still-valid record to overwrite a newer one.
+            let recordToStore: KademliaRecord
+            if let existing = recordStore.get(record.key),
+               let validator = configuration.recordValidator {
+                do {
+                    let bestIndex = try await validator.select(
+                        key: record.key,
+                        records: [existing, record]
+                    )
+                    // index 0 == existing (keep current), 1 == incoming (replace)
+                    if bestIndex == 0 {
+                        // Incoming record is not better; reject the downgrade.
+                        emit(.recordRejected(key: record.key, from: peer, reason: .validationFailed))
+                        emit(.responseSent(to: peer, type: .putValue))
+                        return .putValueResponse(record: existing)
+                    }
+                    recordToStore = record
+                } catch {
+                    // If selection cannot be made, do not silently overwrite;
+                    // reject the write so the conflict is surfaced.
+                    emit(.recordRejected(key: record.key, from: peer, reason: .validationError(String(describing: error))))
+                    throw KademliaError.invalidRecord("Record selection failed: \(error)")
+                }
+            } else {
+                recordToStore = record
+            }
+
+            // Store the record (propagating any backend failure, not swallowing it).
+            do {
+                try recordStore.putThrowing(recordToStore)
+            } catch {
+                emit(.recordRejected(key: recordToStore.key, from: peer, reason: .validationError(String(describing: error))))
+                throw KademliaError.queryFailed("Record store failed: \(error)")
+            }
+            emit(.recordStored(key: recordToStore.key))
             emit(.responseSent(to: peer, type: .putValue))
-            return .putValueResponse(record: record)
+            return .putValueResponse(record: recordToStore)
 
         case .getProviders:
             emit(.requestReceived(from: peer, type: .getProviders))
@@ -729,9 +800,27 @@ public final class KademliaService: EventEmitting, Sendable {
             guard let key = message.key else {
                 throw KademliaError.protocolViolation("Missing key in ADD_PROVIDER")
             }
-            // Add provider records
-            for provider in message.providerPeers {
-                providerStore.addProvider(for: key, peerID: provider.id, addresses: provider.addresses)
+            // Provider-spoofing defense: only accept provider records where the
+            // advertised provider is the sender itself. A peer may only announce
+            // that IT provides content, never that some other peer does. Entries
+            // claiming a different provider are a protocol violation and dropped.
+            var added = 0
+            for provider in message.providerPeers where provider.id == peer {
+                do {
+                    try providerStore.addProviderThrowing(
+                        for: key,
+                        peerID: provider.id,
+                        addresses: provider.addresses
+                    )
+                    added += 1
+                } catch {
+                    emit(.recordRejected(key: key, from: peer, reason: .validationError(String(describing: error))))
+                    throw KademliaError.queryFailed("Provider store failed: \(error)")
+                }
+            }
+            if added < message.providerPeers.count {
+                // At least one entry advertised a provider other than the sender.
+                emit(.recordRejected(key: key, from: peer, reason: .signerMismatch))
             }
             emit(.responseSent(to: peer, type: .addProvider))
             // ADD_PROVIDER doesn't have a response in the spec, but we return an empty response
@@ -825,7 +914,8 @@ public final class KademliaService: EventEmitting, Sendable {
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
             ),
-            skademliaConfig: configuration.skademlia
+            skademliaConfig: configuration.skademlia,
+            localPeerID: localPeerID
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)
@@ -897,7 +987,8 @@ public final class KademliaService: EventEmitting, Sendable {
                 timeout: configuration.queryTimeout
             ),
             validator: configuration.recordValidator,
-            skademliaConfig: configuration.skademlia
+            skademliaConfig: configuration.skademlia,
+            localPeerID: localPeerID
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)
@@ -937,8 +1028,12 @@ public final class KademliaService: EventEmitting, Sendable {
     public func putValue(key: Data, value: Data, using opener: any StreamOpener) async throws -> Int {
         let record = KademliaRecord.create(key: key, value: value)
 
-        // Store locally
-        recordStore.put(record)
+        // Store locally, surfacing a failed store rather than emitting success.
+        do {
+            try recordStore.putThrowing(record)
+        } catch {
+            throw KademliaError.storeFailed("Local record store failed: \(error)")
+        }
         emit(.recordStored(key: key))
 
         let targetKey = KademliaKey(hashing: key)
@@ -1003,7 +1098,8 @@ public final class KademliaService: EventEmitting, Sendable {
                 k: configuration.kValue,
                 timeout: configuration.queryTimeout
             ),
-            skademliaConfig: configuration.skademlia
+            skademliaConfig: configuration.skademlia,
+            localPeerID: localPeerID
         )
 
         let delegate = QueryDelegateImpl(service: self, opener: opener)

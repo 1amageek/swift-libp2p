@@ -104,8 +104,12 @@ struct ExtendedValidatorTests {
         let rpc = GossipSubRPC(messages: [message])
         _ = await router.handleRPC(rpc, from: sender)
 
-        // Message should be seen (dedup cache) but not in message cache (rejected)
-        #expect(router.seenCache.contains(message.id))
+        // A rejected message must NOT enter the seen cache or message cache.
+        // Inserting a rejected (potentially forged-ID) message into the seen
+        // cache would let an attacker censor a later legitimate message with the
+        // same ID (seen-cache poisoning). Dedup insertion happens only AFTER
+        // validation passes.
+        #expect(!router.seenCache.contains(message.id))
         #expect(!router.messageCache.contains(message.id))
 
         // Peer should have been penalized
@@ -130,8 +134,10 @@ struct ExtendedValidatorTests {
         let rpc = GossipSubRPC(messages: [message])
         _ = await router.handleRPC(rpc, from: sender)
 
-        // Message should be seen but not cached
-        #expect(router.seenCache.contains(message.id))
+        // An ignored message must NOT enter the seen cache or message cache.
+        // Only messages that pass validation are recorded as seen, preventing
+        // seen-cache poisoning via forged message IDs.
+        #expect(!router.seenCache.contains(message.id))
         #expect(!router.messageCache.contains(message.id))
 
         // No penalty should be applied

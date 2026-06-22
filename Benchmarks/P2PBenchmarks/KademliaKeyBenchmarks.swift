@@ -2,7 +2,10 @@
 import Testing
 import Foundation
 import Crypto
-import P2PKademlia
+// @testable to access the internal `init(bytes:)` performance primitive.
+// `init(bytes:)` is intentionally internal: untrusted wire input must use the
+// throwing `init(validating:)` so a malformed length is a typed error, not a crash.
+@testable import P2PKademlia
 
 @Suite("KademliaKey Benchmarks", .serialized)
 struct KademliaKeyBenchmarks {

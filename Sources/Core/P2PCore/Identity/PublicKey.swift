@@ -27,7 +27,17 @@ public struct PublicKey: Sendable {
     /// - Parameters:
     ///   - keyType: The type of the key
     ///   - rawBytes: The raw public key bytes
-    /// - Throws: `PublicKeyError.invalidKeySize` if the bytes are invalid
+    /// - Throws: `PublicKeyError.invalidKeySize` if the bytes are invalid;
+    ///   `PublicKeyError.unsupportedKeyType` for RSA / secp256k1.
+    ///
+    /// ## Fail-fast on unsupported key types
+    ///
+    /// This project intentionally supports only Ed25519 and ECDSA P-256 (see
+    /// `P2PCore/CONTEXT.md`). RSA and secp256k1 are rejected here at
+    /// construction — the earliest point — rather than constructing an
+    /// unverifiable key that only fails later at `verify()`. This mirrors
+    /// `PrivateKey`, which already rejects these types, and means a PeerID can
+    /// never be derived from an unverifiable key.
     public init(keyType: KeyType, rawBytes: Data) throws {
         self.keyType = keyType
         self.rawBytes = rawBytes
@@ -40,11 +50,6 @@ public struct PublicKey: Sendable {
             }
             let key = try Curve25519.Signing.PublicKey(rawRepresentation: rawBytes)
             self._cryptoKey = .ed25519(key)
-        case .secp256k1:
-            guard rawBytes.count == 33 || rawBytes.count == 65 else {
-                throw PublicKeyError.invalidKeySize(expected: 33, actual: rawBytes.count)
-            }
-            self._cryptoKey = .unsupported
         case .ecdsa:
             // P-256 public key: 65 bytes uncompressed or 33 bytes compressed
             guard rawBytes.count == 33 || rawBytes.count == 65 else {
@@ -57,12 +62,10 @@ public struct PublicKey: Sendable {
                 key = try P256.Signing.PublicKey(compressedRepresentation: rawBytes)
             }
             self._cryptoKey = .ecdsa(key)
-        case .rsa:
-            // RSA keys are variable length
-            guard !rawBytes.isEmpty else {
-                throw PublicKeyError.invalidKeySize(expected: 1, actual: 0)
-            }
-            self._cryptoKey = .unsupported
+        case .secp256k1, .rsa:
+            // Unsupported by design: reject at derivation rather than producing
+            // an unverifiable key that only fails at verify() time.
+            throw PublicKeyError.unsupportedKeyType(keyType)
         }
 
         self._protobufEncoded = Self.buildProtobufEncoded(keyType: keyType, rawBytes: rawBytes)
@@ -133,9 +136,6 @@ public struct PublicKey: Sendable {
             // Signature is DER encoded
             let ecdsaSignature = try P256.Signing.ECDSASignature(derRepresentation: signature)
             return key.isValidSignature(ecdsaSignature, for: data)
-
-        case .unsupported:
-            throw PublicKeyError.unsupportedOperation
         }
     }
 
@@ -228,7 +228,6 @@ public struct PublicKey: Sendable {
 private enum CryptoKey: Sendable {
     case ed25519(Curve25519.Signing.PublicKey)
     case ecdsa(P256.Signing.PublicKey)
-    case unsupported
 }
 
 // MARK: - Equatable / Hashable
@@ -253,4 +252,7 @@ public enum PublicKeyError: Error, Equatable {
     case invalidProtobuf
     case unsupportedOperation
     case keyDataTooLarge(UInt64)
+    /// The key type is recognized but not supported by this implementation
+    /// (RSA / secp256k1). Rejected at construction so it fails fast.
+    case unsupportedKeyType(KeyType)
 }

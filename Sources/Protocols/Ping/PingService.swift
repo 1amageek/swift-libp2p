@@ -20,17 +20,22 @@ private let pingPayloadSize = 32
 private final class PingStreamReader: Sendable {
     private let stream: MuxedStream
     private let buffer: Mutex<ByteBuffer>
+    /// Upper bound on the internal buffer, preventing an unbounded read buffer
+    /// when a peer sends a large amount of data without a complete payload.
+    private let maxBufferBytes: Int
 
-    init(stream: MuxedStream) {
+    init(stream: MuxedStream, maxBufferBytes: Int = pingPayloadSize * 4) {
         self.stream = stream
         self.buffer = Mutex(ByteBuffer())
+        self.maxBufferBytes = max(pingPayloadSize, maxBufferBytes)
     }
 
     /// Reads exactly `count` bytes from the stream.
     ///
     /// - Parameter count: Number of bytes to read
     /// - Returns: Exactly `count` bytes of data
-    /// - Throws: PingError if stream closes before enough data is available
+    /// - Throws: PingError if stream closes before enough data is available, or
+    ///   if the buffered data exceeds the configured maximum.
     func readExact(_ count: Int) async throws -> ByteBuffer {
         while true {
             let extracted: ByteBuffer? = buffer.withLock { buf in
@@ -50,9 +55,13 @@ private final class PingStreamReader: Sendable {
                 throw PingError.streamError("Stream closed before receiving complete ping response")
             }
 
-            buffer.withLock { buf in
+            let overflow: Bool = buffer.withLock { buf in
                 var chunk = chunk
                 buf.writeBuffer(&chunk)
+                return buf.readableBytes > maxBufferBytes
+            }
+            if overflow {
+                throw PingError.streamError("Ping read buffer exceeded maximum of \(maxBufferBytes) bytes")
             }
         }
     }
@@ -60,11 +69,29 @@ private final class PingStreamReader: Sendable {
 
 /// Configuration for PingService.
 public struct PingConfiguration: Sendable {
-    /// Timeout for ping responses.
+    /// Timeout for ping responses (outbound).
     public var timeout: Duration
 
-    public init(timeout: Duration = .seconds(30)) {
+    /// Idle timeout for the inbound echo handler.
+    ///
+    /// If no complete ping payload is received within this window, the inbound
+    /// handler closes the stream. Prevents a peer from holding an echo handler
+    /// open indefinitely (reflection / handler exhaustion).
+    public var inboundIdleTimeout: Duration
+
+    /// Total lifetime cap for the inbound echo handler.
+    ///
+    /// Bounds the absolute time a single inbound ping stream may stay open.
+    public var inboundTotalTimeout: Duration
+
+    public init(
+        timeout: Duration = .seconds(30),
+        inboundIdleTimeout: Duration = .seconds(60),
+        inboundTotalTimeout: Duration = .seconds(600)
+    ) {
         self.timeout = timeout
+        self.inboundIdleTimeout = inboundIdleTimeout
+        self.inboundTotalTimeout = inboundTotalTimeout
     }
 }
 
@@ -253,21 +280,44 @@ public final class PingService: EventEmitting, Sendable {
     // MARK: - Protocol Handler
 
     /// Handles an incoming ping request (echo back).
+    ///
+    /// The handler is bounded by both an idle timeout (per ping payload) and a
+    /// total lifetime cap so a peer cannot hold the echo handler open
+    /// indefinitely or exhaust handler resources via a stalled stream.
     private func handlePing(context: StreamContext) async {
         let stream = context.stream
         let reader = PingStreamReader(stream: stream)
+        let idleTimeout = configuration.inboundIdleTimeout
+        let totalTimeout = configuration.inboundTotalTimeout
+        let deadline = ContinuousClock.now + totalTimeout
 
         do {
-            // Read and echo back pings until stream closes
+            // Read and echo back pings until the stream closes or a limit fires.
             while true {
-                // Read exactly 32 bytes
-                let payload = try await reader.readExact(pingPayloadSize)
+                // Enforce the total lifetime cap.
+                if ContinuousClock.now >= deadline {
+                    break
+                }
+
+                // Read exactly 32 bytes, racing against the idle timeout.
+                let payload = try await withThrowingTaskGroup(of: ByteBuffer.self) { group in
+                    group.addTask {
+                        try await reader.readExact(pingPayloadSize)
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: idleTimeout)
+                        throw PingError.timeout
+                    }
+                    let result = try await group.next()!
+                    group.cancelAll()
+                    return result
+                }
 
                 // Echo back
                 try await stream.write(payload)
             }
         } catch {
-            // Stream closed or error - normal termination
+            // Stream closed, idle timeout, or error - terminate the handler.
         }
 
         do {

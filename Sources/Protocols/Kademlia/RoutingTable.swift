@@ -128,11 +128,23 @@ public final class RoutingTable: Sendable {
             let centerBucket = targetDistance.bucketIndex ?? 0
 
             // Collect entries from buckets nearest to the target first.
-            // Expand outward from centerBucket until we've checked all
-            // non-empty buckets or have enough candidates.
+            // Expand outward from centerBucket. We must not stop the instant we
+            // have `count` candidates from a single shell, because bucket-index
+            // proximity is only an approximation of XOR distance. Instead, we
+            // keep one extra shell of slack: once we have at least `count`
+            // candidates, we scan a bounded number of additional buckets and
+            // then stop. This yields O(log n)-ish work (a handful of buckets)
+            // instead of always scanning all 256 buckets, while still surfacing
+            // the truly-closest peers from the collected set via the partial sort.
+            //
+            // `extraShells` is the number of additional buckets to scan on each
+            // side after we first reach `count` candidates.
+            let extraShells = 2
             var candidates: [KBucketEntry] = []
             var lo = centerBucket
             var hi = centerBucket + 1
+            var shellsAfterEnough = 0
+            var reachedEnough = false
 
             while lo >= 0 || hi < 256 {
                 if lo >= 0 {
@@ -147,11 +159,15 @@ public final class RoutingTable: Sendable {
                     }
                     hi += 1
                 }
-                // Early exit: if we have enough candidates and the remaining
-                // buckets are farther than our worst candidate, we can stop.
-                // But since bucket proximity is approximate, we collect all
-                // and sort only the collected set. For typical routing tables
-                // with sparse bucket occupation, this is much faster.
+
+                // Documented early-exit: once we have enough candidates, scan a
+                // small number of extra buckets for safety, then stop.
+                if reachedEnough {
+                    shellsAfterEnough += 1
+                    if shellsAfterEnough >= extraShells { break }
+                } else if candidates.count >= count {
+                    reachedEnough = true
+                }
             }
 
             // Use partial sort for efficiency when count << candidates.count

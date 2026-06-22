@@ -143,6 +143,12 @@ stream.protocolID = "/ipfs/id/1.0.0"  // プロトコル合意後に設定
 ## 参照
 - [Yamux Spec](https://github.com/hashicorp/yamux/blob/master/spec.md)
 
+## Flow-Control & Head-of-Line Fixes (2026-06)
+
+- **半閉鎖ウィンドウリーク修正**: `closeRead()`/`localReadClosed` 後に破棄したデータの受信ウィンドウを必ず返す（`FlowController.dataDiscarded` / `windowForClose`）— 半閉鎖ストリームに書き込み続けるピアがウィンドウを 0 に枯渇させてストールするのを防ぐため
+- **接続レベルフロー制御**: 全ストリーム共有の受信ウィンドウ `YamuxConfiguration.connectionReceiveWindow`（デフォルト 16MB）を追加（`ConnectionFlowController`）。集約 in-flight がセッション読み取りバッファを超えないよう束縛する。消費/破棄分は stream-0（セッション）ウィンドウ更新で返す。超過時はプロトコル違反として接続を破棄する
+- **制御フレームキュー**: ACK/RST/Pong は read loop からインライン送信せず `ControlFrameQueue` 経由で別タスクが送信する — 下層書き込みのバックプレッシャーで read loop が wedge し、ウィンドウ更新の排出が止まる soft deadlock を防ぐため。キューは有界（満杯時は接続破棄、サイレントドロップ禁止）
+
 ## Codex Review (2026-01-18)
 
 ### Warning

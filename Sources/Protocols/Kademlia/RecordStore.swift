@@ -2,6 +2,9 @@
 
 import Foundation
 import Synchronization
+import P2PCore
+
+private let recordStoreLogger = Logger(label: "p2p.kademlia.recordstore")
 
 /// Storage for DHT records with TTL support.
 ///
@@ -47,31 +50,57 @@ public final class RecordStore: Sendable {
         self.defaultTTL = defaultTTL
     }
 
-    /// Stores a record.
+    /// Stores a record, propagating any backend failure.
     ///
     /// - Parameters:
     ///   - record: The record to store.
     ///   - ttl: Time-to-live (uses default if nil).
-    /// - Returns: True if stored, false if rejected (e.g., store full).
+    /// - Throws: A backend error (e.g. `KademliaError.storeFull`) if the record
+    ///   could not be stored. The caller MUST decide how to handle failure
+    ///   rather than treating a failed store as success.
+    public func putThrowing(_ record: KademliaRecord, ttl: Duration? = nil) throws {
+        let effectiveTTL = ttl ?? defaultTTL
+        try backend.put(record, ttl: effectiveTTL)
+    }
+
+    /// Stores a record (non-throwing convenience).
+    ///
+    /// - Parameters:
+    ///   - record: The record to store.
+    ///   - ttl: Time-to-live (uses default if nil).
+    /// - Returns: True if stored, false if the backend rejected it (e.g. full).
+    ///   The error is logged (not silently swallowed). Prefer `putThrowing`
+    ///   on paths where the result matters.
     @discardableResult
     public func put(_ record: KademliaRecord, ttl: Duration? = nil) -> Bool {
-        let effectiveTTL = ttl ?? defaultTTL
         do {
-            try backend.put(record, ttl: effectiveTTL)
+            try putThrowing(record, ttl: ttl)
             return true
         } catch {
+            recordStoreLogger.warning("RecordStore.put failed: \(error)")
             return false
         }
     }
 
-    /// Retrieves a record by key.
+    /// Retrieves a record by key, propagating any backend failure.
     ///
     /// - Parameter key: The record key.
-    /// - Returns: The record if found and not expired.
+    /// - Returns: The record if found and not expired (nil if absent).
+    /// - Throws: A backend error if the lookup failed.
+    public func getThrowing(_ key: Data) throws -> KademliaRecord? {
+        try backend.get(key)
+    }
+
+    /// Retrieves a record by key (non-throwing convenience).
+    ///
+    /// - Parameter key: The record key.
+    /// - Returns: The record if found and not expired. Backend errors are
+    ///   logged and surface as `nil`.
     public func get(_ key: Data) -> KademliaRecord? {
         do {
-            return try backend.get(key)
+            return try getThrowing(key)
         } catch {
+            recordStoreLogger.warning("RecordStore.get failed: \(error)")
             return nil
         }
     }
@@ -87,6 +116,7 @@ public final class RecordStore: Sendable {
             try backend.remove(key)
             return existing
         } catch {
+            recordStoreLogger.warning("RecordStore.remove failed: \(error)")
             return nil
         }
     }
@@ -104,6 +134,7 @@ public final class RecordStore: Sendable {
         do {
             return try backend.allRecords()
         } catch {
+            recordStoreLogger.warning("RecordStore.allRecords failed: \(error)")
             return []
         }
     }
@@ -121,6 +152,7 @@ public final class RecordStore: Sendable {
         do {
             return try backend.cleanup()
         } catch {
+            recordStoreLogger.warning("RecordStore.cleanup failed: \(error)")
             return 0
         }
     }
@@ -133,7 +165,7 @@ public final class RecordStore: Sendable {
                 try backend.remove(record.key)
             }
         } catch {
-            // Best effort
+            recordStoreLogger.warning("RecordStore.clear failed: \(error)")
         }
     }
 
@@ -147,6 +179,7 @@ public final class RecordStore: Sendable {
         do {
             return try backend.recordsNeedingRepublish(threshold: threshold)
         } catch {
+            recordStoreLogger.warning("RecordStore.recordsNeedingRepublish failed: \(error)")
             return []
         }
     }

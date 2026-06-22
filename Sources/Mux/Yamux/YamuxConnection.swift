@@ -10,6 +10,14 @@ private let logger = Logger(label: "p2p.mux.yamux.connection")
 /// Threshold for compacting the read buffer (64KB)
 private let readBufferCompactThreshold = 64 * 1024
 
+/// Maximum number of control frames buffered by the control-frame queue.
+///
+/// Decouples control sends (ACK/RST/Pong/window updates) from the read loop so
+/// a back-pressured transport cannot wedge frame draining. Bounded so a peer
+/// cannot make the queue grow without limit by flooding control-triggering
+/// frames faster than the transport drains.
+private let yamuxControlFrameQueueCapacity = 1024
+
 /// Actor for serializing frame writes to the underlying connection.
 ///
 /// This ensures that concurrent writes from multiple streams don't interleave
@@ -82,13 +90,18 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     private let state: Mutex<YamuxConnectionState>
     /// RTT estimator for window auto-tuning (B1).
     let rttEstimator: RTTEstimator
+    /// Connection-level (session) receive flow control shared across all streams.
+    private let connectionFlowController: ConnectionFlowController
     /// Serializes frame writes to prevent interleaving
     private let frameWriter: FrameWriter
+    /// Decouples control-frame sends from the read loop (head-of-line safety).
+    private let controlQueue: ControlFrameQueue
 
     public let inboundStreams: AsyncStream<MuxedStream>
 
     private let readTask: Mutex<Task<Void, Never>?>
     private let keepAliveTask: Mutex<Task<Void, Never>?>
+    private let controlDrainTask: Mutex<Task<Void, Never>?>
 
     init(
         underlying: any SecuredConnection,
@@ -104,6 +117,10 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         self.configuration = configuration
         self.frameWriter = FrameWriter(connection: underlying)
         self.rttEstimator = RTTEstimator()
+        self.connectionFlowController = ConnectionFlowController(
+            maxReceiveWindow: configuration.connectionReceiveWindow
+        )
+        self.controlQueue = ControlFrameQueue(capacity: yamuxControlFrameQueueCapacity)
 
         var initialState = YamuxConnectionState(isInitiator: isInitiator)
 
@@ -117,6 +134,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         self.state = Mutex(initialState)
         self.readTask = Mutex(nil)
         self.keepAliveTask = Mutex(nil)
+        self.controlDrainTask = Mutex(nil)
     }
 
     /// Starts the read loop and keep-alive timer. Must be called after init.
@@ -131,6 +149,13 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         }
 
         guard shouldStart else { return }
+
+        // Start control-frame drain loop first so the read loop can enqueue
+        // control responses immediately without blocking.
+        let drain: Task<Void, Never> = Task { [weak self] in
+            await self?.controlDrainLoop()
+        }
+        controlDrainTask.withLock { $0 = drain }
 
         // Start read loop
         let task: Task<Void, Never> = Task { [weak self] in
@@ -233,6 +258,9 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         // Cancel background tasks
         readTask.withLock { $0?.cancel() }
         keepAliveTask.withLock { $0?.cancel() }
+        // Terminate the control-frame drain loop and cancel its task.
+        controlQueue.finish()
+        controlDrainTask.withLock { $0?.cancel() }
 
         // Notify continuations
         capture.notifyContinuations(error: YamuxError.connectionClosed)
@@ -264,6 +292,52 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         }
     }
 
+    // MARK: - Connection-Level Flow Control
+
+    /// Called by a stream when the application consumes received data.
+    ///
+    /// Returns the consumed bytes to the shared connection window and, if the
+    /// half-window threshold is reached, emits a stream-0 (session) window
+    /// update so the peer may send more aggregate data.
+    func connectionDataConsumed(_ count: UInt32) {
+        if let delta = connectionFlowController.dataConsumed(count: count) {
+            sendConnectionWindowUpdate(delta: delta)
+        }
+    }
+
+    /// Called by a stream when received data is discarded (read side closed).
+    ///
+    /// Returns the discarded bytes to the shared connection window immediately.
+    func connectionDataDiscarded(_ count: UInt32) {
+        if let delta = connectionFlowController.dataDiscarded(count: count) {
+            sendConnectionWindowUpdate(delta: delta)
+        }
+    }
+
+    /// Returns connection budget for bytes that were reserved but never handed
+    /// to a stream (unknown stream, per-stream window violation).
+    private func connectionWindowReturn(_ count: UInt32) {
+        if let delta = connectionFlowController.dataDiscarded(count: count) {
+            sendConnectionWindowUpdate(delta: delta)
+        }
+    }
+
+    /// Sends a session-level window update (stream ID 0) without blocking.
+    ///
+    /// Stream 0 is reserved for connection-level control in Yamux; a window
+    /// update on it grants the peer additional aggregate send budget.
+    private func sendConnectionWindowUpdate(delta: UInt32) {
+        Task { [weak self] in
+            guard let self else { return }
+            let frame = YamuxFrame.windowUpdate(streamID: 0, delta: delta)
+            do {
+                try await self.sendFrame(frame)
+            } catch {
+                // Connection likely closing; readLoop shutdown handles cleanup.
+            }
+        }
+    }
+
     // MARK: - Private
 
     private func sendFrameBestEffort(_ frame: YamuxFrame, context: String) async {
@@ -283,6 +357,51 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             data: nil
         )
         await sendFrameBestEffort(rstFrame, context: context)
+    }
+
+    // MARK: - Control-Frame Queue
+
+    /// Enqueues a control RST for a stream from the read loop.
+    ///
+    /// - Throws: `YamuxError.readBufferOverflow` if the bounded control queue
+    ///   is full — the read loop converts this into an abrupt shutdown rather
+    ///   than silently dropping a required RST.
+    private func enqueueReset(streamID: UInt32, context: String) throws {
+        let rstFrame = YamuxFrame(
+            type: .data,
+            flags: .rst,
+            streamID: streamID,
+            length: 0,
+            data: nil
+        )
+        try enqueueControlFrame(rstFrame, context: "RST: \(context)")
+    }
+
+    /// Enqueues a control frame to be sent by the drain task.
+    ///
+    /// Called from the read loop instead of `await sendFrame` so a
+    /// back-pressured transport cannot stall frame draining.
+    ///
+    /// - Throws: `YamuxError.readBufferOverflow` when the bounded queue is full
+    ///   or finished, so the read loop tears the connection down instead of
+    ///   silently dropping a required control response.
+    private func enqueueControlFrame(_ frame: YamuxFrame, context: String) throws {
+        guard controlQueue.enqueue(frame) else {
+            logger.debug("Yamux control-frame queue full, tearing down connection (\(context))")
+            throw YamuxError.readBufferOverflow
+        }
+    }
+
+    /// Drains queued control frames, writing each through the FrameWriter.
+    ///
+    /// Runs on its own task; only this task blocks on transport back-pressure,
+    /// leaving the read loop free to keep draining inbound frames (including the
+    /// window updates that relieve the back-pressure).
+    private func controlDrainLoop() async {
+        while let frame = await controlQueue.next() {
+            if Task.isCancelled { return }
+            await sendFrameBestEffort(frame, context: "control-frame drain")
+        }
     }
 
     private func readLoop() async {
@@ -359,7 +478,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
             if !isValidStreamID {
                 // Protocol violation: invalid stream ID
-                await sendResetBestEffort(
+                try enqueueReset(
                     streamID: frame.streamID,
                     context: "invalid remote stream id"
                 )
@@ -401,7 +520,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             switch result {
             case .rejectGoAway:
                 // GoAway received - reject new streams
-                await sendResetBestEffort(
+                try enqueueReset(
                     streamID: frame.streamID,
                     context: "reject new stream after go-away"
                 )
@@ -409,7 +528,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
             case .rejectReuse:
                 // Protocol violation: stream ID reuse
-                await sendResetBestEffort(
+                try enqueueReset(
                     streamID: frame.streamID,
                     context: "reject reused stream id"
                 )
@@ -417,7 +536,7 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
             case .rejectLimit:
                 // Stream limit exceeded - reject with RST
-                await sendResetBestEffort(
+                try enqueueReset(
                     streamID: frame.streamID,
                     context: "reject stream over max concurrent limit"
                 )
@@ -442,31 +561,35 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                 return .bufferDelivery(state.inboundContinuation, stream)
             }
 
+            let ackFrame = YamuxFrame(
+                type: .data,
+                flags: .ack,
+                streamID: frame.streamID,
+                length: 0,
+                data: nil
+            )
+
             switch deliveryResult {
             case .directDelivery(let cont, let deliveredStream):
-                // Direct delivery to waiting accepter
-                // ACK must be sent first - if it fails, resume continuation with error
-                let ackFrame = YamuxFrame(
-                    type: .data,
-                    flags: .ack,
-                    streamID: frame.streamID,
-                    length: 0,
-                    data: nil
-                )
+                // Direct delivery to waiting accepter. ACK is enqueued (not sent
+                // inline) so a back-pressured transport cannot stall the read
+                // loop. ACK is enqueued only AFTER the stream is delivered, so a
+                // dropped stream is never ACKed. Enqueue failure tears the
+                // connection down.
                 do {
-                    try await sendFrame(ackFrame)
-                    // ACK succeeded - deliver stream to waiting accepter
+                    try enqueueControlFrame(ackFrame, context: "ACK direct delivery")
                     cont.resume(returning: deliveredStream)
                 } catch {
-                    // ACK failed - clean up stream and resume with error
+                    // Control queue full - clean up stream and resume with error
                     state.withLock { _ = $0.streams.removeValue(forKey: streamID) }
                     cont.resume(throwing: error)
+                    throw error
                 }
 
             case .bufferDelivery(let continuation, let deliveredStream):
                 guard let continuation = continuation else {
                     // No consumer available - reject stream
-                    await sendResetBestEffort(
+                    try enqueueReset(
                         streamID: frame.streamID,
                         context: "reject inbound stream with no continuation"
                     )
@@ -479,19 +602,12 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
                 switch yieldResult {
                 case .enqueued:
-                    // Success - send ACK
-                    let ackFrame = YamuxFrame(
-                        type: .data,
-                        flags: .ack,
-                        streamID: frame.streamID,
-                        length: 0,
-                        data: nil
-                    )
-                    try await sendFrame(ackFrame)
+                    // Success - enqueue ACK
+                    try enqueueControlFrame(ackFrame, context: "ACK buffer delivery")
 
                 case .dropped:
                     // Buffer full - reject with RST (proper backpressure)
-                    await sendResetBestEffort(
+                    try enqueueReset(
                         streamID: frame.streamID,
                         context: "reject dropped inbound stream"
                     )
@@ -509,13 +625,27 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
         // Handle data
         if let data = frame.data, data.readableBytes > 0 {
+            let byteCount = UInt32(data.readableBytes)
+
+            // Connection-level (session) flow control: the aggregate in-flight
+            // data across all streams must stay within the shared budget. A
+            // frame exceeding the granted connection window is a protocol
+            // violation by the peer — tear down the whole session.
+            guard connectionFlowController.dataReceived(count: byteCount) else {
+                abruptShutdown(error: .windowExceeded)
+                throw YamuxError.windowExceeded
+            }
+
             let stream = state.withLock { state in state.streams[streamID] }
             if let stream = stream {
                 let accepted = stream.dataReceived(data)
                 if !accepted {
+                    // Per-stream window violation: the data was not buffered, so
+                    // return its connection budget before tearing down the stream.
+                    connectionWindowReturn(byteCount)
                     // Protocol violation: data exceeded receive window
                     // Send RST frame and remove stream
-                    await sendResetBestEffort(
+                    try enqueueReset(
                         streamID: frame.streamID,
                         context: "reject stream data beyond receive window"
                     )
@@ -523,12 +653,17 @@ public final class YamuxConnection: MuxedConnection, Sendable {
                         _ = state.streams.removeValue(forKey: streamID)
                     }
                 }
-            } else if !frame.flags.contains(.syn) {
-                // Data for unknown stream (not a new stream) - send RST
-                await sendResetBestEffort(
-                    streamID: frame.streamID,
-                    context: "reject data for unknown stream"
-                )
+            } else {
+                // No live stream to receive the data: return the connection
+                // budget we just reserved (the data is dropped here).
+                connectionWindowReturn(byteCount)
+                if !frame.flags.contains(.syn) {
+                    // Data for unknown stream (not a new stream) - send RST
+                    try enqueueReset(
+                        streamID: frame.streamID,
+                        context: "reject data for unknown stream"
+                    )
+                }
             }
         }
 
@@ -576,9 +711,10 @@ public final class YamuxConnection: MuxedConnection, Sendable {
             return
         }
 
-        // Send pong
+        // Enqueue pong via the control queue so a back-pressured transport
+        // cannot stall the read loop on a keep-alive response.
         let pong = YamuxFrame.ping(opaque: frame.length, ack: true)
-        try await sendFrame(pong)
+        try enqueueControlFrame(pong, context: "pong response")
     }
 
     private func handleGoAway(_ frame: YamuxFrame) throws {
@@ -654,6 +790,13 @@ public final class YamuxConnection: MuxedConnection, Sendable {
     /// Resets all streams immediately without sending FIN.
     private func abruptShutdown(error: YamuxError) {
         guard let capture = captureForShutdown() else { return }
+
+        // Terminate the control-frame drain loop and cancel its task and the
+        // keep-alive task. The read loop is the caller (or already exiting), so
+        // it is left to unwind on its own.
+        controlQueue.finish()
+        controlDrainTask.withLock { $0?.cancel() }
+        keepAliveTask.withLock { $0?.cancel() }
 
         capture.notifyContinuations(error: error)
         capture.resetAllStreams()

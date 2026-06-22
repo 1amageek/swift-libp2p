@@ -777,3 +777,142 @@ struct HTTPErrorTests {
         #expect(error is HTTPError)
     }
 }
+
+// MARK: - Content-Length Validation Tests
+
+import NIOCore
+import Synchronization
+import P2PMux
+
+/// Minimal mock MuxedStream that yields a single fixed payload then EOF,
+/// and records bytes written back by the handler.
+private final class HTTPMockStream: MuxedStream, Sendable {
+    let id: UInt64 = 1
+    let protocolID: String? = HTTPProtocol.protocolID
+
+    private let state: Mutex<State>
+    private struct State: Sendable {
+        var toDeliver: [ByteBuffer]
+        var written: [ByteBuffer] = []
+        var closed = false
+    }
+
+    init(payload: Data) {
+        self.state = Mutex(State(toDeliver: [ByteBuffer(bytes: payload)]))
+    }
+
+    var written: [ByteBuffer] { state.withLock { $0.written } }
+
+    func read() async throws -> ByteBuffer {
+        state.withLock { s in
+            if s.toDeliver.isEmpty { return ByteBuffer() } // EOF
+            return s.toDeliver.removeFirst()
+        }
+    }
+    func write(_ data: ByteBuffer) async throws { state.withLock { $0.written.append(data) } }
+    func closeWrite() async throws {}
+    func closeRead() async throws {}
+    func close() async throws { state.withLock { $0.closed = true } }
+    func reset() async throws { state.withLock { $0.closed = true } }
+}
+
+@Suite("HTTP Content-Length Validation", .serialized)
+struct HTTPContentLengthValidationTests {
+
+    private func makeContext(_ stream: MuxedStream) -> StreamContext {
+        StreamContext(
+            stream: stream,
+            remotePeer: KeyPair.generateEd25519().peerID,
+            remoteAddress: Multiaddr.tcp(host: "127.0.0.1", port: 4001),
+            localPeer: KeyPair.generateEd25519().peerID,
+            localAddress: nil,
+            protocolID: HTTPProtocol.protocolID
+        )
+    }
+
+    /// Drives the inbound handler with a raw request and returns the first error
+    /// event (if any).
+    private func runAndCollectError(rawRequest: String) async throws -> HTTPError? {
+        let service = HTTPService()
+        let errorBox = Mutex<HTTPError?>(nil)
+        let done = Mutex(false)
+        let eventTask = Task {
+            for await event in service.events {
+                if case .error(_, let err) = event {
+                    errorBox.withLock { if $0 == nil { $0 = err } }
+                }
+            }
+            done.withLock { $0 = true }
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        let stream = HTTPMockStream(payload: Data(rawRequest.utf8))
+        await service.handleInboundStream(makeContext(stream))
+
+        try await Task.sleep(for: .milliseconds(20))
+        try await service.shutdown()
+        eventTask.cancel()
+        return errorBox.withLock { $0 }
+    }
+
+    @Test("Negative Content-Length is rejected", .timeLimit(.minutes(1)))
+    func negativeContentLength() async throws {
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: -1\r\n\r\n"
+        let error = try await runAndCollectError(rawRequest: raw)
+        guard case .invalidContentLength = error else {
+            Issue.record("Expected invalidContentLength, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test("Int.max Content-Length is rejected (exceeds max body)", .timeLimit(.minutes(1)))
+    func intMaxContentLength() async throws {
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: \(Int.max)\r\n\r\n"
+        let error = try await runAndCollectError(rawRequest: raw)
+        guard case .invalidContentLength = error else {
+            Issue.record("Expected invalidContentLength, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test("Overflowing Content-Length is rejected", .timeLimit(.minutes(1)))
+    func overflowContentLength() async throws {
+        // 99999999999999999999 overflows Int.
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n"
+        let error = try await runAndCollectError(rawRequest: raw)
+        guard case .invalidContentLength = error else {
+            Issue.record("Expected invalidContentLength, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test("Content-Length over max body size is rejected", .timeLimit(.minutes(1)))
+    func overMaxContentLength() async throws {
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: \(HTTPProtocol.maxBodySize + 1)\r\n\r\n"
+        let error = try await runAndCollectError(rawRequest: raw)
+        guard case .invalidContentLength = error else {
+            Issue.record("Expected invalidContentLength, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test("Conflicting duplicate Content-Length headers are rejected", .timeLimit(.minutes(1)))
+    func conflictingContentLength() async throws {
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\n"
+        let error = try await runAndCollectError(rawRequest: raw)
+        guard case .invalidContentLength = error else {
+            Issue.record("Expected invalidContentLength, got \(String(describing: error))")
+            return
+        }
+    }
+
+    @Test("Transfer-Encoding: chunked is rejected", .timeLimit(.minutes(1)))
+    func chunkedRejected() async throws {
+        let raw = "POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+        let error = try await runAndCollectError(rawRequest: raw)
+        guard case .unsupportedFraming = error else {
+            Issue.record("Expected unsupportedFraming, got \(String(describing: error))")
+            return
+        }
+    }
+}

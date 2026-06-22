@@ -717,6 +717,8 @@ struct AutoNATv2ErrorTests {
             .timeout,
             .serviceShutdown,
             .noAddress,
+            .dialTargetRejected("reason"),
+            .dialConcurrencyLimitReached,
         ]
 
         var matched = 0
@@ -730,10 +732,12 @@ struct AutoNATv2ErrorTests {
             case .timeout: matched += 1
             case .serviceShutdown: matched += 1
             case .noAddress: matched += 1
+            case .dialTargetRejected: matched += 1
+            case .dialConcurrencyLimitReached: matched += 1
             }
         }
 
-        #expect(matched == 8)
+        #expect(matched == 10)
     }
 
     @Test("Errors are equatable")
@@ -746,6 +750,230 @@ struct AutoNATv2ErrorTests {
         #expect(AutoNATv2Error.timeout != AutoNATv2Error.noAddress)
         #expect(AutoNATv2Error.protocolViolation("a") == AutoNATv2Error.protocolViolation("a"))
         #expect(AutoNATv2Error.protocolViolation("a") != AutoNATv2Error.protocolViolation("b"))
+    }
+}
+
+// MARK: - IP Address Classifier Tests
+
+@Suite("AutoNATv2 IP Classifier Tests")
+struct AutoNATv2IPClassifierTests {
+
+    @Test("Public unicast IPv4 is accepted")
+    func publicIPv4Accepted() {
+        #expect(IPAddressClassifier.isPublicUnicast("8.8.8.8"))
+        #expect(IPAddressClassifier.isPublicUnicast("1.1.1.1"))
+        #expect(IPAddressClassifier.isPublicUnicast("93.184.216.34"))
+    }
+
+    @Test("Loopback / private / link-local / CGNAT / metadata IPv4 are rejected")
+    func unsafeIPv4Rejected() {
+        #expect(!IPAddressClassifier.isPublicUnicast("127.0.0.1"))   // loopback
+        #expect(!IPAddressClassifier.isPublicUnicast("10.0.0.1"))    // RFC1918
+        #expect(!IPAddressClassifier.isPublicUnicast("172.16.5.4"))  // RFC1918
+        #expect(!IPAddressClassifier.isPublicUnicast("192.168.1.1")) // RFC1918
+        #expect(!IPAddressClassifier.isPublicUnicast("169.254.1.1")) // link-local
+        #expect(!IPAddressClassifier.isPublicUnicast("169.254.169.254")) // cloud metadata
+        #expect(!IPAddressClassifier.isPublicUnicast("100.64.0.1"))  // CGNAT
+        #expect(!IPAddressClassifier.isPublicUnicast("0.0.0.0"))     // unspecified
+        #expect(!IPAddressClassifier.isPublicUnicast("224.0.0.1"))   // multicast
+        #expect(!IPAddressClassifier.isPublicUnicast("255.255.255.255")) // broadcast
+    }
+
+    @Test("IPv4-mapped IPv6 to a private address is rejected")
+    func ipv4MappedPrivateRejected() {
+        #expect(!IPAddressClassifier.isPublicUnicast("::ffff:127.0.0.1"))
+        #expect(!IPAddressClassifier.isPublicUnicast("::ffff:192.168.0.1"))
+        #expect(!IPAddressClassifier.isPublicUnicast("::ffff:169.254.169.254"))
+        // IPv4-mapped to a public address is accepted.
+        #expect(IPAddressClassifier.isPublicUnicast("::ffff:8.8.8.8"))
+    }
+
+    @Test("IPv6 loopback / link-local / ULA / multicast / NAT64 are rejected")
+    func unsafeIPv6Rejected() {
+        #expect(!IPAddressClassifier.isPublicUnicast("::1"))            // loopback
+        #expect(!IPAddressClassifier.isPublicUnicast("::"))             // unspecified
+        #expect(!IPAddressClassifier.isPublicUnicast("fe80::1"))        // link-local
+        #expect(!IPAddressClassifier.isPublicUnicast("febf::1"))        // link-local (fe80::/10 edge)
+        #expect(!IPAddressClassifier.isPublicUnicast("fc00::1"))        // ULA
+        #expect(!IPAddressClassifier.isPublicUnicast("fd12:3456::1"))   // ULA
+        #expect(!IPAddressClassifier.isPublicUnicast("ff02::1"))        // multicast
+        #expect(!IPAddressClassifier.isPublicUnicast("64:ff9b::1.2.3.4")) // NAT64
+    }
+
+    @Test("Public IPv6 is accepted")
+    func publicIPv6Accepted() {
+        #expect(IPAddressClassifier.isPublicUnicast("2606:4700:4700::1111")) // Cloudflare DNS
+    }
+
+    @Test("Malformed addresses fail closed (rejected)")
+    func malformedRejected() {
+        #expect(!IPAddressClassifier.isPublicUnicast(""))
+        #expect(!IPAddressClassifier.isPublicUnicast("not-an-ip"))
+        #expect(!IPAddressClassifier.isPublicUnicast("999.999.999.999"))
+        #expect(!IPAddressClassifier.isPublicUnicast("1.2.3"))
+        #expect(!IPAddressClassifier.isPublicUnicast("::ffff:999.0.0.0"))
+        #expect(!IPAddressClassifier.isPublicUnicast("gggg::1"))
+    }
+}
+
+// MARK: - Server Dial-Path Validation Tests
+
+@Suite("AutoNATv2 Server Dial Validation Tests", .serialized)
+struct AutoNATv2ServerDialTests {
+
+    /// Builds a StreamContext with the given observed remote address.
+    private func makeContext(
+        stream: MuxedStream,
+        remotePeer: PeerID,
+        observed: Multiaddr
+    ) throws -> StreamContext {
+        StreamContext(
+            stream: stream,
+            remotePeer: remotePeer,
+            remoteAddress: observed,
+            localPeer: KeyPair.generateEd25519().peerID,
+            localAddress: nil,
+            protocolID: "/libp2p/autonat/2/dial-request"
+        )
+    }
+
+    /// Encodes a DialRequest into a stream's read buffer (length-prefixed).
+    private func enqueueDialRequest(_ address: Multiaddr, nonce: UInt64, into stream: MockMuxedStream) {
+        let message = AutoNATv2Message.dialRequest(.init(address: address, nonce: nonce))
+        let payload = AutoNATv2Codec.encode(message)
+        // length prefix (varint) + payload, matching writeLengthPrefixedMessage framing.
+        var framed = ByteBuffer()
+        framed.writeBytes(Varint.encode(UInt64(payload.count)))
+        framed.writeBytes(payload)
+        stream.readBuffer = [framed]
+    }
+
+    /// Decodes the last DialResponse the server wrote.
+    private func lastResponse(_ stream: MockMuxedStream) throws -> AutoNATv2Message.DialResponse {
+        guard let framed = stream.writtenData.last else {
+            throw MockError.noData
+        }
+        let raw = Data(framed.readableBytesView)
+        let (length, varintBytes) = try Varint.decodeAsInt(raw)
+        let payload = raw.dropFirst(varintBytes).prefix(length)
+        let decoded = try AutoNATv2Codec.decode(Data(payload))
+        guard case .dialResponse(let resp) = decoded else { throw MockError.noData }
+        return resp
+    }
+
+    @Test("Server rejects a loopback dial target without dialing", .timeLimit(.minutes(1)))
+    func rejectsLoopbackTarget() async throws {
+        let service = AutoNATv2Service()
+        let remotePeer = KeyPair.generateEd25519().peerID
+        let observed = try Multiaddr("/ip4/203.0.113.7/tcp/4001")
+        let target = try Multiaddr("/ip4/127.0.0.1/tcp/9000")
+
+        let stream = MockMuxedStream()
+        enqueueDialRequest(target, nonce: 42, into: stream)
+        let context = try makeContext(stream: stream, remotePeer: remotePeer, observed: observed)
+
+        let dialed = Mutex(false)
+        await service.handleIncomingStream(context: context) { _, _ in
+            dialed.withLock { $0 = true }
+        }
+
+        #expect(!dialed.withLock { $0 }, "Server must NOT dial a loopback target")
+        let resp = try lastResponse(stream)
+        #expect(resp.status == .badRequest)
+        try await service.shutdown()
+    }
+
+    @Test("Server rejects a cloud-metadata dial target", .timeLimit(.minutes(1)))
+    func rejectsMetadataTarget() async throws {
+        let service = AutoNATv2Service()
+        let remotePeer = KeyPair.generateEd25519().peerID
+        let observed = try Multiaddr("/ip4/203.0.113.7/tcp/4001")
+        let target = try Multiaddr("/ip4/169.254.169.254/tcp/80")
+
+        let stream = MockMuxedStream()
+        enqueueDialRequest(target, nonce: 1, into: stream)
+        let context = try makeContext(stream: stream, remotePeer: remotePeer, observed: observed)
+
+        let dialed = Mutex(false)
+        await service.handleIncomingStream(context: context) { _, _ in
+            dialed.withLock { $0 = true }
+        }
+
+        #expect(!dialed.withLock { $0 }, "Server must NOT dial the metadata address")
+        try await service.shutdown()
+    }
+
+    @Test("Server rejects a target whose IP does not match the observed IP", .timeLimit(.minutes(1)))
+    func rejectsMismatchedTarget() async throws {
+        let service = AutoNATv2Service()
+        let remotePeer = KeyPair.generateEd25519().peerID
+        let observed = try Multiaddr("/ip4/203.0.113.7/tcp/4001")
+        let target = try Multiaddr("/ip4/198.51.100.9/tcp/9000") // public but different IP
+
+        let stream = MockMuxedStream()
+        enqueueDialRequest(target, nonce: 7, into: stream)
+        let context = try makeContext(stream: stream, remotePeer: remotePeer, observed: observed)
+
+        let dialed = Mutex(false)
+        await service.handleIncomingStream(context: context) { _, _ in
+            dialed.withLock { $0 = true }
+        }
+
+        #expect(!dialed.withLock { $0 }, "Server must NOT dial an IP that differs from the observed IP")
+        try await service.shutdown()
+    }
+
+    @Test("Server dials a matching public target and forwards the nonce", .timeLimit(.minutes(1)))
+    func dialsMatchingPublicTarget() async throws {
+        let service = AutoNATv2Service()
+        let remotePeer = KeyPair.generateEd25519().peerID
+        let observed = try Multiaddr("/ip4/203.0.113.7/tcp/4001")
+        let target = try Multiaddr("/ip4/203.0.113.7/tcp/9000")
+
+        let stream = MockMuxedStream()
+        enqueueDialRequest(target, nonce: 0xABCD, into: stream)
+        let context = try makeContext(stream: stream, remotePeer: remotePeer, observed: observed)
+
+        let captured = Mutex<(Multiaddr, UInt64)?>(nil)
+        await service.handleIncomingStream(context: context) { addr, nonce in
+            captured.withLock { $0 = (addr, nonce) }
+        }
+
+        let result = captured.withLock { $0 }
+        #expect(result != nil, "Server must dial a valid matching public target")
+        #expect(result?.0 == target)
+        #expect(result?.1 == 0xABCD, "The request nonce must be forwarded to the dialer")
+        let resp = try lastResponse(stream)
+        #expect(resp.status == .ok)
+        try await service.shutdown()
+    }
+
+    @Test("Server enforces per-peer cooldown on the dial path", .timeLimit(.minutes(1)))
+    func enforcesServerCooldown() async throws {
+        let service = AutoNATv2Service(cooldownDuration: .seconds(3600))
+        let remotePeer = KeyPair.generateEd25519().peerID
+        let observed = try Multiaddr("/ip4/203.0.113.7/tcp/4001")
+        let target = try Multiaddr("/ip4/203.0.113.7/tcp/9000")
+
+        // First request: allowed, dials.
+        let stream1 = MockMuxedStream()
+        enqueueDialRequest(target, nonce: 1, into: stream1)
+        let ctx1 = try makeContext(stream: stream1, remotePeer: remotePeer, observed: observed)
+        let dialCount = Mutex(0)
+        await service.handleIncomingStream(context: ctx1) { _, _ in
+            dialCount.withLock { $0 += 1 }
+        }
+        #expect(dialCount.withLock { $0 } == 1)
+
+        // Second request from same peer within cooldown: rejected, no dial.
+        let stream2 = MockMuxedStream()
+        enqueueDialRequest(target, nonce: 2, into: stream2)
+        let ctx2 = try makeContext(stream: stream2, remotePeer: remotePeer, observed: observed)
+        await service.handleIncomingStream(context: ctx2) { _, _ in
+            dialCount.withLock { $0 += 1 }
+        }
+        #expect(dialCount.withLock { $0 } == 1, "Second request within cooldown must not dial")
+        try await service.shutdown()
     }
 }
 

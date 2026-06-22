@@ -28,4 +28,13 @@ public enum DCUtRError: Error, Sendable {
 
     /// Maximum retry attempts exceeded.
     case maxAttemptsExceeded(Error)
+
+    /// The message carried an unknown/unsupported HolePunch type value.
+    case unknownMessageType(UInt64)
+
+    /// A multiaddr in the message could not be parsed.
+    case invalidAddress(String)
+
+    /// The maximum number of concurrent hole-punch upgrades was reached.
+    case concurrencyLimitReached
 }

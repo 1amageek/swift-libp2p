@@ -12,17 +12,35 @@ import Synchronization
 ///
 /// Uses `Mutex` for thread-safe access (high-frequency internal pattern).
 /// Falls back to PeerID identity extraction when no key is explicitly stored.
+///
+/// Bounded by peer count with LRU eviction (mirrors `MemoryPeerStore`) so that
+/// a Sybil flood of distinct peers cannot grow the map without limit.
 public final class MemoryKeyBook: KeyBook, Sendable {
 
-    private let state: Mutex<[PeerID: PublicKey]>
+    /// Default cap on the number of stored keys.
+    public static let defaultMaxPeers = 4096
+
+    private struct State: Sendable {
+        var keys: [PeerID: PublicKey] = [:]
+        var accessOrder = LRUOrder<PeerID>()
+    }
+
+    private let state: Mutex<State>
+    private let maxPeers: Int
 
     /// Creates a new in-memory KeyBook.
-    public init() {
-        self.state = Mutex([:])
+    public init(maxPeers: Int = MemoryKeyBook.defaultMaxPeers) {
+        precondition(maxPeers > 0, "maxPeers must be positive")
+        self.maxPeers = maxPeers
+        self.state = Mutex(State())
     }
 
     public func publicKey(for peer: PeerID) async -> PublicKey? {
-        let stored = state.withLock { $0[peer] }
+        let stored = state.withLock { s -> PublicKey? in
+            guard let key = s.keys[peer] else { return nil }
+            s.accessOrder.touch(peer)
+            return key
+        }
         if let stored { return stored }
         // Fallback: extract from identity-encoded PeerID
         do {
@@ -37,18 +55,41 @@ public final class MemoryKeyBook: KeyBook, Sendable {
         guard derived == peer else {
             throw KeyBookError.peerIDMismatch(expected: peer, derived: derived)
         }
-        state.withLock { $0[peer] = key }
+        state.withLock { s in
+            if s.keys[peer] == nil {
+                evictIfNeeded(&s)
+            }
+            s.keys[peer] = key
+            s.accessOrder.insert(peer)
+        }
     }
 
     public func removePublicKey(for peer: PeerID) async {
-        _ = state.withLock { $0.removeValue(forKey: peer) }
+        state.withLock { s in
+            if s.keys.removeValue(forKey: peer) != nil {
+                s.accessOrder.remove(peer)
+            }
+        }
     }
 
     public func removePeer(_ peer: PeerID) async {
-        _ = state.withLock { $0.removeValue(forKey: peer) }
+        state.withLock { s in
+            if s.keys.removeValue(forKey: peer) != nil {
+                s.accessOrder.remove(peer)
+            }
+        }
     }
 
     public func peersWithKeys() async -> [PeerID] {
-        state.withLock { Array($0.keys) }
+        state.withLock { Array($0.keys.keys) }
+    }
+
+    // MARK: - Private
+
+    /// Evicts the least-recently-used key when the map is at capacity.
+    private func evictIfNeeded(_ s: inout State) {
+        while s.keys.count >= maxPeers, let oldest = s.accessOrder.removeOldest() {
+            s.keys.removeValue(forKey: oldest)
+        }
     }
 }

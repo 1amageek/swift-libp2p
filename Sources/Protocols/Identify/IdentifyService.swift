@@ -41,6 +41,10 @@ public struct IdentifyConfiguration: Sendable {
     /// Default: 10
     public var maxConcurrentPushes: Int
 
+    /// Maximum number of protocols accepted in a received Identify message.
+    /// Bounds memory consumption from a hostile peer. Default: 1024.
+    public var maxProtocols: Int
+
     public init(
         protocolVersion: String = "ipfs/0.1.0",
         agentVersion: String = "swift-libp2p/0.1.0",
@@ -49,7 +53,8 @@ public struct IdentifyConfiguration: Sendable {
         maxCacheSize: Int = 1000,
         cleanupInterval: Duration? = .seconds(300),
         autoPush: Bool = true,
-        maxConcurrentPushes: Int = 10
+        maxConcurrentPushes: Int = 10,
+        maxProtocols: Int = 1024
     ) {
         self.protocolVersion = protocolVersion
         self.agentVersion = agentVersion
@@ -59,6 +64,7 @@ public struct IdentifyConfiguration: Sendable {
         self.cleanupInterval = cleanupInterval
         self.autoPush = autoPush
         self.maxConcurrentPushes = maxConcurrentPushes
+        self.maxProtocols = max(1, maxProtocols)
     }
 }
 
@@ -700,8 +706,10 @@ public final class IdentifyService: EventEmitting, Sendable {
     /// - Parameters:
     ///   - envelope: The signed envelope containing the peer record
     ///   - expectedPeer: The peer ID we expect the record to be for
+    /// - Returns: The verified `PeerRecord` carried by the envelope.
     /// - Throws: `IdentifyError.invalidSignedPeerRecord` if verification fails
-    private func verifySignedPeerRecord(_ envelope: Envelope, expectedPeer: PeerID) throws {
+    @discardableResult
+    private func verifySignedPeerRecord(_ envelope: Envelope, expectedPeer: PeerID) throws -> PeerRecord {
         // Verify signature and extract record
         let peerRecord: PeerRecord
         do {
@@ -727,6 +735,8 @@ public final class IdentifyService: EventEmitting, Sendable {
                 "Envelope signer mismatch: expected \(expectedPeer), got \(envelope.peerID)"
             )
         }
+
+        return peerRecord
     }
 
     /// Reads all data from a stream until EOF.
@@ -831,18 +841,29 @@ public final class IdentifyService: EventEmitting, Sendable {
     }
 
     /// Handles an inbound identify push by reading data, verifying, and merging with cache.
+    ///
+    /// Address fields in a push are only trusted (and allowed to overwrite the
+    /// cached peer view) if they are covered by a valid signed peer record for
+    /// the pushing peer. An address-bearing push without such a record is
+    /// rejected. The protocols list is bounded to prevent memory exhaustion.
     private func handleIdentifyPushRequest(context: StreamContext) async {
         do {
             let data = try await self.readAll(from: context.stream)
             let info = try IdentifyProtobuf.decode(data)
 
-            if let envelope = info.signedPeerRecord {
-                try self.verifySignedPeerRecord(envelope, expectedPeer: context.remotePeer)
+            // Bound the protocols list length.
+            guard info.protocols.count <= configuration.maxProtocols else {
+                throw IdentifyError.messageTooLarge(
+                    size: info.protocols.count, max: configuration.maxProtocols
+                )
             }
 
-            self.mergePushInfo(info, for: context.remotePeer)
+            // Determine which addresses (if any) may be trusted from this push.
+            let trustedInfo = try sanitizePushInfo(info, from: context.remotePeer)
 
-            self.emit(.pushReceived(peer: context.remotePeer, info: info))
+            self.mergePushInfo(trustedInfo, for: context.remotePeer)
+
+            self.emit(.pushReceived(peer: context.remotePeer, info: trustedInfo))
         } catch let identifyError as IdentifyError {
             self.emit(.error(peer: context.remotePeer, identifyError))
         } catch {
@@ -854,6 +875,43 @@ public final class IdentifyService: EventEmitting, Sendable {
         } catch {
             logger.debug("Failed to close identify push stream: \(error)")
         }
+    }
+
+    /// Validates a pushed `IdentifyInfo` and returns a version safe to cache.
+    ///
+    /// - If the push advertises listen addresses, a valid signed peer record
+    ///   (for the pushing peer) that covers every advertised address is
+    ///   required; otherwise the push is rejected.
+    /// - If the push advertises no addresses, it is accepted as-is (protocol /
+    ///   metadata-only update) and cannot overwrite cached addresses (merge
+    ///   keeps existing addresses when the push has none).
+    ///
+    /// - Throws: `IdentifyError.invalidSignedPeerRecord` if address fields are
+    ///   present without adequate signed coverage.
+    private func sanitizePushInfo(_ info: IdentifyInfo, from peer: PeerID) throws -> IdentifyInfo {
+        guard !info.listenAddresses.isEmpty else {
+            // No address fields: nothing to verify; metadata-only update.
+            return info
+        }
+
+        guard let envelope = info.signedPeerRecord else {
+            throw IdentifyError.invalidSignedPeerRecord(
+                "Address-bearing push from \(peer) lacks a signed peer record"
+            )
+        }
+
+        // Verify signature + peer binding, and obtain the trusted record.
+        let record = try verifySignedPeerRecord(envelope, expectedPeer: peer)
+
+        // Every advertised address must be covered by the signed record.
+        let signedAddresses = Set(record.addresses.map { $0.multiaddr })
+        for addr in info.listenAddresses where !signedAddresses.contains(addr) {
+            throw IdentifyError.invalidSignedPeerRecord(
+                "Pushed address \(addr) is not covered by the signed peer record"
+            )
+        }
+
+        return info
     }
 
     // MARK: - Shutdown

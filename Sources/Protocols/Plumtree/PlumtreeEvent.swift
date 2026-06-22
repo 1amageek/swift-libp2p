@@ -15,6 +15,10 @@ public enum PlumtreeEvent: Sendable {
     /// A duplicate message was received.
     case messageDuplicate(messageID: PlumtreeMessageID, from: PeerID)
 
+    /// A gossip message was dropped as invalid (e.g. the message ID is not bound
+    /// to the claimed source, or the hop count exceeded the maximum).
+    case messageDropped(messageID: PlumtreeMessageID, from: PeerID, reason: PlumtreeDropReason)
+
     // MARK: - Tree Events
 
     /// A peer was added to the eager set (tree link established).
@@ -47,4 +51,12 @@ public enum PlumtreeEvent: Sendable {
 
     /// A peer disconnected from the Plumtree overlay.
     case peerDisconnected(peer: PeerID)
+}
+
+/// Reason a gossip message was dropped.
+public enum PlumtreeDropReason: Sendable, Equatable {
+    /// The message ID is not bound to the claimed source peer.
+    case messageIDSourceMismatch
+    /// The message exceeded the maximum allowed hop count.
+    case hopCountExceeded(UInt32)
 }

@@ -16,6 +16,19 @@ public struct DCUtRConfiguration: Sendable {
     /// Maximum number of hole punch attempts per peer.
     public var maxAttempts: Int
 
+    /// Maximum number of concurrent hole-punch upgrades across all peers.
+    ///
+    /// Bounds the resources an attacker can consume by triggering many
+    /// simultaneous upgrades.
+    public var maxConcurrentUpgrades: Int
+
+    /// Upper bound for the measured RTT used to schedule the SYNC wait.
+    ///
+    /// The RTT is attacker-influenced (the remote controls response latency),
+    /// so it is clamped to this maximum before being halved to avoid an
+    /// attacker forcing arbitrarily long sleeps.
+    public var maxEstimatedRTT: Duration
+
     /// Function to get local addresses for exchange.
     public var getLocalAddresses: @Sendable () -> [Multiaddr]
 
@@ -27,11 +40,15 @@ public struct DCUtRConfiguration: Sendable {
     public init(
         timeout: Duration = .seconds(30),
         maxAttempts: Int = 3,
+        maxConcurrentUpgrades: Int = 16,
+        maxEstimatedRTT: Duration = .seconds(2),
         getLocalAddresses: @escaping @Sendable () -> [Multiaddr] = { [] },
         dialer: (@Sendable (Multiaddr) async throws -> Void)? = nil
     ) {
         self.timeout = timeout
         self.maxAttempts = maxAttempts
+        self.maxConcurrentUpgrades = max(1, maxConcurrentUpgrades)
+        self.maxEstimatedRTT = maxEstimatedRTT
         self.getLocalAddresses = getLocalAddresses
         self.dialer = dialer
     }
@@ -84,6 +101,8 @@ public final class DCUtRService: EventEmitting, Sendable {
 
     private struct ServiceState: Sendable {
         var pendingUpgrades: [PeerID: UpgradeAttempt] = [:]
+        /// Count of in-flight upgrades (initiator side) for the global cap.
+        var activeUpgrades: Int = 0
     }
 
     private struct UpgradeAttempt: Sendable {
@@ -154,27 +173,32 @@ public final class DCUtRService: EventEmitting, Sendable {
         using opener: any StreamOpener,
         dialer: @escaping @Sendable (Multiaddr) async throws -> Void
     ) async throws {
-        // Prevent duplicate concurrent upgrades for the same peer
-        let alreadyPending = serviceState.withLock { state in
-            state.pendingUpgrades[peer] != nil
-        }
-        if alreadyPending {
-            throw DCUtRError.holePunchFailed("Upgrade already in progress for peer")
-        }
-
-        // Track the upgrade attempt
-        serviceState.withLock { state in
+        // Atomically: reject duplicate per-peer upgrades, enforce the global
+        // concurrency cap, and reserve a slot + register the pending attempt.
+        let admission: DCUtRError? = serviceState.withLock { state -> DCUtRError? in
+            if state.pendingUpgrades[peer] != nil {
+                return .holePunchFailed("Upgrade already in progress for peer")
+            }
+            if state.activeUpgrades >= configuration.maxConcurrentUpgrades {
+                return .concurrencyLimitReached
+            }
+            state.activeUpgrades += 1
             state.pendingUpgrades[peer] = UpgradeAttempt(
                 peer: peer,
                 observedAddresses: [],
                 startTime: .now,
                 attemptCount: 0
             )
+            return nil
+        }
+        if let admission {
+            throw admission
         }
 
         defer {
-            _ = serviceState.withLock { state in
+            serviceState.withLock { state in
                 state.pendingUpgrades.removeValue(forKey: peer)
+                if state.activeUpgrades > 0 { state.activeUpgrades -= 1 }
             }
         }
 
@@ -252,8 +276,11 @@ public final class DCUtRService: EventEmitting, Sendable {
             let responseData = try await readMessage(from: stream)
             let response = try DCUtRProtobuf.decode(responseData)
 
-            // RTT is the time from sending CONNECT to receiving response
-            let estimatedRTT = ContinuousClock.now - rttStart
+            // RTT is the time from sending CONNECT to receiving response. The
+            // remote controls its response latency, so clamp the measurement to
+            // a configured maximum before it is used to schedule the SYNC wait.
+            let rawRTT = ContinuousClock.now - rttStart
+            let estimatedRTT = min(rawRTT, configuration.maxEstimatedRTT)
 
             guard response.type == .connect else {
                 throw DCUtRError.protocolViolation("Expected CONNECT response")
@@ -431,6 +458,10 @@ public final class DCUtRService: EventEmitting, Sendable {
 
         return await withTaskGroup(of: Multiaddr?.self) { group in
             for address in addresses {
+                // Defense in depth: re-validate each address at dial time. An
+                // address that is not a public, dialable IP (private, DNS-form,
+                // IPv4-mapped private, etc.) must never be dialed for hole punching.
+                guard isDialableForHolePunch(address) else { continue }
                 group.addTask {
                     do {
                         // Apply timeout to each dial attempt to prevent stalling
@@ -468,13 +499,20 @@ public final class DCUtRService: EventEmitting, Sendable {
     /// Filters addresses to only include publicly routable addresses.
     /// Private/loopback/link-local addresses cannot be dialed across NAT.
     private func filterDialableAddresses(_ addresses: [Multiaddr]) -> [Multiaddr] {
-        addresses.filter { addr in
-            guard let ip = addr.ipAddress else {
-                // Non-IP addresses (like /memory) are not dialable
-                return false
-            }
-            return !isPrivateAddress(ip)
+        addresses.filter { isDialableForHolePunch($0) }
+    }
+
+    /// Returns `true` only if the address is a concrete, public, dialable IP.
+    ///
+    /// DNS-form addresses are rejected for hole punching: they cannot be safely
+    /// pre-validated (the resolved IP could be private/internal), so a numeric IP
+    /// component is required and must be globally routable.
+    private func isDialableForHolePunch(_ addr: Multiaddr) -> Bool {
+        guard let ip = addr.ipAddress else {
+            // No literal IP component (DNS form, /memory, etc.) -> not dialable.
+            return false
         }
+        return !isPrivateAddress(ip)
     }
 
     // isPrivateAddress is defined in AddressFiltering.swift (shared within module)

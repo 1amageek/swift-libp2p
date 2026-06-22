@@ -12,6 +12,13 @@ private let wsConnectionLogger = Logger(label: "swift-libp2p.WebSocketConnection
 /// Maximum buffer size (1MB) for DoS protection.
 private let wsMaxReadBufferSize = 1024 * 1024
 
+/// Maximum reassembled size (8MB) for a fragmented WebSocket message.
+///
+/// A peer can split a message across many non-fin frames; without a cap the
+/// reassembly buffer grows unboundedly (memory-exhaustion DoS). On exceed, the
+/// fragment state is discarded and the channel is closed.
+private let wsMaxFragmentedMessageSize = 8 * 1024 * 1024
+
 /// Internal state for WebSocketConnection.
 private struct WebSocketConnectionState: Sendable {
     var readBuffer: ByteBuffer = ByteBuffer()
@@ -225,6 +232,16 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
         }
     }
 
+    /// Outcome of accumulating a binary/text/continuation frame.
+    private enum FragmentOutcome {
+        /// A complete message was reassembled.
+        case completed(ByteBuffer)
+        /// The frame was buffered as a partial message; nothing to deliver yet.
+        case buffered
+        /// The aggregate fragmented size exceeded the cap; state was discarded.
+        case overflow
+    }
+
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var frame = unwrapInboundIn(data)
 
@@ -235,30 +252,26 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
                 frame.data.webSocketUnmask(maskKey)
             }
             if let slice = frame.data.readSlice(length: frame.data.readableBytes) {
-                let completedMessage: ByteBuffer? = state.withLock { s -> ByteBuffer? in
+                let outcome: FragmentOutcome = state.withLock { s in
                     if frame.fin {
                         if var fragmented = s.fragmentedMessage {
+                            // Continuation/fin of an in-progress message.
+                            guard fragmented.readableBytes + slice.readableBytes <= wsMaxFragmentedMessageSize else {
+                                s.fragmentedMessage = nil
+                                return .overflow
+                            }
                             var tail = slice
                             fragmented.writeBuffer(&tail)
                             s.fragmentedMessage = nil
-                            return fragmented
+                            return .completed(fragmented)
                         } else {
-                            return slice
+                            return .completed(slice)
                         }
                     } else {
-                        if var fragmented = s.fragmentedMessage {
-                            var chunk = slice
-                            fragmented.writeBuffer(&chunk)
-                            s.fragmentedMessage = fragmented
-                        } else {
-                            s.fragmentedMessage = slice
-                        }
-                        return nil
+                        return accumulateFragment(&s, slice)
                     }
                 }
-                if let message = completedMessage {
-                    deliverOrBuffer(message)
-                }
+                handleFragmentOutcome(outcome, context: context)
             }
 
         case .continuation:
@@ -266,24 +279,26 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
                 frame.data.webSocketUnmask(maskKey)
             }
             if let slice = frame.data.readSlice(length: frame.data.readableBytes) {
-                let completedMessage: ByteBuffer? = state.withLock { s -> ByteBuffer? in
+                let outcome: FragmentOutcome = state.withLock { s in
                     guard var fragmented = s.fragmentedMessage else {
-                        return nil
+                        // Continuation without a started message: ignore.
+                        return .buffered
                     }
-
+                    guard fragmented.readableBytes + slice.readableBytes <= wsMaxFragmentedMessageSize else {
+                        s.fragmentedMessage = nil
+                        return .overflow
+                    }
                     var chunk = slice
                     fragmented.writeBuffer(&chunk)
                     if frame.fin {
                         s.fragmentedMessage = nil
-                        return fragmented
+                        return .completed(fragmented)
                     } else {
                         s.fragmentedMessage = fragmented
-                        return nil
+                        return .buffered
                     }
                 }
-                if let message = completedMessage {
-                    deliverOrBuffer(message)
-                }
+                handleFragmentOutcome(outcome, context: context)
             }
 
         case .ping:
@@ -348,6 +363,39 @@ final class WebSocketFrameHandler: ChannelInboundHandler, Sendable {
         }
         conn?.channelInactive()
         context.close(promise: nil)
+    }
+
+    /// Appends a non-fin frame slice to the in-progress fragmented message,
+    /// enforcing the aggregate size cap. Must be called while holding the lock.
+    private func accumulateFragment(_ s: inout HandlerState, _ slice: ByteBuffer) -> FragmentOutcome {
+        if var fragmented = s.fragmentedMessage {
+            guard fragmented.readableBytes + slice.readableBytes <= wsMaxFragmentedMessageSize else {
+                s.fragmentedMessage = nil
+                return .overflow
+            }
+            var chunk = slice
+            fragmented.writeBuffer(&chunk)
+            s.fragmentedMessage = fragmented
+        } else {
+            guard slice.readableBytes <= wsMaxFragmentedMessageSize else {
+                return .overflow
+            }
+            s.fragmentedMessage = slice
+        }
+        return .buffered
+    }
+
+    /// Delivers a completed message, or closes the channel on overflow.
+    private func handleFragmentOutcome(_ outcome: FragmentOutcome, context: ChannelHandlerContext) {
+        switch outcome {
+        case .completed(let message):
+            deliverOrBuffer(message)
+        case .buffered:
+            break
+        case .overflow:
+            wsConnectionLogger.warning("WebSocketFrameHandler: Fragmented message exceeded \(wsMaxFragmentedMessageSize) bytes, closing channel")
+            context.close(promise: nil)
+        }
     }
 
     private func deliverOrBuffer(_ message: ByteBuffer) {

@@ -9,6 +9,47 @@ import P2PCore
 /// https://github.com/libp2p/specs/blob/master/pubsub/README.md#the-rpc
 public enum GossipSubProtobuf {
 
+    // MARK: - Decoding Limits (DoS hardening)
+
+    /// Caps applied while decoding an RPC to bound attacker-controlled work and
+    /// memory. Repeated elements beyond these counts are dropped at decode time
+    /// (not silently — the surplus simply never enters the parsed structure,
+    /// which the higher layers treat as the bounded RPC).
+    public struct DecodingLimits: Sendable {
+        public var maxMessages: Int
+        public var maxSubscriptions: Int
+        public var maxIHave: Int
+        public var maxIWant: Int
+        public var maxGraft: Int
+        public var maxPrune: Int
+        public var maxIDontWant: Int
+        /// Maximum protobuf nesting depth (stack-exhaustion guard).
+        public var maxNestingDepth: Int
+
+        public init(
+            maxMessages: Int = 1000,
+            maxSubscriptions: Int = 200,
+            maxIHave: Int = 100,
+            maxIWant: Int = 100,
+            maxGraft: Int = 100,
+            maxPrune: Int = 100,
+            maxIDontWant: Int = 100,
+            maxNestingDepth: Int = 16
+        ) {
+            self.maxMessages = maxMessages
+            self.maxSubscriptions = maxSubscriptions
+            self.maxIHave = maxIHave
+            self.maxIWant = maxIWant
+            self.maxGraft = maxGraft
+            self.maxPrune = maxPrune
+            self.maxIDontWant = maxIDontWant
+            self.maxNestingDepth = maxNestingDepth
+        }
+
+        /// Default limits used when no configuration-derived limits are supplied.
+        public static let `default` = DecodingLimits()
+    }
+
     // MARK: - Wire Type Constants
 
     private static let wireTypeVarint: UInt64 = 0
@@ -320,12 +361,12 @@ public enum GossipSubProtobuf {
     // MARK: - Decoding
 
     /// Decodes a GossipSubRPC from protobuf wire format.
-    public static func decode(_ data: Data) throws -> GossipSubRPC {
-        try decode(data, offset: 0, end: data.count)
+    public static func decode(_ data: Data, limits: DecodingLimits = .default) throws -> GossipSubRPC {
+        try decode(data, offset: 0, end: data.count, limits: limits, depth: 0)
     }
 
-    public static func decode(_ buffer: ByteBuffer) throws -> GossipSubRPC {
-        try decode(Data(buffer: buffer))
+    public static func decode(_ buffer: ByteBuffer, limits: DecodingLimits = .default) throws -> GossipSubRPC {
+        try decode(Data(buffer: buffer), limits: limits)
     }
 
     private static func decodeSubOpts(_ data: Data) throws -> GossipSubRPC.SubscriptionOpt {
@@ -463,15 +504,20 @@ public enum GossipSubProtobuf {
     }
 
     private static func decodeControl(_ data: Data) throws -> ControlMessageBatch {
-        try decodeControl(data, offset: 0, end: data.count)
+        try decodeControl(data, offset: 0, end: data.count, limits: .default, depth: 0)
     }
 
     private static func decodeControl(
         _ data: Data,
         offset startOffset: Int,
-        end: Int
+        end: Int,
+        limits: DecodingLimits,
+        depth: Int
     ) throws -> ControlMessageBatch {
-        try data.withUnsafeBytes { bytes in
+        guard depth < limits.maxNestingDepth else {
+            throw GossipSubError.invalidProtobuf("Maximum nesting depth exceeded")
+        }
+        return try data.withUnsafeBytes { bytes in
             var batch = ControlMessageBatch()
             var offset = startOffset
 
@@ -494,17 +540,28 @@ public enum GossipSubProtobuf {
                     throw GossipSubError.invalidProtobuf("Field truncated")
                 }
 
+                // Per-control-element caps: drop surplus repeated control entries.
                 switch fieldNumber {
                 case 1:
-                    batch.ihaves.append(try decodeIHave(data, offset: offset, end: fieldEnd))
+                    if batch.ihaves.count < limits.maxIHave {
+                        batch.ihaves.append(try decodeIHave(data, offset: offset, end: fieldEnd))
+                    }
                 case 2:
-                    batch.iwants.append(try decodeIWant(data, offset: offset, end: fieldEnd))
+                    if batch.iwants.count < limits.maxIWant {
+                        batch.iwants.append(try decodeIWant(data, offset: offset, end: fieldEnd))
+                    }
                 case 3:
-                    batch.grafts.append(try decodeGraft(data, offset: offset, end: fieldEnd))
+                    if batch.grafts.count < limits.maxGraft {
+                        batch.grafts.append(try decodeGraft(data, offset: offset, end: fieldEnd))
+                    }
                 case 4:
-                    batch.prunes.append(try decodePrune(data, offset: offset, end: fieldEnd))
+                    if batch.prunes.count < limits.maxPrune {
+                        batch.prunes.append(try decodePrune(data, offset: offset, end: fieldEnd))
+                    }
                 case 5:
-                    batch.idontwants.append(try decodeIDontWant(data, offset: offset, end: fieldEnd))
+                    if batch.idontwants.count < limits.maxIDontWant {
+                        batch.idontwants.append(try decodeIDontWant(data, offset: offset, end: fieldEnd))
+                    }
                 default:
                     break
                 }
@@ -829,9 +886,14 @@ public enum GossipSubProtobuf {
     private static func decode(
         _ data: Data,
         offset startOffset: Int,
-        end: Int
+        end: Int,
+        limits: DecodingLimits,
+        depth: Int
     ) throws -> GossipSubRPC {
-        try data.withUnsafeBytes { bytes in
+        guard depth < limits.maxNestingDepth else {
+            throw GossipSubError.invalidProtobuf("Maximum nesting depth exceeded")
+        }
+        return try data.withUnsafeBytes { bytes in
             var subscriptions: [GossipSubRPC.SubscriptionOpt] = []
             var messages: [GossipSubMessage] = []
             var control: ControlMessageBatch?
@@ -859,11 +921,17 @@ public enum GossipSubProtobuf {
 
                 switch fieldNumber {
                 case 1:
-                    subscriptions.append(try decodeSubOpts(data, offset: offset, end: fieldEnd))
+                    // Cap repeated subscriptions; drop surplus.
+                    if subscriptions.count < limits.maxSubscriptions {
+                        subscriptions.append(try decodeSubOpts(data, offset: offset, end: fieldEnd))
+                    }
                 case 2:
-                    messages.append(try decodeMessage(data, offset: offset, end: fieldEnd))
+                    // Cap repeated messages; drop surplus.
+                    if messages.count < limits.maxMessages {
+                        messages.append(try decodeMessage(data, offset: offset, end: fieldEnd))
+                    }
                 case 3:
-                    control = try decodeControl(data, offset: offset, end: fieldEnd)
+                    control = try decodeControl(data, offset: offset, end: fieldEnd, limits: limits, depth: depth + 1)
                 default:
                     break
                 }

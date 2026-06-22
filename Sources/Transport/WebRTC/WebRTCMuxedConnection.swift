@@ -254,6 +254,10 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
                 case deliver(WebRTCMuxedStream)
                 case buffered
                 case dropped
+                /// Pending buffer overflowed; an already-attached stream (if any)
+                /// is failed synchronously so the loss is surfaced immediately
+                /// rather than only when the channel later attaches.
+                case poisoned(WebRTCMuxedStream?)
             }
 
             let route = connectionState.withLock { s -> Route in
@@ -273,12 +277,14 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
                 let bytes = (s.pendingBytes[channelID] ?? 0) + data.count
                 if bytes > Self.maxPendingBytesPerChannel
                     || s.totalPendingBytes + data.count > Self.maxTotalPendingBytes {
-                    // Explicit poisoning instead of a silent drop: the
-                    // stream is failed when the channel attaches
+                    // Explicit poisoning instead of a silent drop. Any stream
+                    // already attached for this channel is failed synchronously
+                    // (below); a not-yet-attached channel is failed at attach.
                     s.pendingData.removeValue(forKey: channelID)
                     s.totalPendingBytes -= s.pendingBytes.removeValue(forKey: channelID) ?? 0
                     s.poisonedChannels.insert(channelID)
-                    return .dropped
+                    let attached = s.channelToStream[channelID].flatMap { s.streams[$0] }
+                    return .poisoned(attached)
                 }
                 s.pendingData[channelID, default: []].append(data)
                 s.pendingBytes[channelID] = bytes
@@ -286,8 +292,14 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
                 return .buffered
             }
 
-            if case .deliver(let stream) = route {
+            switch route {
+            case .deliver(let stream):
                 stream.deliver(data)
+            case .poisoned(let stream):
+                // Surface the loss immediately on the stream if one exists.
+                stream?.fail(WebRTCStreamError.receiveBufferExceeded(limit: Self.maxPendingBytesPerChannel))
+            case .buffered, .dropped:
+                break
             }
         }
 

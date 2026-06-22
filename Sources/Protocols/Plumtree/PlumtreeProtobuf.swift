@@ -161,6 +161,12 @@ public enum PlumtreeProtobuf {
 
     // MARK: - Decoding
 
+    /// Maximum number of elements (per repeated field) accepted in a single RPC.
+    ///
+    /// Bounds the work an attacker can force per message and the fan-out of a
+    /// single forwarded RPC, mitigating decode/forwarding amplification.
+    public static let maxElementsPerRPC = 1024
+
     /// Decodes a PlumtreeRPC from protobuf wire format.
     ///
     /// Uses zero-copy varint decoding via `Varint.decode(from:at:)` and
@@ -190,25 +196,38 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
 
-            let fieldEnd = offset + Int(length)
+            let length = try Varint.toInt(lengthValue)
+            let fieldEnd = offset + length
             guard fieldEnd <= data.count else {
                 throw PlumtreeError.decodingFailed("Field truncated")
             }
 
             switch fieldNumber {
             case 1:
+                guard gossipMessages.count < maxElementsPerRPC else {
+                    throw PlumtreeError.decodingFailed("Too many gossip messages in RPC")
+                }
                 let gossip = try decodeGossip(data, from: offset, to: fieldEnd)
                 gossipMessages.append(gossip)
             case 2:
+                guard ihaveEntries.count < maxElementsPerRPC else {
+                    throw PlumtreeError.decodingFailed("Too many IHave entries in RPC")
+                }
                 let ihave = try decodeIHave(data, from: offset, to: fieldEnd)
                 ihaveEntries.append(ihave)
             case 3:
+                guard graftRequests.count < maxElementsPerRPC else {
+                    throw PlumtreeError.decodingFailed("Too many graft requests in RPC")
+                }
                 let graft = try decodeGraft(data, from: offset, to: fieldEnd)
                 graftRequests.append(graft)
             case 4:
+                guard pruneRequests.count < maxElementsPerRPC else {
+                    throw PlumtreeError.decodingFailed("Too many prune requests in RPC")
+                }
                 let prune = try decodePrune(data, from: offset, to: fieldEnd)
                 pruneRequests.append(prune)
             default:
@@ -252,9 +271,9 @@ public enum PlumtreeProtobuf {
                     offset = try skipField(in: data, at: offset, wireType: wireType)
                     continue
                 }
-                let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let fieldEnd = offset + (try Varint.toInt(lengthValue))
                 guard fieldEnd <= end else {
                     throw PlumtreeError.decodingFailed("Gossip field truncated")
                 }
@@ -282,7 +301,8 @@ public enum PlumtreeProtobuf {
                 }
                 let (value, valueBytes) = try Varint.decode(from: data, at: offset)
                 offset += valueBytes
-                hopCount = UInt32(value)
+                // Saturate rather than trap on an attacker-supplied oversized value.
+                hopCount = value > UInt64(UInt32.max) ? UInt32.max : UInt32(value)
 
             default:
                 offset = try skipField(in: data, at: offset, wireType: wireType)
@@ -326,9 +346,9 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
-            let fieldEnd = offset + Int(length)
+            let fieldEnd = offset + (try Varint.toInt(lengthValue))
             guard fieldEnd <= end else {
                 throw PlumtreeError.decodingFailed("IHave field truncated")
             }
@@ -376,9 +396,9 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
-            let fieldEnd = offset + Int(length)
+            let fieldEnd = offset + (try Varint.toInt(lengthValue))
             guard fieldEnd <= end else {
                 throw PlumtreeError.decodingFailed("Graft field truncated")
             }
@@ -422,9 +442,9 @@ public enum PlumtreeProtobuf {
                 continue
             }
 
-            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
             offset += lengthBytes
-            let fieldEnd = offset + Int(length)
+            let fieldEnd = offset + (try Varint.toInt(lengthValue))
             guard fieldEnd <= end else {
                 throw PlumtreeError.decodingFailed("Prune field truncated")
             }
@@ -454,14 +474,31 @@ public enum PlumtreeProtobuf {
         switch wireType {
         case 0: // Varint
             let (_, bytes) = try Varint.decode(from: data, at: offset)
-            return offset + bytes
+            let end = offset + bytes
+            guard end <= data.count else {
+                throw PlumtreeError.decodingFailed("Varint field truncated")
+            }
+            return end
         case 1: // 64-bit
-            return offset + 8
+            let end = offset + 8
+            guard end <= data.count else {
+                throw PlumtreeError.decodingFailed("Fixed64 field truncated")
+            }
+            return end
         case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
-            return offset + lengthBytes + Int(length)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
+            let afterLen = offset + lengthBytes
+            let length = try Varint.toInt(lengthValue)
+            guard length <= data.count - afterLen else {
+                throw PlumtreeError.decodingFailed("Length-delimited field truncated")
+            }
+            return afterLen + length
         case 5: // 32-bit
-            return offset + 4
+            let end = offset + 4
+            guard end <= data.count else {
+                throw PlumtreeError.decodingFailed("Fixed32 field truncated")
+            }
+            return end
         default:
             throw PlumtreeError.decodingFailed("Unknown wire type \(wireType)")
         }

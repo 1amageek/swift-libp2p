@@ -36,6 +36,7 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
         var beaconSeqNumber: UInt64 = 0
         var observationSeqNumber: UInt64 = 0
         var forwardTask: Task<Void, Never>?
+        var gcTask: Task<Void, Never>?
         var announcedAddresses: [Multiaddr] = []
     }
 
@@ -82,9 +83,37 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
             await self.forwardAggregationEvents()
         }
 
+        // Schedule periodic garbage collection of expired confirmed records and
+        // stale Sybil-filter entries. Without this, both maps grow unbounded
+        // under churn (their GC methods existed but were never invoked).
+        let gcTask: Task<Void, Never>?
+        if let interval = configuration.gcInterval {
+            gcTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do {
+                        try await Task.sleep(for: interval)
+                    } catch {
+                        break
+                    }
+                    guard let self else { return }
+                    self.runGarbageCollection()
+                }
+            }
+        } else {
+            gcTask = nil
+        }
+
         state.withLock { s in
             s.forwardTask = forwardTask
+            s.gcTask = gcTask
         }
+    }
+
+    /// Runs one garbage-collection pass: prunes expired confirmed records and
+    /// stale Sybil-filter entries. Exposed for tests to verify GC effect.
+    public func runGarbageCollection() {
+        configuration.store.removeExpired()
+        filter.pruneExpired()
     }
 
     /// Shuts down the beacon discovery service and releases operational resources.
@@ -93,15 +122,18 @@ public final class BeaconDiscovery: DiscoveryService, Sendable {
     /// This method is idempotent and safe to call multiple times.
     public func shutdown() async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
-        let task = state.withLock { s -> Task<Void, Never>? in
-            guard s.isRunning else { return nil }
+        let tasks = state.withLock { s -> [Task<Void, Never>] in
+            guard s.isRunning else { return [] }
             s.isRunning = false
-            let task = s.forwardTask
+            var tasks: [Task<Void, Never>] = []
+            if let forwardTask = s.forwardTask { tasks.append(forwardTask) }
+            if let gcTask = s.gcTask { tasks.append(gcTask) }
             s.forwardTask = nil
-            return task
+            s.gcTask = nil
+            return tasks
         }
 
-        task?.cancel()
+        for task in tasks { task.cancel() }
         ingest.shutdown()
         broadcaster.shutdown()
     }

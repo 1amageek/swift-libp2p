@@ -93,7 +93,7 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
 
     /// Sends a SWIM message to a member.
     public func send(_ message: SWIMMessage, to member: MemberID) async throws {
-        let data = SWIMMessageCodec.encode(message)
+        let data = try SWIMMessageCodec.encode(message)
         try await udpTransport.send(data, to: SocketAddress(hostPort: member.address))
     }
 

@@ -13,6 +13,22 @@ internal enum MemoryChannelError: Error, Sendable {
     case concurrentReadNotSupported
 }
 
+/// Outcome of a send operation on a memory channel direction.
+internal enum MemorySendResult: Sendable {
+    /// Data was delivered to a waiting reader or buffered.
+    case accepted
+    /// The direction is closed; the data was rejected.
+    case closed
+    /// The per-direction buffer is full; the data was rejected (backpressure).
+    case bufferFull
+}
+
+/// Default maximum bytes buffered per direction when no reader is waiting.
+///
+/// Bounds memory a sender can pin by writing without the peer reading,
+/// mirroring TCP's `tcpMaxReadBufferSize` DoS protection. 1MB.
+internal let memoryChannelMaxBufferedBytes = 1024 * 1024
+
 /// A bidirectional in-memory channel connecting two endpoints.
 ///
 /// This is used internally by MemoryConnection to transfer data
@@ -22,6 +38,9 @@ internal final class MemoryChannel: Sendable {
     /// The state for one direction of the channel.
     private struct DirectionState: Sendable {
         var buffer: [ByteBuffer] = []
+        /// Sum of `readableBytes` across `buffer` (kept in sync on append/remove)
+        /// to bound buffered memory without re-summing the queue each send.
+        var bufferedBytes = 0
         var isClosed = false
         var waitingContinuation: CheckedContinuation<ByteBuffer, any Error>?
     }
@@ -32,8 +51,14 @@ internal final class MemoryChannel: Sendable {
     /// State for B to A direction.
     private let bToAState: Mutex<DirectionState>
 
+    /// Maximum bytes buffered per direction when no reader is waiting.
+    private let maxBufferedBytes: Int
+
     /// Creates a new memory channel.
-    init() {
+    ///
+    /// - Parameter maxBufferedBytes: Per-direction buffer cap (DoS protection).
+    init(maxBufferedBytes: Int = memoryChannelMaxBufferedBytes) {
+        self.maxBufferedBytes = maxBufferedBytes
         self.aToBState = Mutex(DirectionState())
         self.bToAState = Mutex(DirectionState())
     }
@@ -43,19 +68,11 @@ internal final class MemoryChannel: Sendable {
     /// Sends data from A to B.
     ///
     /// - Parameter data: The data to send
-    /// - Returns: `true` if the data was sent, `false` if the channel is closed
-    @discardableResult
-    func sendFromA(_ data: ByteBuffer) -> Bool {
+    /// - Returns: `.accepted` if delivered/buffered, `.closed` if the direction
+    ///   is closed, or `.bufferFull` if the per-direction buffer cap is reached.
+    func sendFromA(_ data: ByteBuffer) -> MemorySendResult {
         aToBState.withLock { state in
-            if state.isClosed { return false }
-
-            if let continuation = state.waitingContinuation {
-                state.waitingContinuation = nil
-                continuation.resume(returning: data)
-            } else {
-                state.buffer.append(data)
-            }
-            return true
+            send(&state, data)
         }
     }
 
@@ -72,6 +89,7 @@ internal final class MemoryChannel: Sendable {
 
                 if !state.buffer.isEmpty {
                     let data = state.buffer.removeFirst()
+                    state.bufferedBytes -= data.readableBytes
                     continuation.resume(returning: data)
                 } else if state.isClosed {
                     continuation.resume(returning: ByteBuffer())
@@ -87,20 +105,34 @@ internal final class MemoryChannel: Sendable {
     /// Sends data from B to A.
     ///
     /// - Parameter data: The data to send
-    /// - Returns: `true` if the data was sent, `false` if the channel is closed
-    @discardableResult
-    func sendFromB(_ data: ByteBuffer) -> Bool {
+    /// - Returns: `.accepted` if delivered/buffered, `.closed` if the direction
+    ///   is closed, or `.bufferFull` if the per-direction buffer cap is reached.
+    func sendFromB(_ data: ByteBuffer) -> MemorySendResult {
         bToAState.withLock { state in
-            if state.isClosed { return false }
-
-            if let continuation = state.waitingContinuation {
-                state.waitingContinuation = nil
-                continuation.resume(returning: data)
-            } else {
-                state.buffer.append(data)
-            }
-            return true
+            send(&state, data)
         }
+    }
+
+    /// Shared send logic for one direction. Must be called while holding the
+    /// direction's lock.
+    private func send(_ state: inout DirectionState, _ data: ByteBuffer) -> MemorySendResult {
+        if state.isClosed { return .closed }
+
+        if let continuation = state.waitingContinuation {
+            state.waitingContinuation = nil
+            continuation.resume(returning: data)
+            return .accepted
+        }
+
+        // No reader waiting: bound the buffer to prevent memory-exhaustion DoS.
+        // Always admit the first message so a single oversized write is not
+        // permanently stuck, but reject once the cap is reached.
+        if !state.buffer.isEmpty && state.bufferedBytes + data.readableBytes > maxBufferedBytes {
+            return .bufferFull
+        }
+        state.bufferedBytes += data.readableBytes
+        state.buffer.append(data)
+        return .accepted
     }
 
     /// Receives data at B (from A).
@@ -116,6 +148,7 @@ internal final class MemoryChannel: Sendable {
 
                 if !state.buffer.isEmpty {
                     let data = state.buffer.removeFirst()
+                    state.bufferedBytes -= data.readableBytes
                     continuation.resume(returning: data)
                 } else if state.isClosed {
                     continuation.resume(returning: ByteBuffer())

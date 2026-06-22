@@ -4,6 +4,7 @@ import Testing
 import Foundation
 @testable import P2PTransportQUIC
 @testable import P2PCore
+import P2PTransport
 import QUIC
 
 @Suite("MultiaddrConversion Tests")
@@ -65,6 +66,54 @@ struct MultiaddrConversionTests {
 
         let udpAddr = try Multiaddr("/ip4/127.0.0.1/udp/4433")
         #expect(udpAddr.toQUICSocketAddress() == nil)
+    }
+
+    // MARK: - Port Validation Tests (Finding 9)
+
+    @Test("Dial conversion rejects port 0")
+    func dialRejectsPortZero() throws {
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+        // Port 0 is a valid LISTEN address (ephemeral bind) but never a valid
+        // dial target — it must be rejected rather than silently substituted.
+        #expect(addr.toQUICDialSocketAddress() == nil)
+    }
+
+    @Test("Listen conversion accepts port 0 (ephemeral bind)")
+    func listenAcceptsPortZero() throws {
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+        let socketAddr = addr.toQUICSocketAddress()
+        #expect(socketAddr != nil)
+        #expect(socketAddr?.port == 0)
+    }
+
+    @Test("Dial conversion accepts a concrete non-zero port")
+    func dialAcceptsConcretePort() throws {
+        let addr = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
+        let socketAddr = addr.toQUICDialSocketAddress()
+        #expect(socketAddr != nil)
+        #expect(socketAddr?.port == 4433)
+    }
+
+    @Test("QUICTransport.canDial rejects port 0, canListen accepts it")
+    func canDialVsCanListenPortZero() throws {
+        let transport = QUICTransport()
+        let portZero = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+        #expect(transport.canDial(portZero) == false)
+        #expect(transport.canListen(portZero) == true)
+
+        let portConcrete = try Multiaddr("/ip4/127.0.0.1/udp/4433/quic-v1")
+        #expect(transport.canDial(portConcrete) == true)
+    }
+
+    @Test("dialSecured rejects port 0 with unsupportedAddress")
+    func dialSecuredRejectsPortZero() async throws {
+        let transport = QUICTransport()
+        let keyPair = KeyPair.generateEd25519()
+        let portZero = try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1")
+
+        await #expect(throws: TransportError.self) {
+            _ = try await transport.dialSecured(portZero, localKeyPair: keyPair)
+        }
     }
 
     // MARK: - toQUICMultiaddr Tests

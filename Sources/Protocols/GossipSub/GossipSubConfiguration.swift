@@ -93,6 +93,68 @@ public struct GossipSubConfiguration: Sendable {
     /// Maximum IWANT message IDs per request.
     public var maxIWantMessages: Int
 
+    // MARK: - Per-RPC Element Caps (DoS hardening)
+
+    /// Maximum number of published messages accepted in a single RPC.
+    /// Excess messages are dropped during decoding to bound work/memory.
+    public var maxRPCMessages: Int
+
+    /// Maximum number of subscription opts accepted in a single RPC.
+    public var maxRPCSubscriptions: Int
+
+    /// Maximum number of IHAVE control entries accepted in a single RPC.
+    public var maxRPCIHave: Int
+
+    /// Maximum number of IWANT control entries accepted in a single RPC.
+    public var maxRPCIWant: Int
+
+    /// Maximum number of GRAFT control entries accepted in a single RPC.
+    public var maxRPCGraft: Int
+
+    /// Maximum number of PRUNE control entries accepted in a single RPC.
+    public var maxRPCPrune: Int
+
+    /// Maximum number of IDONTWANT control entries accepted in a single RPC.
+    public var maxRPCIDontWant: Int
+
+    /// Maximum number of message IDs honored per IDONTWANT entry.
+    public var maxIDontWantMessageIDs: Int
+
+    /// Maximum nesting depth allowed when decoding protobuf (stack-exhaustion guard).
+    public var maxProtobufNestingDepth: Int
+
+    /// Decoding limits derived from this configuration, applied at wire decode.
+    public var decodingLimits: GossipSubProtobuf.DecodingLimits {
+        GossipSubProtobuf.DecodingLimits(
+            maxMessages: maxRPCMessages,
+            maxSubscriptions: maxRPCSubscriptions,
+            maxIHave: maxRPCIHave,
+            maxIWant: maxRPCIWant,
+            maxGraft: maxRPCGraft,
+            maxPrune: maxRPCPrune,
+            maxIDontWant: maxRPCIDontWant,
+            maxNestingDepth: maxProtobufNestingDepth
+        )
+    }
+
+    // MARK: - IWANT Response Budget (A5, anti-exfiltration)
+
+    /// Maximum number of messages served in response to IWANT from a single
+    /// peer within one heartbeat window. Prevents full message-cache exfiltration.
+    public var maxIWantResponseMessages: Int
+
+    /// Maximum total bytes served in response to IWANT from a single peer
+    /// within one heartbeat window.
+    public var maxIWantResponseBytes: Int
+
+    // MARK: - Promise Bounds (anti memory-DoS)
+
+    /// Maximum total IWANT promises tracked at any time.
+    public var maxGossipPromises: Int
+
+    /// Maximum IWANT promises tracked per peer.
+    public var maxGossipPromisesPerPeer: Int
+
     // MARK: - IDONTWANT (v1.2)
 
     /// Time to live for IDONTWANT entries.
@@ -159,7 +221,23 @@ public struct GossipSubConfiguration: Sendable {
     /// Subscription filter for topic subscriptions.
     /// When set, controls which topics can be subscribed to locally
     /// and filters incoming remote subscriptions.
+    ///
+    /// When `nil`, `effectiveSubscriptionFilter` installs a default
+    /// `MaxCountSubscriptionFilter` so that an unconfigured node is still
+    /// protected against subscription flooding.
     public var subscriptionFilter: (any TopicSubscriptionFilter)?
+
+    /// The subscription filter actually applied at runtime.
+    ///
+    /// Falls back to a `MaxCountSubscriptionFilter` (bounded per-peer and
+    /// per-request) when no explicit filter is configured. This guarantees a
+    /// per-RPC subscription count cap is always enforced.
+    public var effectiveSubscriptionFilter: any TopicSubscriptionFilter {
+        subscriptionFilter ?? MaxCountSubscriptionFilter(
+            maxSubscriptionsPerPeer: maxSubscriptions * 10,
+            maxSubscriptionsPerRequest: maxRPCSubscriptions
+        )
+    }
 
     // MARK: - Peer Exchange (A3)
 
@@ -171,6 +249,16 @@ public struct GossipSubConfiguration: Sendable {
 
     /// Minimum score of the pruning peer to accept its PX peers.
     public var acceptPXThreshold: Double
+
+    // MARK: - Score Thresholds (v1.1 gating)
+
+    /// Minimum peer score required to be considered as a target for publishing.
+    /// Peers below this score are excluded from the publish/forward target set.
+    public var publishThreshold: Double
+
+    /// Minimum peer score required to participate in gossip (IHAVE/IWANT).
+    /// IHAVE from peers below this score is dropped; gossip is not emitted to them.
+    public var gossipThreshold: Double
 
     // MARK: - IWANT Promise Tracking (A5)
 
@@ -209,6 +297,15 @@ public struct GossipSubConfiguration: Sendable {
     /// When set, overrides `signMessages`.
     public var messageAuthenticity: MessageAuthenticity?
 
+    /// Explicit opt-in to insecure validation modes (`.none`, or accepting
+    /// unsigned messages in `.permissive`).
+    ///
+    /// When `false` (the secure default), configuring a `.none` validation mode
+    /// — or disabling signature validation entirely — is rejected by `validate()`.
+    /// This prevents accidentally running a node that silently accepts unsigned
+    /// or forged messages. Set to `true` only for tests / private trusted networks.
+    public var allowInsecureValidation: Bool
+
     // MARK: - Flood Publish
 
     /// Whether to flood publish to all peers (not just mesh).
@@ -244,6 +341,19 @@ public struct GossipSubConfiguration: Sendable {
         maxPendingGrafts: Int = 100,
         maxIHaveMessages: Int = 5000,
         maxIWantMessages: Int = 5000,
+        maxRPCMessages: Int = 1000,
+        maxRPCSubscriptions: Int = 200,
+        maxRPCIHave: Int = 100,
+        maxRPCIWant: Int = 100,
+        maxRPCGraft: Int = 100,
+        maxRPCPrune: Int = 100,
+        maxRPCIDontWant: Int = 100,
+        maxIDontWantMessageIDs: Int = 1000,
+        maxProtobufNestingDepth: Int = 16,
+        maxIWantResponseMessages: Int = 1000,
+        maxIWantResponseBytes: Int = 1024 * 1024,  // 1 MB per peer per heartbeat
+        maxGossipPromises: Int = 100_000,
+        maxGossipPromisesPerPeer: Int = 10_000,
         idontwantTTL: Duration = .seconds(3),
         idontwantThreshold: Int = 1024,  // 1KB - send IDONTWANT for messages >= 1KB
         topicScoreParams: [Topic: TopicScoreParams] = [:],
@@ -257,9 +367,12 @@ public struct GossipSubConfiguration: Sendable {
         enablePeerExchange: Bool = false,
         prunePeers: Int = 0,
         acceptPXThreshold: Double = 10.0,
+        publishThreshold: Double = -100.0,
+        gossipThreshold: Double = -100.0,
         iwantFollowupTime: Duration = .seconds(3),
         validationMode: ValidationMode? = nil,
         messageAuthenticity: MessageAuthenticity? = nil,
+        allowInsecureValidation: Bool = false,
         floodPublish: Bool = true,
         floodPublishMaxPeers: Int = 25
     ) {
@@ -286,6 +399,19 @@ public struct GossipSubConfiguration: Sendable {
         self.maxPendingGrafts = maxPendingGrafts
         self.maxIHaveMessages = maxIHaveMessages
         self.maxIWantMessages = maxIWantMessages
+        self.maxRPCMessages = maxRPCMessages
+        self.maxRPCSubscriptions = maxRPCSubscriptions
+        self.maxRPCIHave = maxRPCIHave
+        self.maxRPCIWant = maxRPCIWant
+        self.maxRPCGraft = maxRPCGraft
+        self.maxRPCPrune = maxRPCPrune
+        self.maxRPCIDontWant = maxRPCIDontWant
+        self.maxIDontWantMessageIDs = maxIDontWantMessageIDs
+        self.maxProtobufNestingDepth = maxProtobufNestingDepth
+        self.maxIWantResponseMessages = maxIWantResponseMessages
+        self.maxIWantResponseBytes = maxIWantResponseBytes
+        self.maxGossipPromises = maxGossipPromises
+        self.maxGossipPromisesPerPeer = maxGossipPromisesPerPeer
         self.idontwantTTL = idontwantTTL
         self.idontwantThreshold = idontwantThreshold
         self.topicScoreParams = topicScoreParams
@@ -299,9 +425,12 @@ public struct GossipSubConfiguration: Sendable {
         self.enablePeerExchange = enablePeerExchange
         self.prunePeers = prunePeers
         self.acceptPXThreshold = acceptPXThreshold
+        self.publishThreshold = publishThreshold
+        self.gossipThreshold = gossipThreshold
         self.iwantFollowupTime = iwantFollowupTime
         self.validationMode = validationMode
         self.messageAuthenticity = messageAuthenticity
+        self.allowInsecureValidation = allowInsecureValidation
         self.floodPublish = floodPublish
         self.floodPublishMaxPeers = floodPublishMaxPeers
     }
@@ -354,6 +483,22 @@ public struct GossipSubConfiguration: Sendable {
         if validationMode == .anonymous && messageIDFunction == nil {
             throw ConfigurationError.anonymousModeRequiresCustomMessageID
         }
+        // Insecure validation modes must be opted into explicitly (no silent
+        // acceptance of unsigned/forged messages). The effective validation mode
+        // is `.none` when validationMode is nil and validateSignatures is false,
+        // or `.none` is explicitly configured.
+        if !allowInsecureValidation {
+            if validationMode == GossipSubConfiguration.ValidationMode.none {
+                throw ConfigurationError.insecureValidationNotAllowed(
+                    "validationMode == .none accepts forged messages; set allowInsecureValidation = true to opt in"
+                )
+            }
+            if validationMode == nil && !validateSignatures {
+                throw ConfigurationError.insecureValidationNotAllowed(
+                    "validateSignatures == false accepts forged messages; set allowInsecureValidation = true to opt in"
+                )
+            }
+        }
     }
 
     /// Configuration validation errors.
@@ -362,6 +507,7 @@ public struct GossipSubConfiguration: Sendable {
         case invalidCacheConfig(String)
         case incompatibleAuthAndValidation(String)
         case anonymousModeRequiresCustomMessageID
+        case insecureValidationNotAllowed(String)
     }
 }
 
@@ -413,10 +559,12 @@ extension GossipSubConfiguration {
         config.fanoutTTL = .seconds(5)
         config.seenTTL = .seconds(10)
         config.pruneBackoff = .seconds(5)
-        // Lenient for testing scenarios that don't require signing
+        // Lenient for testing scenarios that don't require signing.
+        // Explicitly opt into insecure validation (loud, not silent).
         config.validateSignatures = false
         config.signMessages = false
         config.strictSignatureVerification = false
+        config.allowInsecureValidation = true
         return config
     }
 }

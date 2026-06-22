@@ -696,7 +696,7 @@ struct NodeE2ETests {
 
         // Create client with gater that blocks all dials
         let gater = BlocklistGater()
-        gater.block(address: "server11") // Block by address substring
+        gater.block(address: "server11") // Block by structured memory-ID component
 
         let clientConfig = NodeConfiguration(
             transports: [MemoryTransport(hub: hub)],

@@ -173,8 +173,14 @@ public final class HeartbeatManager: Sendable {
         // 9. Check broken IWANT promises (A5)
         _ = router.checkBrokenPromises()
 
-        // 10. Decay peer scores
-        router.decayPeerScores()
+        // 10. Scoring maintenance: decay scores, clean IWANT tracking, and
+        // apply/reset delivery-rate penalties. This replaces the previous
+        // decay-only call so the delivery window is rolled each heartbeat and
+        // peers are penalized on rate (not an ever-growing counter).
+        router.performScoringMaintenance()
+
+        // 11. Reset the per-peer IWANT response budget for the next window.
+        router.resetIWantBudget()
     }
 }
 

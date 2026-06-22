@@ -62,9 +62,15 @@ enum DCUtRProtobuf {
 
     // MARK: - Decoding
 
+    /// Maximum number of observed addresses accepted per message (DoS bound).
+    static let maxObservedAddresses = 64
+
     /// Decodes a DCUtRMessage from protobuf wire format.
     static func decode(_ data: Data) throws -> DCUtRMessage {
-        var type: DCUtRMessageType = .connect
+        // Rebase to a zero-based buffer so slicing on a non-zero-based slice is safe.
+        let data = data.startIndex == 0 ? data : Data(data)
+
+        var typeValue: UInt64?
         var addresses: [Multiaddr] = []
 
         var offset = 0
@@ -80,23 +86,32 @@ enum DCUtRProtobuf {
             case (1, wireTypeVarint): // type
                 let (value, valueBytes) = try Varint.decode(from: data, at: offset)
                 offset += valueBytes
-                type = DCUtRMessageType(rawValue: value) ?? .connect
+                typeValue = value
 
             case (2, wireTypeLengthDelimited): // ObsAddrs
-                let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
+                let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: offset)
                 offset += lengthBytes
-                let fieldEnd = offset + Int(length)
+                let length = try Varint.toInt(lengthValue)
+                let fieldEnd = offset + length
                 guard fieldEnd <= data.count else {
                     throw DCUtRError.encodingError("Address field truncated")
                 }
 
-                // Skip invalid multiaddr instead of throwing
+                // Bound the number of addresses to prevent decode amplification.
+                guard addresses.count < maxObservedAddresses else {
+                    throw DCUtRError.encodingError(
+                        "Too many observed addresses (max \(maxObservedAddresses))"
+                    )
+                }
+
+                // Surface invalid multiaddrs rather than silently dropping them:
+                // a malformed address indicates a malformed/hostile message.
+                let addrData = data[offset ..< fieldEnd]
                 do {
-                    let addrData = data[data.startIndex + offset ..< data.startIndex + fieldEnd]
                     let addr = try Multiaddr(bytes: Data(addrData))
                     addresses.append(addr)
                 } catch {
-                    // Invalid multiaddr - skip and continue
+                    throw DCUtRError.invalidAddress("Invalid observed multiaddr: \(error)")
                 }
 
                 offset = fieldEnd
@@ -105,6 +120,15 @@ enum DCUtRProtobuf {
                 // Skip unknown fields
                 offset = try skipField(wireType: wireType, data: data, offset: offset)
             }
+        }
+
+        // The type field is required and must be a known value. Defaulting an
+        // unknown/absent type silently would let a peer steer protocol behavior.
+        guard let typeValue else {
+            throw DCUtRError.protocolViolation("HolePunch message missing type field")
+        }
+        guard let type = DCUtRMessageType(rawValue: typeValue) else {
+            throw DCUtRError.unknownMessageType(typeValue)
         }
 
         return DCUtRMessage(type: type, observedAddresses: addresses)
@@ -126,8 +150,14 @@ enum DCUtRProtobuf {
         case 1: // 64-bit
             newOffset += 8
         case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(from: data, at: newOffset)
-            newOffset += lengthBytes + Int(length)
+            let (lengthValue, lengthBytes) = try Varint.decode(from: data, at: newOffset)
+            newOffset += lengthBytes
+            let length = try Varint.toInt(lengthValue)
+            // Validate the declared length fits before advancing past it.
+            guard length <= data.count - newOffset else {
+                throw DCUtRError.encodingError("Field extends beyond data")
+            }
+            newOffset += length
         case 5: // 32-bit
             newOffset += 4
         default:

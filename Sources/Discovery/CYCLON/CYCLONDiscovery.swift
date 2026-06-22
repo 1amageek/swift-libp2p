@@ -180,7 +180,6 @@ public actor CYCLONDiscovery: DiscoveryService {
                 to: target.peerID,
                 protocol: cyclonProtocolID
             )
-            defer { Task { try await stream.close() } }
 
             let requestData = CYCLONProtobuf.encode(.shuffleRequest(entries: subset))
             try await stream.writeLengthPrefixedMessage(ByteBuffer(bytes: requestData))
@@ -190,9 +189,24 @@ public actor CYCLONDiscovery: DiscoveryService {
             )
             let response = try CYCLONProtobuf.decode(Data(buffer: responseBuffer))
 
-            guard case .shuffleResponse(let receivedEntries) = response else {
+            // Close the stream inline and log any close failure instead of
+            // dropping it in a fire-and-forget `defer { Task { ... } }`.
+            do {
+                try await stream.close()
+            } catch {
+                logger.debug("Failed to close shuffle stream", metadata: [
+                    "target": "\(target.peerID)",
+                    "error": "\(error)",
+                ])
+            }
+
+            guard case .shuffleResponse(let rawEntries) = response else {
                 throw CYCLONError.invalidMessage
             }
+
+            // Cap and dedupe attacker-controlled input before merging: a remote
+            // peer must not be able to push more than `shuffleLength` entries.
+            let receivedEntries = sanitizeReceived(rawEntries)
 
             // Step 5: Merge received entries
             partialView.merge(
@@ -230,9 +244,12 @@ public actor CYCLONDiscovery: DiscoveryService {
             )
             let request = try CYCLONProtobuf.decode(Data(buffer: requestBuffer))
 
-            guard case .shuffleRequest(let receivedEntries) = request else {
+            guard case .shuffleRequest(let rawEntries) = request else {
                 throw CYCLONError.invalidMessage
             }
+
+            // Cap and dedupe attacker-controlled input before merging.
+            let receivedEntries = sanitizeReceived(rawEntries)
 
             // Build response subset
             let responseSubset = partialView.randomSubset(
@@ -261,6 +278,26 @@ public actor CYCLONDiscovery: DiscoveryService {
                 "error": "\(error)",
             ])
         }
+    }
+
+    // MARK: - Input Sanitization
+
+    /// Caps and dedupes received shuffle entries before they touch the view.
+    ///
+    /// - removes our own ID (a peer must not insert us into our own view)
+    /// - dedupes by peerID (keeps first occurrence)
+    /// - caps the count to `shuffleLength` (a peer cannot flood our view)
+    private func sanitizeReceived(_ entries: [CYCLONEntry]) -> [CYCLONEntry] {
+        var seen = Set<PeerID>()
+        var result: [CYCLONEntry] = []
+        result.reserveCapacity(min(entries.count, configuration.shuffleLength))
+        for entry in entries {
+            guard entry.peerID != localPeerID else { continue }
+            guard seen.insert(entry.peerID).inserted else { continue }
+            result.append(entry)
+            if result.count >= configuration.shuffleLength { break }
+        }
+        return result
     }
 
     // MARK: - Event Emission

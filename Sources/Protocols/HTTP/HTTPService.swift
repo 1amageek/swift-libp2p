@@ -328,13 +328,23 @@ public final class HTTPService: EventEmitting, Sendable {
 
             // Check if we have the complete headers
             if let headerEnd = findDoubleCrlf(in: buffer) {
-                // Parse Content-Length to determine body size
-                let contentLength = parseContentLength(from: buffer, headerEnd: headerEnd)
                 let bodyStart = headerEnd + 4  // After \r\n\r\n
 
+                // Reject framing we cannot honor (e.g. chunked transfer-encoding).
+                try validateTransferEncoding(from: buffer, headerEnd: headerEnd)
+
+                // Parse and strictly validate Content-Length.
+                let contentLength = try parseContentLength(from: buffer, headerEnd: headerEnd)
+
                 if let contentLength = contentLength {
-                    // Read until we have the full body
-                    let totalExpected = bodyStart + contentLength
+                    // Overflow-checked total. bodyStart and contentLength are both
+                    // already validated as non-negative and bounded.
+                    let (totalExpected, overflow) = bodyStart.addingReportingOverflow(contentLength)
+                    if overflow {
+                        throw HTTPError.invalidContentLength("Content-Length + header size overflows")
+                    }
+
+                    // Read until we have the full body.
                     while buffer.readableBytes < totalExpected {
                         var moreData = try await stream.read()
                         if moreData.readableBytes == 0 {
@@ -342,15 +352,44 @@ public final class HTTPService: EventEmitting, Sendable {
                         }
                         buffer.writeBuffer(&moreData)
                     }
-                    // Return exactly the expected amount
+
+                    // If there are MORE bytes than the framed message, the extra
+                    // bytes are unframed and must be treated as an error rather
+                    // than silently dropped.
+                    if buffer.readableBytes > totalExpected {
+                        throw HTTPError.malformedMessage("Unexpected bytes after Content-Length body")
+                    }
+
+                    // Return exactly the expected amount.
                     guard let message = buffer.readSlice(length: totalExpected) else {
                         throw HTTPError.streamClosed
                     }
                     return message
                 } else {
-                    // No Content-Length: return what we have (headers only, no body)
+                    // No Content-Length: a body cannot be framed. Any bytes beyond
+                    // the headers are unframed and must not be silently dropped.
+                    if buffer.readableBytes > bodyStart {
+                        throw HTTPError.malformedMessage("Body present without Content-Length")
+                    }
                     return buffer
                 }
+            }
+        }
+    }
+
+    /// Rejects framing the parser cannot honor.
+    ///
+    /// `Transfer-Encoding: chunked` is not supported; any Transfer-Encoding
+    /// header is rejected explicitly rather than ignored (ignoring it would
+    /// leave the body unframed / enable request smuggling).
+    private func validateTransferEncoding(from data: ByteBuffer, headerEnd: Int) throws {
+        var headerBuffer = data
+        headerBuffer.moveWriterIndex(to: headerBuffer.readerIndex + headerEnd)
+        let headerString = String(decoding: headerBuffer.readableBytesView, as: UTF8.self)
+        for line in headerString.components(separatedBy: "\r\n") {
+            if line.lowercased().hasPrefix("transfer-encoding:") {
+                let value = line.dropFirst("transfer-encoding:".count).trimmingCharacters(in: .whitespaces)
+                throw HTTPError.unsupportedFraming("Transfer-Encoding not supported: \(value)")
             }
         }
     }
@@ -373,21 +412,50 @@ public final class HTTPService: EventEmitting, Sendable {
         return nil
     }
 
-    /// Parses the Content-Length header value from raw header bytes.
-    private func parseContentLength(from data: ByteBuffer, headerEnd: Int) -> Int? {
+    /// Parses and strictly validates the Content-Length header.
+    ///
+    /// - Returns: the validated non-negative length, or `nil` if no
+    ///   Content-Length header is present.
+    /// - Throws: `HTTPError.invalidContentLength` if the value is non-numeric,
+    ///   negative, overflows `Int`, exceeds `maxBodySize`, or if multiple
+    ///   conflicting Content-Length headers are present.
+    private func parseContentLength(from data: ByteBuffer, headerEnd: Int) throws -> Int? {
         var headerBuffer = data
         headerBuffer.moveWriterIndex(to: headerBuffer.readerIndex + headerEnd)
         let headerString = String(decoding: headerBuffer.readableBytesView, as: UTF8.self)
 
-        let lines = headerString.components(separatedBy: "\r\n")
-        for line in lines {
+        var found: Int? = nil
+        for line in headerString.components(separatedBy: "\r\n") {
             let lower = line.lowercased()
-            if lower.hasPrefix("content-length:") {
-                let valueString = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
-                return Int(valueString)
+            guard lower.hasPrefix("content-length:") else { continue }
+
+            let valueString = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+
+            // Must be a non-empty run of ASCII digits only. This rejects
+            // negatives ("-1"), "+1", whitespace-embedded, hex, and overflow
+            // (Int(...) returns nil on overflow).
+            guard !valueString.isEmpty, valueString.allSatisfy({ $0.isNumber }) else {
+                throw HTTPError.invalidContentLength("Non-numeric Content-Length: \(valueString)")
             }
+            guard let value = Int(valueString) else {
+                throw HTTPError.invalidContentLength("Content-Length out of range: \(valueString)")
+            }
+            guard value >= 0 else {
+                throw HTTPError.invalidContentLength("Negative Content-Length: \(value)")
+            }
+            guard value <= HTTPProtocol.maxBodySize else {
+                throw HTTPError.invalidContentLength(
+                    "Content-Length \(value) exceeds maximum \(HTTPProtocol.maxBodySize)"
+                )
+            }
+
+            // Duplicate headers must agree; conflicting values are rejected.
+            if let existing = found, existing != value {
+                throw HTTPError.invalidContentLength("Conflicting Content-Length headers")
+            }
+            found = value
         }
-        return nil
+        return found
     }
 
     // MARK: - Event Emission

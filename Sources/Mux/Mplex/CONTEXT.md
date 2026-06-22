@@ -72,6 +72,11 @@ private actor MplexFrameWriter  // Mplex 固有名
 
 **対応**: 一貫性のため汎用名に変更を検討
 
+## Head-of-Line & Buffer Config Fixes (2026-06)
+
+- **制御フレームキュー**: read loop からの RST 送信は `MplexControlFrameQueue` 経由で別タスクが送信する — 下層書き込みのバックプレッシャーで read loop が wedge するのを防ぐため。キューは有界（満杯時は接続破棄、サイレントドロップ禁止）
+- **専用ストリームバッファ設定**: `MplexConfiguration.maxReadBufferSizePerStream`（デフォルト 1MB）を追加し、`MplexStream` のバッファ上限を `maxFrameSize`（単一フレームサイズ）から分離した — フレームサイズと「未読ストリームバッファ上限」は別概念のため
+
 ### INFO: best-effort cleanup
 
 **場所**: `MplexConnection.swift`, `MplexStream.swift`
