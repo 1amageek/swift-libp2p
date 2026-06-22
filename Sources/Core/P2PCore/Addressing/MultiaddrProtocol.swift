@@ -1,12 +1,14 @@
 /// Protocol definitions for Multiaddr.
 /// https://github.com/multiformats/multiaddr/blob/master/protocols.csv
+///
+/// The protocol-table, IP/port binary codec, and length-delimited value codec
+/// now live in the Embedded-clean ``LibP2PCore`` (`MultiaddrCodec` / `IPAddress`).
+/// This adapter keeps the `MultiaddrProtocol` enum (which carries a `PeerID` and
+/// `Data` payloads) and the `Data`/`String` public surface, delegating the
+/// Foundation-free codec to the core.
 
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
+import LibP2PCore
 
 /// A protocol component in a Multiaddr.
 public enum MultiaddrProtocol: Sendable, Hashable {
@@ -169,128 +171,45 @@ public enum MultiaddrProtocol: Sendable, Hashable {
 
     // MARK: - Encoding Helpers
 
+    /// Encodes a dotted-decimal IPv4 address to its 4 wire bytes (core codec).
     private static func encodeIPv4(_ address: String) -> Data? {
-        var addr = in_addr()
-        let result = address.withCString { cString in
-            inet_pton(AF_INET, cString, &addr)
-        }
-        guard result == 1 else { return nil }
-
-        return withUnsafeBytes(of: &addr.s_addr) { bytes in
-            Data(bytes)
-        }
+        guard let bytes = IPAddress.encodeIPv4(address) else { return nil }
+        return Data(bytes)
     }
 
+    /// Encodes an IPv6 address (zone stripped) to its 16 wire bytes (core codec).
     private static func encodeIPv6(_ address: String) -> Data? {
-        // 1. Strip zone ID (e.g., fe80::1%eth0 → fe80::1)
-        let cleanAddress: String
-        if let percentIndex = address.firstIndex(of: "%") {
-            cleanAddress = String(address[..<percentIndex])
-        } else {
-            cleanAddress = address
-        }
-        guard !cleanAddress.isEmpty else { return nil }
-
-        var addr = in6_addr()
-        let result = cleanAddress.withCString { cString in
-            inet_pton(AF_INET6, cString, &addr)
-        }
-        guard result == 1 else { return nil }
-
-        return withUnsafeBytes(of: &addr) { bytes in
-            Data(bytes)
-        }
+        guard let bytes = MultiaddrCodec.encodeIPv6Value(address) else { return nil }
+        return Data(bytes)
     }
 
     /// Normalizes an IPv6 address to RFC 5952 compressed form (e.g., "::1", "fe80::1").
     ///
-    /// This function:
-    /// - Expands `::` shorthand to full 8 groups
-    /// - Strips zone IDs (e.g., `%eth0`)
-    /// - Handles IPv4-mapped addresses (e.g., `::ffff:192.0.2.1`)
-    /// - Rejects invalid addresses (multiple `::`, malformed groups)
-    /// - Compresses the longest run of zero groups per RFC 5952
+    /// Delegates to the Embedded-clean core. Expands `::`, strips zone IDs,
+    /// handles IPv4-mapped addresses, rejects malformed/over-long input, and
+    /// compresses the longest zero run per RFC 5952.
     ///
     /// - Parameter address: The IPv6 address string to normalize
     /// - Returns: The normalized IPv6 address in RFC 5952 compressed form, or nil if invalid or too long (>64 chars with zone)
     static func normalizeIPv6(_ address: String) -> String? {
-        // Max IPv6 address length with zone ID is ~64 chars
-        guard address.count <= 64 else { return nil }
-        guard let bytes = encodeIPv6(address) else { return nil }
-
-        // Parse into 16-bit groups
-        var groups: [UInt16] = []
-        for i in 0..<8 {
-            let value = UInt16(bytes[i * 2]) << 8 | UInt16(bytes[i * 2 + 1])
-            groups.append(value)
-        }
-
-        return compressIPv6(groups)
+        IPAddress.normalizeIPv6(address)
     }
 
-    /// Compresses 8 IPv6 groups into RFC 5952 form.
-    ///
-    /// RFC 5952 rules:
-    /// - Find the longest run of consecutive zero groups (minimum length 2)
-    /// - If tied, use the first occurrence
-    /// - Replace with "::"
-    /// - Leading zeros in each group are suppressed
+    /// Compresses 8 IPv6 groups into RFC 5952 form (core codec).
     static func compressIPv6(_ groups: [UInt16]) -> String {
-        // Find the longest run of consecutive zero groups
-        var bestStart = -1
-        var bestLen = 0
-        var curStart = -1
-        var curLen = 0
-
-        for i in 0..<8 {
-            if groups[i] == 0 {
-                if curStart == -1 { curStart = i }
-                curLen += 1
-                if curLen > bestLen {
-                    bestStart = curStart
-                    bestLen = curLen
-                }
-            } else {
-                curStart = -1
-                curLen = 0
-            }
-        }
-
-        // Only compress runs of 2 or more zeros (RFC 5952 §4.2.3)
-        if bestLen < 2 {
-            bestStart = -1
-            bestLen = 0
-        }
-
-        // Build compressed string
-        var parts: [String] = []
-        var i = 0
-        while i < 8 {
-            if i == bestStart {
-                // Insert "::" marker
-                if i == 0 { parts.append("") }
-                parts.append("")
-                i += bestLen
-                if i == 8 { parts.append("") }
-            } else {
-                parts.append(String(groups[i], radix: 16))
-                i += 1
-            }
-        }
-
-        return parts.joined(separator: ":")
+        IPAddress.compressIPv6(groups)
     }
 
     private static func encodePort(_ port: UInt16) -> Data {
-        Data([UInt8(port >> 8), UInt8(port & 0xFF)])
+        Data(MultiaddrCodec.encodePort(port))
     }
 
     static func isValidIPv4(_ address: String) -> Bool {
-        encodeIPv4(address) != nil
+        IPAddress.encodeIPv4(address) != nil
     }
 
     static func isValidIPv6(_ address: String) -> Bool {
-        encodeIPv6(address) != nil
+        MultiaddrCodec.encodeIPv6Value(address) != nil
     }
 
     // MARK: - Decoding
@@ -457,18 +376,9 @@ public enum MultiaddrProtocol: Sendable, Hashable {
         return startIndex..<endIndex
     }
 
-    /// Creates a protocol from its name and value string.
+    /// Whether a protocol name requires a value component (core table).
     static func requiresValue(name: String) -> Bool? {
-        switch name {
-        case "ip4", "ip6zone", "ip6", "tcp", "udp", "p2p", "ipfs",
-             "dns", "dns4", "dns6", "dnsaddr", "unix", "memory",
-             "certhash", "ble", "wifi-direct", "lora", "nfc":
-            return true
-        case "quic", "quic-v1", "ws", "wss", "p2p-circuit", "webrtc-direct", "webtransport":
-            return false
-        default:
-            return nil
-        }
+        MultiaddrCodec.requiresValue(name: name)
     }
 
     /// Creates a protocol from its name and value string.

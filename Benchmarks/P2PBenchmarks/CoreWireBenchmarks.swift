@@ -24,7 +24,9 @@ struct CoreWireBenchmarks {
         try benchmark("Multihash.decode sha256 legacy", iterations: 500_000) {
             let encoded = inputs[index & 3]
             index &+= 1
-            blackHole(try Self.legacyDecodeMultihash(encoded))
+            // `Multihash.bytes` is `[UInt8]` in the Embedded-clean core; the
+            // legacy `Data`-based decoder takes the same bytes as `Data`.
+            blackHole(try Self.legacyDecodeMultihash(Data(encoded)))
         }
     }
 

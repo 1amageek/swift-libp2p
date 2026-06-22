@@ -106,7 +106,7 @@ struct KademliaInteropTests {
             return
         }
 
-        let request = KademliaMessage.findNode(key: keyPair.peerID.multihash.bytes)
+        let request = KademliaMessage.findNode(key: Data(keyPair.peerID.multihash.bytes))
         try await stream.write(ByteBuffer(bytes: encodeLengthPrefixed(KademliaProtobuf.encode(request))))
 
         guard let responseFrame = try await readFromStreamWithTimeout(

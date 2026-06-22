@@ -1,8 +1,14 @@
 /// Public key representation for libp2p.
 /// https://github.com/libp2p/specs/blob/master/peer-ids/peer-ids.md
+///
+/// The PublicKey protobuf *framing* (mixed wire-type encode/decode) now lives in
+/// the Embedded-clean ``LibP2PCore`` (`PublicKeyProtobuf`). This adapter keeps
+/// the CryptoKit-backed key construction and verification (the Crypto seam) and
+/// delegates the byte framing to the core.
 
 import Foundation
 import Crypto
+import LibP2PCore
 
 /// A public key used for peer identification and verification.
 public struct PublicKey: Sendable {
@@ -153,71 +159,31 @@ public struct PublicKey: Sendable {
 
     /// Decodes a public key from its protobuf representation.
     ///
+    /// Delegates the byte framing to the Embedded-clean core
+    /// (`PublicKeyProtobuf`); the key-type validation and CryptoKit
+    /// construction (the Crypto seam) stay here.
+    ///
     /// - Parameter data: The protobuf-encoded public key
     /// - Throws: `PublicKeyError` if decoding fails
     public init(protobufEncoded data: Data) throws {
-        var offset = 0
-        var keyType: KeyType?
-        var keyData: Data?
-
-        while offset < data.count {
-            let (fieldTag, fieldBytes) = try Varint.decode(from: data, at: offset)
-            offset += fieldBytes
-
-            let fieldNumber = fieldTag >> 3
-            let wireType = fieldTag & 0x07
-
-            switch (fieldNumber, wireType) {
-            case (1, 0): // KeyType varint
-                let (typeValue, typeBytes) = try Varint.decode(from: data, at: offset)
-                offset += typeBytes
-                guard let type = KeyType(rawValue: typeValue) else {
-                    throw PublicKeyError.unknownKeyType(typeValue)
-                }
-                keyType = type
-
-            case (2, 2): // Data length-delimited
-                let (length, lengthBytes) = try Varint.decode(from: data, at: offset)
-                offset += lengthBytes
-                // Bounds check: prevent DoS from huge length values
-                // Public keys are typically 32-256 bytes, 4KB is more than enough
-                guard length <= 4096 else {
-                    throw PublicKeyError.keyDataTooLarge(length)
-                }
-                let keyLength = Int(length)
-                let keyDataEnd = offset + keyLength
-                guard keyDataEnd <= data.count else {
-                    throw PublicKeyError.invalidProtobuf
-                }
-                keyData = data[Self.fieldRange(in: data, offset: offset, end: keyDataEnd)]
-                offset = keyDataEnd
-
-            default:
-                throw PublicKeyError.invalidProtobuf
-            }
-        }
-
-        guard let type = keyType, let data = keyData else {
+        let fields: PublicKeyProtobuf
+        do {
+            fields = try PublicKeyProtobuf.decode(from: [UInt8](data))
+        } catch PublicKeyProtobufError.keyDataTooLarge(let length) {
+            throw PublicKeyError.keyDataTooLarge(length)
+        } catch {
             throw PublicKeyError.invalidProtobuf
         }
 
-        try self.init(keyType: type, rawBytes: data)
-    }
+        guard let type = KeyType(rawValue: fields.keyType) else {
+            throw PublicKeyError.unknownKeyType(fields.keyType)
+        }
 
-    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
-        let startIndex = data.index(data.startIndex, offsetBy: offset)
-        let endIndex = data.index(data.startIndex, offsetBy: end)
-        return startIndex..<endIndex
+        try self.init(keyType: type, rawBytes: Data(fields.keyData))
     }
 
     private static func buildProtobufEncoded(keyType: KeyType, rawBytes: Data) -> Data {
-        var encoded = Data()
-        encoded.append(0x08) // Field 1: KeyType (field number 1, wire type 0)
-        encoded.append(contentsOf: Varint.encode(keyType.rawValue))
-        encoded.append(0x12) // Field 2: Data (field number 2, wire type 2)
-        encoded.append(contentsOf: Varint.encode(UInt64(rawBytes.count)))
-        encoded.append(rawBytes)
-        return encoded
+        Data(PublicKeyProtobuf.encode(keyType: keyType.rawValue, keyData: [UInt8](rawBytes)))
     }
 }
 

@@ -1,8 +1,14 @@
 /// PeerID implementation conforming to libp2p specification.
 /// https://github.com/libp2p/specs/blob/master/peer-ids/peer-ids.md
+///
+/// The framing decisions (identity-vs-SHA-256 selection, identity-multihash
+/// wrap, textual multibase prefix classification) now live in the Embedded-clean
+/// ``LibP2PCore`` (`PeerIDFraming`). This adapter keeps the SHA-256 digest call
+/// (the Crypto seam) and the `PublicKey` crypto, delegating framing to the core.
 
 import Foundation
 import Crypto
+import LibP2PCore
 
 /// A unique identifier for a peer in the libp2p network.
 ///
@@ -21,10 +27,13 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
     public init(publicKey: PublicKey) {
         let encoded = publicKey.protobufEncoded
 
-        // Use identity multihash for small keys (Ed25519)
-        // Otherwise use SHA-256
-        if publicKey.keyType.supportsIdentityEncoding && encoded.count <= 42 {
-            self.multihash = Multihash.identity(encoded)
+        // The identity-vs-SHA-256 selection rule lives in the core; the SHA-256
+        // digest (Crypto seam) and the identity wrap come from the core/adapter.
+        if PeerIDFraming.usesIdentityEncoding(
+            supportsIdentityEncoding: publicKey.keyType.supportsIdentityEncoding,
+            encodedLength: encoded.count
+        ) {
+            self.multihash = PeerIDFraming.identityMultihash(forEncodedKey: [UInt8](encoded))
         } else {
             self.multihash = Multihash.sha256(encoded)
         }
@@ -77,20 +86,16 @@ public struct PeerID: Sendable, Hashable, CustomStringConvertible {
     /// - Throws: `PeerIDError`/`MultihashError` if the string is invalid, or
     ///   `PeerIDError.unsupportedEncoding` for the `f`/`b` multibase prefixes.
     public init(string: String) throws {
+        // The multibase prefix classification lives in the core; base58btc
+        // decode (Foundation Data surface) stays adapter-side.
         let data: Data
-        if string.hasPrefix("Qm") || string.hasPrefix("1") {
-            // Legacy base58btc multihash (no multibase prefix).
+        switch PeerIDFraming.classify(string) {
+        case .base58btc:
             data = try Data(base58Encoded: string)
-        } else if string.hasPrefix("z") {
-            // Multibase base58btc prefix — strip the single-char prefix.
-            let base58Part = String(string.dropFirst())
-            data = try Data(base58Encoded: base58Part)
-        } else if string.hasPrefix("f") || string.hasPrefix("b") {
-            // Multibase hex (f) or base32 (b) — not yet supported.
+        case .multibaseBase58btc(let payload):
+            data = try Data(base58Encoded: payload)
+        case .unsupported:
             throw PeerIDError.unsupportedEncoding
-        } else {
-            // Try as plain base58btc.
-            data = try Data(base58Encoded: string)
         }
 
         self.multihash = try Multihash(bytes: data)

@@ -1,6 +1,12 @@
 /// NoisePayload - Handshake payload encoding/decoding for Noise protocol
+///
+/// The payload protobuf *framing* now lives in the Embedded-clean ``LibP2PCore``
+/// (`NoisePayloadFields`). This adapter keeps the crypto (key sign/verify,
+/// PeerID derivation) and the `Data`/NIO framing surface, delegating the byte
+/// framing to the core.
 import Foundation
 import P2PCore
+import LibP2PCore
 import Crypto
 
 /// The handshake payload exchanged during Noise XX handshake.
@@ -72,49 +78,27 @@ struct NoisePayload: Sendable {
     /// }
     /// ```
     func encode() -> Data {
-        var result = Data()
-        if !identityKey.isEmpty {
-            result.append(encodeProtobufField(fieldNumber: 1, data: identityKey))
-        }
-        if !identitySig.isEmpty {
-            result.append(encodeProtobufField(fieldNumber: 2, data: identitySig))
-        }
-        if !data.isEmpty {
-            result.append(encodeProtobufField(fieldNumber: 3, data: data))
-        }
-        return result
+        let fields = NoisePayloadFields(
+            identityKey: [UInt8](identityKey),
+            identitySig: [UInt8](identitySig),
+            data: [UInt8](data)
+        )
+        return Data(fields.encode())
     }
 
     /// Decodes a payload from protobuf format.
     static func decode(from data: Data) throws -> NoisePayload {
-        let fields: [ProtobufField]
+        let fields: NoisePayloadFields
         do {
-            fields = try decodeProtobufFields(from: data)
+            fields = try NoisePayloadFields.decode(from: [UInt8](data))
         } catch {
             throw NoiseError.invalidPayload
         }
 
-        var identityKey: Data?
-        var identitySig: Data?
-        var payloadData: Data?
-
-        for field in fields {
-            switch field.fieldNumber {
-            case 1: identityKey = Data(field.data)
-            case 2: identitySig = Data(field.data)
-            case 3: payloadData = Data(field.data)
-            default: break
-            }
-        }
-
-        guard let key = identityKey, let sig = identitySig else {
-            throw NoiseError.invalidPayload
-        }
-
         return NoisePayload(
-            identityKey: key,
-            identitySig: sig,
-            data: payloadData ?? Data()
+            identityKey: Data(fields.identityKey),
+            identitySig: Data(fields.identitySig),
+            data: Data(fields.data)
         )
     }
 }
@@ -123,17 +107,23 @@ struct NoisePayload: Sendable {
 
 /// Reads a length-prefixed Noise message from data.
 ///
+/// Delegates the `[UInt8]` framing to the Embedded-clean core (`NoiseFraming`);
+/// the `Data` surface stays adapter-side.
+///
 /// - Parameter data: Buffer containing messages
 /// - Returns: (message, bytesConsumed) or nil if incomplete
 /// - Throws: `NoiseError.frameTooLarge` if the frame exceeds max size
 func readNoiseMessage(from data: Data) throws -> (message: Data, bytesConsumed: Int)? {
     do {
-        guard let result = try readLengthPrefixedFrame(from: data, maxMessageSize: noiseMaxMessageSize) else {
+        guard let result = try NoiseFraming.read(from: [UInt8](data)) else {
             return nil
         }
-        return (result.message, result.consumed)
-    } catch is FramingError {
-        throw NoiseError.frameTooLarge(size: 0, max: noiseMaxMessageSize)
+        return (Data(result.message), result.consumed)
+    } catch let error as NoiseFramingError {
+        switch error {
+        case .frameTooLarge(let size, let max):
+            throw NoiseError.frameTooLarge(size: size, max: max)
+        }
     }
 }
 
@@ -152,13 +142,19 @@ func readNoiseMessage(from buffer: inout ByteBuffer) throws -> ByteBuffer? {
 
 /// Encodes a Noise message with length prefix.
 ///
+/// Delegates the `[UInt8]` framing to the Embedded-clean core (`NoiseFraming`);
+/// the `Data` surface stays adapter-side.
+///
 /// - Parameter message: The message to encode
 /// - Returns: Length-prefixed message
 func encodeNoiseMessage(_ message: Data) throws -> Data {
     do {
-        return try encodeLengthPrefixedFrame(message, maxMessageSize: noiseMaxMessageSize)
-    } catch is FramingError {
-        throw NoiseError.frameTooLarge(size: message.count, max: noiseMaxMessageSize)
+        return Data(try NoiseFraming.encode([UInt8](message)))
+    } catch let error as NoiseFramingError {
+        switch error {
+        case .frameTooLarge(let size, let max):
+            throw NoiseError.frameTooLarge(size: size, max: max)
+        }
     }
 }
 

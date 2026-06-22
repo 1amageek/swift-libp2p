@@ -1,6 +1,11 @@
 /// NoiseError - Error definitions for Noise protocol
+///
+/// The Noise wire constants now live in the Embedded-clean ``LibP2PCore``
+/// (`NoiseFraming`); the file-local aliases below forward to them so existing
+/// callers in this module are unchanged.
 import Foundation
 import P2PCore
+import LibP2PCore
 
 /// Errors that can occur during Noise protocol operations.
 public enum NoiseError: Error, Sendable {
@@ -37,20 +42,24 @@ public enum NoiseError: Error, Sendable {
 
 // MARK: - Constants
 
+// These forward to the Embedded-clean core (`NoiseFraming`) so the wire
+// constants have a single source of truth. The names are kept module-local so
+// existing callers in this module compile unchanged.
+
 /// Maximum Noise message size (including length prefix).
-let noiseMaxMessageSize = 65535
+let noiseMaxMessageSize = NoiseFraming.maxMessageSize
 
 /// Maximum plaintext size per frame (max message - auth tag).
-let noiseMaxPlaintextSize = noiseMaxMessageSize - 16
+let noiseMaxPlaintextSize = NoiseFraming.maxPlaintextSize
 
 /// ChaCha20-Poly1305 auth tag size.
-let noiseAuthTagSize = 16
+let noiseAuthTagSize = NoiseFraming.authTagSize
 
 /// X25519 public key size.
-let noisePublicKeySize = 32
+let noisePublicKeySize = NoiseFraming.publicKeySize
 
 /// Noise protocol name for XX pattern with our cipher suite.
-let noiseProtocolName = "Noise_XX_25519_ChaChaPoly_SHA256"
+let noiseProtocolName = NoiseFraming.protocolName
 
 /// Prefix for signing the static key.
-let noiseStaticKeySignaturePrefix = "noise-libp2p-static-key:"
+let noiseStaticKeySignaturePrefix = NoiseFraming.staticKeySignaturePrefix
