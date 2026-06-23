@@ -32,11 +32,13 @@ public struct NegotiationResult: Sendable {
 public enum MultistreamSelect {
 
     /// The multistream-select protocol ID.
-    public static let protocolID = "/multistream/1.0.0"
+    /// Sourced from the Embedded-clean ``MultistreamCodec`` core.
+    public static let protocolID = MultistreamCodec.protocolID
 
     /// Maximum message size for multistream-select (64KB).
     /// Protocol IDs are typically short strings, so this is very generous.
-    public static let maxMessageSize = 64 * 1024
+    /// Sourced from the Embedded-clean ``MultistreamCodec`` core.
+    public static let maxMessageSize = MultistreamCodec.maxMessageSize
 
     /// Bounds applied to the responder-side negotiation phase to prevent a peer
     /// from holding negotiation open indefinitely or amplifying output via
@@ -318,11 +320,8 @@ public enum MultistreamSelect {
                 }
                 // ls response must be newline-delimited protocol IDs inside a single
                 // multistream length prefix (no nested per-protocol varints).
-                // Keep the historical trailing blank line for compatibility.
-                let body = supported.map { "\($0)\n" }.joined() + "\n"
-                var response = ByteBuffer()
-                response.writeBytes(Varint.encode(UInt64(body.utf8.count)))
-                response.writeString(body)
+                // The Embedded-clean core keeps the historical trailing blank line.
+                let response = ByteBuffer(bytes: MultistreamCodec.encodeListResponse(supported))
                 try await write(response)
             } else {
                 try await write(encode("na"))
@@ -352,38 +351,38 @@ public enum MultistreamSelect {
     }
 
     private static func decodeAttempt(_ data: ByteBuffer) throws -> DecodeAttempt {
-        let (length, lengthBytes) = try data.withUnsafeReadableBytes { ptr in
-            try Varint.decode(from: UnsafeRawBufferPointer(ptr), at: 0)
+        // Delegate the wire framing (varint length prefix, newline termination,
+        // strict UTF-8, message-size bound) to the Embedded-clean core, then map
+        // the core outcome/errors back to this adapter's types so the public
+        // behaviour and error contract are byte-identical.
+        let bytes = data.getBytes(at: data.readerIndex, length: data.readableBytes) ?? []
+        let outcome: MultistreamCodec.DecodeOutcome
+        do {
+            outcome = try MultistreamCodec.decode(from: bytes, maxMessageSize: maxMessageSize)
+        } catch {
+            switch error {
+            case .truncated:
+                // No complete length prefix yet — equivalent to insufficient data.
+                throw VarintError.insufficientData
+            case .invalidLengthPrefix:
+                // A malformed/overflowing length-prefix varint. Surface as the
+                // historical `VarintError.overflow` so the upgrade path maps it
+                // to `UpgradeError.invalidVarint` (preserved behaviour).
+                throw VarintError.overflow
+            case .invalidUtf8:
+                throw NegotiationError.invalidUtf8
+            case .missingNewline:
+                throw NegotiationError.invalidMessage
+            case .messageTooLarge(let size, let max):
+                throw NegotiationError.messageTooLarge(size: size, max: max)
+            }
         }
-
-        // Validate message size to prevent memory exhaustion attacks
-        guard length <= UInt64(Int.max) else {
-            throw NegotiationError.messageTooLarge(size: Int.max, max: maxMessageSize)
-        }
-        let messageLength = Int(length)
-        if messageLength > maxMessageSize {
-            throw NegotiationError.messageTooLarge(size: messageLength, max: maxMessageSize)
-        }
-
-        let totalConsumed = lengthBytes + messageLength
-        guard data.readableBytes >= totalConsumed else {
+        switch outcome {
+        case .message(let token, let consumed):
+            return .message(token, consumed: consumed)
+        case .needMoreData:
             return .needMoreData
         }
-        let contentIndex = data.readerIndex + lengthBytes
-        guard
-            let bytes = data.getBytes(at: contentIndex, length: messageLength),
-            var string = String(bytes: bytes, encoding: .utf8)
-        else {
-            throw NegotiationError.invalidUtf8
-        }
-
-        // Multistream-select spec requires messages to end with newline
-        guard string.hasSuffix("\n") else {
-            throw NegotiationError.invalidMessage
-        }
-        string.removeLast()
-
-        return .message(string, consumed: totalConsumed)
     }
 
     private static func readNextMessage(
@@ -416,12 +415,9 @@ public enum MultistreamSelect {
     // MARK: - Encoding
 
     /// Encodes a protocol string for multistream-select.
+    /// Delegates the framing to the Embedded-clean ``MultistreamCodec`` core.
     public static func encode(_ string: String) -> ByteBuffer {
-        let payload = string + "\n"
-        var buffer = ByteBuffer()
-        buffer.writeBytes(Varint.encode(UInt64(payload.utf8.count)))
-        buffer.writeString(payload)
-        return buffer
+        ByteBuffer(bytes: MultistreamCodec.encode(string))
     }
 
     /// Decodes a protocol string from multistream-select format.

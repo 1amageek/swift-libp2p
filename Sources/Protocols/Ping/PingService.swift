@@ -9,7 +9,8 @@ import Synchronization
 private let logger = Logger(label: "p2p.ping")
 
 /// Ping payload size (must be 32 bytes per libp2p spec).
-private let pingPayloadSize = 32
+/// Sourced from the Embedded-clean ``PingCodec`` core.
+private let pingPayloadSize = PingCodec.payloadSize
 
 // MARK: - PingStreamReader
 
