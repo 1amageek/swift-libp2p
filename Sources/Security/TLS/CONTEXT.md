@@ -9,9 +9,10 @@ SecurityUpgrader プロトコルを実装。
 ## 依存ライブラリ
 
 - **swift-tls** (`TLSCore`, `TLSRecord`) — TLS 1.3 ハンドシェイク・レコード層
-- **swift-certificates** (`X509`) — X.509 証明書の生成・解析
-- **swift-asn1** (`SwiftASN1`) — ASN.1 DER エンコード/デコード
-- **swift-crypto** (`Crypto`) — P-256 鍵生成（証明書用エフェメラル鍵）
+- **P2PCoreDER** (swift-p2p-core) — libp2p RPK 証明書の build/parse/verify の
+  Embedded-clean minimal-DER コーデック（M6b で swift-certificates から移行）
+- **swift-crypto** (`Crypto`) — P-256 鍵生成（証明書用エフェメラル鍵）+ SignedKey
+  署名検証 / 自己署名（P2PCoreDER に closure として注入）
 
 ## libp2p TLS 仕様
 
@@ -34,14 +35,14 @@ SignedKey {
 
 - `TLSUpgrader.swift` — SecurityUpgrader 実装（タイムアウト対応）
 - `TLSConnection.swift` — SecuredConnection 実装（swift-tls ラッパー）
-- `TLSCertificate.swift` — 証明書生成/検証（swift-certificates 使用）
+- `TLSCertificate.swift` — 証明書生成/検証（`LibP2PCertificate` 経由、P2PCoreDER 使用）
 - `TLSError.swift` — エラー定義
 
 ## アーキテクチャ
 
 ```
 TLSUpgrader.secure()
-  └─> LibP2PCertificate.generate()         // swift-certificates で証明書生成
+  └─> LibP2PCertificate.generate()         // P2PCoreDER で証明書生成（Embedded-clean）
   └─> TLSCore.TLSConfiguration 構築        // ALPN, mTLS, certificateValidator 設定
   └─> TLSRecord.TLSConnection 作成
   └─> performHandshake()                   // Mutex<Bool> タイムアウト付き

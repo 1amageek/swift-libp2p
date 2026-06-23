@@ -268,8 +268,11 @@ let package = Package(
             dependencies: [
                 "P2PCore",
                 .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "X509", package: "swift-certificates"),
-                .product(name: "SwiftASN1", package: "swift-asn1"),
+                // M6b: the libp2p Raw-Public-Key (RPK) certificate build/parse/
+                // verify goes through the Embedded-clean minimal-DER codec rather
+                // than swift-certificates/SwiftASN1. swift-certificates remains a
+                // package dependency for any full-X.509 path that needs it.
+                .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
             path: "Sources/Security/Certificate"
         ),
@@ -326,6 +329,8 @@ let package = Package(
             dependencies: [
                 "P2PCertificate",
                 "P2PCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
             path: "Tests/Security/CertificateTests"
         ),

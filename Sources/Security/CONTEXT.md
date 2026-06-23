@@ -24,7 +24,7 @@ Security/
 |-----------|------|----------|
 | `P2PSecurity` | SecurityUpgraderプロトコル定義 | P2PCore |
 | `P2PSecurityNoise` | Noise XXパターン実装 | P2PSecurity, swift-crypto |
-| `P2PSecurityTLS` | TLS 1.3実装（swift-tls使用） | P2PSecurity, swift-tls, swift-certificates, swift-asn1, swift-crypto |
+| `P2PSecurityTLS` | TLS 1.3実装（swift-tls使用） | P2PSecurity, P2PCertificate, swift-tls, swift-crypto |
 | `P2PSecurityPlaintext` | テスト用プレーンテキスト | P2PSecurity |
 | `P2PSecurityPnet` | Private Network（PSK + XSalsa20） | P2PCore, Crypto |
 
@@ -120,7 +120,7 @@ TLS 1.3 ハンドシェイク・暗号化/復号は swift-tls が担当。libp2p
 - エフェメラル P-256 鍵ペアで自己署名 X.509 証明書を生成
 - libp2p 拡張 (OID: 1.3.6.1.4.1.53594.1.1) に SignedKey 構造体を埋め込み
 - CertificateValidator コールバックで PeerID を抽出・検証
-- swift-certificates + SwiftASN1 で証明書の生成・解析
+- P2PCoreDER（Embedded-clean minimal-DER）で証明書の生成・解析（M6b で swift-certificates から移行）
 
 ### タイムアウト
 `Mutex<Bool>` フラグで外部キャンセルとタイムアウトを区別。

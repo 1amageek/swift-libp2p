@@ -14,4 +14,12 @@ public enum LibP2PCertificateError: Error, Sendable {
 
     /// The PeerID extracted from the certificate does not match the expected PeerID.
     case peerIDMismatch(expected: PeerID, actual: PeerID)
+
+    /// The certificate / SignedKey DER was malformed, truncated, or otherwise
+    /// failed to parse, or the derived PeerID multihash was structurally invalid.
+    case invalidStructure
+
+    /// Encoding the certificate (e.g. the SubjectPublicKeyInfo) failed during
+    /// generation.
+    case encodingFailed
 }
