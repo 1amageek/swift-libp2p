@@ -192,7 +192,7 @@ struct CertificateDebugTests {
         let decodedCertificate = try Certificate.decode(from: encodedMsg)
         #expect(decodedCertificate.certificates.count == 1, "Should have 1 certificate")
 
-        let recoveredDER = decodedCertificate.certificates[0]
+        let recoveredDER = decodedCertificate.certificatesData[0]
         print("Recovered cert DER: \(recoveredDER.count) bytes")
         print("Recovered cert hex (first 50): \(recoveredDER.prefix(50).map { String(format: "%02x", $0) }.joined())")
 
@@ -233,7 +233,7 @@ struct CertificateDebugTests {
 
         // Decode certificate from content
         let decoded = try Certificate.decode(from: content)
-        let recoveredDER = decoded.certificates.first!
+        let recoveredDER = decoded.certificatesData.first!
 
         // Verify
         let recoveredCert = try X509Certificate.parse(from: recoveredDER)

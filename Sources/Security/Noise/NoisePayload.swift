@@ -46,6 +46,13 @@ struct NoisePayload: Sendable {
         self.data = data
     }
 
+    /// Creates a payload from the Embedded-clean core's decoded fields.
+    init(fields: NoisePayloadFields) {
+        self.identityKey = Data(fields.identityKey)
+        self.identitySig = Data(fields.identitySig)
+        self.data = Data(fields.data)
+    }
+
     /// Verifies the payload and extracts the remote peer ID.
     ///
     /// - Parameter noiseStaticPublicKey: The remote's Noise static public key

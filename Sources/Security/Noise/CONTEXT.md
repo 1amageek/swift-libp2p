@@ -16,16 +16,55 @@ Noise Protocol Framework XXパターンの実装。
 
 ---
 
+## Embedded Core Migration (2026-06)
+
+The Noise XX crypto state machine now lives in the Embedded-clean `LibP2PCore`,
+generic over the `P2PCoreCrypto.CryptoProvider` seam. This module is the host
+adapter: it specialises the core at `C = NoiseFoundationProvider` (a swift-crypto
+backend) and keeps the `Data`/NIO/`Mutex` surface so existing callers and tests are
+byte-identical.
+
+| 配置 | 型 | 役割 |
+|---|---|---|
+| `LibP2PCore` (Embedded, `<C>`) | `NoiseCipherStateCore<C>` | ChaCha20-Poly1305 AEAD, 96-bit nonce |
+| `LibP2PCore` (Embedded, `<C>`) | `NoiseSymmetricStateCore<C>` | `ck`/`h`, mixKey/mixHash, split |
+| `LibP2PCore` (Embedded, `<C>`) | `NoiseHandshakeCore<C>` | XX transitions, X25519 DH, payload framing |
+| `LibP2PCore` (Embedded, `<C>`) | `NoiseKeyAgreementCore<C>` | X25519 DH + small-order rejection |
+| `LibP2PCore` (Embedded) | `NoiseCryptoError` | typed-throws error (closed enum) |
+| adapter (host) | `NoiseFoundationProvider` | `CryptoProvider` over swift-crypto |
+| adapter (host) | `NoiseCipherState` / `NoiseSymmetricState` / `NoiseHandshake` | `Data` bridges over the core |
+
+- **Identity signature stays adapter-side**: `NoisePayload` builds/verifies the
+  `"noise-libp2p-static-key:"||static_pubkey` signature via the multi-scheme
+  `P2PCore` identity key (Ed25519 raw + ECDSA-P256 DER). Verification is
+  fail-closed (`NoiseError.invalidSignature`); the core returns the decrypted
+  payload + remote static key the adapter binds that signature to.
+- **Security invariants preserved byte-identically**: per-message nonce counter,
+  handshake-hash binding, small-order/zero-shared-secret rejection, fail-closed
+  AEAD tag handling. No silent fallback anywhere.
+
+---
+
 ## ファイル構成
 
 ```
 Sources/Security/Noise/
-├── NoiseUpgrader.swift       # SecurityUpgrader実装 (エントリポイント)
-├── NoiseConnection.swift     # SecuredConnection実装 (暗号化通信)
-├── NoiseHandshake.swift      # XXハンドシェイク状態機械
-├── NoiseCryptoState.swift    # Noise暗号状態 (SymmetricState, CipherState)
-├── NoisePayload.swift        # ハンドシェイクペイロード (protobuf)
-└── NoiseError.swift          # エラー定義
+├── NoiseUpgrader.swift              # SecurityUpgrader実装 (エントリポイント)
+├── NoiseConnection.swift           # SecuredConnection実装 (暗号化通信)
+├── NoiseHandshake.swift            # XXハンドシェイク adapter (core を Data でラップ)
+├── NoiseCryptoState.swift          # Cipher/Symmetric adapter (core を Data でラップ)
+├── NoisePayload.swift              # ハンドシェイクペイロード (identity sign/verify)
+├── NoiseError.swift                # エラー定義
+├── NoiseFoundationProvider.swift   # host CryptoProvider (AEAD/hash/HKDF/HMAC/...)
+├── NoiseFoundationKeyAgreement.swift # X25519/P256/P384 ECDH provider
+└── NoiseFoundationSignature.swift  # Ed25519/P256/P384 signature provider
+
+Sources/LibP2PCore/   (Embedded-clean, generic <C: CryptoProvider>)
+├── NoiseCipherStateCore.swift      # ChaChaPoly AEAD + 96-bit nonce
+├── NoiseSymmetricStateCore.swift   # ck/h, mixKey/mixHash, split
+├── NoiseHandshakeCore.swift        # XX state machine
+├── NoiseKeyAgreementCore.swift     # X25519 DH + small-order rejection
+└── NoiseCryptoError.swift          # typed-throws core error
 ```
 
 ## 主要な型

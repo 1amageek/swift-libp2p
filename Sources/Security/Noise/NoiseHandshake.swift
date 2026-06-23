@@ -1,7 +1,17 @@
-/// NoiseHandshake - XX pattern handshake state machine
+/// NoiseHandshake - XX pattern handshake state machine (adapter).
+///
+/// The XX state machine + crypto now live in the Embedded-clean ``LibP2PCore``
+/// (`NoiseHandshakeCore<C>`); this adapter is a `Data`/CryptoKit/`KeyPair` bridge
+/// that specialises the core at `C = NoiseFoundationProvider`. It owns the libp2p
+/// identity binding: it builds the signed ``NoisePayload`` for the messages it
+/// writes, and the caller verifies the ``NoisePayload`` this returns (fail-closed
+/// signature check authenticating the remote PeerID).
 import Foundation
 import P2PCore
+import LibP2PCore
 import Crypto
+
+private typealias HandshakeCore = NoiseHandshakeCore<NoiseFoundationProvider>
 
 /// Manages the Noise XX handshake state.
 ///
@@ -25,297 +35,136 @@ struct NoiseHandshake: Sendable {
     /// Whether we are the initiator (dialer) or responder (listener).
     let isInitiator: Bool
 
-    /// The local ephemeral key pair (generated during handshake).
-    private let localEphemeralKey: Curve25519.KeyAgreement.PrivateKey
+    /// The Embedded-clean XX state machine, specialised at the host provider.
+    private var core: HandshakeCore
 
-    /// The remote's static public key (learned during handshake).
-    private var _remoteStaticKey: Curve25519.KeyAgreement.PublicKey?
-    var remoteStaticKey: Curve25519.KeyAgreement.PublicKey? { _remoteStaticKey }
+    /// The remote's static public key (learned during the handshake).
+    ///
+    /// The raw bytes were already imported through the seam by the core, so
+    /// re-parsing here cannot fail; the `do/catch` exists only to avoid `try?`.
+    var remoteStaticKey: Curve25519.KeyAgreement.PublicKey? {
+        guard let raw = core.remoteStaticPublicKey else { return nil }
+        return Self.curve25519PublicKey(from: raw)
+    }
 
-    /// The remote's ephemeral public key (learned during handshake).
-    private var _remoteEphemeralKey: Curve25519.KeyAgreement.PublicKey?
-    var remoteEphemeralKey: Curve25519.KeyAgreement.PublicKey? { _remoteEphemeralKey }
+    /// The remote's ephemeral public key (learned during the handshake).
+    var remoteEphemeralKey: Curve25519.KeyAgreement.PublicKey? {
+        guard let raw = core.remoteEphemeralPublicKey else { return nil }
+        return Self.curve25519PublicKey(from: raw)
+    }
 
-    /// The symmetric state for the handshake.
-    private var symmetricState: NoiseSymmetricState
+    /// Re-imports a raw X25519 public key the core already validated.
+    private static func curve25519PublicKey(from raw: [UInt8]) -> Curve25519.KeyAgreement.PublicKey? {
+        do {
+            return try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(raw))
+        } catch {
+            return nil
+        }
+    }
 
     /// Creates a new handshake state.
     ///
     /// - Parameters:
-    ///   - localKeyPair: The libp2p identity key pair
-    ///   - isInitiator: True if we are initiating the connection
+    ///   - localKeyPair: The libp2p identity key pair.
+    ///   - isInitiator: True if we are initiating the connection.
     init(localKeyPair: KeyPair, isInitiator: Bool) {
         self.localKeyPair = localKeyPair
         self.isInitiator = isInitiator
 
-        // Generate Noise static key (X25519)
-        self.localStaticKey = Curve25519.KeyAgreement.PrivateKey()
+        // Generate the Noise static + ephemeral X25519 keys (CryptoKit), then hand
+        // their raw bytes to the core, which re-imports them through the seam.
+        let staticKey = Curve25519.KeyAgreement.PrivateKey()
+        let ephemeralKey = Curve25519.KeyAgreement.PrivateKey()
+        self.localStaticKey = staticKey
 
-        // Generate ephemeral key
-        self.localEphemeralKey = Curve25519.KeyAgreement.PrivateKey()
-
-        // Initialize symmetric state with protocol name
-        self.symmetricState = NoiseSymmetricState(protocolName: noiseProtocolName)
-
-        // Mix in empty prologue (libp2p uses empty prologue)
-        self.symmetricState.mixHash(Data())
+        // Core construction only fails on malformed raw keys; freshly generated
+        // CryptoKit keys are always valid, so this cannot throw in practice.
+        do {
+            self.core = try HandshakeCore(
+                staticPrivateKeyRaw: [UInt8](staticKey.rawRepresentation),
+                ephemeralPrivateKeyRaw: [UInt8](ephemeralKey.rawRepresentation),
+                isInitiator: isInitiator,
+                protocolName: [UInt8](NoiseFraming.protocolName.utf8)
+            )
+        } catch {
+            preconditionFailure("NoiseHandshakeCore rejected a freshly generated X25519 key pair")
+        }
     }
 
     // MARK: - Initiator Methods
 
-    /// Writes Message A (initiator's first message).
-    ///
-    /// Pattern: `-> e`
-    /// - Sends ephemeral public key
-    /// - Per Noise spec, calls encryptAndHash on empty payload
+    /// Writes Message A (initiator's first message). Pattern: `-> e`.
     mutating func writeMessageA() throws -> Data {
-        let ephemeralPub = Data(localEphemeralKey.publicKey.rawRepresentation)
-
-        // Mix ephemeral into hash
-        symmetricState.mixHash(ephemeralPub)
-
-        // Per Noise spec, WriteMessage always calls EncryptAndHash on the payload.
-        // For message A, there's no payload (empty), but we still need to call
-        // encryptAndHash(empty) which does mixHash(empty ciphertext).
-        // Since no key is set yet, encryptAndHash returns empty but still does mixHash(empty).
-        // This is required for compatibility with go-libp2p/flynn-noise.
-        _ = try symmetricState.encryptAndHash(Data())
-
-        return ephemeralPub
+        do {
+            return Data(try core.writeMessageA())
+        } catch {
+            throw mapHandshakeCoreError(error)
+        }
     }
 
-    /// Reads Message B (responder's response).
-    ///
-    /// Pattern: `<- e, ee, s, es`
-    /// - Receives responder's ephemeral
-    /// - Performs ee DH
-    /// - Decrypts responder's static
-    /// - Performs es DH
-    /// - Decrypts and verifies payload
+    /// Reads Message B (responder's response). Pattern: `<- e, ee, s, es`.
     mutating func readMessageB<Message: RandomAccessCollection & DataProtocol>(
         _ message: Message
     ) throws -> NoisePayload where Message.Element == UInt8, Message.SubSequence: DataProtocol {
-        let messageStart = message.startIndex
-        let afterEphemeral = message.index(messageStart, offsetBy: noisePublicKeySize, limitedBy: message.endIndex)
-
-        // Read remote ephemeral (32 bytes, unencrypted)
-        guard let afterEphemeral else {
-            throw NoiseError.handshakeFailed("Message B too short for ephemeral key")
+        do {
+            let fields = try core.readMessageB([UInt8](message))
+            return NoisePayload(fields: fields)
+        } catch {
+            throw mapHandshakeCoreError(error)
         }
-        let remoteEphemeralData = message[messageStart..<afterEphemeral]
-
-        // Validate that the ephemeral key is not a small-order point
-        guard validateX25519PublicKey(remoteEphemeralData) else {
-            throw NoiseError.invalidKey
-        }
-
-        let remoteEphemeral = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(remoteEphemeralData))
-        _remoteEphemeralKey = remoteEphemeral
-
-        // Mix remote ephemeral into hash
-        symmetricState.mixHash(remoteEphemeralData)
-
-        // ee: DH(local ephemeral, remote ephemeral)
-        let ee = try noiseKeyAgreement(privateKey: localEphemeralKey, publicKey: remoteEphemeral)
-        symmetricState.mixKey(ee)
-
-        // Decrypt remote static (32 bytes + 16 tag)
-        let encryptedStaticSize = noisePublicKeySize + noiseAuthTagSize
-        let afterEncryptedStatic = message.index(
-            afterEphemeral,
-            offsetBy: encryptedStaticSize,
-            limitedBy: message.endIndex
-        )
-        guard let afterEncryptedStatic else {
-            throw NoiseError.handshakeFailed("Message B too short for static key")
-        }
-        let encryptedStatic = message[afterEphemeral..<afterEncryptedStatic]
-
-        let remoteStaticData = try symmetricState.decryptAndHash(encryptedStatic)
-
-        // Validate that the static key is not a small-order point
-        guard validateX25519PublicKey(remoteStaticData) else {
-            throw NoiseError.invalidKey
-        }
-
-        let remoteStatic = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: remoteStaticData)
-        _remoteStaticKey = remoteStatic
-
-        // es: DH(local ephemeral, remote static)
-        let es = try noiseKeyAgreement(privateKey: localEphemeralKey, publicKey: remoteStatic)
-        symmetricState.mixKey(es)
-
-        // Decrypt payload
-        let encryptedPayload = message[afterEncryptedStatic...]
-        let payloadData = try symmetricState.decryptAndHash(encryptedPayload)
-
-        // Decode and verify payload
-        let payload = try NoisePayload.decode(from: payloadData)
-        return payload
     }
 
     mutating func readMessageB(_ message: ByteBuffer) throws -> NoisePayload {
         try readMessageB(message.readableBytesView)
     }
 
-    /// Writes Message C (initiator's final message).
-    ///
-    /// Pattern: `-> s, se`
-    /// - Encrypts our static public key
-    /// - Performs se DH
-    /// - Encrypts our payload
+    /// Writes Message C (initiator's final message). Pattern: `-> s, se`.
     mutating func writeMessageC() throws -> Data {
-        guard let remoteEphemeral = _remoteEphemeralKey else {
-            throw NoiseError.messageOutOfOrder
+        let payloadBytes = try makeSignedPayloadBytes()
+        do {
+            return Data(try core.writeMessageC(payload: payloadBytes))
+        } catch {
+            throw mapHandshakeCoreError(error)
         }
-
-        var result = Data()
-
-        // Encrypt local static public key
-        let localStaticPub = Data(localStaticKey.publicKey.rawRepresentation)
-        let encryptedStatic = try symmetricState.encryptAndHash(localStaticPub)
-        result.append(encryptedStatic)
-
-        // se: DH(local static, remote ephemeral)
-        let se = try noiseKeyAgreement(privateKey: localStaticKey, publicKey: remoteEphemeral)
-        symmetricState.mixKey(se)
-
-        // Create and encrypt payload
-        let payload = try NoisePayload(keyPair: localKeyPair, noiseStaticPublicKey: localStaticPub)
-        let encryptedPayload = try symmetricState.encryptAndHash(payload.encode())
-        result.append(encryptedPayload)
-
-        return result
     }
 
     // MARK: - Responder Methods
 
-    /// Reads Message A (initiator's first message).
-    ///
-    /// Pattern: `-> e`
-    /// - Receives initiator's ephemeral public key
-    /// - Per Noise spec, calls decryptAndHash on remaining bytes (empty payload)
+    /// Reads Message A (initiator's first message). Pattern: `-> e`.
     mutating func readMessageA<Message: RandomAccessCollection & DataProtocol>(
         _ message: Message
     ) throws where Message.Element == UInt8, Message.SubSequence: DataProtocol {
-        let messageStart = message.startIndex
-        let afterEphemeral = message.index(messageStart, offsetBy: noisePublicKeySize, limitedBy: message.endIndex)
-        guard let afterEphemeral else {
-            throw NoiseError.handshakeFailed("Message A too short")
+        do {
+            try core.readMessageA([UInt8](message))
+        } catch {
+            throw mapHandshakeCoreError(error)
         }
-
-        let remoteEphemeralData = message[messageStart..<afterEphemeral]
-
-        // Validate that the ephemeral key is not a small-order point
-        guard validateX25519PublicKey(remoteEphemeralData) else {
-            throw NoiseError.invalidKey
-        }
-
-        let remoteEphemeral = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(remoteEphemeralData))
-        _remoteEphemeralKey = remoteEphemeral
-
-        // Mix remote ephemeral into hash
-        symmetricState.mixHash(remoteEphemeralData)
-
-        // Per Noise spec, ReadMessage always calls DecryptAndHash on remaining bytes.
-        // For message A, the remaining bytes are empty (no payload), but we still need
-        // to call decryptAndHash(empty) which does mixHash(empty ciphertext).
-        // Since no key is set yet, decryptAndHash returns empty but still does mixHash(empty).
-        // This is required for compatibility with go-libp2p/flynn-noise.
-        let remainingBytes = message[afterEphemeral...]
-        _ = try symmetricState.decryptAndHash(remainingBytes)
     }
 
     mutating func readMessageA(_ message: ByteBuffer) throws {
         try readMessageA(message.readableBytesView)
     }
 
-    /// Writes Message B (responder's response).
-    ///
-    /// Pattern: `<- e, ee, s, es`
-    /// - Sends our ephemeral
-    /// - Performs ee DH
-    /// - Encrypts and sends our static
-    /// - Performs es DH
-    /// - Encrypts and sends payload
+    /// Writes Message B (responder's response). Pattern: `<- e, ee, s, es`.
     mutating func writeMessageB() throws -> Data {
-        guard let remoteEphemeral = _remoteEphemeralKey else {
-            throw NoiseError.messageOutOfOrder
+        let payloadBytes = try makeSignedPayloadBytes()
+        do {
+            return Data(try core.writeMessageB(payload: payloadBytes))
+        } catch {
+            throw mapHandshakeCoreError(error)
         }
-
-        var result = Data()
-
-        // Send our ephemeral (unencrypted)
-        let localEphemeralPub = Data(localEphemeralKey.publicKey.rawRepresentation)
-        result.append(localEphemeralPub)
-        symmetricState.mixHash(localEphemeralPub)
-
-        // ee: DH(local ephemeral, remote ephemeral)
-        let ee = try noiseKeyAgreement(privateKey: localEphemeralKey, publicKey: remoteEphemeral)
-        symmetricState.mixKey(ee)
-
-        // Encrypt and send our static public key
-        let localStaticPub = Data(localStaticKey.publicKey.rawRepresentation)
-        let encryptedStatic = try symmetricState.encryptAndHash(localStaticPub)
-        result.append(encryptedStatic)
-
-        // es: DH(local static, remote ephemeral)
-        // Note: For responder, "es" means DH(responder_static, initiator_ephemeral)
-        let es = try noiseKeyAgreement(privateKey: localStaticKey, publicKey: remoteEphemeral)
-        symmetricState.mixKey(es)
-
-        // Create and encrypt payload
-        let payload = try NoisePayload(keyPair: localKeyPair, noiseStaticPublicKey: localStaticPub)
-        let encryptedPayload = try symmetricState.encryptAndHash(payload.encode())
-        result.append(encryptedPayload)
-
-        return result
     }
 
-    /// Reads Message C (initiator's final message).
-    ///
-    /// Pattern: `-> s, se`
-    /// - Decrypts initiator's static public key
-    /// - Performs se DH
-    /// - Decrypts and verifies payload
+    /// Reads Message C (initiator's final message). Pattern: `-> s, se`.
     mutating func readMessageC<Message: RandomAccessCollection & DataProtocol>(
         _ message: Message
     ) throws -> NoisePayload where Message.Element == UInt8, Message.SubSequence: DataProtocol {
-        // Decrypt remote static (32 bytes + 16 tag)
-        let encryptedStaticSize = noisePublicKeySize + noiseAuthTagSize
-        let messageStart = message.startIndex
-        let afterEncryptedStatic = message.index(
-            messageStart,
-            offsetBy: encryptedStaticSize,
-            limitedBy: message.endIndex
-        )
-        guard let afterEncryptedStatic else {
-            throw NoiseError.handshakeFailed("Message C too short for static key")
+        do {
+            let fields = try core.readMessageC([UInt8](message))
+            return NoisePayload(fields: fields)
+        } catch {
+            throw mapHandshakeCoreError(error)
         }
-        let encryptedStatic = message[messageStart..<afterEncryptedStatic]
-
-        let remoteStaticData = try symmetricState.decryptAndHash(encryptedStatic)
-
-        // Validate that the static key is not a small-order point
-        guard validateX25519PublicKey(remoteStaticData) else {
-            throw NoiseError.invalidKey
-        }
-
-        let remoteStatic = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: remoteStaticData)
-        _remoteStaticKey = remoteStatic
-
-        // se: DH(local ephemeral, remote static)
-        // Note: For responder reading, "se" means DH(responder_ephemeral, initiator_static)
-        let se = try noiseKeyAgreement(privateKey: localEphemeralKey, publicKey: remoteStatic)
-        symmetricState.mixKey(se)
-
-        // Decrypt payload
-        let encryptedPayload = message[afterEncryptedStatic...]
-        let payloadData = try symmetricState.decryptAndHash(encryptedPayload)
-
-        // Decode and verify payload
-        let payload = try NoisePayload.decode(from: payloadData)
-        return payload
     }
 
     mutating func readMessageC(_ message: ByteBuffer) throws -> NoisePayload {
@@ -324,18 +173,35 @@ struct NoiseHandshake: Sendable {
 
     // MARK: - Finalization
 
-    /// Splits the handshake state into transport cipher states.
-    ///
-    /// Returns (send cipher, receive cipher) for this peer.
+    /// Splits the handshake state into transport cipher states `(send, recv)`.
     mutating func split() -> (send: NoiseCipherState, recv: NoiseCipherState) {
-        let (c1, c2) = symmetricState.split()
+        let (send, recv) = core.split()
+        return (NoiseCipherState(core: send), NoiseCipherState(core: recv))
+    }
 
-        if isInitiator {
-            // Initiator: c1 is send, c2 is recv
-            return (c1, c2)
-        } else {
-            // Responder: c2 is send, c1 is recv
-            return (c2, c1)
-        }
+    // MARK: - Identity payload (adapter-owned)
+
+    /// Builds the encoded ``NoisePayload`` bytes for an outbound message: the
+    /// libp2p identity key + a signature over the Noise static public key. The
+    /// signature is produced by the multi-scheme `P2PCore` identity key.
+    private func makeSignedPayloadBytes() throws -> [UInt8] {
+        let staticPub = Data(localStaticKey.publicKey.rawRepresentation)
+        let payload = try NoisePayload(keyPair: localKeyPair, noiseStaticPublicKey: staticPub)
+        return [UInt8](payload.encode())
+    }
+}
+
+/// Maps the core handshake error onto the adapter's public ``NoiseError``,
+/// preserving the out-of-order / too-short / decryption semantics callers expect.
+private func mapHandshakeCoreError(_ error: NoiseCryptoError) -> NoiseError {
+    switch error {
+    case .decryptionFailed:   return .decryptionFailed
+    case .invalidPayload:     return .invalidPayload
+    case .invalidSignature:   return .invalidSignature
+    case .invalidKey:         return .invalidKey
+    case .messageOutOfOrder:  return .messageOutOfOrder
+    case .messageTooShort:    return .handshakeFailed("Noise message too short")
+    case .nonceOverflow:      return .nonceOverflow
+    case .cryptoFailure:      return .decryptionFailed
     }
 }

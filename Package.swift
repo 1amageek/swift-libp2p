@@ -116,6 +116,10 @@ let package = Package(
             name: "LibP2PCore",
             dependencies: [
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                // Crypto seam (CryptoProvider/KeyAgreement/AEAD/KeyDerivation/...).
+                // The Noise crypto state machine in this core is generic over
+                // `C: CryptoProvider`; a concrete provider lives in the adapter.
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
             ],
             path: "Sources/LibP2PCore",
             swiftSettings: coreSettings
@@ -273,7 +277,13 @@ let package = Package(
             name: "P2PSecurityNoise",
             dependencies: [
                 "P2PSecurity",
+                "LibP2PCore",
                 .product(name: "Crypto", package: "swift-crypto"),
+                // Crypto seam: the adapter provides `NoiseFoundationProvider`
+                // (a host `CryptoProvider`) and specialises the Embedded-clean
+                // Noise core in `LibP2PCore` at that provider.
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
             ],
             path: "Sources/Security/Noise",
             exclude: ["CONTEXT.md", "README.md"]
