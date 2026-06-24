@@ -3,6 +3,7 @@ import Testing
 import Foundation
 @testable import P2PGossipSub
 @testable import P2PCore
+@testable import LibP2PCore
 
 @Suite("GossipSub Protobuf Tests")
 struct GossipSubProtobufTests {
@@ -236,5 +237,67 @@ struct GossipSubProtobufTests {
         #expect(decoded.control?.iwants.count == 1)
         #expect(decoded.control?.idontwants.count == 1)
         #expect(decoded.control?.idontwants[0].messageIDs[0] == MessageID(bytes: Data([0xEE, 0xFF])))
+    }
+
+    // MARK: - Remote-DoS Hardening (length varint > Int.max)
+
+    /// A crafted RPC whose length-delimited field declares a length in
+    /// (Int.max, UInt64.max] must throw the codec's typed error, NOT trap the
+    /// process. `Varint.decode` accepts up to 2^64-1, so `Int(UInt64)` would
+    /// abort before the bound check — a remote-crash DoS.
+    @Test("readLength rejects an out-of-Int-range length without trapping")
+    func gossipSubLengthVarintBeyondIntMaxThrows() throws {
+        // Top-level length-delimited field (field 2 = publish, wireType 2).
+        let tag: UInt8 = (2 << 3) | 2
+        // 2^63 > Int.max (Int.max == 2^63 - 1) on a 64-bit platform.
+        let hugeLength: UInt64 = 1 << 63
+        var blob: [UInt8] = [tag]
+        blob.append(contentsOf: Varint.encodeBytes(hugeLength))
+
+        #expect(throws: GossipSubCodecError.self) {
+            _ = try GossipSubRPCFields.decode(from: blob)
+        }
+    }
+
+    /// The `skip` path (unknown length-delimited sub-field) must also throw
+    /// rather than trap on an out-of-Int-range length varint. An unknown field
+    /// number inside a sub-message routes to `skip`, exercising its wireType-2
+    /// branch (the lone other `Int(UInt64)` trap site).
+    @Test("skip rejects an out-of-Int-range length without trapping")
+    func gossipSubSkipLengthVarintBeyondIntMaxThrows() throws {
+        let hugeLength: UInt64 = 1 << 63
+        // Inner SubOpts sub-message: unknown field 5 (default → skip), wireType 2.
+        var inner: [UInt8] = [(5 << 3) | 2]
+        inner.append(contentsOf: Varint.encodeBytes(hugeLength))
+        // Outer RPC: field 1 (subscriptions), wireType 2, length = inner.count.
+        var blob: [UInt8] = [(1 << 3) | 2]
+        blob.append(contentsOf: Varint.encodeBytes(UInt64(inner.count)))
+        blob.append(contentsOf: inner)
+
+        #expect(throws: GossipSubCodecError.self) {
+            _ = try GossipSubRPCFields.decode(from: blob)
+        }
+    }
+
+    /// Confirms a well-formed RPC still round-trips through the core codec,
+    /// proving the hardening did not break valid decoding.
+    @Test("Normal RPC still round-trips after length hardening")
+    func gossipSubNormalRPCStillRoundTrips() throws {
+        let topic = Topic("hardening-topic")
+        var rpc = GossipSubRPC()
+        rpc.subscriptions.append(.subscribe(to: topic))
+        rpc.messages.append(GossipSubMessage(
+            source: nil,
+            data: Data("payload".utf8),
+            sequenceNumber: Data([0x01, 0x02, 0x03, 0x04]),
+            topic: topic
+        ))
+
+        let encoded = GossipSubProtobuf.encode(rpc)
+        let decoded = try GossipSubProtobuf.decode(encoded)
+        #expect(decoded.subscriptions.count == 1)
+        #expect(decoded.subscriptions[0].topic == topic)
+        #expect(decoded.messages.count == 1)
+        #expect(decoded.messages[0].topic == topic)
     }
 }

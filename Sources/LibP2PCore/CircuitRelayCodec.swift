@@ -455,6 +455,11 @@ public enum CircuitRelayCodec {
             } catch {
                 throw .truncated
             }
+            // Validate the declared length fits before advancing past it,
+            // so the addition itself cannot overflow.
+            guard length <= limit - newOffset else {
+                throw .truncated
+            }
             newOffset += lengthBytes + length
         case 5:
             newOffset += 4

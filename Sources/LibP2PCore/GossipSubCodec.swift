@@ -774,7 +774,16 @@ public struct GossipSubRPCFields: Sendable, Equatable {
             throw .truncated
         }
         offset += lengthBytes
-        let fieldEnd = offset + Int(lengthValue)
+        // Use the throwing conversion: Int(UInt64) traps on values in
+        // (Int.max, UInt64.max], which Varint.decode accepts. An attacker
+        // could otherwise crash the process before the bound check below.
+        let length: Int
+        do {
+            length = try Varint.toInt(lengthValue)
+        } catch {
+            throw .truncated
+        }
+        let fieldEnd = offset + length
         guard fieldEnd <= limit, fieldEnd >= offset else {
             throw .truncated
         }
@@ -804,7 +813,19 @@ public struct GossipSubRPCFields: Sendable, Equatable {
             } catch {
                 throw .truncated
             }
-            newOffset += lengthBytes + Int(lengthValue)
+            // Throwing conversion avoids a trap on out-of-Int-range lengths.
+            let length: Int
+            do {
+                length = try Varint.toInt(lengthValue)
+            } catch {
+                throw .truncated
+            }
+            // Validate the declared length fits before advancing past it,
+            // so the addition itself cannot overflow.
+            guard length <= limit - newOffset else {
+                throw .truncated
+            }
+            newOffset += lengthBytes + length
         case 5:
             newOffset += 4
         default:
