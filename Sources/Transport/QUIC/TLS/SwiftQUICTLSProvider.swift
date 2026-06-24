@@ -139,11 +139,12 @@ public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
 
     /// Validates a libp2p certificate chain and extracts the PeerID
     ///
-    /// This function:
-    /// 1. Extracts the libp2p extension (OID 1.3.6.1.4.1.53594.1.1)
-    /// 2. Parses the protobuf-encoded public key
-    /// 3. Verifies the signature over the TLS public key
-    /// 4. Derives and returns the PeerID
+    /// Delegates to `LibP2PCertificateHelper.validatePeerID`, which (via
+    /// P2PCoreDER) parses the leaf, verifies the SignedKey signature over the
+    /// leaf SPKI, derives the PeerID, and enforces the expected PeerID. The
+    /// whole path is fail-closed: a missing/invalid extension, a malformed
+    /// SignedKey, a bad signature, an unsupported key type, or a PeerID mismatch
+    /// all throw — the handshake is never accepted on a failure.
     ///
     /// - Parameters:
     ///   - certChain: The peer's certificate chain (DER encoded)
@@ -158,37 +159,10 @@ public final class SwiftQUICTLSProvider: TLS13Provider, Sendable {
             throw TLSCertificateError.missingLibp2pExtension
         }
 
-        // Extract libp2p public key from certificate extension
-        let (publicKeyBytes, signature) = try LibP2PCertificateHelper.extractLibP2PPublicKey(
-            from: leafCertDER
+        return try LibP2PCertificateHelper.validatePeerID(
+            from: leafCertDER,
+            expectedPeerID: expectedPeerID
         )
-
-        // Parse the protobuf-encoded public key
-        let libp2pPublicKey = try P2PCore.PublicKey(protobufEncoded: publicKeyBytes)
-
-        // Parse the certificate to get SPKI for signature verification
-        let peerCert = try X509Certificate.parse(from: leafCertDER)
-
-        // Verify the signature
-        // Message = "libp2p-tls-handshake:" + DER(SubjectPublicKeyInfo)
-        let spkiDER = peerCert.subjectPublicKeyInfoDER
-        let message = Data("libp2p-tls-handshake:".utf8) + spkiDER
-
-        guard try libp2pPublicKey.verify(signature: signature, for: message) else {
-            throw TLSCertificateError.invalidExtensionSignature
-        }
-
-        // Derive PeerID
-        let peerID = libp2pPublicKey.peerID
-
-        // Verify against expected PeerID if set
-        if let expected = expectedPeerID {
-            guard expected == peerID else {
-                throw TLSCertificateError.peerIDMismatch(expected: expected, actual: peerID)
-            }
-        }
-
-        return peerID
     }
 
     // MARK: - Public Accessors

@@ -170,6 +170,13 @@ let package = Package(
                 "P2PMux",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "QUIC", package: "swift-quic"),
+                // The libp2p-over-QUIC certificate build/parse/verify goes
+                // through the Embedded-clean minimal-DER codec (same path as the
+                // swift-certificates RPK path) rather than swift-quic's
+                // ASN1Builder / X509Certificate. swift-quic is still required for
+                // the QUIC handshake itself.
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
             path: "Sources/Transport/QUIC",
             exclude: ["CONTEXT.md"]
@@ -229,6 +236,10 @@ let package = Package(
                 "P2PTransportQUIC",
                 "P2PCore",
                 .product(name: "QUIC", package: "swift-quic"),
+                // The P2PCoreDER-path cert tests build forged/valid libp2p leaf
+                // certs directly with the minimal-DER primitives.
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
             path: "Tests/Transport/QUICTests"
         ),

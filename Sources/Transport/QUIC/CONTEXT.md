@@ -41,7 +41,7 @@ and return `MuxedConnection` directly.
 | `QUICListener.swift` | Listener implementations (standard and secured) |
 | `MultiaddrConversion.swift` | Multiaddr ↔ SocketAddress conversion |
 | `TLS/SwiftQUICTLSProvider.swift` | libp2p TLS 1.3 provider |
-| `TLS/LibP2PCertificateHelper.swift` | X.509 certificate generation |
+| `TLS/LibP2PCertificateHelper.swift` | libp2p cert build/parse/verify via P2PCoreDER (Embedded-clean minimal-DER) |
 | `QUICHolePunch.swift` | NAT traversal coordinator for QUIC hole punching |
 
 ## Usage
