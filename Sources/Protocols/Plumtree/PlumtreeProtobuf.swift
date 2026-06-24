@@ -108,6 +108,8 @@ public enum PlumtreeProtobuf {
             throw PlumtreeError.decodingFailed("Missing required field")
         case .invalidTopicUTF8:
             throw PlumtreeError.decodingFailed("Invalid topic UTF-8")
+        case .gossipDataTooLarge(let size, let max):
+            throw PlumtreeError.decodingFailed("Gossip data too large (\(size) > \(max))")
         }
     }
 }

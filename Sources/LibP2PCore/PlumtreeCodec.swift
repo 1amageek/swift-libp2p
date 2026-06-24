@@ -184,6 +184,10 @@ public struct PlumtreeRPCFields: Sendable, Equatable {
     /// single forwarded RPC, mitigating decode/forwarding amplification.
     public static let maxElementsPerRPC = 1024
 
+    /// Per-Gossip byte cap on the `data` payload field. Bounds an
+    /// attacker-supplied oversized payload in a single forwarded gossip message.
+    public static let maxGossipDataBytes = 1 << 20
+
     /// Decodes a Plumtree RPC from protobuf wire format.
     ///
     /// - Throws: `PlumtreeCodecError` on empty input, truncated framing,
@@ -262,6 +266,14 @@ public struct PlumtreeRPCFields: Sendable, Equatable {
                     continue
                 }
                 let fieldEnd = try readLength(bytes, at: &offset, limit: end)
+                // Per-Gossip byte cap on the data payload (field 3): reject an
+                // oversized payload before allocating it.
+                if fieldNumber == 3 {
+                    let dataSize = fieldEnd - offset
+                    guard dataSize <= maxGossipDataBytes else {
+                        throw .gossipDataTooLarge(size: dataSize, max: maxGossipDataBytes)
+                    }
+                }
                 let value = Array(bytes[offset..<fieldEnd])
                 offset = fieldEnd
                 switch fieldNumber {
@@ -507,4 +519,7 @@ public enum PlumtreeCodecError: Error, Equatable, Sendable {
     case missingField
     /// A topic field was not valid UTF-8.
     case invalidTopicUTF8
+    /// A Gossip `data` field exceeds the per-message byte cap (DoS bound against
+    /// an attacker-supplied oversized payload).
+    case gossipDataTooLarge(size: Int, max: Int)
 }

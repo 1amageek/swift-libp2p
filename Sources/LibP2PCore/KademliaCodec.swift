@@ -206,10 +206,18 @@ public struct KademliaFields: Sendable, Equatable {
     ///   - maxPeers: Repeated-field cap for `closerPeers` / `providerPeers`. Once
     ///     reached, surplus entries are dropped while the offset still advances
     ///     (a 0.2.0 DoS bound against Sybil/eclipse peer-list injection).
-    /// - Throws: `KademliaCodecError` on truncated / malformed framing.
+    ///   - maxAddrsPerPeer: Per-peer cap on the repeated `addresses` field. Once
+    ///     reached, surplus addresses are dropped (bounded), not allocated.
+    ///   - maxRecordValueBytes: Per-record cap on the `value` field byte size.
+    ///     An oversized value is rejected (throws), bounding memory against an
+    ///     attacker-supplied oversized DHT value.
+    /// - Throws: `KademliaCodecError` on truncated / malformed framing, or
+    ///   `recordValueTooLarge` when a record value exceeds the byte cap.
     public static func decode(
         from bytes: [UInt8],
-        maxPeers: Int
+        maxPeers: Int,
+        maxAddrsPerPeer: Int = 256,
+        maxRecordValueBytes: Int = 1_048_576
     ) throws(KademliaCodecError) -> KademliaFields {
         var typeRawValue: UInt32 = 0
         var key: [UInt8]?
@@ -250,20 +258,26 @@ public struct KademliaFields: Sendable, Equatable {
 
             case (3, 2):
                 let end = try KademliaFields.readLength(bytes, at: &offset)
-                record = try KademliaFields.decodeRecord(bytes, from: offset, to: end)
+                record = try KademliaFields.decodeRecord(
+                    bytes, from: offset, to: end, maxValueBytes: maxRecordValueBytes
+                )
                 offset = end
 
             case (8, 2):
                 let end = try KademliaFields.readLength(bytes, at: &offset)
                 if closerPeers.count < maxPeers {
-                    closerPeers.append(try KademliaFields.decodePeer(bytes, from: offset, to: end))
+                    closerPeers.append(try KademliaFields.decodePeer(
+                        bytes, from: offset, to: end, maxAddrs: maxAddrsPerPeer
+                    ))
                 }
                 offset = end
 
             case (9, 2):
                 let end = try KademliaFields.readLength(bytes, at: &offset)
                 if providerPeers.count < maxPeers {
-                    providerPeers.append(try KademliaFields.decodePeer(bytes, from: offset, to: end))
+                    providerPeers.append(try KademliaFields.decodePeer(
+                        bytes, from: offset, to: end, maxAddrs: maxAddrsPerPeer
+                    ))
                 }
                 offset = end
 
@@ -282,7 +296,7 @@ public struct KademliaFields: Sendable, Equatable {
     }
 
     private static func decodePeer(
-        _ bytes: [UInt8], from start: Int, to end: Int
+        _ bytes: [UInt8], from start: Int, to end: Int, maxAddrs: Int
     ) throws(KademliaCodecError) -> KademliaPeerFields {
         var id: [UInt8]?
         var addresses: [[UInt8]] = []
@@ -310,7 +324,10 @@ public struct KademliaFields: Sendable, Equatable {
 
             case (2, 2):
                 let fieldEnd = try KademliaFields.readLength(bytes, at: &offset, limit: end)
-                addresses.append(Array(bytes[offset..<fieldEnd]))
+                // Per-peer cap on the repeated addresses field.
+                if addresses.count < maxAddrs {
+                    addresses.append(Array(bytes[offset..<fieldEnd]))
+                }
                 offset = fieldEnd
 
             case (3, 0):
@@ -336,7 +353,7 @@ public struct KademliaFields: Sendable, Equatable {
     }
 
     private static func decodeRecord(
-        _ bytes: [UInt8], from start: Int, to end: Int
+        _ bytes: [UInt8], from start: Int, to end: Int, maxValueBytes: Int
     ) throws(KademliaCodecError) -> KademliaRecordFields {
         var key: [UInt8]?
         var value: [UInt8]?
@@ -364,7 +381,14 @@ public struct KademliaFields: Sendable, Equatable {
             let fieldEnd = try KademliaFields.readLength(bytes, at: &offset, limit: end)
             switch fieldNumber {
             case 1: key = Array(bytes[offset..<fieldEnd])
-            case 2: value = Array(bytes[offset..<fieldEnd])
+            case 2:
+                // Per-record byte cap: reject an oversized value rather than
+                // allocating it.
+                let valueSize = fieldEnd - offset
+                guard valueSize <= maxValueBytes else {
+                    throw .recordValueTooLarge(size: valueSize, max: maxValueBytes)
+                }
+                value = Array(bytes[offset..<fieldEnd])
             case 5: timeReceived = decodeUTF8Strict(Array(bytes[offset..<fieldEnd]))
             default: break
             }
@@ -464,4 +488,7 @@ public enum KademliaCodecError: Error, Equatable, Sendable {
     case missingPeerID
     /// A record is missing its required `key` or `value` field.
     case missingRecordField
+    /// A record's `value` field exceeds the per-record byte cap (DoS bound
+    /// against an attacker-supplied oversized DHT value).
+    case recordValueTooLarge(size: Int, max: Int)
 }

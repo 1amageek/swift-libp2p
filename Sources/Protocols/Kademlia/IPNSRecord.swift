@@ -186,7 +186,7 @@ public struct IPNSRecord: Sendable, Equatable {
             case (1, 2): // value (length-delimited)
                 let (length, lengthBytes) = try Varint.decode(from: inputData, at: offset)
                 offset += lengthBytes
-                let len = Int(length)
+                let len = try Varint.toInt(length)
                 guard offset + len <= inputData.count else {
                     throw IPNSRecordError.invalidFormat
                 }
@@ -204,7 +204,7 @@ public struct IPNSRecord: Sendable, Equatable {
             case (3, 2): // validity (length-delimited, RFC 3339 string)
                 let (length, lengthBytes) = try Varint.decode(from: inputData, at: offset)
                 offset += lengthBytes
-                let len = Int(length)
+                let len = try Varint.toInt(length)
                 guard offset + len <= inputData.count else {
                     throw IPNSRecordError.invalidFormat
                 }
@@ -223,7 +223,7 @@ public struct IPNSRecord: Sendable, Equatable {
             case (5, 2): // signature (length-delimited)
                 let (length, lengthBytes) = try Varint.decode(from: inputData, at: offset)
                 offset += lengthBytes
-                let len = Int(length)
+                let len = try Varint.toInt(length)
                 guard offset + len <= inputData.count else {
                     throw IPNSRecordError.invalidFormat
                 }
@@ -233,7 +233,7 @@ public struct IPNSRecord: Sendable, Equatable {
             case (6, 2): // publicKey (length-delimited, optional)
                 let (length, lengthBytes) = try Varint.decode(from: inputData, at: offset)
                 offset += lengthBytes
-                let len = Int(length)
+                let len = try Varint.toInt(length)
                 guard offset + len <= inputData.count else {
                     throw IPNSRecordError.invalidFormat
                 }
@@ -254,7 +254,7 @@ public struct IPNSRecord: Sendable, Equatable {
                 case 2: // length-delimited: skip
                     let (length, lengthBytes) = try Varint.decode(from: inputData, at: offset)
                     offset += lengthBytes
-                    let len = Int(length)
+                    let len = try Varint.toInt(length)
                     guard offset + len <= inputData.count else {
                         throw IPNSRecordError.invalidFormat
                     }

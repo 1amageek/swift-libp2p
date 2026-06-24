@@ -220,7 +220,9 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
                 let isClosed = self.state.withLock { $0.isClosed }
                 if isClosed { break }
 
-                let muxedStream = QUICMuxedStream(stream: quicStream)
+                let muxedStream = QUICMuxedStream(stream: quicStream) { [weak self] _ in
+                    self?.decrementOpenStreamCount()
+                }
                 self.state.withLock { $0.openStreamCount += 1 }
                 self.streamChannel.send(muxedStream)
             }
@@ -240,7 +242,21 @@ public final class QUICMuxedConnection: MuxedConnection, Sendable {
     public func newStream() async throws -> MuxedStream {
         let quicStream = try await quicConnection.openStream()
         state.withLock { $0.openStreamCount += 1 }
-        return QUICMuxedStream(stream: quicStream)
+        return QUICMuxedStream(stream: quicStream) { [weak self] _ in
+            self?.decrementOpenStreamCount()
+        }
+    }
+
+    /// Decrements the open-stream count when a stream terminates, so an idle
+    /// connection (no active streams) becomes reclaimable. Clamped at zero as a
+    /// defence against a double-fire (the stream's `terminateIfNeeded` already
+    /// guarantees a single call, but the count must never go negative).
+    private func decrementOpenStreamCount() {
+        state.withLock { s in
+            if s.openStreamCount > 0 {
+                s.openStreamCount -= 1
+            }
+        }
     }
 
     /// Accepts an incoming stream.

@@ -18,12 +18,21 @@ private let logger = Logger(label: "swift-libp2p.QUICMuxedStream")
 public final class QUICMuxedStream: MuxedStream, Sendable {
 
     private let stream: any QUICStreamProtocol
+
+    /// Invoked exactly once when the stream terminates (both read and write
+    /// closed, or reset) so the owning connection can decrement its open-stream
+    /// count and become idle-reclaimable. Mirrors `WebRTCMuxedStream.onTerminate`.
+    private let onTerminate: @Sendable (UInt64) -> Void
+
     private let state: Mutex<StreamState>
 
     private struct StreamState: Sendable {
         var protocolID: String?
         var readClosed: Bool = false
         var writeClosed: Bool = false
+        /// Set once when the termination callback has fired, so the owning
+        /// connection's open-stream count is decremented exactly once.
+        var didTerminate: Bool = false
     }
 
     /// The stream ID.
@@ -41,8 +50,16 @@ public final class QUICMuxedStream: MuxedStream, Sendable {
     /// - Parameters:
     ///   - stream: The underlying QUIC stream
     ///   - protocolID: The negotiated protocol ID (if known)
-    public init(stream: any QUICStreamProtocol, protocolID: String? = nil) {
+    ///   - onTerminate: Invoked exactly once when the stream terminates, with the
+    ///     stream ID, so the owning connection can drop its open-stream
+    ///     bookkeeping. Defaults to a no-op for callers that do not track streams.
+    public init(
+        stream: any QUICStreamProtocol,
+        protocolID: String? = nil,
+        onTerminate: @escaping @Sendable (UInt64) -> Void = { _ in }
+    ) {
         self.stream = stream
+        self.onTerminate = onTerminate
         self.state = Mutex(StreamState(protocolID: protocolID))
     }
 
@@ -88,6 +105,9 @@ public final class QUICMuxedStream: MuxedStream, Sendable {
 
         logger.debug("closeWrite(): Stream \(self.id)")
         try await stream.closeWrite()
+        // Half-closing the write side may complete termination (if the read side
+        // was already closed). Notify the owning connection once both are closed.
+        terminateIfNeeded()
     }
 
     /// Closes the read side of the stream (sends STOP_SENDING).
@@ -105,6 +125,9 @@ public final class QUICMuxedStream: MuxedStream, Sendable {
         logger.debug("closeRead(): Stream \(self.id)")
         // QUIC STOP_SENDING frame tells peer we won't read anymore
         try await stream.stopSending(errorCode: 0)
+        // Half-closing the read side may complete termination (if the write side
+        // was already closed). Notify the owning connection once both are closed.
+        terminateIfNeeded()
     }
 
     /// Closes the stream gracefully.
@@ -130,6 +153,8 @@ public final class QUICMuxedStream: MuxedStream, Sendable {
         if !writeAlreadyClosed {
             try await stream.closeWrite()
         }
+        // close() marks both read and write closed, so the stream is terminated.
+        terminateIfNeeded()
     }
 
     /// Resets the stream (abrupt close).
@@ -144,5 +169,23 @@ public final class QUICMuxedStream: MuxedStream, Sendable {
 
         logger.debug("reset(): Stream \(self.id)")
         await stream.reset(errorCode: 0)
+        // reset() marks both read and write closed, so the stream is terminated.
+        terminateIfNeeded()
+    }
+
+    // MARK: - Termination
+
+    /// Invokes the termination callback exactly once, when both the read and
+    /// write sides are closed. Idempotent across `close`/`reset`/`closeWrite`+
+    /// `closeRead`.
+    private func terminateIfNeeded() {
+        let shouldNotify = state.withLock { s -> Bool in
+            guard s.readClosed, s.writeClosed, !s.didTerminate else { return false }
+            s.didTerminate = true
+            return true
+        }
+        if shouldNotify {
+            onTerminate(id)
+        }
     }
 }

@@ -1,9 +1,22 @@
 /// TLSTamperTests - Integration tests for the TLS handshake identity binding.
 ///
-/// Verifies Finding 5: the post-handshake cross-check that re-derives the PeerID
-/// from the certificate the peer ACTUALLY presented and requires it to match the
-/// validated PeerID. A swapped peer cert or a tampered signed key must abort the
-/// handshake; a legitimate handshake must complete with correctly bound PeerIDs.
+/// Verifies Finding 5: the identity-binding invariant that a swapped peer cert or
+/// a tampered signed key re-derives a DIFFERENT PeerID than the legitimate one,
+/// so the upgrader can never bind a PeerID the leaf cert does not attest. These
+/// invariants are asserted at the `LibP2PCertificate` level — the source of truth
+/// the upgrader's verification relies on.
+///
+/// ## Deferred libp2p-TLS authentication (fail-closed)
+///
+/// The end-to-end mutual-auth handshake assertions formerly in this suite drove
+/// the removed `TLSCore.TLSConnection` directly (`validatedPeerInfo` /
+/// `peerCertificates`). After the swift-tls facade redesign the Tier-1 `TLS`
+/// facade discards the validator's `PeerIdentity` (`peerIdentity` returns nil), so
+/// the libp2p-TLS upgrader cannot read the verified remote PeerID back out. The
+/// upgrader therefore FAILS CLOSED — `peerIdentityUnavailableRejectsRatherThanAccept`
+/// asserts a full handshake over an in-memory pipe throws rather than admitting an
+/// unidentified peer. Completing libp2p-TLS auth is unblocked once the facade
+/// surfaces `peerIdentity`.
 import Testing
 import Foundation
 import NIOCore
@@ -11,117 +24,69 @@ import Synchronization
 import P2PCore
 import P2PCertificate
 import P2PSecurity
-import TLSCore
-import TLSRecord
 @testable import P2PSecurityTLS
 
 @Suite("TLS Tamper / Identity Binding Tests", .serialized)
 struct TLSTamperTests {
 
-    // MARK: - End-to-End Handshake (cross-check invariant over a real handshake)
+    // MARK: - Fail-Closed Gate (deferred peer-identity surfacing)
 
-    /// Drives a real mutual-auth TLS 1.3 handshake between two TLSConnections
-    /// configured exactly like TLSUpgrader (libp2p certs, ALPN, validator), then
-    /// returns both connections. The pump is bounded: it fails fast instead of
-    /// hanging if the handshake makes no progress.
-    private func performLibp2pHandshake(
-        clientKeyPair: KeyPair,
-        serverKeyPair: KeyPair,
-        clientExpectedPeer: PeerID? = nil,
-        serverExpectedPeer: PeerID? = nil
-    ) async throws -> (client: TLSConnection, server: TLSConnection) {
-        func makeConfig(for keyPair: KeyPair, expectedPeer: PeerID?) throws -> TLSConfiguration {
-            let cert = try TLSCertificateHelper.generate(keyPair: keyPair)
-            var config = TLSConfiguration()
-            config.alpnProtocols = TLSUpgrader.buildALPNProtocols(muxerProtocols: [])
-            config.signingKey = cert.signingKey
-            config.certificateChain = cert.certificateChain
-            config.allowSelfSigned = true
-            config.verifyPeer = true
-            config.requireClientCertificate = true
-            config.certificateValidator = TLSCertificateHelper.makeCertificateValidator(
-                expectedPeer: expectedPeer
-            )
-            return config
-        }
-
-        let client = TLSConnection(configuration: try makeConfig(for: clientKeyPair, expectedPeer: clientExpectedPeer))
-        let server = TLSConnection(configuration: try makeConfig(for: serverKeyPair, expectedPeer: serverExpectedPeer))
-
-        var clientToServer = try await client.startHandshake(isClient: true)
-        _ = try await server.startHandshake(isClient: false)
-        var serverToClient = Data()
-
-        // Bounded ping-pong: deliver pending bytes to the peer, collect its
-        // response, until both are connected or no progress is made.
-        for _ in 0..<32 {
-            if client.isConnected && server.isConnected { break }
-
-            if !clientToServer.isEmpty {
-                let out = try await server.processReceivedData(clientToServer)
-                clientToServer = Data()
-                if out.alert != nil { throw TestHarnessError.alert }
-                serverToClient.append(out.dataToSend)
-            }
-
-            if !serverToClient.isEmpty {
-                let out = try await client.processReceivedData(serverToClient)
-                serverToClient = Data()
-                if out.alert != nil { throw TestHarnessError.alert }
-                clientToServer.append(out.dataToSend)
-            }
-
-            if clientToServer.isEmpty && serverToClient.isEmpty { break }
-        }
-
-        guard client.isConnected, server.isConnected else {
-            throw TestHarnessError.handshakeIncomplete
-        }
-        return (client, server)
-    }
-
-    @Test("Legitimate handshake: presented cert re-derives the validated PeerID", .timeLimit(.minutes(1)))
-    func legitimateHandshakeCrossCheckPasses() async throws {
+    @Test("Fail-closed: upgrader rejects rather than accept an unidentified peer", .timeLimit(.minutes(1)))
+    func peerIdentityUnavailableRejectsRatherThanAccept() async throws {
         let clientKeyPair = KeyPair.generateEd25519()
         let serverKeyPair = KeyPair.generateEd25519()
 
-        let (client, server) = try await performLibp2pHandshake(
-            clientKeyPair: clientKeyPair,
-            serverKeyPair: serverKeyPair
+        let (clientConn, serverConn) = InMemoryRawConnectionPair.make()
+        // A short handshake timeout keeps the test bounded: the upgrader's own
+        // timeout machinery fails the handshake (throwing `TLSError.timeout`)
+        // rather than blocking forever, so the test never hangs regardless of how
+        // far the in-memory handshake progresses.
+        let upgrader = TLSUpgrader(
+            configuration: TLSUpgraderConfiguration(handshakeTimeout: .milliseconds(500))
         )
 
-        // This mirrors TLSUpgrader step 5b exactly: re-derive the PeerID from the
-        // certificate the peer ACTUALLY presented and require it to match the
-        // validator's result. For a legitimate handshake the two agree.
-        let serverValidated = try #require(client.validatedPeerInfo as? PeerID)
-        let serverPresentedLeaf = try #require(client.peerCertificates?.first)
-        let serverRederived = try LibP2PCertificate.extractPeerID(from: serverPresentedLeaf)
-        #expect(serverValidated == serverRederived)
-        #expect(serverRederived == serverKeyPair.peerID)
+        // Drive both sides concurrently. The upgrader must NEVER return a
+        // SecuredConnection bound to an unverified/unidentified peer: while the
+        // facade does not surface `peerIdentity`, the fail-closed gate throws
+        // `peerIdentityUnavailable` (or the handshake times out / rejects first).
+        // The essential invariant: NEITHER side silently succeeds.
+        let outcomes: [Bool] = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                do {
+                    _ = try await upgrader.secure(
+                        clientConn,
+                        localKeyPair: clientKeyPair,
+                        as: .initiator,
+                        expectedPeer: serverKeyPair.peerID
+                    )
+                    return true  // silently accepted — a security failure
+                } catch {
+                    return false  // rejected — the required fail-closed outcome
+                }
+            }
+            group.addTask {
+                do {
+                    _ = try await upgrader.secure(
+                        serverConn,
+                        localKeyPair: serverKeyPair,
+                        as: .responder,
+                        expectedPeer: nil
+                    )
+                    return true
+                } catch {
+                    return false
+                }
+            }
 
-        let clientValidated = try #require(server.validatedPeerInfo as? PeerID)
-        let clientPresentedLeaf = try #require(server.peerCertificates?.first)
-        let clientRederived = try LibP2PCertificate.extractPeerID(from: clientPresentedLeaf)
-        #expect(clientValidated == clientRederived)
-        #expect(clientRederived == clientKeyPair.peerID)
-    }
-
-    @Test("Handshake aborts when a side expects a different peer", .timeLimit(.minutes(1)))
-    func mismatchedExpectedPeerAborts() async throws {
-        let clientKeyPair = KeyPair.generateEd25519()
-        let serverKeyPair = KeyPair.generateEd25519()
-        let wrongExpected = KeyPair.generateEd25519().peerID
-
-        // The client expects the WRONG server identity. The validator (invoked by
-        // swift-tls during the handshake) must reject the presented cert, so the
-        // handshake cannot complete — it must throw, never silently succeed.
-        await #expect(throws: (any Error).self) {
-            _ = try await self.performLibp2pHandshake(
-                clientKeyPair: clientKeyPair,
-                serverKeyPair: serverKeyPair,
-                clientExpectedPeer: wrongExpected
-            )
+            var results: [Bool] = []
+            for await accepted in group {
+                results.append(accepted)
+            }
+            return results
         }
+
+        // Neither side may have silently accepted an unidentified peer.
+        #expect(outcomes.allSatisfy { $0 == false })
     }
 
     // MARK: - Cross-Check Invariant (swapped / tampered certificate)
@@ -153,11 +118,8 @@ struct TLSTamperTests {
         // End-to-end "mismatched signed key" scenario from Finding 5: the client
         // expects identity B, but the server presents its real cert for identity
         // A. The presented signed key (A) does not match what the client expects
-        // (B), so the handshake must abort — TLSUpgrader's cross-check and the
-        // validator both refuse to bind a PeerID that the leaf cert does not
-        // actually attest. (Covered concretely by mismatchedExpectedPeerAborts;
-        // here we additionally assert the data-source invariant that the cross-
-        // check relies on: a swapped leaf re-derives to a different PeerID.)
+        // (B), so the handshake must abort — the validator and upgrader both
+        // refuse to bind a PeerID that the leaf cert does not actually attest.
         let serverKeyPair = KeyPair.generateEd25519()
         let attackerKeyPair = KeyPair.generateEd25519()
 
@@ -196,13 +158,125 @@ struct TLSTamperTests {
             _ = try LibP2PCertificate.extractPeerID(from: tampered)
         }
     }
+
+    @Test("Validator's surfaced identity matches the presented leaf (binding source of truth)")
+    func validatorBindsPresentedLeafIdentity() throws {
+        // The validator the upgrader installs surfaces the PeerID re-derived from
+        // the leaf the peer ACTUALLY presented. This is the identity the upgrader
+        // would bind once the facade surfaces `peerIdentity`.
+        let keyPair = KeyPair.generateEd25519()
+        let identity = try TLSCertificateHelper.makeIdentity(keyPair: keyPair)
+        let validator = TLSCertificateHelper.makeCertificateValidator(expectedPeer: nil)
+
+        let surfaced = try validator(identity.certificateChain)
+        #expect(surfaced?.identifier == [UInt8](keyPair.peerID.bytes))
+    }
 }
 
-// MARK: - Test Harness Errors
+// MARK: - In-Memory RawConnection Pipe
 
-private enum TestHarnessError: Error, Equatable {
-    /// The handshake did not complete within the bounded pump (no progress).
-    case handshakeIncomplete
-    /// A TLS alert was emitted during the handshake.
-    case alert
+/// Shared inbound queue for one direction of the pipe. A blocked `read()` parks
+/// a continuation that the peer's `write()` resumes — no spinning.
+private final class PipeQueue: Sendable {
+    struct State {
+        var inbound: [ByteBuffer] = []
+        var waiter: CheckedContinuation<ByteBuffer, any Error>?
+        var isClosed = false
+    }
+    let state = Mutex(State())
+}
+
+/// A bidirectional in-memory `RawConnection` pair used to drive a real TLS
+/// handshake between two `TLSUpgrader` endpoints without a network. Reads pull
+/// from `incoming`; writes push to `outgoing` (the peer's `incoming`).
+private final class InMemoryRawConnectionPair: RawConnection, Sendable {
+
+    private let incoming: PipeQueue
+    private let outgoing: PipeQueue
+
+    private init(incoming: PipeQueue, outgoing: PipeQueue) {
+        self.incoming = incoming
+        self.outgoing = outgoing
+    }
+
+    static func make() -> (InMemoryRawConnectionPair, InMemoryRawConnectionPair) {
+        let aToB = PipeQueue()
+        let bToA = PipeQueue()
+        let left = InMemoryRawConnectionPair(incoming: bToA, outgoing: aToB)
+        let right = InMemoryRawConnectionPair(incoming: aToB, outgoing: bToA)
+        return (left, right)
+    }
+
+    var localAddress: Multiaddr? { nil }
+    var remoteAddress: Multiaddr { Multiaddr.memory(id: "inmemory") }
+
+    private enum ReadAction {
+        case deliver(ByteBuffer)
+        case closed
+        case park
+    }
+
+    func read() async throws -> ByteBuffer {
+        // Cancellation-aware: when the upgrader's handshake timeout cancels the
+        // handshake task, a parked `read()` must resume (with CancellationError)
+        // instead of blocking forever. Without this the in-memory handshake could
+        // deadlock once both sides are waiting for bytes that never arrive.
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let action: ReadAction = incoming.state.withLock { state in
+                    if !state.inbound.isEmpty {
+                        return .deliver(state.inbound.removeFirst())
+                    }
+                    if state.isClosed {
+                        return .closed
+                    }
+                    if Task.isCancelled {
+                        return .closed
+                    }
+                    state.waiter = continuation
+                    return .park
+                }
+                switch action {
+                case .deliver(let buffer):
+                    continuation.resume(returning: buffer)
+                case .closed:
+                    continuation.resume(throwing: CancellationError())
+                case .park:
+                    break
+                }
+            }
+        } onCancel: {
+            let waiter: CheckedContinuation<ByteBuffer, any Error>? = incoming.state.withLock { state in
+                let waiter = state.waiter
+                state.waiter = nil
+                return waiter
+            }
+            waiter?.resume(throwing: CancellationError())
+        }
+    }
+
+    func write(_ data: ByteBuffer) async throws {
+        let waiter: CheckedContinuation<ByteBuffer, any Error>? = outgoing.state.withLock { state in
+            guard !state.isClosed else { return nil }
+            if let waiter = state.waiter {
+                state.waiter = nil
+                return waiter
+            }
+            state.inbound.append(data)
+            return nil
+        }
+        waiter?.resume(returning: data)
+    }
+
+    func close() async throws {
+        for queue in [incoming, outgoing] {
+            let waiter: CheckedContinuation<ByteBuffer, any Error>? = queue.state.withLock { state in
+                state.isClosed = true
+                let waiter = state.waiter
+                state.waiter = nil
+                return waiter
+            }
+            waiter?.resume(throwing: TLSError.connectionClosed)
+        }
+    }
 }

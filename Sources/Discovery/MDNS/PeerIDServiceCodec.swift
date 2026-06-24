@@ -1,8 +1,9 @@
-/// P2PDiscoveryMDNS - Codec for encoding/decoding PeerID to/from mDNS Service
+/// P2PDiscoveryMDNS - Codec for encoding/decoding PeerID to/from an MDNSService
 import Foundation
 import P2PCore
+import P2PCoreTransport
 import P2PDiscovery
-import mDNS
+import MDNS
 
 /// TXT record keys for libp2p peer information.
 public enum PeerTXTKey {
@@ -12,12 +13,82 @@ public enum PeerTXTKey {
     public static let agentVersion = "agent"
     /// Comma-separated protocol IDs.
     public static let protocols = "protos"
+    /// One or more `dnsaddr` multiaddrs (see `dnsaddrSeparator`).
+    public static let dnsaddr = "dnsaddr"
 }
 
-/// Codec for converting between PeerID/Multiaddr and mDNS Service.
+/// Codec for converting between PeerID/Multiaddr and an `MDNSService`.
 public enum PeerIDServiceCodec {
 
-    /// Encodes a PeerID and addresses into an mDNS Service.
+    /// Separator packing MULTIPLE `dnsaddr` multiaddrs into the single
+    /// `MDNSService.txt["dnsaddr"]` value.
+    ///
+    /// The Tier-1 `MDNS` facade models TXT attributes as `[String: [UInt8]]`
+    /// (ONE value per key), whereas the libp2p mDNS spec advertises MULTIPLE
+    /// `dnsaddr` TXT entries. We pack them into one value separated by a newline.
+    /// A multiaddr text representation is a `/`-delimited token sequence and never
+    /// contains a newline, so `\n` is an unambiguous, lossless separator.
+    private static let dnsaddrSeparator: Character = "\n"
+
+    // MARK: - TXT helpers
+
+    /// Reads a single UTF-8 TXT value for `key`, or nil if absent/non-UTF-8.
+    private static func txtString(_ txt: [String: [UInt8]], _ key: String) -> String? {
+        guard let bytes = txt[key] else { return nil }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Reads the packed `dnsaddr` TXT value and splits it into the individual
+    /// multiaddr strings (empty if the key is absent).
+    private static func dnsaddrValues(_ txt: [String: [UInt8]]) -> [String] {
+        guard let packed = txtString(txt, PeerTXTKey.dnsaddr) else { return [] }
+        return packed
+            .split(separator: dnsaddrSeparator, omittingEmptySubsequences: true)
+            .map(String.init)
+    }
+
+    // MARK: - IP rendering
+
+    /// Renders an `IPAddress` to its canonical text form for multiaddr building.
+    ///
+    /// `P2PCoreTransport.IPAddress` is Foundation-free and is NOT
+    /// `CustomStringConvertible`, so we render from `rawBytes` directly:
+    /// dotted-quad for IPv4, fully-expanded 8-group hextet form for IPv6.
+    private static func renderIP(_ address: P2PCoreTransport.IPAddress) -> String {
+        let bytes = address.rawBytes
+        if address.isIPv4, bytes.count == 4 {
+            return "\(bytes[0]).\(bytes[1]).\(bytes[2]).\(bytes[3])"
+        }
+        guard bytes.count == 16 else {
+            // Defensive: an address with neither 4 nor 16 bytes is malformed.
+            // Render the IPv4 octets if possible, else an empty (invalid) string
+            // so the caller's `Multiaddr(...)` parse rejects it rather than
+            // fabricating an address.
+            return bytes.count == 4
+                ? "\(bytes[0]).\(bytes[1]).\(bytes[2]).\(bytes[3])"
+                : ""
+        }
+        var groups: [String] = []
+        var i = 0
+        while i < 16 {
+            let group = (UInt16(bytes[i]) << 8) | UInt16(bytes[i + 1])
+            groups.append(String(group, radix: 16))
+            i += 2
+        }
+        return groups.joined(separator: ":")
+    }
+
+    /// Whether an IPv6 `IPAddress` is link-local (fe80::/10).
+    private static func isIPv6LinkLocal(_ address: P2PCoreTransport.IPAddress) -> Bool {
+        let bytes = address.rawBytes
+        guard bytes.count == 16 else { return false }
+        let leading16 = (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
+        return (leading16 & 0xFFC0) == 0xFE80
+    }
+
+    // MARK: - Encode
+
+    /// Encodes a PeerID and addresses into an `MDNSService`.
     ///
     /// - Parameters:
     ///   - peerID: The local peer ID.
@@ -25,67 +96,77 @@ public enum PeerIDServiceCodec {
     ///   - port: The port number.
     ///   - configuration: The mDNS configuration.
     ///   - serviceName: Optional service instance name override.
-    /// - Returns: An mDNS Service ready to be advertised.
+    /// - Returns: An `MDNSService` ready to be advertised.
     public static func encode(
         peerID: PeerID,
         addresses: [Multiaddr],
         port: UInt16,
         configuration: MDNSConfiguration,
         serviceName: String? = nil
-    ) -> Service {
-        var txtRecord = TXTRecord()
+    ) -> MDNSService {
+        var txt: [String: [UInt8]] = [:]
 
         // Encode public key if available (not all key types support extraction)
         do {
             if let publicKey = try peerID.extractPublicKey() {
-                txtRecord[PeerTXTKey.publicKey] = publicKey.protobufEncoded.base64EncodedString()
+                txt[PeerTXTKey.publicKey] = Array(
+                    publicKey.protobufEncoded.base64EncodedString().utf8
+                )
             }
         } catch {
             // Public key not extractable for this key type - omit from TXT record
         }
 
         // Agent version
-        txtRecord[PeerTXTKey.agentVersion] = configuration.agentVersion
+        txt[PeerTXTKey.agentVersion] = Array(configuration.agentVersion.utf8)
 
-        // Encode multiaddresses as dnsaddr TXT attributes (libp2p mDNS spec)
+        // Encode multiaddresses as dnsaddr TXT attributes (libp2p mDNS spec),
+        // packed into a single newline-separated value (see `dnsaddrSeparator`).
+        var dnsaddrStrings: [String] = []
         for var addr in addresses {
             do {
                 // Ensure p2p component is present
                 if !addr.hasPeerID {
                     addr = try addr.appending(.p2p(peerID))
                 }
-                txtRecord.appendValue(addr.description, forKey: "dnsaddr")
+                dnsaddrStrings.append(addr.description)
             } catch {
-                // Skip invalid multiaddr
+                // Skip invalid multiaddr (per-element validation, not systemic)
                 continue
             }
+        }
+        if !dnsaddrStrings.isEmpty {
+            let packed = dnsaddrStrings.joined(separator: String(dnsaddrSeparator))
+            txt[PeerTXTKey.dnsaddr] = Array(packed.utf8)
         }
 
         // Extract protocol information from addresses (backward compatibility)
         let protocols = extractProtocols(from: addresses)
         if !protocols.isEmpty {
-            txtRecord[PeerTXTKey.protocols] = protocols.joined(separator: ",")
+            txt[PeerTXTKey.protocols] = Array(protocols.joined(separator: ",").utf8)
         }
 
-        return Service(
+        return MDNSService(
             name: serviceName ?? peerID.description,
             type: configuration.serviceType,
             domain: configuration.domain,
             port: port,
-            txtRecord: txtRecord,
+            txt: txt,
             ttl: configuration.ttl
         )
     }
 
-    /// Decodes an mDNS Service into a ScoredCandidate.
+    // MARK: - Decode
+
+    /// Decodes an `MDNSService` into a ScoredCandidate.
     ///
     /// - Parameters:
-    ///   - service: The mDNS Service to decode.
+    ///   - service: The `MDNSService` to decode.
     ///   - observer: The local peer ID observing this service.
     /// - Returns: A ScoredCandidate.
     /// - Throws: `MDNSDiscoveryError.invalidPeerID` if the service name is not a valid peer ID.
     public static func decode(
-        service: Service,
+        service: MDNSService,
         observer: PeerID
     ) throws -> ScoredCandidate {
         let peerID = try inferPeerID(from: service)
@@ -93,8 +174,7 @@ public enum PeerIDServiceCodec {
         var addresses: [Multiaddr] = []
 
         // Priority 1: Read dnsaddr TXT attributes (libp2p mDNS spec)
-        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
-        for addrString in dnsaddrValues {
+        for addrString in dnsaddrValues(service.txt) {
             do {
                 let normalized = normalizeScopedIPv6InMultiaddr(addrString)
                 var addr = try Multiaddr(normalized)
@@ -112,7 +192,7 @@ public enum PeerIDServiceCodec {
 
                 addresses.append(addr)
             } catch {
-                // Invalid multiaddr - skip and continue
+                // Invalid multiaddr - skip and continue (per-element validation)
                 continue
             }
         }
@@ -122,7 +202,7 @@ public enum PeerIDServiceCodec {
         if addresses.isEmpty, let port = service.port {
             // Add IPv4 addresses (TCP — mDNS-SD advertises TCP service ports)
             for ipv4 in service.ipv4Addresses {
-                var addr = try Multiaddr("/ip4/\(ipv4)/tcp/\(port)")
+                var addr = try Multiaddr("/ip4/\(renderIP(ipv4))/tcp/\(port)")
                 addr = try addr.appending(.p2p(peerID))
                 addresses.append(addr)
             }
@@ -132,7 +212,7 @@ public enum PeerIDServiceCodec {
                 // Link-local IPv6 addresses require a zone/scope ID for reachability.
                 // Service A/AAAA records do not carry scope information, so skip them.
                 guard !isIPv6LinkLocal(ipv6) else { continue }
-                var addr = try Multiaddr("/ip6/\(ipv6)/tcp/\(port)")
+                var addr = try Multiaddr("/ip6/\(renderIP(ipv6))/tcp/\(port)")
                 addr = try addr.appending(.p2p(peerID))
                 addresses.append(addr)
             }
@@ -148,7 +228,7 @@ public enum PeerIDServiceCodec {
         )
     }
 
-    /// Creates an Observation from a service browser event.
+    /// Creates an Observation from a discovered `MDNSService`.
     ///
     /// - Parameters:
     ///   - service: The discovered service.
@@ -158,7 +238,7 @@ public enum PeerIDServiceCodec {
     /// - Returns: An Observation.
     /// - Throws: `MDNSDiscoveryError.invalidPeerID` if the service name is not a valid peer ID.
     public static func toObservation(
-        service: Service,
+        service: MDNSService,
         kind: PeerObservation.Kind,
         observer: PeerID,
         sequenceNumber: UInt64
@@ -168,8 +248,7 @@ public enum PeerIDServiceCodec {
         var hints: [Multiaddr] = []
 
         // Priority 1: Read dnsaddr TXT attributes (consistent with decode())
-        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
-        for addrString in dnsaddrValues {
+        for addrString in dnsaddrValues(service.txt) {
             do {
                 let normalized = normalizeScopedIPv6InMultiaddr(addrString)
                 var addr = try Multiaddr(normalized)
@@ -186,7 +265,7 @@ public enum PeerIDServiceCodec {
 
                 hints.append(addr)
             } catch {
-                // Invalid multiaddr - skip and continue
+                // Invalid multiaddr - skip and continue (per-element validation)
                 continue
             }
         }
@@ -194,7 +273,7 @@ public enum PeerIDServiceCodec {
         // Fallback: Build address hints from A/AAAA records + port
         if hints.isEmpty, let port = service.port {
             for ipv4 in service.ipv4Addresses {
-                var addr = try Multiaddr("/ip4/\(ipv4)/tcp/\(port)")
+                var addr = try Multiaddr("/ip4/\(renderIP(ipv4))/tcp/\(port)")
                 addr = try addr.appending(.p2p(peerID))
                 hints.append(addr)
             }
@@ -202,7 +281,7 @@ public enum PeerIDServiceCodec {
                 // Link-local IPv6 addresses require a zone/scope ID for reachability.
                 // Service A/AAAA records do not carry scope information, so skip them.
                 guard !isIPv6LinkLocal(ipv6) else { continue }
-                var addr = try Multiaddr("/ip6/\(ipv6)/tcp/\(port)")
+                var addr = try Multiaddr("/ip6/\(renderIP(ipv6))/tcp/\(port)")
                 addr = try addr.appending(.p2p(peerID))
                 hints.append(addr)
             }
@@ -218,13 +297,13 @@ public enum PeerIDServiceCodec {
         )
     }
 
-    /// Infers the peer ID represented by an mDNS service.
+    /// Infers the peer ID represented by an `MDNSService`.
     ///
     /// Resolution order:
     /// 1. PeerID embedded in `dnsaddr` TXT values (`/p2p/<peerID>`)
     /// 2. PeerID derived from `pk` TXT value (protobuf-encoded public key)
     /// 3. Legacy fallback: parse service instance name as PeerID
-    public static func inferPeerID(from service: Service) throws -> PeerID {
+    public static func inferPeerID(from service: MDNSService) throws -> PeerID {
         if let dnsaddrPeerID = peerIDFromDNSAddrTXT(service: service) {
             return dnsaddrPeerID
         }
@@ -242,11 +321,10 @@ public enum PeerIDServiceCodec {
 
     // MARK: - Private Helpers
 
-    private static func peerIDFromDNSAddrTXT(service: Service) -> PeerID? {
-        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
+    private static func peerIDFromDNSAddrTXT(service: MDNSService) -> PeerID? {
         var peerIDs = Set<PeerID>()
 
-        for value in dnsaddrValues {
+        for value in dnsaddrValues(service.txt) {
             do {
                 let normalized = normalizeScopedIPv6InMultiaddr(value)
                 let addr = try Multiaddr(normalized)
@@ -265,8 +343,8 @@ public enum PeerIDServiceCodec {
         return nil
     }
 
-    private static func peerIDFromPublicKeyTXT(service: Service) -> PeerID? {
-        guard let encoded = service.txtRecord[PeerTXTKey.publicKey], !encoded.isEmpty else {
+    private static func peerIDFromPublicKeyTXT(service: MDNSService) -> PeerID? {
+        guard let encoded = txtString(service.txt, PeerTXTKey.publicKey), !encoded.isEmpty else {
             return nil
         }
 
@@ -300,7 +378,7 @@ public enum PeerIDServiceCodec {
         return Array(protocols).sorted()
     }
 
-    private static func calculateScore(service: Service, addressCount: Int) -> Double {
+    private static func calculateScore(service: MDNSService, addressCount: Int) -> Double {
         var score = 0.5  // Base score for discovery
 
         // Bonus for being fully resolved
@@ -319,11 +397,6 @@ public enum PeerIDServiceCodec {
         }
 
         return min(score, 1.0)
-    }
-
-    private static func isIPv6LinkLocal(_ address: IPv6Address) -> Bool {
-        let leading16 = UInt16((address.hi >> 48) & 0xFFFF)
-        return (leading16 & 0xFFC0) == 0xFE80
     }
 
     /// Converts `/ip6/<addr>%<zone>/...` segments to `/ip6zone/<zone>/ip6/<addr>/...`.

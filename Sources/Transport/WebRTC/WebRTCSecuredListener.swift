@@ -24,7 +24,6 @@ import P2PTransport
 import P2PMux
 import P2PCertificate
 import WebRTC
-import DTLSCore
 
 /// A listener that yields pre-secured WebRTC connections.
 public final class WebRTCSecuredListener: SecuredListener, Sendable {

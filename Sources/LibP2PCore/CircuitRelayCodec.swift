@@ -294,6 +294,14 @@ public enum CircuitRelayCodec {
 
     // MARK: - Decoding sub-messages
 
+    /// Per-`Peer`/`Reservation` cap on the repeated `addrs` field. Bounds a
+    /// relay message advertising an unbounded number of addresses.
+    static let maxAddressesPerEntry = 256
+
+    /// Per-`Reservation` byte cap on the `voucher` field. Bounds an
+    /// attacker-supplied oversized voucher blob.
+    static let maxVoucherBytes = 1 << 20
+
     static func decodePeer(
         _ bytes: [UInt8], from start: Int, to end: Int
     ) throws(CircuitRelayCodecError) -> CircuitRelayPeerFields {
@@ -309,7 +317,11 @@ public enum CircuitRelayCodec {
             let fieldEnd = try readLength(bytes, at: &offset, limit: end)
             switch fieldNumber {
             case 1: id = Array(bytes[offset..<fieldEnd])
-            case 2: addresses.append(Array(bytes[offset..<fieldEnd]))
+            case 2:
+                // Per-Peer cap on the repeated addrs field.
+                if addresses.count < maxAddressesPerEntry {
+                    addresses.append(Array(bytes[offset..<fieldEnd]))
+                }
             default: break
             }
             offset = fieldEnd
@@ -334,10 +346,19 @@ public enum CircuitRelayCodec {
                 expiration = try readVarint(bytes, at: &offset)
             case (2, 2):
                 let fieldEnd = try readLength(bytes, at: &offset, limit: end)
-                addresses.append(Array(bytes[offset..<fieldEnd]))
+                // Per-Reservation cap on the repeated addrs field.
+                if addresses.count < maxAddressesPerEntry {
+                    addresses.append(Array(bytes[offset..<fieldEnd]))
+                }
                 offset = fieldEnd
             case (3, 2):
                 let fieldEnd = try readLength(bytes, at: &offset, limit: end)
+                // Per-Reservation byte cap on the voucher field: reject an
+                // oversized voucher rather than allocating it.
+                let voucherSize = fieldEnd - offset
+                guard voucherSize <= maxVoucherBytes else {
+                    throw .voucherTooLarge(size: voucherSize, max: maxVoucherBytes)
+                }
                 voucher = Array(bytes[offset..<fieldEnd])
                 offset = fieldEnd
             default:
@@ -481,4 +502,7 @@ public enum CircuitRelayCodecError: Error, Equatable, Sendable {
     case unknownWireType(UInt64)
     /// A peer entry is missing its required `id` field.
     case missingPeerID
+    /// A reservation `voucher` exceeds the per-voucher byte cap (DoS bound
+    /// against an attacker-supplied oversized voucher blob).
+    case voucherTooLarge(size: Int, max: Int)
 }

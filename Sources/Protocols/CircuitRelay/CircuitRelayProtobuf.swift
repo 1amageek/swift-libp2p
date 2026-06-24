@@ -152,6 +152,8 @@ enum CircuitRelayProtobuf {
             throw CircuitRelayError.encodingError("Unknown wire type \(wireType)")
         case .missingPeerID:
             throw CircuitRelayError.encodingError("Missing peer ID")
+        case .voucherTooLarge(let size, let max):
+            throw CircuitRelayError.encodingError("Voucher too large (\(size) > \(max))")
         }
     }
 }

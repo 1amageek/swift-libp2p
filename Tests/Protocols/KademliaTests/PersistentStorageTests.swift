@@ -578,3 +578,65 @@ struct RecordStoreCustomBackendTests {
         #expect(store.contains(key) == false)
     }
 }
+
+// MARK: - Record Storage Byte-Cap Tests (review finding R4)
+
+/// Regression tests for the per-value byte cap added to the Kademlia record
+/// storage backends. Previously the storages enforced only a record COUNT cap,
+/// so an attacker-supplied oversized value could exhaust memory/disk. `put` now
+/// rejects a value larger than `maxValueBytes` with a typed throw.
+@Suite("Record Storage Byte-Cap Tests")
+struct RecordStorageByteCapTests {
+
+    private func makeTempDir() throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kademlia-bytecap-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        return tempDir
+    }
+
+    private func cleanupDir(_ dir: URL) {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    @Test("InMemory: put rejects a value exceeding maxValueBytes")
+    func inMemoryRejectsOversizedValue() throws {
+        let storage = InMemoryRecordStorage(maxRecords: 16, maxValueBytes: 64)
+        let record = KademliaRecord(
+            key: Data("k".utf8),
+            value: Data(repeating: 0xAB, count: 65)
+        )
+        #expect(throws: KademliaError.self) {
+            try storage.put(record, ttl: .seconds(3600))
+        }
+        // The oversized record must NOT have been stored.
+        #expect(try storage.get(Data("k".utf8)) == nil)
+    }
+
+    @Test("InMemory: put accepts a value at exactly maxValueBytes")
+    func inMemoryAcceptsBoundaryValue() throws {
+        let storage = InMemoryRecordStorage(maxRecords: 16, maxValueBytes: 64)
+        let record = KademliaRecord(
+            key: Data("k".utf8),
+            value: Data(repeating: 0xAB, count: 64)
+        )
+        try storage.put(record, ttl: .seconds(3600))
+        #expect(try storage.get(Data("k".utf8))?.value.count == 64)
+    }
+
+    @Test("File: put rejects a value exceeding maxValueBytes (no disk write)")
+    func fileRejectsOversizedValue() throws {
+        let dir = try makeTempDir()
+        defer { cleanupDir(dir) }
+
+        let storage = try FileRecordStorage(directory: dir, maxRecords: 16, maxValueBytes: 64)
+        let record = KademliaRecord(
+            key: Data("k".utf8),
+            value: Data(repeating: 0xAB, count: 65)
+        )
+        #expect(throws: KademliaError.self) {
+            try storage.put(record, ttl: .seconds(3600))
+        }
+        #expect(try storage.get(Data("k".utf8)) == nil)
+    }
+}

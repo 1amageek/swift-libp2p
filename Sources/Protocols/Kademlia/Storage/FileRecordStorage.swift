@@ -80,6 +80,12 @@ public final class FileRecordStorage: RecordStorage, Sendable {
     /// Maximum number of records to store.
     public let maxRecords: Int
 
+    /// Maximum byte size of a single record value. A record whose value exceeds
+    /// this is rejected in `put` (before any disk write), bounding per-value
+    /// disk/memory against an attacker-supplied oversized DHT value.
+    /// Default: 64 KiB (the libp2p `MaxRecordSize` convention).
+    public let maxValueBytes: Int
+
     private let recordsDirectory: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -98,10 +104,13 @@ public final class FileRecordStorage: RecordStorage, Sendable {
     /// - Parameters:
     ///   - directory: The base directory for storing records.
     ///   - maxRecords: Maximum number of records (default: 1024).
+    ///   - maxValueBytes: Maximum byte size of a single record value
+    ///     (default: 64 KiB).
     /// - Throws: If the directory cannot be created or existing records cannot be loaded.
-    public init(directory: URL, maxRecords: Int = 1024) throws {
+    public init(directory: URL, maxRecords: Int = 1024, maxValueBytes: Int = 64 * 1024) throws {
         self.baseDirectory = directory
         self.maxRecords = maxRecords
+        self.maxValueBytes = maxValueBytes
         self.recordsDirectory = directory.appendingPathComponent("records")
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
@@ -127,6 +136,15 @@ public final class FileRecordStorage: RecordStorage, Sendable {
     // MARK: - RecordStorage
 
     public func put(_ record: KademliaRecord, ttl: Duration) throws {
+        // Self-defending byte cap: reject an oversized value before any disk
+        // write, rather than allowing unbounded disk/memory growth.
+        guard record.value.count <= maxValueBytes else {
+            throw KademliaError.recordTooLarge(
+                valueBytes: record.value.count,
+                limit: maxValueBytes
+            )
+        }
+
         let now = ContinuousClock.now
         let expiresAt = now.advanced(by: ttl)
         let filePath = self.filePath(for: record.key)

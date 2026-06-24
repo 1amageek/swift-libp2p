@@ -16,7 +16,6 @@ import P2PTransport
 import P2PMux
 import P2PCertificate
 import WebRTC
-import DTLSCore
 import NIOCore
 import NIOPosix
 import Logging
@@ -127,7 +126,7 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
 
         // Generate a certificate with the libp2p extension (OID 1.3.6.1.4.1.53594.1.1)
         let generated = try LibP2PCertificate.generate(keyPair: localKeyPair)
-        let certificate = try DTLSCertificate(
+        let certificate = try WebRTCCertificate(
             derEncoded: generated.certificateDER,
             privateKey: generated.privateKey
         )
@@ -268,7 +267,7 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
 
         // Generate a certificate with the libp2p extension (OID 1.3.6.1.4.1.53594.1.1)
         let generated = try LibP2PCertificate.generate(keyPair: localKeyPair)
-        let certificate = try DTLSCertificate(
+        let certificate = try WebRTCCertificate(
             derEncoded: generated.certificateDER,
             privateKey: generated.privateKey
         )

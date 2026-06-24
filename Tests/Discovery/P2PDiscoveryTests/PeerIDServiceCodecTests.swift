@@ -3,7 +3,21 @@ import Foundation
 @testable import P2PDiscoveryMDNS
 @testable import P2PDiscovery
 @testable import P2PCore
-import mDNS
+import MDNS
+import P2PCoreTransport
+
+// MARK: - TXT helpers (new flat-dict + newline-packed-dnsaddr model)
+//
+// The MDNS facade models TXT attributes as `[String: [UInt8]]` (one value per
+// key). The libp2p codec packs MULTIPLE `dnsaddr` multiaddrs into the single
+// `txt["dnsaddr"]` value, newline ("\n") separated. These helpers build that
+// flat dict from string inputs so the tests read like the old multi-value API.
+
+private func txtString(_ value: String) -> [UInt8] { Array(value.utf8) }
+
+private func dnsaddrTXT(_ multiaddrs: [String]) -> [String: [UInt8]] {
+    [PeerTXTKey.dnsaddr: Array(multiaddrs.joined(separator: "\n").utf8)]
+}
 
 @Suite("PeerIDServiceCodec Tests")
 struct PeerIDServiceCodecTests {
@@ -88,7 +102,7 @@ struct PeerIDServiceCodecTests {
             configuration: configuration
         )
 
-        #expect(service.txtRecord[PeerTXTKey.agentVersion] == "test-agent/1.0")
+        #expect(service.txt[PeerTXTKey.agentVersion] == txtString("test-agent/1.0"))
     }
 
     @Test("Encode extracts protocols from addresses")
@@ -108,8 +122,9 @@ struct PeerIDServiceCodecTests {
             configuration: configuration
         )
 
-        let protocols = service.txtRecord[PeerTXTKey.protocols]
-        #expect(protocols != nil)
+        let protocolsBytes = service.txt[PeerTXTKey.protocols]
+        #expect(protocolsBytes != nil)
+        let protocols = protocolsBytes.map { String(decoding: $0, as: UTF8.self) }
         // Should contain ip4, tcp, udp (sorted)
         #expect(protocols?.contains("ip4") == true)
         #expect(protocols?.contains("tcp") == true)
@@ -129,7 +144,7 @@ struct PeerIDServiceCodecTests {
             configuration: configuration
         )
 
-        #expect(service.txtRecord[PeerTXTKey.protocols] == nil)
+        #expect(service.txt[PeerTXTKey.protocols] == nil)
     }
 
     @Test("Encode supports custom service name override")
@@ -157,14 +172,12 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -176,14 +189,12 @@ struct PeerIDServiceCodecTests {
     func decodeInvalidPeerID() {
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: "invalid-peer-id",
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
         #expect(throws: MDNSDiscoveryError.self) {
@@ -197,14 +208,12 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "192.168.1.1")!, IPv4Address(string: "10.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(192, 168, 1, 1), .v4(10, 0, 0, 1)]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -219,14 +228,13 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        // 2001:db8::1
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [IPv6Address(string: "2001:db8::1")!],
-            txtRecord: TXTRecord()
+            addresses: [.v6(InlineIPv6(0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -241,14 +249,12 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: nil,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -264,14 +270,12 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: nil,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: []
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -285,24 +289,21 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let serviceNoAddr = Service(
+        let serviceNoAddr = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: nil,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: []
         )
 
-        let serviceWithAddr = Service(
+        let serviceWithAddr = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
+            host: "host.local",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
         let candidateNoAddr = try PeerIDServiceCodec.decode(service: serviceNoAddr, observer: observer)
@@ -317,24 +318,26 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let serviceIPv4Only = Service(
+        let serviceIPv4Only = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
+            host: "host.local",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
-        let serviceDualStack = Service(
+        // 127.0.0.1 + ::1
+        let serviceDualStack = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
+            host: "host.local",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [IPv6Address(string: "::1")!],
-            txtRecord: TXTRecord()
+            addresses: [
+                .v4(127, 0, 0, 1),
+                .v6(InlineIPv6(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))
+            ]
         )
 
         let candidateIPv4 = try PeerIDServiceCodec.decode(service: serviceIPv4Only, observer: observer)
@@ -349,15 +352,19 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        // Create a fully resolved service with all bonuses
-        let service = Service(
+        // Create a fully resolved service with all bonuses (host + port + dual stack)
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
+            host: "host.local",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!, IPv4Address(string: "192.168.1.1")!],
-            ipv6Addresses: [IPv6Address(string: "::1")!, IPv6Address(string: "fe80::1")!],
-            txtRecord: TXTRecord()
+            addresses: [
+                .v4(127, 0, 0, 1),
+                .v4(192, 168, 1, 1),
+                .v6(InlineIPv6(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01)),
+                .v6(InlineIPv6(0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))
+            ]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -373,14 +380,12 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "192.168.1.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(192, 168, 1, 1)]
         )
 
         let observation = try PeerIDServiceCodec.toObservation(
@@ -400,14 +405,12 @@ struct PeerIDServiceCodecTests {
     func toObservationInvalidPeerID() {
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: "invalid-name",
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
         #expect(throws: MDNSDiscoveryError.self) {
@@ -426,14 +429,16 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "192.168.1.1")!, IPv4Address(string: "10.0.0.1")!],
-            ipv6Addresses: [IPv6Address(string: "::1")!],
-            txtRecord: TXTRecord()
+            addresses: [
+                .v4(192, 168, 1, 1),
+                .v4(10, 0, 0, 1),
+                .v6(InlineIPv6(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))
+            ]
         )
 
         let observation = try PeerIDServiceCodec.toObservation(
@@ -443,7 +448,7 @@ struct PeerIDServiceCodecTests {
             sequenceNumber: 1
         )
 
-        // Should have UDP addresses for each IP
+        // Should have an address hint for each IP (2 IPv4 + 1 IPv6)
         #expect(observation.hints.count == 3)
     }
 
@@ -453,14 +458,12 @@ struct PeerIDServiceCodecTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "127.0.0.1")!],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: [.v4(127, 0, 0, 1)]
         )
 
         let observation = try PeerIDServiceCodec.toObservation(
@@ -538,6 +541,10 @@ struct MDNSConfigurationTests {
     }
 
     // MARK: - dnsaddr TXT Attribute Tests (libp2p mDNS spec)
+    //
+    // The facade packs multiple dnsaddr multiaddrs into the single
+    // `txt["dnsaddr"]` value, newline-separated. These tests read/write that
+    // packed value via the `dnsaddrTXT` / split helpers.
 
     @Test("Encode includes dnsaddr TXT attributes")
     func encodeDnsaddrAttributes() throws {
@@ -555,7 +562,12 @@ struct MDNSConfigurationTests {
             configuration: MDNSConfiguration()
         )
 
-        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
+        // The codec packs the dnsaddr entries into one newline-separated value.
+        let packed = try #require(service.txt[PeerTXTKey.dnsaddr])
+        let dnsaddrValues = String(decoding: packed, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+
         #expect(dnsaddrValues.count == 2)
         #expect(dnsaddrValues[0].contains("/ip4/127.0.0.1/tcp/4001"))
         #expect(dnsaddrValues[1].contains("/ip6/::1/tcp/4001"))
@@ -581,7 +593,10 @@ struct MDNSConfigurationTests {
             configuration: MDNSConfiguration()
         )
 
-        let dnsaddrValues = service.txtRecord.values(forKey: "dnsaddr")
+        let packed = try #require(service.txt[PeerTXTKey.dnsaddr])
+        let dnsaddrValues = String(decoding: packed, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
         #expect(dnsaddrValues.count == 1)
         #expect(dnsaddrValues[0] == "/ip4/127.0.0.1/tcp/4001/p2p/\(peerID)")
     }
@@ -592,18 +607,15 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-        txtRecord.appendValue("/ip6/fe80::1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT([
+                "/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)",
+                "/ip6/fe80::1/tcp/4001/p2p/\(peerID)"
+            ])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -619,17 +631,12 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: "opaque-peer-name",
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT(["/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)"])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -644,17 +651,12 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip6/fe80::1%en0/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: "opaque-peer-name",
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT(["/ip6/fe80::1%en0/tcp/4001/p2p/\(peerID)"])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -669,17 +671,12 @@ struct MDNSConfigurationTests {
         let keyPair = KeyPair.generateEd25519()
         let peerID = keyPair.peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/10.0.0.1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: "opaque-peer-name",
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT(["/ip4/10.0.0.1/tcp/4001/p2p/\(peerID)"])
         )
 
         let inferred = try PeerIDServiceCodec.inferPeerID(from: service)
@@ -690,14 +687,12 @@ struct MDNSConfigurationTests {
     func inferPeerIDFallbackToServiceName() throws {
         let peerID = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: TXTRecord()
+            addresses: []
         )
 
         let inferred = try PeerIDServiceCodec.inferPeerID(from: service)
@@ -710,19 +705,16 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-        txtRecord.appendValue("invalid-multiaddr", forKey: "dnsaddr")
-        txtRecord.appendValue("/ip6/fe80::1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT([
+                "/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)",
+                "invalid-multiaddr",
+                "/ip6/fe80::1/tcp/4001/p2p/\(peerID)"
+            ])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -739,17 +731,12 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/192.168.1.1/tcp/4001", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT(["/ip4/192.168.1.1/tcp/4001"])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -765,23 +752,25 @@ struct MDNSConfigurationTests {
         let otherPeerID = KeyPair.generateEd25519().peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-        txtRecord.appendValue("/ip4/192.168.1.2/tcp/4001/p2p/\(otherPeerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        // Both peer IDs appear in dnsaddr; the codec resolves the subject from the
+        // service name (peerID) and keeps only the matching dnsaddr entry. When
+        // multiple distinct peer IDs are present, dnsaddr-based inference returns
+        // nil, so inference falls back to the service name.
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT([
+                "/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)",
+                "/ip4/192.168.1.2/tcp/4001/p2p/\(otherPeerID)"
+            ])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
         // Should skip mismatched peer ID
+        #expect(candidate.peerID == peerID)
         #expect(candidate.addresses.count == 1)
         #expect(candidate.addresses[0].description == "/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)")
     }
@@ -792,22 +781,29 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        // 192.168.1.1 + 2001:db8::1
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "192.168.1.1")!],
-            ipv6Addresses: [IPv6Address(string: "2001:db8::1")!],
-            txtRecord: TXTRecord()
+            addresses: [
+                .v4(192, 168, 1, 1),
+                .v6(InlineIPv6(0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))
+            ]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
 
-        // Should fall back to A/AAAA records
+        // Should fall back to A/AAAA records: one IPv4 + one IPv6 address.
         #expect(candidate.addresses.count == 2)
         #expect(candidate.addresses[0].description == "/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)")
-        #expect(candidate.addresses[1].description == "/ip6/2001:db8::1/tcp/4001/p2p/\(peerID)")
+        // The IPv6 fallback is rendered from raw bytes and canonicalized by
+        // Multiaddr; assert it is an ip6 address with the right port + p2p rather
+        // than pinning Multiaddr's exact IPv6 text canonicalization.
+        let ipv6Addr = candidate.addresses[1].description
+        #expect(ipv6Addr.hasPrefix("/ip6/"))
+        #expect(ipv6Addr.contains("/tcp/4001/p2p/\(peerID)"))
     }
 
     @Test("Decode prefers dnsaddr over A/AAAA records")
@@ -816,17 +812,13 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/10.0.0.1/tcp/5001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "192.168.1.1")!],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            addresses: [.v4(192, 168, 1, 1)],
+            txt: dnsaddrTXT(["/ip4/10.0.0.1/tcp/5001/p2p/\(peerID)"])
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)
@@ -842,17 +834,12 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        var txtRecord = TXTRecord()
-        txtRecord.appendValue("/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)", forKey: "dnsaddr")
-
-        let service = Service(
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [],
-            txtRecord: txtRecord
+            txt: dnsaddrTXT(["/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)"])
         )
 
         let observation = try PeerIDServiceCodec.toObservation(
@@ -872,14 +859,16 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        // 192.168.1.1 + fe80::1 (link-local IPv6 is skipped in fallback)
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [IPv4Address(string: "192.168.1.1")!],
-            ipv6Addresses: [IPv6Address(string: "fe80::1")!],
-            txtRecord: TXTRecord()
+            addresses: [
+                .v4(192, 168, 1, 1),
+                .v6(InlineIPv6(0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))
+            ]
         )
 
         let observation = try PeerIDServiceCodec.toObservation(
@@ -889,6 +878,7 @@ struct MDNSConfigurationTests {
             sequenceNumber: 1
         )
 
+        // The link-local IPv6 is skipped (no scope), leaving the single IPv4 hint.
         #expect(observation.hints.count == 1)
         #expect(observation.hints[0].description == "/ip4/192.168.1.1/tcp/4001/p2p/\(peerID)")
     }
@@ -899,14 +889,13 @@ struct MDNSConfigurationTests {
         let peerID = keyPair.peerID
         let observer = KeyPair.generateEd25519().peerID
 
-        let service = Service(
+        // fe80::1 link-local IPv6
+        let service = MDNSService(
             name: peerID.description,
             type: "_p2p._udp",
             domain: "local.",
             port: 4001,
-            ipv4Addresses: [],
-            ipv6Addresses: [IPv6Address(string: "fe80::1")!],
-            txtRecord: TXTRecord()
+            addresses: [.v6(InlineIPv6(0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01))]
         )
 
         let candidate = try PeerIDServiceCodec.decode(service: service, observer: observer)

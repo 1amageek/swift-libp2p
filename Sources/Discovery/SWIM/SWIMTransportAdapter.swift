@@ -1,6 +1,11 @@
 /// P2PDiscoverySWIM - Adapter from NIOUDPTransport to SWIMTransport
 import Foundation
 import SWIM
+// `SWIMMessageCodec` lives in the Tier-3 `SWIMWire` product after the SWIM
+// redesign; the `SWIM` facade deliberately does NOT re-export the codec
+// machinery, so it must be imported directly. The `Data` codec overloads
+// (`encode`/`decode`) are surfaced via SWIM's `SWIMMessageCodec+Data` extension.
+import SWIMWire
 import NIOUDPTransport
 import NIOCore
 import Logging

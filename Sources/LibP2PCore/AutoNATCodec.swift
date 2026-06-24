@@ -181,6 +181,10 @@ public struct AutoNATFields: Sendable, Equatable {
         return peer
     }
 
+    /// Per-`PeerInfo` cap on the repeated `addresses` field. Bounds an AutoNAT v1
+    /// dial request advertising an unbounded number of addresses.
+    private static let maxAddressesPerPeer = 256
+
     private static func decodePeerInfo(
         _ bytes: [UInt8], from start: Int, to end: Int
     ) throws(AutoNATCodecError) -> AutoNATPeerInfoFields {
@@ -196,7 +200,11 @@ public struct AutoNATFields: Sendable, Equatable {
             let fieldEnd = try readLength(bytes, at: &offset, limit: end)
             switch fieldNumber {
             case 1: id = Array(bytes[offset..<fieldEnd])
-            case 2: addresses.append(Array(bytes[offset..<fieldEnd]))
+            case 2:
+                // Per-PeerInfo cap on the repeated addresses field.
+                if addresses.count < maxAddressesPerPeer {
+                    addresses.append(Array(bytes[offset..<fieldEnd]))
+                }
             default: break
             }
             offset = fieldEnd

@@ -66,7 +66,9 @@ public actor SWIMMembership: DiscoveryService {
     public let localPeerID: PeerID
     private let configuration: SWIMMembershipConfiguration
     private var transport: SWIMTransportAdapter?
-    private var swim: SWIMInstance?
+    // The SWIM redesign renamed the engine `SWIMInstance` -> `SWIMCluster`
+    // (same init shape + start/shutdown/join/leave/members/aliveCount/events API).
+    private var swim: SWIMCluster?
 
     private var isStarted = false
     private var sequenceNumber: UInt64 = 0
@@ -123,8 +125,8 @@ public actor SWIMMembership: DiscoveryService {
             )
         )
 
-        // Create SWIM instance
-        let swim = SWIMInstance(
+        // Create SWIM cluster engine
+        let swim = SWIMCluster(
             localMember: localMember,
             config: configuration.swimConfig,
             transport: transport

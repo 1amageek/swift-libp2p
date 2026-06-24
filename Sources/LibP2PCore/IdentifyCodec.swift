@@ -136,10 +136,16 @@ public struct IdentifyFields: Sendable, Equatable {
     ///   - bytes: The protobuf-encoded Identify message.
     ///   - maxFieldSize: Reject any single field whose declared length exceeds
     ///     this bound (a 0.2.0 field-limit security bound).
+    ///   - maxListenAddrs: Cap on the repeated `listenAddrs` field. Excess
+    ///     entries are dropped (bounded), not allocated.
+    ///   - maxProtocols: Cap on the repeated `protocols` field. Excess entries
+    ///     are dropped (bounded), not allocated.
     /// - Throws: `IdentifyCodecError` on truncated / malformed framing.
     public static func decode(
         from bytes: [UInt8],
-        maxFieldSize: Int = 1_048_576
+        maxFieldSize: Int = 1_048_576,
+        maxListenAddrs: Int = 1000,
+        maxProtocols: Int = 1000
     ) throws(IdentifyCodecError) -> IdentifyFields {
         var fields = IdentifyFields()
         var offset = 0
@@ -186,9 +192,15 @@ public struct IdentifyFields: Sendable, Equatable {
 
             switch fieldNumber {
             case 1: fields.publicKey = value
-            case 2: fields.listenAddrs.append(value)
+            case 2:
+                // Per-message cap on the repeated listenAddrs field.
+                if fields.listenAddrs.count < maxListenAddrs {
+                    fields.listenAddrs.append(value)
+                }
             case 3:
-                if let proto = decodeUTF8Strict(value) {
+                if let proto = decodeUTF8Strict(value),
+                   fields.protocols.count < maxProtocols {
+                    // Per-message cap on the repeated protocols field.
                     fields.protocols.append(proto)
                 }
             case 4: fields.observedAddr = value

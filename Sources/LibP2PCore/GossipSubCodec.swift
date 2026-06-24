@@ -48,6 +48,13 @@ public struct GossipSubDecodingLimits: Sendable {
     public var maxPrune: Int
     public var maxIDontWant: Int
     public var maxNestingDepth: Int
+    /// Per-control-entry cap on the inner `messageIDs` array (IHAVE / IWANT /
+    /// IDONTWANT). Bounds a single control entry advertising an unbounded number
+    /// of message IDs.
+    public var maxMessageIDsPerControl: Int
+    /// Per-PRUNE cap on the inner `peers` array (peer-exchange entries). Bounds a
+    /// single PRUNE carrying an unbounded peer-exchange list.
+    public var maxPeersPerPrune: Int
 
     public init(
         maxMessages: Int = 1000,
@@ -57,7 +64,9 @@ public struct GossipSubDecodingLimits: Sendable {
         maxGraft: Int = 100,
         maxPrune: Int = 100,
         maxIDontWant: Int = 100,
-        maxNestingDepth: Int = 16
+        maxNestingDepth: Int = 16,
+        maxMessageIDsPerControl: Int = 1000,
+        maxPeersPerPrune: Int = 100
     ) {
         self.maxMessages = maxMessages
         self.maxSubscriptions = maxSubscriptions
@@ -67,6 +76,8 @@ public struct GossipSubDecodingLimits: Sendable {
         self.maxPrune = maxPrune
         self.maxIDontWant = maxIDontWant
         self.maxNestingDepth = maxNestingDepth
+        self.maxMessageIDsPerControl = maxMessageIDsPerControl
+        self.maxPeersPerPrune = maxPeersPerPrune
     }
 
     public static let `default` = GossipSubDecodingLimits()
@@ -541,11 +552,17 @@ public struct GossipSubRPCFields: Sendable, Equatable {
             switch fieldNumber {
             case 1:
                 if control.ihaves.count < limits.maxIHave {
-                    control.ihaves.append(try decodeIHave(bytes, from: offset, to: fieldEnd))
+                    control.ihaves.append(try decodeIHave(
+                        bytes, from: offset, to: fieldEnd,
+                        maxMessageIDs: limits.maxMessageIDsPerControl
+                    ))
                 }
             case 2:
                 if control.iwants.count < limits.maxIWant {
-                    control.iwants.append(try decodeIWant(bytes, from: offset, to: fieldEnd))
+                    control.iwants.append(try decodeIWant(
+                        bytes, from: offset, to: fieldEnd,
+                        maxMessageIDs: limits.maxMessageIDsPerControl
+                    ))
                 }
             case 3:
                 if control.grafts.count < limits.maxGraft {
@@ -553,11 +570,17 @@ public struct GossipSubRPCFields: Sendable, Equatable {
                 }
             case 4:
                 if control.prunes.count < limits.maxPrune {
-                    control.prunes.append(try decodePrune(bytes, from: offset, to: fieldEnd))
+                    control.prunes.append(try decodePrune(
+                        bytes, from: offset, to: fieldEnd,
+                        maxPeers: limits.maxPeersPerPrune
+                    ))
                 }
             case 5:
                 if control.idontwants.count < limits.maxIDontWant {
-                    control.idontwants.append(try decodeIDontWant(bytes, from: offset, to: fieldEnd))
+                    control.idontwants.append(try decodeIDontWant(
+                        bytes, from: offset, to: fieldEnd,
+                        maxMessageIDs: limits.maxMessageIDsPerControl
+                    ))
                 }
             default:
                 break
@@ -568,7 +591,7 @@ public struct GossipSubRPCFields: Sendable, Equatable {
     }
 
     private static func decodeIHave(
-        _ bytes: [UInt8], from start: Int, to end: Int
+        _ bytes: [UInt8], from start: Int, to end: Int, maxMessageIDs: Int
     ) throws(GossipSubCodecError) -> GossipSubIHaveFields {
         var topic: String?
         var messageIDs: [[UInt8]] = []
@@ -586,7 +609,11 @@ public struct GossipSubRPCFields: Sendable, Equatable {
                     topic = str
                 }
             case 2:
-                messageIDs.append(Array(bytes[offset..<fieldEnd]))
+                // Per-IHAVE cap: bound the inner messageID list (mirror the
+                // outer control caps).
+                if messageIDs.count < maxMessageIDs {
+                    messageIDs.append(Array(bytes[offset..<fieldEnd]))
+                }
             default: break
             }
             offset = fieldEnd
@@ -598,7 +625,7 @@ public struct GossipSubRPCFields: Sendable, Equatable {
     }
 
     private static func decodeIWant(
-        _ bytes: [UInt8], from start: Int, to end: Int
+        _ bytes: [UInt8], from start: Int, to end: Int, maxMessageIDs: Int
     ) throws(GossipSubCodecError) -> GossipSubIWantFields {
         var messageIDs: [[UInt8]] = []
         var offset = start
@@ -610,7 +637,10 @@ public struct GossipSubRPCFields: Sendable, Equatable {
             }
             let fieldEnd = try readLength(bytes, at: &offset, limit: end)
             if fieldNumber == 1 {
-                messageIDs.append(Array(bytes[offset..<fieldEnd]))
+                // Per-IWANT cap: bound the inner messageID list.
+                if messageIDs.count < maxMessageIDs {
+                    messageIDs.append(Array(bytes[offset..<fieldEnd]))
+                }
             }
             offset = fieldEnd
         }
@@ -641,7 +671,7 @@ public struct GossipSubRPCFields: Sendable, Equatable {
     }
 
     private static func decodePrune(
-        _ bytes: [UInt8], from start: Int, to end: Int
+        _ bytes: [UInt8], from start: Int, to end: Int, maxPeers: Int
     ) throws(GossipSubCodecError) -> GossipSubPruneFields {
         var topic: String?
         var peers: [GossipSubPeerInfoFields] = []
@@ -666,7 +696,10 @@ public struct GossipSubRPCFields: Sendable, Equatable {
                     continue
                 }
                 let fieldEnd = try readLength(bytes, at: &offset, limit: end)
-                peers.append(try decodePeerInfo(bytes, from: offset, to: fieldEnd))
+                // Per-PRUNE cap: bound the inner peer-exchange list.
+                if peers.count < maxPeers {
+                    peers.append(try decodePeerInfo(bytes, from: offset, to: fieldEnd))
+                }
                 offset = fieldEnd
             case 3:
                 guard wireType == 0 else {
@@ -711,7 +744,7 @@ public struct GossipSubRPCFields: Sendable, Equatable {
     }
 
     private static func decodeIDontWant(
-        _ bytes: [UInt8], from start: Int, to end: Int
+        _ bytes: [UInt8], from start: Int, to end: Int, maxMessageIDs: Int
     ) throws(GossipSubCodecError) -> GossipSubIDontWantFields {
         var messageIDs: [[UInt8]] = []
         var offset = start
@@ -723,7 +756,10 @@ public struct GossipSubRPCFields: Sendable, Equatable {
             }
             let fieldEnd = try readLength(bytes, at: &offset, limit: end)
             if fieldNumber == 1 {
-                messageIDs.append(Array(bytes[offset..<fieldEnd]))
+                // Per-IDONTWANT cap: bound the inner messageID list.
+                if messageIDs.count < maxMessageIDs {
+                    messageIDs.append(Array(bytes[offset..<fieldEnd]))
+                }
             }
             offset = fieldEnd
         }

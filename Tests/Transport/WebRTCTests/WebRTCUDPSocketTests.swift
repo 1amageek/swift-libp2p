@@ -10,7 +10,6 @@ import NIOEmbedded
 import Synchronization
 @testable import P2PTransportWebRTC
 @testable import WebRTC
-@testable import DTLSCore
 
 @Suite("WebRTC UDP Socket Tests")
 struct WebRTCUDPSocketTests {
@@ -18,7 +17,7 @@ struct WebRTCUDPSocketTests {
     private struct TestChannelError: Error {}
 
     private func makeConnection() throws -> WebRTCConnection {
-        let cert = try DTLSCertificate.generateSelfSigned()
+        let cert = try WebRTCCertificate.generateSelfSigned()
         return WebRTCConnection.asServer(certificate: cert, sendHandler: { _ in })
     }
 

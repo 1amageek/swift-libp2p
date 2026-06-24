@@ -25,15 +25,34 @@ public final class InMemoryRecordStorage: RecordStorage, Sendable {
     /// Maximum number of records to store.
     public let maxRecords: Int
 
+    /// Maximum byte size of a single record value. A record whose value exceeds
+    /// this is rejected in `put`, bounding per-value memory against an
+    /// attacker-supplied oversized DHT value. Default: 64 KiB (the libp2p
+    /// `MaxRecordSize` convention).
+    public let maxValueBytes: Int
+
     /// Creates a new in-memory record storage.
     ///
-    /// - Parameter maxRecords: Maximum number of records (default: 1024).
-    public init(maxRecords: Int = 1024) {
+    /// - Parameters:
+    ///   - maxRecords: Maximum number of records (default: 1024).
+    ///   - maxValueBytes: Maximum byte size of a single record value
+    ///     (default: 64 KiB).
+    public init(maxRecords: Int = 1024, maxValueBytes: Int = 64 * 1024) {
         self.maxRecords = maxRecords
+        self.maxValueBytes = maxValueBytes
         self.state = Mutex(State())
     }
 
     public func put(_ record: KademliaRecord, ttl: Duration) throws {
+        // Self-defending byte cap: reject an oversized value before it is stored,
+        // rather than allowing unbounded memory growth.
+        guard record.value.count <= maxValueBytes else {
+            throw KademliaError.recordTooLarge(
+                valueBytes: record.value.count,
+                limit: maxValueBytes
+            )
+        }
+
         let now = ContinuousClock.now
         let expiresAt = now.advanced(by: ttl)
         let stored = StoredRecord(record: record, storedAt: now, expiresAt: expiresAt)

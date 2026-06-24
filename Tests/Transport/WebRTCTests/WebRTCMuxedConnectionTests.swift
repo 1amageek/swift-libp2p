@@ -8,14 +8,13 @@ import Foundation
 @testable import P2PCore
 @testable import P2PTransport
 @testable import WebRTC
-@testable import DTLSCore
 
 @Suite("WebRTC MuxedConnection Tests")
 struct WebRTCMuxedConnectionTests {
 
     /// Helper to create a test muxed connection.
     private func createTestConnection() throws -> (WebRTCMuxedConnection, PeerID, PeerID) {
-        let cert = try DTLSCertificate.generateSelfSigned()
+        let cert = try WebRTCCertificate.generateSelfSigned()
         let webrtcConn = WebRTCConnection.asServer(
             certificate: cert,
             sendHandler: { _ in }

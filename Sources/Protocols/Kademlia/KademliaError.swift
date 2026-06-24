@@ -43,4 +43,9 @@ public enum KademliaError: Error, Sendable, Equatable {
 
     /// A storage backend operation failed.
     case storeFailed(String)
+
+    /// A record's value exceeds the storage backend's per-value byte cap.
+    /// Self-defending bound against an attacker-supplied oversized DHT value
+    /// exhausting memory/disk.
+    case recordTooLarge(valueBytes: Int, limit: Int)
 }

@@ -6,9 +6,24 @@ TCP 接続用の TLS 1.3 セキュリティアップグレーダー。
 [swift-tls](https://github.com/1amageek/swift-tls) を使用し、libp2p TLS 仕様に準拠。
 SecurityUpgrader プロトコルを実装。
 
+## Deferred: libp2p-TLS peer-identity surfacing (fail-closed)
+
+swift-tls の facade 再設計後、`TLS` facade の `TLSClient`/`TLSServer` は
+`certificateValidator` が返した `PeerIdentity` を破棄する（`peerIdentity` が常に
+`nil` を返す既知のギャップ）。libp2p-TLS upgrader は検証済み remote PeerID を
+`SecuredConnection` の構築に必須とするため、PeerID を取り出せない間は
+`TLSError.peerIdentityUnavailable` を **throw して FAIL-CLOSED** する
+（未認証/未識別ピアを黙って受理しない）。libp2p-TLS 認証の完成は、facade が
+`peerIdentity` を surfacing するという deferred 修正でアンブロックされる。
+それまで `TLSUpgrader.secure(...)` は常に reject する。
+`TLSCertificateHelper.makeCertificateValidator` は handshake 中に libp2p 拡張を
+検証し PeerID を再導出するので、不正/不一致証明書は handshake 内で reject される。
+
 ## 依存ライブラリ
 
-- **swift-tls** (`TLSCore`, `TLSRecord`) — TLS 1.3 ハンドシェイク・レコード層
+- **swift-tls** (`TLS` facade — `TLSClient`/`TLSServer`/`TLSConfiguration`/
+  `TLSIdentity`/`Certificate`/`PeerIdentity`) — TLS 1.3 ハンドシェイク・レコード層。
+  旧 `TLSCore`/`TLSRecord` は facade 再設計で `TLS` に統合された
 - **P2PCoreDER** (swift-p2p-core) — libp2p RPK 証明書の build/parse/verify の
   Embedded-clean minimal-DER コーデック（M6b で swift-certificates から移行）
 - **swift-crypto** (`Crypto`) — P-256 鍵生成（証明書用エフェメラル鍵）+ SignedKey

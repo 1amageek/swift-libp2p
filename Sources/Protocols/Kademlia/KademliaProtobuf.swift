@@ -148,6 +148,8 @@ enum KademliaProtobuf {
             throw KademliaError.encodingError("Missing peer ID")
         case .missingRecordField:
             throw KademliaError.encodingError("Missing key or value in record")
+        case .recordValueTooLarge(let size, let max):
+            throw KademliaError.encodingError("Record value too large (\(size) > \(max))")
         }
     }
 }

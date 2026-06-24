@@ -10,7 +10,6 @@ import Synchronization
 @testable import P2PTransportWebRTC
 @testable import P2PCore
 @testable import WebRTC
-@testable import DTLSCore
 @testable import DataChannel
 
 @Suite("WebRTC MuxedStream Tests")
@@ -22,7 +21,7 @@ struct WebRTCMuxedStreamTests {
     /// but tests focus on `deliver()` / `closeRead()` which don't touch
     /// the connection's DTLS layer.
     private func createTestStream() throws -> WebRTCMuxedStream {
-        let cert = try DTLSCertificate.generateSelfSigned()
+        let cert = try WebRTCCertificate.generateSelfSigned()
         let connection = WebRTCConnection.asServer(
             certificate: cert,
             sendHandler: { _ in }
@@ -194,7 +193,7 @@ struct WebRTCMuxedStreamTests {
 
     @Test("fail resumes waiters, fails writes, and terminates exactly once", .timeLimit(.minutes(1)))
     func failTerminatesExactlyOnce() async throws {
-        let cert = try DTLSCertificate.generateSelfSigned()
+        let cert = try WebRTCCertificate.generateSelfSigned()
         let connection = WebRTCConnection.asServer(
             certificate: cert,
             sendHandler: { _ in }

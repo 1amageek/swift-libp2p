@@ -189,8 +189,12 @@ let package = Package(
                 "P2PMux",
                 "P2PCertificate",
                 .product(name: "Logging", package: "swift-log"),
+                // The WebRTC product owns the DTLS certificate type
+                // (`WebRTCCertificate`) and drives the DTLS handshake through
+                // swift-tls's Tier-1 `TLS` facade internally. The former
+                // `DTLSCore` product was demoted to a package target in the tls
+                // facade redesign and is no longer importable here.
                 .product(name: "WebRTC", package: "swift-webrtc"),
-                .product(name: "DTLSCore", package: "swift-tls"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
@@ -250,6 +254,7 @@ let package = Package(
                 "P2PTransport",
                 "P2PMux",
                 "P2PCore",
+                .product(name: "WebRTC", package: "swift-webrtc"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),
             ],
@@ -314,8 +319,10 @@ let package = Package(
                 "P2PSecurity",
                 "P2PCertificate",
                 .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "TLSCore", package: "swift-tls"),
-                .product(name: "TLSRecord", package: "swift-tls"),
+                // Tier-1 TLS facade (`TLSClient`/`TLSServer`/`TLSConfiguration`).
+                // Replaces the former `TLSCore`/`TLSRecord` products folded into
+                // the facade in the tls redesign.
+                .product(name: "TLS", package: "swift-tls"),
             ],
             path: "Sources/Security/TLS",
             exclude: ["CONTEXT.md"]
@@ -351,6 +358,7 @@ let package = Package(
                 "P2PSecurityTLS",
                 "P2PCertificate",
                 "P2PCore",
+                .product(name: "TLS", package: "swift-tls"),
             ],
             path: "Tests/Security/TLSTests"
         ),
@@ -431,7 +439,10 @@ let package = Package(
                 "P2PDiscovery",
                 "P2PCore",
                 "P2PProtocols",
-                .product(name: "mDNS", package: "swift-mDNS"),
+                .product(name: "MDNS", package: "swift-mDNS"),
+                // The new MDNS facade vends `MDNSService.addresses` as
+                // `P2PCoreTransport.IPAddress`; the codec consumes it directly.
+                .product(name: "P2PCoreTransport", package: "swift-p2p-core"),
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/Discovery/MDNS"
@@ -443,6 +454,10 @@ let package = Package(
                 "P2PCore",
                 "P2PProtocols",
                 .product(name: "SWIM", package: "swift-SWIM"),
+                // The Tier-3 `SWIMWire` codec product (`SWIMMessageCodec`) is not
+                // re-exported by the `SWIM` facade; the transport adapter needs it
+                // directly to (de)serialise SWIM messages on the wire.
+                .product(name: "SWIMWire", package: "swift-SWIM"),
                 .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
                 .product(name: "Logging", package: "swift-log"),
             ],

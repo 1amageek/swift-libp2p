@@ -3,7 +3,7 @@ import Foundation
 import P2PCore
 import P2PDiscovery
 import P2PProtocols
-import mDNS
+import MDNS
 import Synchronization
 import Logging
 
@@ -11,6 +11,17 @@ import Logging
 ///
 /// Uses Multicast DNS (RFC 6762) and DNS-SD (RFC 6763) to discover
 /// and advertise libp2p peers on the local network.
+///
+/// ## Removal detection (not surfaced by the new facade)
+///
+/// The Tier-1 `MDNS` facade vends discovered services as a flat
+/// `MDNSDiscoveries` sequence of `MDNSService` upserts. On a goodbye (TTL 0) it
+/// re-emits the last-known `MDNSService` value, which is indistinguishable from
+/// an add/update at the value level. Consequently this service emits only
+/// `.announcement` / `.reachable` (upsert) observations and does NOT synthesize
+/// `.unreachable` observations — doing so would be fabricating an event the
+/// facade cannot reliably signal. `knownServicesByPeerID` is therefore an
+/// upsert-only cache.
 public actor MDNSDiscovery: DiscoveryService {
 
     // MARK: - Properties
@@ -18,14 +29,14 @@ public actor MDNSDiscovery: DiscoveryService {
     public let localPeerID: PeerID
     private let configuration: MDNSConfiguration
     private let advertisedServiceName: String
-    private var browser: ServiceBrowser?
-    private var advertiser: ServiceAdvertiser?
+    private var browser: MDNSBrowser?
+    private var responder: MDNSResponder?
 
-    private var knownServicesByPeerID: [PeerID: Service] = [:]
+    private var knownServicesByPeerID: [PeerID: MDNSService] = [:]
     private var peerIDByServiceName: [String: PeerID] = [:]
     private var serviceNameByPeerID: [PeerID: String] = [:]
-    private var lastBrowserError: DNSError?
-    private var lastShutdownError: DNSError?
+    private var lastBrowserError: MDNSError?
+    private var lastShutdownError: MDNSError?
     private var sequenceNumber: UInt64 = 0
     private var isStarted = false
     private var forwardTask: Task<Void, Never>?
@@ -67,38 +78,50 @@ public actor MDNSDiscovery: DiscoveryService {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
         guard !isStarted else { return }
 
-        // Create browser configuration
-        var browserConfig = ServiceBrowser.Configuration()
+        // Create browser configuration. The facade browser auto-starts on the
+        // first `browse(_:)`; there is no separate `start()`.
+        var browserConfig = MDNSBrowser.Configuration()
         browserConfig.queryInterval = configuration.queryInterval
         browserConfig.autoResolve = true
         browserConfig.useIPv4 = configuration.useIPv4
         browserConfig.useIPv6 = configuration.useIPv6
         browserConfig.networkInterface = configuration.networkInterface
 
-        let browser = ServiceBrowser(configuration: browserConfig)
+        let browser = MDNSBrowser(configuration: browserConfig)
         self.browser = browser
 
-        // Create advertiser configuration
-        var advertiserConfig = ServiceAdvertiser.Configuration()
-        advertiserConfig.ttl = configuration.ttl
-        advertiserConfig.useIPv4 = configuration.useIPv4
-        advertiserConfig.useIPv6 = configuration.useIPv6
-        advertiserConfig.networkInterface = configuration.networkInterface
+        // Create responder configuration. The facade responder auto-starts on
+        // the first `advertise(_:)`; there is no separate `start()`.
+        var responderConfig = MDNSResponder.Configuration()
+        responderConfig.ttl = configuration.ttl
+        responderConfig.useIPv4 = configuration.useIPv4
+        responderConfig.useIPv6 = configuration.useIPv6
+        responderConfig.networkInterface = configuration.networkInterface
 
-        let advertiser = ServiceAdvertiser(configuration: advertiserConfig)
-        self.advertiser = advertiser
+        let responder = MDNSResponder(configuration: responderConfig)
+        self.responder = responder
 
-        try await browser.start()
-        try await advertiser.start()
-        try await browser.browse(for: configuration.fullServiceType)
+        let discoveries: MDNSDiscoveries
+        do {
+            discoveries = try await browser.browse(configuration.fullServiceType)
+        } catch {
+            // `browse` throws `MDNSError` (typed). Browser failed to start/browse:
+            // clear references and surface the failure rather than leaving a
+            // half-started service. (A plain `catch` is used instead of
+            // `catch let error as MDNSError`, which crashes SILGen in this
+            // toolchain.)
+            self.browser = nil
+            self.responder = nil
+            throw MDNSDiscoveryError.browserError(error)
+        }
 
         isStarted = true
         lastBrowserError = nil
 
-        // Start event forwarding task
+        // Start event forwarding task over the typed discovery sequence.
         forwardTask = Task { [weak self] in
-            guard let self = self else { return }
-            await self.forwardBrowserEvents()
+            guard let self else { return }
+            await self.forwardDiscoveries(discoveries)
         }
     }
 
@@ -110,23 +133,19 @@ public actor MDNSDiscovery: DiscoveryService {
         forwardTask?.cancel()
         forwardTask = nil
 
-        do {
-            if let browser {
-                try await browser.shutdown()
-            }
-            if let advertiser {
-                try await advertiser.shutdown()
-            }
-            lastShutdownError = nil
-        } catch let dnsError as DNSError {
-            lastShutdownError = dnsError
-        } catch {
-            lastShutdownError = .networkError("mDNS shutdown failed: \(error)")
+        // Browser/responder `stop()` do not throw; any prior browse error stays
+        // recorded in `lastBrowserError`.
+        if let browser {
+            await browser.stop()
         }
+        if let responder {
+            await responder.stop()
+        }
+        lastShutdownError = nil
 
         // Clear references to allow new instances on next start()
         browser = nil
-        advertiser = nil
+        responder = nil
 
         isStarted = false
         knownServicesByPeerID.removeAll()
@@ -142,7 +161,7 @@ public actor MDNSDiscovery: DiscoveryService {
     /// Announces our presence with the given addresses.
     public func announce(addresses: [Multiaddr]) async throws {
         DiscoveryServiceOwnershipRegistry.preconditionAccessible(self)
-        guard isStarted, let advertiser = advertiser else {
+        guard isStarted, let responder = responder else {
             throw MDNSDiscoveryError.notStarted
         }
 
@@ -157,7 +176,14 @@ public actor MDNSDiscovery: DiscoveryService {
             serviceName: advertisedServiceName
         )
 
-        try await advertiser.register(service)
+        do {
+            try await responder.advertise(service)
+        } catch {
+            // `advertise` throws `MDNSError` (typed). A plain `catch` is used
+            // instead of `catch let error as MDNSError`, which crashes SILGen in
+            // this toolchain.
+            throw MDNSDiscoveryError.browserError(error)
+        }
     }
 
     /// Finds candidates for a specific peer.
@@ -209,119 +235,59 @@ public actor MDNSDiscovery: DiscoveryService {
 
     // MARK: - Private Methods
 
-    private func forwardBrowserEvents() async {
-        guard let browser = browser else { return }
-
-        for await event in await browser.events {
-            switch event {
-            case .found(let service):
-                handleServiceFound(service)
-
-            case .updated(let service):
-                handleServiceUpdated(service)
-
-            case .removed(let service):
-                handleServiceRemoved(service)
-
-            case .error(let error):
-                lastBrowserError = error
+    /// Iterates the typed discovery sequence, upserting each yielded service.
+    ///
+    /// A thrown `MDNSError` is recorded in `lastBrowserError` (not swallowed) so
+    /// `find(peer:)` can surface a systemic browser failure to callers.
+    private func forwardDiscoveries(_ discoveries: MDNSDiscoveries) async {
+        do {
+            for try await service in discoveries {
+                handleServiceUpsert(service)
             }
+        } catch {
+            // The discovery sequence throws `MDNSError` (typed). Record it (not
+            // swallowed) so `find(peer:)` can surface a systemic failure. A plain
+            // `catch` is used instead of `catch let error as MDNSError`, which
+            // crashes SILGen in this toolchain.
+            lastBrowserError = error
         }
     }
 
-    private func handleServiceFound(_ service: Service) {
-        // Ignore our own service
-        guard service.name != localPeerID.description else { return }
+    /// Upserts a discovered service into the cache and emits an observation.
+    ///
+    /// The facade does not distinguish add vs. update vs. goodbye at the value
+    /// level (see the type doc), so every yielded service is treated as a
+    /// `.reachable` upsert when already known, otherwise `.announcement`.
+    private func handleServiceUpsert(_ service: MDNSService) {
+        // Ignore our own advertised service.
+        guard service.name != advertisedServiceName,
+              service.name != localPeerID.description else { return }
 
         sequenceNumber += 1
 
+        let kind: PeerObservation.Kind
         do {
+            let peerID = try PeerIDServiceCodec.inferPeerID(from: service)
+            kind = knownServicesByPeerID[peerID] == nil ? .announcement : .reachable
+
             let observation = try PeerIDServiceCodec.toObservation(
                 service: service,
-                kind: .announcement,
+                kind: kind,
                 observer: localPeerID,
                 sequenceNumber: sequenceNumber
             )
             lastBrowserError = nil
-            if let previousName = serviceNameByPeerID[observation.subject], previousName != service.name {
+            if let previousName = serviceNameByPeerID[peerID], previousName != service.name {
                 peerIDByServiceName.removeValue(forKey: previousName)
             }
-            knownServicesByPeerID[observation.subject] = service
-            peerIDByServiceName[service.name] = observation.subject
-            serviceNameByPeerID[observation.subject] = service.name
+            knownServicesByPeerID[peerID] = service
+            peerIDByServiceName[service.name] = peerID
+            serviceNameByPeerID[peerID] = service.name
             broadcaster.emit(observation)
         } catch {
-            // Invalid service name - not a valid libp2p peer, skip
+            // Invalid service name / not a valid libp2p peer - skip
+            // (per-element validation, not a systemic failure).
         }
-    }
-
-    private func handleServiceUpdated(_ service: Service) {
-        guard service.name != localPeerID.description else { return }
-
-        sequenceNumber += 1
-
-        do {
-            let observation = try PeerIDServiceCodec.toObservation(
-                service: service,
-                kind: .reachable,
-                observer: localPeerID,
-                sequenceNumber: sequenceNumber
-            )
-            lastBrowserError = nil
-            if let previousName = serviceNameByPeerID[observation.subject], previousName != service.name {
-                peerIDByServiceName.removeValue(forKey: previousName)
-            }
-            knownServicesByPeerID[observation.subject] = service
-            peerIDByServiceName[service.name] = observation.subject
-            serviceNameByPeerID[observation.subject] = service.name
-            broadcaster.emit(observation)
-        } catch {
-            // Invalid service name - not a valid libp2p peer, skip
-        }
-    }
-
-    private func handleServiceRemoved(_ service: Service) {
-        guard service.name != localPeerID.description else { return }
-
-        sequenceNumber += 1
-        lastBrowserError = nil
-
-        var removedPeerID = peerIDByServiceName.removeValue(forKey: service.name)
-
-        if removedPeerID == nil {
-            do {
-                removedPeerID = try PeerIDServiceCodec.inferPeerID(from: service)
-            } catch {
-                // Cannot identify removed peer
-            }
-        }
-
-        guard let peerID = removedPeerID else {
-            return
-        }
-
-        serviceNameByPeerID.removeValue(forKey: peerID)
-        let knownService = knownServicesByPeerID.removeValue(forKey: peerID)
-
-        var hints: [Multiaddr] = []
-        if let knownService {
-            do {
-                let candidate = try PeerIDServiceCodec.decode(service: knownService, observer: localPeerID)
-                hints = candidate.addresses
-            } catch {
-                hints = []
-            }
-        }
-
-        let observation = PeerObservation(
-            subject: peerID,
-            observer: localPeerID,
-            kind: .unreachable,
-            hints: hints,
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            sequenceNumber: sequenceNumber
-        )
-        broadcaster.emit(observation)
     }
 
     private func extractPort(from addresses: [Multiaddr]) -> UInt16? {
@@ -364,6 +330,6 @@ public enum MDNSDiscoveryError: Error, Sendable {
     case alreadyStarted
     /// Failed to parse peer ID from service name.
     case invalidPeerID(String)
-    /// Service browser reported an operational error.
-    case browserError(DNSError)
+    /// The mDNS browser/responder reported an operational error.
+    case browserError(MDNSError)
 }
