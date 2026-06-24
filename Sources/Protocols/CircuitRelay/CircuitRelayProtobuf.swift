@@ -1,6 +1,10 @@
 /// CircuitRelayProtobuf - Wire format encoding/decoding for Circuit Relay v2
 ///
-/// Implements protobuf encoding/decoding for HopMessage and StopMessage.
+/// The wire framing lives in the Embedded-clean ``CircuitRelayHopFields`` /
+/// ``CircuitRelayStopFields`` codecs (`LibP2PCore`); this adapter bridges the
+/// domain types — `PeerID`, `Multiaddr`, and the `Duration` of the circuit
+/// limit — to/from the codecs' raw `[UInt8]` fields, and restores the
+/// historical `Data`/`ByteBuffer` API.
 ///
 /// See: https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md
 
@@ -11,501 +15,143 @@ import P2PCore
 /// Protobuf encoding/decoding for Circuit Relay v2 messages.
 enum CircuitRelayProtobuf {
 
-    // MARK: - Wire Type Constants
-
-    private static let wireTypeVarint: UInt64 = 0
-    private static let wireTypeLengthDelimited: UInt64 = 2
-
-    // MARK: - HopMessage Field Tags
-
-    /// HopMessage field tags (field number << 3 | wire type)
-    private enum HopTag {
-        static let type: UInt8 = 0x08        // field 1, varint
-        static let peer: UInt8 = 0x12        // field 2, length-delimited
-        static let reservation: UInt8 = 0x1A // field 3, length-delimited
-        static let limit: UInt8 = 0x22       // field 4, length-delimited
-        static let status: UInt8 = 0x28      // field 5, varint
-    }
-
-    // MARK: - StopMessage Field Tags
-
-    /// StopMessage field tags
-    private enum StopTag {
-        static let type: UInt8 = 0x08    // field 1, varint
-        static let peer: UInt8 = 0x12    // field 2, length-delimited
-        static let limit: UInt8 = 0x1A   // field 3, length-delimited
-        static let status: UInt8 = 0x20  // field 4, varint
-    }
-
-    // MARK: - Peer Message Field Tags
-
-    /// Peer message field tags
-    private enum PeerTag {
-        static let id: UInt8 = 0x0A      // field 1, length-delimited
-        static let addrs: UInt8 = 0x12   // field 2, length-delimited (repeated)
-    }
-
-    // MARK: - Reservation Message Field Tags
-
-    /// Reservation message field tags
-    private enum ReservationTag {
-        static let expire: UInt8 = 0x08   // field 1, varint
-        static let addrs: UInt8 = 0x12    // field 2, length-delimited (repeated)
-        static let voucher: UInt8 = 0x1A  // field 3, length-delimited
-    }
-
-    // MARK: - Limit Message Field Tags
-
-    /// Limit message field tags
-    private enum LimitTag {
-        static let duration: UInt8 = 0x08 // field 1, varint
-        static let data: UInt8 = 0x10     // field 2, varint
-    }
-
-    // MARK: - HopMessage Encoding
+    // MARK: - HopMessage
 
     /// Encodes a HopMessage to protobuf wire format.
     static func encode(_ message: HopMessage) -> Data {
-        var result = Data()
-
-        // Field 1: type (varint)
-        result.append(HopTag.type)
-        result.append(contentsOf: Varint.encode(UInt64(message.type.rawValue)))
-
-        // Field 2: peer (optional, embedded message)
-        if let peer = message.peer {
-            let peerData = encodePeer(peer)
-            result.append(HopTag.peer)
-            result.append(contentsOf: Varint.encode(UInt64(peerData.count)))
-            result.append(peerData)
-        }
-
-        // Field 3: reservation (optional, embedded message)
-        if let reservation = message.reservation {
-            let resData = encodeReservation(reservation)
-            result.append(HopTag.reservation)
-            result.append(contentsOf: Varint.encode(UInt64(resData.count)))
-            result.append(resData)
-        }
-
-        // Field 4: limit (optional, embedded message)
-        if let limit = message.limit {
-            let limitData = encodeLimit(limit)
-            if !limitData.isEmpty {
-                result.append(HopTag.limit)
-                result.append(contentsOf: Varint.encode(UInt64(limitData.count)))
-                result.append(limitData)
-            }
-        }
-
-        // Field 5: status (optional, varint)
-        if let status = message.status {
-            result.append(HopTag.status)
-            result.append(contentsOf: Varint.encode(UInt64(status.rawValue)))
-        }
-
-        return result
+        Data(buildHopFields(message).encode())
     }
 
     static func encode(_ message: HopMessage, into buffer: inout ByteBuffer) {
-        buffer.writeBytes(encode(message))
+        buffer.writeBytes(buildHopFields(message).encode())
     }
 
     /// Decodes a HopMessage from protobuf wire format.
     static func decodeHop(_ data: Data) throws -> HopMessage {
-        var type: HopMessageType = .reserve
-        var peer: PeerInfo?
-        var reservation: ReservationInfo?
-        var limit: CircuitLimit?
-        var status: HopStatus?
-
-        var offset = data.startIndex
-
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
-
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
-
-            switch (fieldNumber, wireType) {
-            case (1, wireTypeVarint): // type
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                type = HopMessageType(rawValue: UInt8(value)) ?? .reserve
-
-            case (2, wireTypeLengthDelimited): // peer
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Peer field truncated")
-                }
-                peer = try decodePeer(Data(data[offset..<fieldEnd]))
-                offset = fieldEnd
-
-            case (3, wireTypeLengthDelimited): // reservation
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Reservation field truncated")
-                }
-                reservation = try decodeReservation(Data(data[offset..<fieldEnd]))
-                offset = fieldEnd
-
-            case (4, wireTypeLengthDelimited): // limit
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Limit field truncated")
-                }
-                limit = try decodeLimit(Data(data[offset..<fieldEnd]))
-                offset = fieldEnd
-
-            case (5, wireTypeVarint): // status
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                status = HopStatus(rawValue: UInt32(value)) ?? .unknown
-
-            default:
-                // Skip unknown fields
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-            }
+        let fields: CircuitRelayHopFields
+        do {
+            fields = try CircuitRelayHopFields.decode(from: [UInt8](data))
+        } catch {
+            try rethrow(error)
         }
-
-        return HopMessage(type: type, peer: peer, reservation: reservation, limit: limit, status: status)
+        return HopMessage(
+            type: HopMessageType(rawValue: fields.typeRawValue) ?? .reserve,
+            peer: try fields.peer.map(buildPeerInfo),
+            reservation: try fields.reservation.map(buildReservation),
+            limit: fields.limit.map(buildLimit),
+            status: fields.statusRawValue.map { HopStatus(rawValue: $0) ?? .unknown }
+        )
     }
 
     static func decodeHop(_ buffer: ByteBuffer) throws -> HopMessage {
         try decodeHop(Data(buffer: buffer))
     }
 
-    // MARK: - StopMessage Encoding
+    private static func buildHopFields(_ message: HopMessage) -> CircuitRelayHopFields {
+        CircuitRelayHopFields(
+            typeRawValue: message.type.rawValue,
+            peer: message.peer.map(buildPeerFields),
+            reservation: message.reservation.map(buildReservationFields),
+            limit: message.limit.map(buildLimitFields),
+            statusRawValue: message.status?.rawValue
+        )
+    }
+
+    // MARK: - StopMessage
 
     /// Encodes a StopMessage to protobuf wire format.
     static func encode(_ message: StopMessage) -> Data {
-        var result = Data()
-
-        // Field 1: type (varint)
-        result.append(StopTag.type)
-        result.append(contentsOf: Varint.encode(UInt64(message.type.rawValue)))
-
-        // Field 2: peer (optional, embedded message)
-        if let peer = message.peer {
-            let peerData = encodePeer(peer)
-            result.append(StopTag.peer)
-            result.append(contentsOf: Varint.encode(UInt64(peerData.count)))
-            result.append(peerData)
-        }
-
-        // Field 3: limit (optional, embedded message)
-        if let limit = message.limit {
-            let limitData = encodeLimit(limit)
-            if !limitData.isEmpty {
-                result.append(StopTag.limit)
-                result.append(contentsOf: Varint.encode(UInt64(limitData.count)))
-                result.append(limitData)
-            }
-        }
-
-        // Field 4: status (optional, varint)
-        if let status = message.status {
-            result.append(StopTag.status)
-            result.append(contentsOf: Varint.encode(UInt64(status.rawValue)))
-        }
-
-        return result
+        Data(buildStopFields(message).encode())
     }
 
     static func encode(_ message: StopMessage, into buffer: inout ByteBuffer) {
-        buffer.writeBytes(encode(message))
+        buffer.writeBytes(buildStopFields(message).encode())
     }
 
     /// Decodes a StopMessage from protobuf wire format.
     static func decodeStop(_ data: Data) throws -> StopMessage {
-        var type: StopMessageType = .connect
-        var peer: PeerInfo?
-        var limit: CircuitLimit?
-        var status: StopStatus?
-
-        var offset = data.startIndex
-
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
-
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
-
-            switch (fieldNumber, wireType) {
-            case (1, wireTypeVarint): // type
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                type = StopMessageType(rawValue: UInt8(value)) ?? .connect
-
-            case (2, wireTypeLengthDelimited): // peer
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Peer field truncated")
-                }
-                peer = try decodePeer(Data(data[offset..<fieldEnd]))
-                offset = fieldEnd
-
-            case (3, wireTypeLengthDelimited): // limit
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Limit field truncated")
-                }
-                limit = try decodeLimit(Data(data[offset..<fieldEnd]))
-                offset = fieldEnd
-
-            case (4, wireTypeVarint): // status
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                status = StopStatus(rawValue: UInt32(value)) ?? .unknown
-
-            default:
-                // Skip unknown fields
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-            }
+        let fields: CircuitRelayStopFields
+        do {
+            fields = try CircuitRelayStopFields.decode(from: [UInt8](data))
+        } catch {
+            try rethrow(error)
         }
-
-        return StopMessage(type: type, peer: peer, limit: limit, status: status)
+        return StopMessage(
+            type: StopMessageType(rawValue: fields.typeRawValue) ?? .connect,
+            peer: try fields.peer.map(buildPeerInfo),
+            limit: fields.limit.map(buildLimit),
+            status: fields.statusRawValue.map { StopStatus(rawValue: $0) ?? .unknown }
+        )
     }
 
     static func decodeStop(_ buffer: ByteBuffer) throws -> StopMessage {
         try decodeStop(Data(buffer: buffer))
     }
 
-    // MARK: - Peer Encoding
-
-    private static func encodePeer(_ peer: PeerInfo) -> Data {
-        var result = Data()
-
-        // Field 1: id (bytes)
-        let idBytes = peer.id.bytes
-        result.append(PeerTag.id)
-        result.append(contentsOf: Varint.encode(UInt64(idBytes.count)))
-        result.append(idBytes)
-
-        // Field 2: addrs (repeated bytes)
-        for addr in peer.addresses {
-            let addrBytes = addr.bytes
-            result.append(PeerTag.addrs)
-            result.append(contentsOf: Varint.encode(UInt64(addrBytes.count)))
-            result.append(addrBytes)
-        }
-
-        return result
+    private static func buildStopFields(_ message: StopMessage) -> CircuitRelayStopFields {
+        CircuitRelayStopFields(
+            typeRawValue: message.type.rawValue,
+            peer: message.peer.map(buildPeerFields),
+            limit: message.limit.map(buildLimitFields),
+            statusRawValue: message.status?.rawValue
+        )
     }
 
-    private static func decodePeer(_ data: Data) throws -> PeerInfo {
-        var id: PeerID?
-        var addresses: [Multiaddr] = []
+    // MARK: - Domain ↔ field bridging
 
-        var offset = data.startIndex
+    private static func buildPeerFields(_ peer: PeerInfo) -> CircuitRelayPeerFields {
+        CircuitRelayPeerFields(
+            id: [UInt8](peer.id.bytes),
+            addresses: peer.addresses.map { [UInt8]($0.bytes) }
+        )
+    }
 
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
+    private static func buildPeerInfo(_ fields: CircuitRelayPeerFields) throws -> PeerInfo {
+        PeerInfo(
+            id: try PeerID(bytes: Data(fields.id)),
+            addresses: try fields.addresses.map { try Multiaddr(bytes: Data($0)) }
+        )
+    }
 
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
+    private static func buildReservationFields(_ reservation: ReservationInfo) -> CircuitRelayReservationFields {
+        CircuitRelayReservationFields(
+            expiration: reservation.expiration,
+            addresses: reservation.addresses.map { [UInt8]($0.bytes) },
+            voucher: reservation.voucher.map { [UInt8]($0) }
+        )
+    }
 
-            guard wireType == wireTypeLengthDelimited else {
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-                continue
-            }
+    private static func buildReservation(_ fields: CircuitRelayReservationFields) throws -> ReservationInfo {
+        ReservationInfo(
+            expiration: fields.expiration,
+            addresses: try fields.addresses.map { try Multiaddr(bytes: Data($0)) },
+            voucher: fields.voucher.map { Data($0) }
+        )
+    }
 
-            let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-            offset += lengthBytes
-            let fieldEnd = offset + (try Varint.toInt(length))
-            guard fieldEnd <= data.endIndex else {
-                throw CircuitRelayError.encodingError("Field truncated")
-            }
+    private static func buildLimitFields(_ limit: CircuitLimit) -> CircuitRelayLimitFields {
+        CircuitRelayLimitFields(
+            durationSeconds: limit.duration.map { UInt32($0.components.seconds) },
+            data: limit.data
+        )
+    }
 
-            let fieldData = Data(data[offset..<fieldEnd])
-            offset = fieldEnd
+    private static func buildLimit(_ fields: CircuitRelayLimitFields) -> CircuitLimit {
+        CircuitLimit(
+            duration: fields.durationSeconds.map { Duration.seconds(Int64($0)) },
+            data: fields.data
+        )
+    }
 
-            switch fieldNumber {
-            case 1: // id
-                id = try PeerID(bytes: fieldData)
-            case 2: // addrs
-                let addr = try Multiaddr(bytes: fieldData)
-                addresses.append(addr)
-            default:
-                break
-            }
-        }
-
-        guard let peerId = id else {
+    /// Maps the cored codec's typed error to the adapter's error contract.
+    private static func rethrow(_ error: CircuitRelayCodecError) throws -> Never {
+        switch error {
+        case .truncated:
+            throw CircuitRelayError.encodingError("Field truncated")
+        case .unknownWireType(let wireType):
+            throw CircuitRelayError.encodingError("Unknown wire type \(wireType)")
+        case .missingPeerID:
             throw CircuitRelayError.encodingError("Missing peer ID")
         }
-
-        return PeerInfo(id: peerId, addresses: addresses)
-    }
-
-    // MARK: - Reservation Encoding
-
-    private static func encodeReservation(_ reservation: ReservationInfo) -> Data {
-        var result = Data()
-
-        // Field 1: expire (uint64)
-        result.append(ReservationTag.expire)
-        result.append(contentsOf: Varint.encode(reservation.expiration))
-
-        // Field 2: addrs (repeated bytes)
-        for addr in reservation.addresses {
-            let addrBytes = addr.bytes
-            result.append(ReservationTag.addrs)
-            result.append(contentsOf: Varint.encode(UInt64(addrBytes.count)))
-            result.append(addrBytes)
-        }
-
-        // Field 3: voucher (optional bytes)
-        if let voucher = reservation.voucher {
-            result.append(ReservationTag.voucher)
-            result.append(contentsOf: Varint.encode(UInt64(voucher.count)))
-            result.append(voucher)
-        }
-
-        return result
-    }
-
-    private static func decodeReservation(_ data: Data) throws -> ReservationInfo {
-        var expiration: UInt64 = 0
-        var addresses: [Multiaddr] = []
-        var voucher: Data?
-
-        var offset = data.startIndex
-
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
-
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
-
-            switch (fieldNumber, wireType) {
-            case (1, wireTypeVarint): // expire
-                let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-                offset += valueBytes
-                expiration = value
-
-            case (2, wireTypeLengthDelimited): // addrs
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Address field truncated")
-                }
-                let addr = try Multiaddr(bytes: Data(data[offset..<fieldEnd]))
-                addresses.append(addr)
-                offset = fieldEnd
-
-            case (3, wireTypeLengthDelimited): // voucher
-                let (length, lengthBytes) = try Varint.decode(Data(data[offset...]))
-                offset += lengthBytes
-                let fieldEnd = offset + (try Varint.toInt(length))
-                guard fieldEnd <= data.endIndex else {
-                    throw CircuitRelayError.encodingError("Voucher field truncated")
-                }
-                voucher = Data(data[offset..<fieldEnd])
-                offset = fieldEnd
-
-            default:
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-            }
-        }
-
-        return ReservationInfo(expiration: expiration, addresses: addresses, voucher: voucher)
-    }
-
-    // MARK: - Limit Encoding
-
-    private static func encodeLimit(_ limit: CircuitLimit) -> Data {
-        var result = Data()
-
-        // Field 1: duration (optional uint32, in seconds)
-        if let duration = limit.duration {
-            let seconds = UInt32(duration.components.seconds)
-            result.append(LimitTag.duration)
-            result.append(contentsOf: Varint.encode(UInt64(seconds)))
-        }
-
-        // Field 2: data (optional uint64)
-        if let data = limit.data {
-            result.append(LimitTag.data)
-            result.append(contentsOf: Varint.encode(data))
-        }
-
-        return result
-    }
-
-    private static func decodeLimit(_ data: Data) throws -> CircuitLimit {
-        var duration: Duration?
-        var dataLimit: UInt64?
-
-        var offset = data.startIndex
-
-        while offset < data.endIndex {
-            let (tag, tagBytes) = try Varint.decode(Data(data[offset...]))
-            offset += tagBytes
-
-            let fieldNumber = tag >> 3
-            let wireType = tag & 0x07
-
-            guard wireType == wireTypeVarint else {
-                offset = try skipField(wireType: wireType, data: data, offset: offset)
-                continue
-            }
-
-            let (value, valueBytes) = try Varint.decode(Data(data[offset...]))
-            offset += valueBytes
-
-            switch fieldNumber {
-            case 1: // duration
-                duration = .seconds(Int64(value))
-            case 2: // data
-                dataLimit = value
-            default:
-                break
-            }
-        }
-
-        return CircuitLimit(duration: duration, data: dataLimit)
-    }
-
-    // MARK: - Helpers
-
-    private static func skipField(wireType: UInt64, data: Data, offset: Int) throws -> Int {
-        var newOffset = offset
-
-        switch wireType {
-        case 0: // Varint
-            let (_, varBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += varBytes
-        case 1: // 64-bit
-            newOffset += 8
-        case 2: // Length-delimited
-            let (length, lengthBytes) = try Varint.decode(Data(data[newOffset...]))
-            newOffset += lengthBytes + (try Varint.toInt(length))
-        case 5: // 32-bit
-            newOffset += 4
-        default:
-            throw CircuitRelayError.encodingError("Unknown wire type \(wireType)")
-        }
-
-        guard newOffset <= data.endIndex else {
-            throw CircuitRelayError.encodingError("Field extends beyond data")
-        }
-
-        return newOffset
     }
 }
