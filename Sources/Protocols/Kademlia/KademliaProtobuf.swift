@@ -1,6 +1,10 @@
 /// KademliaProtobuf - Wire format encoding/decoding for Kademlia DHT.
 ///
-/// Implements protobuf encoding/decoding for Kademlia messages.
+/// The wire framing lives in the Embedded-clean ``KademliaFields`` codec
+/// (`LibP2PCore`); this adapter bridges the domain types — `PeerID` and
+/// `Multiaddr` — to/from the codec's raw `[UInt8]` fields, restores the
+/// historical `Data`/`ByteBuffer` API, and resolves the typed `KademliaMessage`
+/// shape from the message type plus field presence.
 ///
 /// See: https://github.com/libp2p/specs/tree/master/kad-dht
 
@@ -11,263 +15,110 @@ import NIOCore
 /// Protobuf encoding/decoding for Kademlia messages.
 enum KademliaProtobuf {
 
-    private struct PreparedPeer {
-        let idBytes: Data
-        let addressBytes: [Data]
-        let connectionTypeRawValue: UInt64
-        let encodedSize: Int
-    }
-
-    private struct PreparedRecord {
-        let key: Data
-        let value: Data
-        let timeData: Data?
-        let encodedSize: Int
-    }
-
-    // MARK: - Wire Type Constants
-
-    private static let wireTypeVarint: UInt64 = 0
-    private static let wireTypeLengthDelimited: UInt64 = 2
-
     /// Maximum number of peers accepted per repeated field (closerPeers /
     /// providerPeers) at decode time. Bounds an attacker's ability to inject a
     /// huge Sybil/eclipse peer list in a single response. Set generously to
     /// ~k so legitimate responses are unaffected.
     static let maxPeersPerMessage = KademliaProtocol.kValue * 2
 
-    // MARK: - Message Field Tags
-
-    private enum MessageTag {
-        static let type: UInt8 = 0x08        // field 1, varint
-        static let key: UInt8 = 0x52         // field 10, length-delimited
-        static let record: UInt8 = 0x1A      // field 3, length-delimited
-        static let closerPeers: UInt8 = 0x42 // field 8, length-delimited (repeated)
-        static let providerPeers: UInt8 = 0x4A // field 9, length-delimited (repeated)
-    }
-
-    // MARK: - Peer Field Tags
-
-    private enum PeerTag {
-        static let id: UInt8 = 0x0A          // field 1, length-delimited
-        static let addrs: UInt8 = 0x12       // field 2, length-delimited (repeated)
-        static let connection: UInt8 = 0x18  // field 3, varint
-    }
-
-    // MARK: - Record Field Tags
-
-    private enum RecordTag {
-        static let key: UInt8 = 0x0A         // field 1, length-delimited
-        static let value: UInt8 = 0x12       // field 2, length-delimited
-        static let timeReceived: UInt8 = 0x2A // field 5, length-delimited (string)
-    }
-
     // MARK: - Message Encoding
 
     /// Encodes a KademliaMessage to protobuf wire format.
     static func encode(_ message: KademliaMessage) -> Data {
-        var data = Data(capacity: estimatedCapacity(of: message))
-        encode(message, into: &data)
-        return data
+        Data(buildFields(message).encode())
     }
 
     static func encode(_ message: KademliaMessage, into data: inout Data) {
-        data.reserveCapacity(data.count + estimatedCapacity(of: message))
-
-        data.append(MessageTag.type)
-        Varint.encode(UInt64(message.type.rawValue), into: &data)
-
-        if let key = message.key {
-            data.append(MessageTag.key)
-            Varint.encode(UInt64(key.count), into: &data)
-            data.append(key)
-        }
-
-        if let record = message.record {
-            let preparedRecord = prepare(record)
-            data.append(MessageTag.record)
-            Varint.encode(UInt64(preparedRecord.encodedSize), into: &data)
-            encodeRecord(preparedRecord, into: &data)
-        }
-
-        for peer in message.closerPeers {
-            let preparedPeer = prepare(peer)
-            data.append(MessageTag.closerPeers)
-            Varint.encode(UInt64(preparedPeer.encodedSize), into: &data)
-            encodePeer(preparedPeer, into: &data)
-        }
-
-        for peer in message.providerPeers {
-            let preparedPeer = prepare(peer)
-            data.append(MessageTag.providerPeers)
-            Varint.encode(UInt64(preparedPeer.encodedSize), into: &data)
-            encodePeer(preparedPeer, into: &data)
-        }
+        data.append(contentsOf: buildFields(message).encode())
     }
 
     static func encode(_ message: KademliaMessage, into buffer: inout ByteBuffer) {
-        buffer.reserveCapacity(buffer.writerIndex + estimatedCapacity(of: message))
-
-        buffer.writeInteger(MessageTag.type)
-        Varint.encode(UInt64(message.type.rawValue), into: &buffer)
-
-        if let key = message.key {
-            buffer.writeInteger(MessageTag.key)
-            Varint.encode(UInt64(key.count), into: &buffer)
-            buffer.writeBytes(key)
-        }
-
-        if let record = message.record {
-            let preparedRecord = prepare(record)
-            buffer.writeInteger(MessageTag.record)
-            Varint.encode(UInt64(preparedRecord.encodedSize), into: &buffer)
-            encodeRecord(preparedRecord, into: &buffer)
-        }
-
-        for peer in message.closerPeers {
-            let preparedPeer = prepare(peer)
-            buffer.writeInteger(MessageTag.closerPeers)
-            Varint.encode(UInt64(preparedPeer.encodedSize), into: &buffer)
-            encodePeer(preparedPeer, into: &buffer)
-        }
-
-        for peer in message.providerPeers {
-            let preparedPeer = prepare(peer)
-            buffer.writeInteger(MessageTag.providerPeers)
-            Varint.encode(UInt64(preparedPeer.encodedSize), into: &buffer)
-            encodePeer(preparedPeer, into: &buffer)
-        }
+        buffer.writeBytes(buildFields(message).encode())
     }
 
-    private static func estimatedCapacity(of message: KademliaMessage) -> Int {
-        12
-            + (message.key.map { 10 + $0.count } ?? 0)
-            + (message.record.map { 10 + $0.key.count + $0.value.count + 20 } ?? 0)
-            + message.closerPeers.count * 100
-            + message.providerPeers.count * 100
+    /// Bridges a `KademliaMessage` (domain types) into the cored raw-byte fields.
+    private static func buildFields(_ message: KademliaMessage) -> KademliaFields {
+        KademliaFields(
+            typeRawValue: message.type.rawValue,
+            key: message.key.map { [UInt8]($0) },
+            record: message.record.map(buildRecordFields),
+            closerPeers: message.closerPeers.map(buildPeerFields),
+            providerPeers: message.providerPeers.map(buildPeerFields)
+        )
     }
+
+    private static func buildPeerFields(_ peer: KademliaPeer) -> KademliaPeerFields {
+        KademliaPeerFields(
+            id: [UInt8](peer.id.bytes),
+            addresses: peer.addresses.map { [UInt8]($0.bytes) },
+            connectionTypeRawValue: peer.connectionType.rawValue
+        )
+    }
+
+    private static func buildRecordFields(_ record: KademliaRecord) -> KademliaRecordFields {
+        KademliaRecordFields(
+            key: [UInt8](record.key),
+            value: [UInt8](record.value),
+            timeReceived: record.timeReceived
+        )
+    }
+
+    // MARK: - Message Decoding
 
     /// Decodes a KademliaMessage from protobuf wire format.
     static func decode(_ data: Data) throws -> KademliaMessage {
-        try data.withUnsafeBytes { bytes in
-            var type: KademliaMessageType = .findNode
-            var key: Data?
-            var record: KademliaRecord?
-            var closerPeers: [KademliaPeer] = []
-            var providerPeers: [KademliaPeer] = []
+        let fields: KademliaFields
+        do {
+            fields = try KademliaFields.decode(from: [UInt8](data), maxPeers: maxPeersPerMessage)
+        } catch {
+            try rethrow(error)
+        }
 
-            var offset = 0
+        let type = KademliaMessageType(rawValue: fields.typeRawValue) ?? .findNode
+        let key = fields.key.map { Data($0) }
+        let record = try fields.record.map(buildRecord)
+        let closerPeers = try fields.closerPeers.map(buildPeer)
+        let providerPeers = try fields.providerPeers.map(buildPeer)
 
-            while offset < bytes.count {
-                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
-                offset += tagBytes
-
-                let fieldNumber = tag >> 3
-                let wireType = tag & 0x07
-
-                switch (fieldNumber, wireType) {
-                case (1, wireTypeVarint):
-                    let (value, valueBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += valueBytes
-                    type = KademliaMessageType(rawValue: UInt32(value)) ?? .findNode
-
-                case (10, wireTypeLengthDelimited):
-                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += lengthBytes
-                    let length = try Varint.toInt(lengthValue)
-                    let fieldEnd = offset + length
-                    guard fieldEnd <= bytes.count else {
-                        throw KademliaError.encodingError("Key field truncated")
-                    }
-                    key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                    offset = fieldEnd
-
-                case (3, wireTypeLengthDelimited):
-                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += lengthBytes
-                    let length = try Varint.toInt(lengthValue)
-                    let fieldEnd = offset + length
-                    guard fieldEnd <= bytes.count else {
-                        throw KademliaError.encodingError("Record field truncated")
-                    }
-                    record = try decodeRecord(data, offset: offset, end: fieldEnd)
-                    offset = fieldEnd
-
-                case (8, wireTypeLengthDelimited):
-                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += lengthBytes
-                    let length = try Varint.toInt(lengthValue)
-                    let fieldEnd = offset + length
-                    guard fieldEnd <= bytes.count else {
-                        throw KademliaError.encodingError("CloserPeers field truncated")
-                    }
-                    // Bound the number of decoded peers; drop surplus while
-                    // still advancing the offset to stay in sync.
-                    if closerPeers.count < maxPeersPerMessage {
-                        closerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
-                    }
-                    offset = fieldEnd
-
-                case (9, wireTypeLengthDelimited):
-                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += lengthBytes
-                    let length = try Varint.toInt(lengthValue)
-                    let fieldEnd = offset + length
-                    guard fieldEnd <= bytes.count else {
-                        throw KademliaError.encodingError("ProviderPeers field truncated")
-                    }
-                    // Bound the number of decoded provider peers; drop surplus
-                    // while still advancing the offset to stay in sync.
-                    if providerPeers.count < maxPeersPerMessage {
-                        providerPeers.append(try decodePeer(data, offset: offset, end: fieldEnd))
-                    }
-                    offset = fieldEnd
-
-                default:
-                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
-                }
+        switch type {
+        case .findNode:
+            if closerPeers.isEmpty, let key {
+                return .findNode(key: key)
             }
+            return .findNodeResponse(closerPeers: closerPeers)
 
-            switch type {
-            case .findNode:
-                if closerPeers.isEmpty, let key {
-                    return .findNode(key: key)
-                }
-                return .findNodeResponse(closerPeers: closerPeers)
-
-            case .getValue:
-                if record != nil || !closerPeers.isEmpty {
-                    return .getValueResponse(record: record, closerPeers: closerPeers)
-                }
-                guard let key else {
-                    throw KademliaError.encodingError("Missing key in GET_VALUE")
-                }
-                return .getValue(key: key)
-
-            case .putValue:
-                guard let record else {
-                    throw KademliaError.encodingError("Missing record in PUT_VALUE")
-                }
-                return .putValue(record: record)
-
-            case .addProvider:
-                guard let key else {
-                    throw KademliaError.encodingError("Missing key in ADD_PROVIDER")
-                }
-                return .addProvider(key: key, providers: providerPeers)
-
-            case .getProviders:
-                if !providerPeers.isEmpty || !closerPeers.isEmpty {
-                    return .getProvidersResponse(providers: providerPeers, closerPeers: closerPeers)
-                }
-                guard let key else {
-                    throw KademliaError.encodingError("Missing key in GET_PROVIDERS")
-                }
-                return .getProviders(key: key)
-
-            case .ping:
-                throw KademliaError.protocolViolation("PING is deprecated")
+        case .getValue:
+            if record != nil || !closerPeers.isEmpty {
+                return .getValueResponse(record: record, closerPeers: closerPeers)
             }
+            guard let key else {
+                throw KademliaError.encodingError("Missing key in GET_VALUE")
+            }
+            return .getValue(key: key)
+
+        case .putValue:
+            guard let record else {
+                throw KademliaError.encodingError("Missing record in PUT_VALUE")
+            }
+            return .putValue(record: record)
+
+        case .addProvider:
+            guard let key else {
+                throw KademliaError.encodingError("Missing key in ADD_PROVIDER")
+            }
+            return .addProvider(key: key, providers: providerPeers)
+
+        case .getProviders:
+            if !providerPeers.isEmpty || !closerPeers.isEmpty {
+                return .getProvidersResponse(providers: providerPeers, closerPeers: closerPeers)
+            }
+            guard let key else {
+                throw KademliaError.encodingError("Missing key in GET_PROVIDERS")
+            }
+            return .getProviders(key: key)
+
+        case .ping:
+            throw KademliaError.protocolViolation("PING is deprecated")
         }
     }
 
@@ -275,283 +126,28 @@ enum KademliaProtobuf {
         try decode(Data(buffer: buffer))
     }
 
-    // MARK: - Peer Encoding
-
-    private static func encodePeer(_ peer: PreparedPeer, into data: inout Data) {
-        data.append(PeerTag.id)
-        Varint.encode(UInt64(peer.idBytes.count), into: &data)
-        data.append(peer.idBytes)
-
-        for addrBytes in peer.addressBytes {
-            data.append(PeerTag.addrs)
-            Varint.encode(UInt64(addrBytes.count), into: &data)
-            data.append(addrBytes)
-        }
-
-        data.append(PeerTag.connection)
-        Varint.encode(peer.connectionTypeRawValue, into: &data)
+    private static func buildPeer(_ fields: KademliaPeerFields) throws -> KademliaPeer {
+        let peerID = try PeerID(bytes: Data(fields.id))
+        let addresses = try fields.addresses.map { try Multiaddr(bytes: Data($0)) }
+        let connectionType = KademliaPeerConnectionType(rawValue: fields.connectionTypeRawValue) ?? .notConnected
+        return KademliaPeer(id: peerID, addresses: addresses, connectionType: connectionType)
     }
 
-    private static func encodePeer(_ peer: PreparedPeer, into buffer: inout ByteBuffer) {
-        buffer.writeInteger(PeerTag.id)
-        Varint.encode(UInt64(peer.idBytes.count), into: &buffer)
-        buffer.writeBytes(peer.idBytes)
-
-        for addrBytes in peer.addressBytes {
-            buffer.writeInteger(PeerTag.addrs)
-            Varint.encode(UInt64(addrBytes.count), into: &buffer)
-            buffer.writeBytes(addrBytes)
-        }
-
-        buffer.writeInteger(PeerTag.connection)
-        Varint.encode(peer.connectionTypeRawValue, into: &buffer)
+    private static func buildRecord(_ fields: KademliaRecordFields) throws -> KademliaRecord {
+        KademliaRecord(key: Data(fields.key), value: Data(fields.value), timeReceived: fields.timeReceived)
     }
 
-    private static func decodePeer(_ data: Data, offset startOffset: Int, end: Int) throws -> KademliaPeer {
-        try data.withUnsafeBytes { bytes in
-            var id: PeerID?
-            var addresses: [Multiaddr] = []
-            var connectionType: KademliaPeerConnectionType = .notConnected
-
-            var offset = startOffset
-
-            while offset < end {
-                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
-                offset += tagBytes
-
-                let fieldNumber = tag >> 3
-                let wireType = tag & 0x07
-
-                switch (fieldNumber, wireType) {
-                case (1, wireTypeLengthDelimited):
-                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += lengthBytes
-                    let length = try Varint.toInt(lengthValue)
-                    let fieldEnd = offset + length
-                    guard fieldEnd <= end else {
-                        throw KademliaError.encodingError("Peer ID truncated")
-                    }
-                    id = try PeerID(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                    offset = fieldEnd
-
-                case (2, wireTypeLengthDelimited):
-                    let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += lengthBytes
-                    let length = try Varint.toInt(lengthValue)
-                    let fieldEnd = offset + length
-                    guard fieldEnd <= end else {
-                        throw KademliaError.encodingError("Address truncated")
-                    }
-                    addresses.append(try Multiaddr(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)]))
-                    offset = fieldEnd
-
-                case (3, wireTypeVarint):
-                    let (value, valueBytes) = try Varint.decode(from: bytes, at: offset)
-                    offset += valueBytes
-                    connectionType = KademliaPeerConnectionType(rawValue: UInt32(value)) ?? .notConnected
-
-                default:
-                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
-                }
-            }
-
-            guard let peerID = id else {
-                throw KademliaError.encodingError("Missing peer ID")
-            }
-
-            return KademliaPeer(id: peerID, addresses: addresses, connectionType: connectionType)
-        }
-    }
-
-    // MARK: - Record Encoding
-
-    private static func encodeRecord(_ record: PreparedRecord, into data: inout Data) {
-        data.append(RecordTag.key)
-        Varint.encode(UInt64(record.key.count), into: &data)
-        data.append(record.key)
-
-        data.append(RecordTag.value)
-        Varint.encode(UInt64(record.value.count), into: &data)
-        data.append(record.value)
-
-        if let timeData = record.timeData {
-            data.append(RecordTag.timeReceived)
-            Varint.encode(UInt64(timeData.count), into: &data)
-            data.append(timeData)
-        }
-    }
-
-    private static func encodeRecord(_ record: PreparedRecord, into buffer: inout ByteBuffer) {
-        buffer.writeInteger(RecordTag.key)
-        Varint.encode(UInt64(record.key.count), into: &buffer)
-        buffer.writeBytes(record.key)
-
-        buffer.writeInteger(RecordTag.value)
-        Varint.encode(UInt64(record.value.count), into: &buffer)
-        buffer.writeBytes(record.value)
-
-        if let timeData = record.timeData {
-            buffer.writeInteger(RecordTag.timeReceived)
-            Varint.encode(UInt64(timeData.count), into: &buffer)
-            buffer.writeBytes(timeData)
-        }
-    }
-
-    private static func encodedSize(of message: KademliaMessage) -> Int {
-        2
-            + (message.key.map { 1 + varintSize(of: $0.count) + $0.count } ?? 0)
-            + (message.record.map { 1 + varintSize(of: encodedSize(of: $0)) + encodedSize(of: $0) } ?? 0)
-            + message.closerPeers.reduce(0) { total, peer in
-                let peerSize = encodedSize(of: peer)
-                return total + 1 + varintSize(of: peerSize) + peerSize
-            }
-            + message.providerPeers.reduce(0) { total, peer in
-                let peerSize = encodedSize(of: peer)
-                return total + 1 + varintSize(of: peerSize) + peerSize
-        }
-    }
-
-    private static func prepare(_ peer: KademliaPeer) -> PreparedPeer {
-        let idBytes = peer.id.bytes
-        let addressBytes = peer.addresses.map(\.bytes)
-        let addressSize = addressBytes.reduce(0) { total, addrBytes in
-            total + 1 + varintSize(of: addrBytes.count) + addrBytes.count
-        }
-        return PreparedPeer(
-            idBytes: idBytes,
-            addressBytes: addressBytes,
-            connectionTypeRawValue: UInt64(peer.connectionType.rawValue),
-            encodedSize: 1 + varintSize(of: idBytes.count) + idBytes.count + addressSize + 1 + 1
-        )
-    }
-
-    private static func prepare(_ record: KademliaRecord) -> PreparedRecord {
-        let timeData = record.timeReceived.map { Data($0.utf8) }
-        let timeSize = timeData.map { 1 + varintSize(of: $0.count) + $0.count } ?? 0
-        return PreparedRecord(
-            key: record.key,
-            value: record.value,
-            timeData: timeData,
-            encodedSize: 1 + varintSize(of: record.key.count) + record.key.count
-                + 1 + varintSize(of: record.value.count) + record.value.count
-                + timeSize
-        )
-    }
-
-    private static func encodedSize(of peer: KademliaPeer) -> Int {
-        let idBytes = peer.id.bytes
-        let addressBytes = peer.addresses.reduce(0) { total, addr in
-            total + 1 + varintSize(of: addr.bytes.count) + addr.bytes.count
-        }
-        return 1 + varintSize(of: idBytes.count) + idBytes.count
-            + addressBytes
-            + 1 + 1
-    }
-
-    private static func encodedSize(of record: KademliaRecord) -> Int {
-        let timeSize: Int
-        if let timeReceived = record.timeReceived {
-            let count = Data(timeReceived.utf8).count
-            timeSize = 1 + varintSize(of: count) + count
-        } else {
-            timeSize = 0
-        }
-
-        return 1 + varintSize(of: record.key.count) + record.key.count
-            + 1 + varintSize(of: record.value.count) + record.value.count
-            + timeSize
-    }
-
-    private static func varintSize(of count: Int) -> Int {
-        var value = UInt64(count)
-        var size = 1
-        while value >= 0x80 {
-            value >>= 7
-            size += 1
-        }
-        return size
-    }
-
-    private static func decodeRecord(_ data: Data, offset startOffset: Int, end: Int) throws -> KademliaRecord {
-        try data.withUnsafeBytes { bytes in
-            var key: Data?
-            var value: Data?
-            var timeReceived: String?
-
-            var offset = startOffset
-
-            while offset < end {
-                let (tag, tagBytes) = try Varint.decode(from: bytes, at: offset)
-                offset += tagBytes
-
-                let fieldNumber = tag >> 3
-                let wireType = tag & 0x07
-
-                guard wireType == wireTypeLengthDelimited else {
-                    offset = try skipField(wireType: wireType, buffer: bytes, offset: offset)
-                    continue
-                }
-
-                let (lengthValue, lengthBytes) = try Varint.decode(from: bytes, at: offset)
-                offset += lengthBytes
-                let length = try Varint.toInt(lengthValue)
-                let fieldEnd = offset + length
-                guard fieldEnd <= end else {
-                    throw KademliaError.encodingError("Record field truncated")
-                }
-
-                switch fieldNumber {
-                case 1:
-                    key = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                case 2:
-                    value = Data(data[fieldRange(in: data, offset: offset, end: fieldEnd)])
-                case 5:
-                    timeReceived = String(bytes: data[fieldRange(in: data, offset: offset, end: fieldEnd)], encoding: .utf8)
-                default:
-                    break
-                }
-                offset = fieldEnd
-            }
-
-            guard let recordKey = key, let recordValue = value else {
-                throw KademliaError.encodingError("Missing key or value in record")
-            }
-
-            return KademliaRecord(key: recordKey, value: recordValue, timeReceived: timeReceived)
-        }
-    }
-
-    // MARK: - Helpers
-
-    private static func skipField(wireType: UInt64, buffer: UnsafeRawBufferPointer, offset: Int) throws -> Int {
-        var newOffset = offset
-
-        switch wireType {
-        case 0:
-            let (_, varBytes) = try Varint.decode(from: buffer, at: newOffset)
-            newOffset += varBytes
-        case 1:
-            newOffset += 8
-        case 2:
-            let (lengthValue, lengthBytes) = try Varint.decode(from: buffer, at: newOffset)
-            let length = try Varint.toInt(lengthValue)
-            newOffset += lengthBytes + length
-        case 5:
-            newOffset += 4
-        default:
+    /// Maps the cored codec's typed error to the adapter's error contract.
+    private static func rethrow(_ error: KademliaCodecError) throws -> Never {
+        switch error {
+        case .truncated:
+            throw KademliaError.encodingError("Field truncated")
+        case .unknownWireType(let wireType):
             throw KademliaError.encodingError("Unknown wire type \(wireType)")
+        case .missingPeerID:
+            throw KademliaError.encodingError("Missing peer ID")
+        case .missingRecordField:
+            throw KademliaError.encodingError("Missing key or value in record")
         }
-
-        guard newOffset <= buffer.count else {
-            throw KademliaError.encodingError("Field extends beyond data")
-        }
-
-        return newOffset
-    }
-
-    private static func fieldRange(in data: Data, offset: Int, end: Int) -> Range<Data.Index> {
-        let startIndex = data.index(data.startIndex, offsetBy: offset)
-        let endIndex = data.index(data.startIndex, offsetBy: end)
-        return startIndex..<endIndex
     }
 }
