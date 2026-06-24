@@ -35,15 +35,14 @@ public struct TLSUpgraderConfiguration: Sendable {
 /// - ALPN "libp2p" with optional early muxer negotiation
 /// - PeerID extraction from the certificate's libp2p extension
 ///
-/// ## Deferred peer-identity surfacing (fail-closed)
+/// ## Peer-identity surfacing (fail-closed)
 ///
-/// The Tier-1 `TLS` facade currently discards the `PeerIdentity` produced by the
-/// certificate validator: `TLSClient.peerIdentity` / `TLSServer.peerIdentity`
-/// return `nil` (a known swift-tls gap). The upgrader REQUIRES the verified
-/// remote PeerID to build the `SecuredConnection`, so when the identity cannot be
-/// read back, it throws `TLSError.peerIdentityUnavailable` rather than admit an
-/// unidentified/unauthenticated peer. Completing libp2p-TLS authentication is
-/// unblocked once the facade surfaces `peerIdentity`; see CONTEXT.md "Deferred".
+/// The Tier-1 `TLS` facade surfaces the `PeerIdentity` produced by the libp2p
+/// certificate validator via `TLSClient.peerIdentity` / `TLSServer.peerIdentity`.
+/// The upgrader REQUIRES the verified remote PeerID to build the
+/// `SecuredConnection`, so when the identity cannot be read back (no validator
+/// identity), it throws `TLSError.peerIdentityUnavailable` rather than admit an
+/// unidentified/unauthenticated peer — never weakening the fail-closed contract.
 public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendable {
 
     public var protocolID: String { tlsProtocolID }
@@ -167,11 +166,24 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
         let alpnProtocols = Self.buildALPNProtocols(muxerProtocols: muxerProtocols)
 
         // 3. Configure TLS 1.3 (mutual auth, custom libp2p certificate validator).
-        //    Trust is established by the validator re-deriving the PeerID from the
-        //    libp2p certificate extension; there is no X.509 CA chain to anchor.
+        //    libp2p certificates are SELF-SIGNED X.509 with no CA chain (libp2p-tls
+        //    spec): trust is established solely by the validator re-deriving the
+        //    PeerID from the libp2p extension and verifying its embedded signature.
+        //
+        //    `verifyPeer` is therefore `false` — NOT to relax authentication, but to
+        //    suppress the facade's standard X.509 CA-chain validation, which would
+        //    reject a self-signed leaf against the empty trust store. Authentication
+        //    is NOT weakened:
+        //      - the CertificateVerify proof-of-possession is ALWAYS checked in-core
+        //        (the peer proves it holds the leaf's private key);
+        //      - the custom `certificateValidator` STILL runs because a certificate
+        //        is presented on both sides (mutual TLS), enforcing the libp2p
+        //        extension signature, PeerID derivation, and the `expectedPeer` match.
+        //    This mirrors the working swift-quic libp2p-TLS path (verifyPeer = false
+        //    + self-signed certs verified by the libp2p extension).
         var tlsConfig = TLSConfiguration(
             alpnProtocols: alpnProtocols,
-            verifyPeer: true,
+            verifyPeer: false,
             identity: identity,
             trustRoots: .none,
             requireClientCertificate: true,
@@ -230,13 +242,10 @@ public final class TLSUpgrader: SecurityUpgrader, EarlyMuxerNegotiating, Sendabl
         //    FAIL-CLOSED GATE: the libp2p certificate validator already ran during
         //    the handshake (rejecting a missing/invalid/mismatched libp2p
         //    extension, and `expectedPeer` mismatch). It produced a `PeerIdentity`
-        //    carrying the peer's PeerID — but the `TLS` facade currently discards
-        //    it (`peerIdentity` returns nil). Without the verified PeerID we cannot
-        //    build a `SecuredConnection` bound to an authenticated peer, so we
-        //    REJECT rather than admit an unidentified peer. This is the deferred
-        //    swift-tls peer-identity surfacing gap (CONTEXT.md "Deferred"); once
-        //    the facade surfaces `peerIdentity`, the branch below completes the
-        //    handshake instead of throwing.
+        //    carrying the peer's PeerID, which the `TLS` facade now surfaces via
+        //    `peerIdentity`. If no verified identity is available we cannot build a
+        //    `SecuredConnection` bound to an authenticated peer, so we REJECT
+        //    rather than admit an unidentified peer.
         guard let peerIdentity = endpoint.peerIdentity else {
             throw TLSError.peerIdentityUnavailable
         }

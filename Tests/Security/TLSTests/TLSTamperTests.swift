@@ -6,17 +6,17 @@
 /// invariants are asserted at the `LibP2PCertificate` level — the source of truth
 /// the upgrader's verification relies on.
 ///
-/// ## Deferred libp2p-TLS authentication (fail-closed)
+/// ## libp2p-TLS authentication (now completed, fail-closed preserved)
 ///
-/// The end-to-end mutual-auth handshake assertions formerly in this suite drove
-/// the removed `TLSCore.TLSConnection` directly (`validatedPeerInfo` /
-/// `peerCertificates`). After the swift-tls facade redesign the Tier-1 `TLS`
-/// facade discards the validator's `PeerIdentity` (`peerIdentity` returns nil), so
-/// the libp2p-TLS upgrader cannot read the verified remote PeerID back out. The
-/// upgrader therefore FAILS CLOSED — `peerIdentityUnavailableRejectsRatherThanAccept`
-/// asserts a full handshake over an in-memory pipe throws rather than admitting an
-/// unidentified peer. Completing libp2p-TLS auth is unblocked once the facade
-/// surfaces `peerIdentity`.
+/// The Tier-1 `TLS` facade now surfaces the validator's `PeerIdentity` via
+/// `peerIdentity`, so the libp2p-TLS upgrader reads the verified remote PeerID
+/// back out and COMPLETES the handshake instead of failing closed on a missing
+/// accessor. `legitimateHandshakeBindsVerifiedPeer` drives a full handshake over
+/// an in-memory pipe between two valid peers and asserts BOTH sides return a
+/// `SecuredConnection` bound to the OTHER side's verified PeerID. The fail-closed
+/// contract is unchanged and is covered by the `expectedPeer`-mismatch and the
+/// cross-check / tamper invariants below — a mismatched or unverifiable peer is
+/// still rejected, never admitted.
 import Testing
 import Foundation
 import NIOCore
@@ -29,64 +29,53 @@ import P2PSecurity
 @Suite("TLS Tamper / Identity Binding Tests", .serialized)
 struct TLSTamperTests {
 
-    // MARK: - Fail-Closed Gate (deferred peer-identity surfacing)
+    // MARK: - Completed Authentication (peer-identity surfacing resolved)
 
-    @Test("Fail-closed: upgrader rejects rather than accept an unidentified peer", .timeLimit(.minutes(1)))
-    func peerIdentityUnavailableRejectsRatherThanAccept() async throws {
+    @Test("Legitimate handshake binds each side to the OTHER's verified PeerID", .timeLimit(.minutes(1)))
+    func legitimateHandshakeBindsVerifiedPeer() async throws {
         let clientKeyPair = KeyPair.generateEd25519()
         let serverKeyPair = KeyPair.generateEd25519()
 
         let (clientConn, serverConn) = InMemoryRawConnectionPair.make()
-        // A short handshake timeout keeps the test bounded: the upgrader's own
-        // timeout machinery fails the handshake (throwing `TLSError.timeout`)
-        // rather than blocking forever, so the test never hangs regardless of how
-        // far the in-memory handshake progresses.
         let upgrader = TLSUpgrader(
-            configuration: TLSUpgraderConfiguration(handshakeTimeout: .milliseconds(500))
+            configuration: TLSUpgraderConfiguration(handshakeTimeout: .seconds(10))
         )
 
-        // Drive both sides concurrently. The upgrader must NEVER return a
-        // SecuredConnection bound to an unverified/unidentified peer: while the
-        // facade does not surface `peerIdentity`, the fail-closed gate throws
-        // `peerIdentityUnavailable` (or the handshake times out / rejects first).
-        // The essential invariant: NEITHER side silently succeeds.
-        let outcomes: [Bool] = await withTaskGroup(of: Bool.self) { group in
+        // Drive both sides concurrently. With `peerIdentity` now surfaced, the
+        // legitimate mutual-auth handshake COMPLETES and each side binds the
+        // verified PeerID re-derived from the peer's presented libp2p certificate.
+        let byRole = try await withThrowingTaskGroup(
+            of: (role: String, remote: PeerID).self
+        ) { group in
             group.addTask {
-                do {
-                    _ = try await upgrader.secure(
-                        clientConn,
-                        localKeyPair: clientKeyPair,
-                        as: .initiator,
-                        expectedPeer: serverKeyPair.peerID
-                    )
-                    return true  // silently accepted — a security failure
-                } catch {
-                    return false  // rejected — the required fail-closed outcome
-                }
+                let secured = try await upgrader.secure(
+                    clientConn,
+                    localKeyPair: clientKeyPair,
+                    as: .initiator,
+                    expectedPeer: serverKeyPair.peerID
+                )
+                return ("client", secured.remotePeer)
             }
             group.addTask {
-                do {
-                    _ = try await upgrader.secure(
-                        serverConn,
-                        localKeyPair: serverKeyPair,
-                        as: .responder,
-                        expectedPeer: nil
-                    )
-                    return true
-                } catch {
-                    return false
-                }
+                let secured = try await upgrader.secure(
+                    serverConn,
+                    localKeyPair: serverKeyPair,
+                    as: .responder,
+                    expectedPeer: nil
+                )
+                return ("server", secured.remotePeer)
             }
 
-            var results: [Bool] = []
-            for await accepted in group {
-                results.append(accepted)
+            var results: [String: PeerID] = [:]
+            for try await outcome in group {
+                results[outcome.role] = outcome.remote
             }
             return results
         }
 
-        // Neither side may have silently accepted an unidentified peer.
-        #expect(outcomes.allSatisfy { $0 == false })
+        // Each side authenticated and bound the OTHER side's verified identity.
+        #expect(byRole["client"] == serverKeyPair.peerID)
+        #expect(byRole["server"] == clientKeyPair.peerID)
     }
 
     // MARK: - Cross-Check Invariant (swapped / tampered certificate)
