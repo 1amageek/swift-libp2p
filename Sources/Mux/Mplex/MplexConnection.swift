@@ -43,7 +43,12 @@ struct MplexStreamKey: Hashable, Sendable {
 private struct MplexConnectionState: Sendable {
     var streams: [MplexStreamKey: MplexStream] = [:]
     var nextStreamID: UInt64 = 0
-    var pendingAccepts: [CheckedContinuation<MuxedStream, Error>] = []
+    /// Parked `acceptStream()` waiters, each keyed by a unique monotonic id so a
+    /// specific waiter can be removed on cancellation. FIFO delivery order is
+    /// preserved by appending and removing the first element.
+    var pendingAccepts: [(id: UInt64, continuation: CheckedContinuation<MuxedStream, Error>)] = []
+    /// Next id to assign to a parked accept waiter.
+    var nextAcceptID: UInt64 = 0
     var isClosed = false
     var isStarted = false
     var readBuffer = ByteBuffer()
@@ -201,16 +206,65 @@ public final class MplexConnection: MuxedConnection, Sendable {
         return stream
     }
 
+    /// Waits for the next inbound stream.
+    ///
+    /// Resolution is exactly one of three mutually distinguishable outcomes:
+    /// - returns a `MuxedStream` — an inbound stream was delivered to this waiter
+    /// - throws `MplexError.connectionClosed` — the connection closed (clean
+    ///   close or abrupt shutdown) while this call was parked
+    /// - throws `CancellationError` — the awaiting task was cancelled while
+    ///   parked (the connection is still open)
+    ///
+    /// Cancellation is reported as a distinct `CancellationError`, never as a
+    /// fake stream or a spurious clean close, so the caller can tell a cancelled
+    /// accept apart from a real stream and from a closed connection.
     public func acceptStream() async throws -> MuxedStream {
-        try await withCheckedThrowingContinuation { continuation in
-            state.withLock { state in
-                if state.isClosed {
-                    continuation.resume(throwing: MplexError.connectionClosed)
-                    return
-                }
-                state.pendingAccepts.append(continuation)
-            }
+        let id = state.withLock { state -> UInt64 in
+            let assigned = state.nextAcceptID
+            state.nextAcceptID &+= 1
+            return assigned
         }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MuxedStream, Error>) in
+                state.withLock { state in
+                    if state.isClosed {
+                        continuation.resume(throwing: MplexError.connectionClosed)
+                        return
+                    }
+                    // Fast path: the task was already cancelled before parking.
+                    // Resume with cancellation and never register, so neither
+                    // delivery, cancel, nor shutdown finds anything to resume.
+                    if Task.isCancelled {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    state.pendingAccepts.append((id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            // Hop off the cancellation handler so the Mutex removal/resume is
+            // serialized with delivery and shutdown.
+            Task { self.cancelPendingAccept(id) }
+        }
+    }
+
+    /// Removes and fails the parked accept waiter `id` with `CancellationError`,
+    /// exactly once.
+    ///
+    /// If the id is absent — already resumed by an incoming stream delivery or by
+    /// shutdown — this is a no-op. Membership in `pendingAccepts` is the
+    /// exactly-once guard: a waiter is resumed by EXACTLY ONE of
+    /// {incoming-stream delivery, cancel, shutdown}, whichever first removes it
+    /// by id, and the Mutex serializes them.
+    private func cancelPendingAccept(_ id: UInt64) {
+        let continuation: CheckedContinuation<MuxedStream, Error>? = state.withLock { state in
+            guard let index = state.pendingAccepts.firstIndex(where: { $0.id == id }) else {
+                return nil
+            }
+            return state.pendingAccepts.remove(at: index).continuation
+        }
+        continuation?.resume(throwing: CancellationError())
     }
 
     public func close() async throws {
@@ -369,8 +423,10 @@ public final class MplexConnection: MuxedConnection, Sendable {
 
         let deliveryResult = state.withLock { state -> DeliveryResult in
             if !state.pendingAccepts.isEmpty {
-                let cont = state.pendingAccepts.removeFirst()
-                return .directDelivery(cont, stream)
+                // FIFO: the oldest parked waiter receives the stream. Removing
+                // it by index is the exactly-once guard against cancel/shutdown.
+                let waiter = state.pendingAccepts.removeFirst()
+                return .directDelivery(waiter.continuation, stream)
             }
             return .bufferDelivery(state.inboundContinuation, stream)
         }
@@ -515,12 +571,18 @@ public final class MplexConnection: MuxedConnection, Sendable {
     private struct ShutdownCapture {
         let streams: [MplexStream]
         let inboundContinuation: AsyncStream<MuxedStream>.Continuation?
-        let pendingAccepts: [CheckedContinuation<MuxedStream, Error>]
+        let pendingAccepts: [(id: UInt64, continuation: CheckedContinuation<MuxedStream, Error>)]
 
+        /// Finishes the inbound stream and resumes pending accepts with error.
+        ///
+        /// Each parked accept that is still present at capture time is resumed
+        /// here with the connection-closed error. A waiter is captured at most
+        /// once (the capture clears `pendingAccepts` under the lock), so this
+        /// cannot double-resume one already removed by delivery or cancel.
         func notifyContinuations(error: Error) {
             inboundContinuation?.finish()
-            for continuation in pendingAccepts {
-                continuation.resume(throwing: error)
+            for waiter in pendingAccepts {
+                waiter.continuation.resume(throwing: error)
             }
         }
 
