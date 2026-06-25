@@ -1,186 +1,26 @@
-# P2PPing
+# Ping — CONTEXT
+Scope/role: libp2p Ping (`P2PPing`). Connection liveness, RTT measurement, NAT keepalive.
 
-## 概要
-libp2p Pingプロトコルの実装。
+Ping echoes a fixed 32-byte random payload and times the round trip. The only subtlety is
+exact framing: a single `MuxedStream.read()` may return more or fewer than 32 bytes.
 
-## 責務
-- 接続のヘルスチェック
-- RTT（Round-Trip Time）測定
-- NAT keepalive
+## Contracts (the load-bearing rules)
+- `PingStreamReader` buffers internally and returns exactly the requested byte count,
+  reading more from the stream as needed. Do not assume one read yields exactly 32 bytes.
 
-## Protocol ID
-- `/ipfs/ping/1.0.0`
+## Invariants (must hold; tests guard them)
+- Payload is exactly 32 bytes (spec); the responder echoes the received payload verbatim.
+- Requests have a configurable timeout (30s default).
+- `statistics(from:)` computes min/max/avg at nanosecond precision.
 
-## 依存関係
-- `P2PCore` (PeerID)
-- `P2PMux` (MuxedStream)
-- `P2PProtocols` (ProtocolService)
+## Dependencies & seams
+- `P2PCore` (PeerID), `P2PMux` (MuxedStream), `P2PProtocols` (ProtocolService).
 
----
+## Wire protocol notes
+- Protocol ID `/ipfs/ping/1.0.0`. Wire: send 32 random bytes, receive the same 32 bytes
+  echoed back; RTT = receive time − send time. Verified against go/rust-libp2p over QUIC.
 
-## ファイル構成
+## Build
+- Host: `swift build`. Tests: `swift test --filter Ping` (with a timeout).
 
-```
-Sources/Protocols/Ping/
-├── PingService.swift    # メインサービス実装
-├── PingResult.swift     # 結果・イベント・エラー型
-└── CONTEXT.md
-```
-
-## 主要な型
-
-| 型名 | 説明 |
-|-----|------|
-| `PingService` | プロトコルサービス実装 |
-| `PingResult` | Ping結果（RTT含む） |
-| `PingConfiguration` | サービス設定 |
-| `PingEvent` | イベント通知 |
-| `PingError` | エラー型 |
-
----
-
-## Wire Protocol
-
-### Message Format
-
-```
-┌────────────────────────────────────────┐
-│ 32 bytes of random data                │
-└────────────────────────────────────────┘
-```
-
-### Message Flow
-
-```
-Initiator              Responder
-    |---- 32 bytes ------->|
-    |<---- 32 bytes -------|
-    (echo: same 32 bytes)
-```
-
-RTT = time(receive response) - time(send request)
-
----
-
-## API
-
-### Handler登録
-
-```swift
-let pingService = PingService(configuration: .init(
-    timeout: .seconds(30)
-))
-
-await pingService.registerHandler(node: node)
-```
-
-### 単一Ping
-
-```swift
-let result = try await pingService.ping(remotePeer, using: node)
-print("RTT: \(result.rtt)")  // e.g., "2.5ms"
-```
-
-### 複数Ping + 統計
-
-```swift
-let results = await pingService.pingMultiple(
-    remotePeer,
-    using: node,
-    count: 5,
-    interval: .milliseconds(100)
-)
-
-if let stats = PingService.statistics(from: results) {
-    print("Min: \(stats.min)")
-    print("Max: \(stats.max)")
-    print("Avg: \(stats.avg)")
-}
-```
-
----
-
-## 仕様準拠
-
-- ペイロードサイズ: 32バイト（仕様準拠）
-- レスポンス: 受信したペイロードをそのままエコーバック
-- タイムアウト: 設定可能（デフォルト30秒）
-
----
-
-## 実装詳細
-
-### PingStreamReader
-`MuxedStream.read()`は32バイト以上を返す場合がある。
-`PingStreamReader`は内部バッファリングで正確に32バイトを抽出:
-
-```swift
-class PingStreamReader {
-    private let buffer: Mutex<Data>
-
-    func readExact(_ count: Int) async throws -> Data
-    // 必要に応じてストリームから追加読み取り
-    // バッファから正確にcountバイトを返す
-}
-```
-
-### 統計計算
-`PingService.statistics(from:)`はナノ秒精度で計算:
-- min: 最小RTT
-- max: 最大RTT
-- avg: 平均RTT
-
-## テスト
-
-```
-Tests/Protocols/PingTests/
-└── PingServiceTests.swift    # サービステスト
-
-Tests/Interop/Protocols/
-└── PingInteropTests.swift    # Go/Rust相互運用（QUIC）
-
-Tests/Interop/Existing/
-├── GoLibp2pInteropTests.swift   # Pingケース含む
-└── RustInteropTests.swift       # Pingケース含む
-```
-
-### 実装状況
-| ファイル | ステータス | 説明 |
-|---------|----------|------|
-| PingServiceTests | ✅ 実装済み | 単一/複数Ping、統計テスト |
-| PingInteropTests | ✅ 実装済み | Go/Rust相互運用（32バイトエコー検証） |
-
-## 品質向上TODO
-
-### 高優先度
-- [x] **PingServiceテストの追加** - 単一Ping、複数Ping、統計計算テスト
-- [x] **Go/Rust相互運用テスト** - 実際のノードとの32バイトエコー検証
-
-### 中優先度
-- [ ] **タイムアウト動作テスト** - 30秒デフォルトタイムアウトの検証
-- [ ] **不正ペイロード処理テスト** - 32バイト以外のレスポンス処理
-- [ ] **並行Pingテスト** - 同一ピアへの複数同時Ping
-
-### 低優先度
-- [ ] **Ping統計の永続化** - 履歴RTTの保存と傾向分析
-- [ ] **適応タイムアウト** - 過去のRTTに基づくタイムアウト調整
-
-<!-- CONTEXT_EVAL_START -->
-## 実装評価 (2026-02-16)
-
-- 総合評価: **A** (100/100)
-- 対象ターゲット: `P2PPing`
-- 実装読解範囲: 2 Swift files / 379 LOC
-- テスト範囲: 36 files / 297 cases / targets 3
-- 公開API: types 5 / funcs 4
-- 参照網羅率: type 1.0 / func 1.0
-- 未参照公開型: 0 件（例: `なし`）
-- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
-- 評価所見: 重大な静的リスクは検出されず
-
-### 重点アクション
-- 現行のテスト網羅を維持し、機能追加時は同一粒度でテストを増やす。
-
-※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
-
-<!-- CONTEXT_EVAL_END -->
+Last reviewed: 2026-06-25

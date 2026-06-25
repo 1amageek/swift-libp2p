@@ -1,232 +1,40 @@
-# P2PIdentify
+# Identify — CONTEXT
+Scope/role: libp2p Identify + Identify Push (`P2PIdentify`). Exchanges peer public key,
+listen addresses, supported protocols, and observed address. Read this before changing
+signed-peer-record verification or the cache.
 
-## 概要
-libp2p Identifyプロトコルの実装。
+Identify learns a peer's identity and capabilities on connect and broadcasts updates via
+Push. The security-relevant part is signed-peer-record verification; the operational part
+is a bounded TTL/LRU cache with explicit maintenance.
 
-## 責務
-- Peer情報の交換（公開鍵、プロトコル、アドレス）
-- 接続時の自動識別
-- 情報更新のプッシュ通知
+## Contracts (the load-bearing rules)
+- Background cache cleanup is opt-in: `startMaintenance()` must be called explicitly;
+  `shutdown()` stops maintenance and finishes the event stream.
+- Reads are bounded — the message reader throws `messageTooLarge` past the 64KB limit
+  rather than silently truncating. Do not reintroduce silent truncation.
 
-## Protocol IDs
-- `/ipfs/id/1.0.0` - Identify (query)
-- `/ipfs/id/push/1.0.0` - Identify Push (broadcast)
+## Invariants (must hold; tests guard them)
+- **Signed peer records (field 8) are verified when present.**
+  `verifySignedPeerRecord()` checks the Envelope signature and requires the PeerID to
+  match across three places: the record's PeerID, the envelope signer, and the expected
+  peer. A mismatch fails verification.
+- Cache eviction is deterministic: expired entries first, then LRU. `cachedInfo(for:)`
+  returns `nil` for expired entries; `allCachedInfo` filters expired.
 
-## 依存関係
-- `P2PCore` (PeerID, PublicKey, Multiaddr, Envelope)
-- `P2PMux` (MuxedStream)
-- `P2PProtocols` (ProtocolService)
+## Dependencies & seams
+- `P2PCore` (PeerID, PublicKey, Multiaddr, Envelope), `P2PMux` (MuxedStream),
+  `P2PProtocols` (ProtocolService).
+- Listen addresses and supported protocols are supplied by injected closures at
+  handler registration (`getListenAddresses`, `getSupportedProtocols`).
 
----
+## Wire protocol notes
+- Protocol IDs: `/ipfs/id/1.0.0` (query), `/ipfs/id/push/1.0.0` (push).
+- Protobuf `Identify`: `publicKey`(1), `listenAddrs`(2), `protocols`(3),
+  `observedAddr`(4), `protocolVersion`(5), `agentVersion`(6), `signedPeerRecord`(8)
+  — field 7 is skipped. Query opens a stream and reads one Identify message; Push pushes
+  one message on a fresh stream.
 
-## ファイル構成
+## Build
+- Host: `swift build`. Tests: `swift test --filter Identify` (with a timeout).
 
-```
-Sources/Protocols/Identify/
-├── IdentifyService.swift     # メインサービス実装
-├── IdentifyInfo.swift        # 交換データ構造
-├── IdentifyProtobuf.swift    # Wire format encode/decode
-├── IdentifyError.swift       # エラー定義
-└── CONTEXT.md
-```
-
-## 主要な型
-
-| 型名 | 説明 |
-|-----|------|
-| `IdentifyService` | プロトコルサービス実装 |
-| `IdentifyInfo` | Peer情報構造体 |
-| `IdentifyConfiguration` | サービス設定 |
-| `IdentifyEvent` | イベント通知 |
-| `IdentifyError` | エラー型 |
-
----
-
-## Wire Protocol
-
-### Protobuf Message
-
-```protobuf
-message Identify {
-  optional bytes publicKey = 1;
-  repeated bytes listenAddrs = 2;
-  repeated string protocols = 3;
-  optional bytes observedAddr = 4;
-  optional string protocolVersion = 5;
-  optional string agentVersion = 6;
-  optional bytes signedPeerRecord = 8;  // field 7 is skipped
-}
-```
-
-### Message Flow
-
-**Identify (query):**
-```
-Initiator              Responder
-    |---- stream open ---->|
-    |<--- Identify msg ----|
-    |---- stream close --->|
-```
-
-**Identify Push:**
-```
-Sender                 Receiver
-    |---- stream open ---->|
-    |---- Identify msg --->|
-    |---- stream close --->|
-```
-
----
-
-## API
-
-### Handler登録
-
-```swift
-let identifyService = IdentifyService(configuration: .init(
-    agentVersion: "my-app/1.0.0"
-))
-
-await identifyService.registerHandlers(
-    node: node,
-    localKeyPair: keyPair,
-    getListenAddresses: { await node.configuration.listenAddresses },
-    getSupportedProtocols: { await node.supportedProtocols }
-)
-```
-
-### Peer識別
-
-```swift
-let info = try await identifyService.identify(remotePeer, using: node)
-print("Agent: \(info.agentVersion)")
-print("Protocols: \(info.protocols)")
-```
-
-### Push送信
-
-```swift
-try await identifyService.push(
-    to: remotePeer,
-    using: node,
-    localKeyPair: keyPair,
-    listenAddresses: addresses,
-    supportedProtocols: protocols
-)
-```
-
----
-
-## 実装詳細
-
-### キャッシュ管理
-`IdentifyService`は識別済みピア情報をキャッシュ:
-
-```swift
-// 設定
-IdentifyConfiguration(
-    cacheTTL: .seconds(24 * 60 * 60),  // デフォルト24時間
-    maxCacheSize: 1000,                 // デフォルト1000エントリ
-    cleanupInterval: .seconds(300)      // デフォルト5分（nil で無効化）
-)
-
-// キャッシュAPI
-func cachedInfo(for peer: PeerID) -> IdentifyInfo?  // 期限切れは nil を返す
-var allCachedInfo: [PeerID: IdentifyInfo]           // 期限切れをフィルタ
-func clearCache(for peer: PeerID)
-func clearAllCache()
-func cleanup() -> Int                                // 手動クリーンアップ
-
-// メンテナンスAPI
-func startMaintenance()  // バックグラウンドクリーンアップ開始
-func stopMaintenance()   // 停止
-func shutdown() async    // stopMaintenance() + イベントストリーム終了
-```
-
-**削除戦略**:
-1. 期限切れエントリ優先
-2. LRU（最古アクセス）
-
-**注意**: `startMaintenance()` を明示的に呼び出す必要あり。
-
-### signedPeerRecord検証
-- フィールド8（signedPeerRecord）の署名検証を実装 ✅ 2026-01-23
-- `verifySignedPeerRecord()` で Envelope 署名を検証
-- PeerID の一致を確認（record内、envelope署名者、期待値）
-
-### イベント
-
-```swift
-public enum IdentifyEvent: Sendable {
-    case received(peer: PeerID, info: IdentifyInfo)
-    case sent(peer: PeerID)
-    case pushReceived(peer: PeerID, info: IdentifyInfo)
-    case error(peer: PeerID?, IdentifyError)
-    case maintenanceCompleted(entriesRemoved: Int)
-}
-```
-
-## テスト
-
-```
-Tests/Protocols/IdentifyTests/
-├── IdentifyProtobufTests.swift   # Encode/decode
-└── IdentifyServiceTests.swift    # サービステスト
-
-Tests/Interop/Protocols/
-└── IdentifyInteropTests.swift    # Go/Rust相互運用（QUIC）
-
-Tests/Interop/Existing/
-├── GoLibp2pInteropTests.swift   # Identifyケース含む
-└── RustInteropTests.swift       # Identifyケース含む
-```
-
-### 実装状況
-| ファイル | ステータス | 説明 |
-|---------|----------|------|
-| IdentifyProtobufTests | ✅ 実装済み | エンコード/デコードテスト |
-| IdentifyServiceTests | ✅ 実装済み | 基本サービステスト |
-| IdentifyInteropTests | ✅ 実装済み | Go/Rust相互運用（identify応答デコード） |
-
-## 品質向上TODO
-
-### 高優先度
-- [x] **signedPeerRecord検証の実装** - `verifySignedPeerRecord()` で署名とPeerID検証 ✅ 2026-01-23
-- [x] **キャッシュTTL/サイズ制限** - TTL ベース有効期限 + LRU 削除 + バックグラウンドメンテナンス ✅ 2026-01-23
-- [x] **IdentifyServiceテストの追加** - キャッシュ TTL/LRU/メンテナンステスト追加 ✅ 2026-01-23
-- [ ] **Protobufラウンドトリップテスト** - 全フィールドのエンコード/デコード検証
-
-### 中優先度
-- [ ] **observedAddr検証** - 観察アドレスの妥当性チェック
-- [x] **Identify Push自動送信** - IdentifyService側実装済み + Node統合完了（NodeConfiguration.identifyService で自動登録・peer lifecycle通知） ✅
-
-### 低優先度
-- [ ] **Delta更新対応** - 差分のみの情報交換（帯域節約）
-- [ ] **protocolVersion/agentVersionパース** - バージョン比較ユーティリティ
-
-## Codex Review (2026-01-18) - UPDATED 2026-01-23
-
-### Warning
-| Issue | Location | Status | Description |
-|-------|----------|--------|-------------|
-| ~~readAll silently truncates~~ | `IdentifyService.swift:384-398` | ✅ Fixed | Now throws `messageTooLarge` error when exceeding 64KB limit |
-
-<!-- CONTEXT_EVAL_START -->
-## 実装評価 (2026-02-16)
-
-- 総合評価: **A** (100/100)
-- 対象ターゲット: `P2PIdentify`
-- 実装読解範囲: 4 Swift files / 1117 LOC
-- テスト範囲: 25 files / 107 cases / targets 2
-- 公開API: types 5 / funcs 13
-- 参照網羅率: type 1.0 / func 0.69
-- 未参照公開型: 0 件（例: `なし`）
-- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
-- 評価所見: 重大な静的リスクは検出されず
-
-### 重点アクション
-- 現行のテスト網羅を維持し、機能追加時は同一粒度でテストを増やす。
-
-※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
-
-<!-- CONTEXT_EVAL_END -->
+Last reviewed: 2026-06-25
