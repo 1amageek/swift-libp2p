@@ -445,7 +445,8 @@ let package = Package(
                 .product(name: "P2PCoreTransport", package: "swift-p2p-core"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/Discovery/MDNS"
+            path: "Sources/Discovery/MDNS",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PDiscoverySWIM",
@@ -461,7 +462,8 @@ let package = Package(
                 .product(name: "NIOUDPTransport", package: "swift-nio-udp"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/Discovery/SWIM"
+            path: "Sources/Discovery/SWIM",
+            exclude: ["CONTEXT.md"]
         ),
         .target(
             name: "P2PDiscoveryCYCLON",

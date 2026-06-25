@@ -25,7 +25,7 @@ Discovery/
 | ターゲット | 責務 | 依存関係 |
 |-----------|------|----------|
 | `P2PDiscovery` | DiscoveryServiceプロトコル定義 | P2PCore |
-| `P2PDiscoveryMDNS` | mDNSベースのローカル発見 | P2PDiscovery, mDNS |
+| `P2PDiscoveryMDNS` | mDNSベースのローカル発見 | P2PDiscovery, MDNS |
 | `P2PDiscoverySWIM` | SWIMメンバーシップ実装 | P2PDiscovery |
 | `P2PDiscoveryCYCLON` | CYCLONピアサンプリング | P2PDiscovery |
 | `P2PDiscoveryPlumtree` | Plumtreeアナウンス統合 | P2PDiscovery, P2PPlumtree |
@@ -36,7 +36,7 @@ Discovery/
 
 ```swift
 /// 観察情報
-public struct Observation: Sendable, Hashable {
+public struct PeerObservation: Sendable, Hashable {
     public enum Kind: Sendable, Hashable {
         case announcement   // 自己アナウンス
         case reachable      // 到達可能の観察
@@ -59,13 +59,23 @@ public struct ScoredCandidate: Sendable {
 }
 
 /// 発見サービス
-public protocol DiscoveryService: Sendable {
+public protocol DiscoveryService: AnyObject, Sendable {
+    /// 自己除外フィルタに使う local peer（protocol 拡張が参照）
+    var localPeerID: PeerID { get }
     func announce(addresses: [Multiaddr]) async throws
     func find(peer: PeerID) async throws -> [ScoredCandidate]
-    func subscribe(to peer: PeerID) -> AsyncStream<Observation>
-    func knownPeers() async -> [PeerID]
-    var observations: AsyncStream<Observation> { get }
-    func shutdown() async
+    func subscribe(to peer: PeerID) -> AsyncStream<PeerObservation>
+    /// 自己を含む生の known peers（要件側）。公開 API は `knownPeers()` を使う
+    func collectKnownPeers() async -> [PeerID]
+    var observations: AsyncStream<PeerObservation> { get }
+    func shutdown() async throws
+}
+
+extension DiscoveryService {
+    /// 自己を除外した known peers（横断的処理は拡張で一元管理）
+    public func knownPeers() async -> [PeerID] {
+        await collectKnownPeers().filter { $0 != localPeerID }
+    }
 }
 ```
 
@@ -129,7 +139,7 @@ base: 0.5                           // ベーススコア
 | モジュール | ステータス | 説明 |
 |-----------|----------|------|
 | P2PDiscovery | ✅ 実装済み | プロトコル定義 |
-| CompositeDiscovery | ✅ 実装済み | 複数サービス合成 |
+| DiscoveryPipeline | ✅ 実装済み | 複数サービス合成（result builder、旧 CompositeDiscovery） |
 | P2PDiscoverySWIM | ✅ 実装済み | swift-SWIM統合 |
 | P2PDiscoveryMDNS | ✅ 実装済み | ローカルネットワーク発見 |
 | PeerStore (in-memory) | ✅ 実装済み | LRUキャッシュ、最大1000ピア、TTLベースGC |
@@ -185,23 +195,24 @@ public struct BootstrapConfiguration: Sendable {
 - 自動定期ブートストラップ（オプション）
 - 並行接続試行
 
-### CompositeDiscovery
-複数の発見サービスを組み合わせる:
+### DiscoveryPipeline（旧 CompositeDiscovery）
+複数の発見サービスを result-builder で合成する:
 ```swift
-let composite = CompositeDiscovery.build(localPeerID: localPeerID) { builder in
-    builder.addSWIM(configuration: .default, weight: 1.0)
-    builder.addMDNS(configuration: .default, weight: 0.8)
+let pipeline = DiscoveryPipeline(localPeerID: localPeerID) {
+    DiscoveryRegistration(SWIMMembership(localPeerID: localPeerID), weight: 1.0)
+    DiscoveryRegistration(MDNSDiscovery(localPeerID: localPeerID), weight: 0.8)
 }
-await composite.start()
+try await pipeline.start()
 // ... 使用 ...
-await composite.shutdown()  // 必須: 内部サービスも停止
+try await pipeline.shutdown()  // 必須: 所有する child service も停止
 ```
 
 **重要な制約**:
-- CompositeDiscoveryは factory から child service を生成して所有する
-- child service はその CompositeDiscovery 専用に生成すること
-- 既存インスタンスを closure で再利用すると ownership 境界が崩れる
-- `shutdown()`は必ず呼び出すこと（内部サービスも停止される）
+- DiscoveryPipeline は構成された child service の ownership を取得する（`ownerID` で claim）
+- 各 service インスタンスは1つの DiscoveryPipeline のみが使用すること
+  （`DiscoveryServiceOwnershipRegistry` が二重 owner を precondition で検出）
+- pipeline に渡した後は service を直接使用しない
+- `shutdown()` は必ず呼び出すこと（child service も停止される）
 
 ### SWIMの追加型
 - `SWIMMembership` - DiscoveryService実装
@@ -284,28 +295,29 @@ await composite.shutdown()  // 必須: 内部サービスも停止
 | MDNSDiscovery | `actor` | 低頻度、ユーザー向けAPI |
 | CYCLONDiscovery | `actor` | 低頻度、ユーザー向けAPI |
 | PlumtreeDiscovery | `actor` | 低頻度、ユーザー向けAPI |
-| CompositeDiscovery | `final class + Mutex` | イベント転送のみ、内部は軽量処理 |
+| DiscoveryPipeline | `final class + Mutex` | イベント転送のみ、内部は軽量処理 |
 
 ### イベントパターン
 
 Discovery層のすべてのサービスは **EventBroadcaster（多消費者）** を使用。
 
 - **理由**: 複数の消費者が異なるピアを監視する（`subscribe(to: PeerID)`）
-- **実装**: `nonisolated let broadcaster = EventBroadcaster<Observation>()`
+- **実装**: `nonisolated let broadcaster = EventBroadcaster<PeerObservation>()`
 - **ライフサイクル**: `deinit` で `broadcaster.shutdown()` 呼び出し
 
 ### ライフサイクルメソッド統一
 
-すべてのDiscoveryServiceは `func shutdown() async` を実装すること。
+すべてのDiscoveryServiceは `func shutdown() async throws` を実装すること。
 
 | サービス | 現状 | 修正状況 |
 |---------|------|----------|
-| SWIMMembership | `func shutdown() async` | ✅ 実装済み |
-| MDNSDiscovery | `func shutdown() async` | ✅ 実装済み |
-| CYCLONDiscovery | `func shutdown() async` | ✅ 実装済み |
-| CompositeDiscovery | `func shutdown() async` | ✅ 実装済み（内部サービスも停止） |
+| SWIMMembership | `func shutdown() async throws` | ✅ 実装済み |
+| MDNSDiscovery | `func shutdown() async throws` | ✅ 実装済み |
+| CYCLONDiscovery | `func shutdown() async throws` | ✅ 実装済み |
+| DiscoveryPipeline | `func shutdown() async throws` | ✅ 実装済み（所有する child service も停止） |
 
 **理由**: 内部で非同期リソース（`await transport.shutdown()`, `await browser.shutdown()`）を停止する必要がある。
+**注**: `CompositeDiscovery` は result-builder ベースの `DiscoveryPipeline` に置き換わった。
 
 ## Codex Review (2026-01-18, Updated 2026-02-14)
 

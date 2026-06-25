@@ -48,13 +48,16 @@
 ```
 swift-libp2p/
 Sources/
+├── LibP2PCore/                  # Embedded-clean コア（[UInt8]/P2PCoreBytes、Foundation非依存）
+│
 ├── Core/
-│   └── P2PCore/                 # 最小限の共通抽象のみ
+│   └── P2PCore/                 # LibP2PCore + Foundation アダプタ（Data/NIO 公開API）
 │       ├── Identity/            # PeerID, PublicKey, KeyPair
 │       ├── Addressing/          # Multiaddr, MultiaddrProtocol
 │       ├── Connection/          # RawConnection, SecuredConnection (protocols)
 │       ├── Lifecycle/           # ライフサイクル管理
 │       ├── Record/              # ピアレコード
+│       ├── Compat/              # Varint/Data 互換シム
 │       └── Utilities/           # Varint, Base58, Multihash, HexEncoding
 │
 ├── Transport/
@@ -63,14 +66,16 @@ Sources/
 │   ├── QUIC/                    # P2PTransportQUIC (swift-quic)
 │   │   └── TLS/                 # QUIC TLS 統合
 │   ├── WebRTC/                  # P2PTransportWebRTC (swift-webrtc)
+│   ├── WebTransport/            # P2PTransportWebTransport (over QUIC)
 │   ├── WebSocket/               # P2PTransportWebSocket (SwiftNIO)
 │   └── Memory/                  # P2PTransportMemory (テスト用)
 │
 ├── Security/
 │   ├── P2PSecurity/             # Protocol定義 (SecurityUpgrader)
-│   ├── Certificate/             # P2PCertificate (libp2p TLS証明書)
+│   ├── Certificate/             # P2PCertificate (libp2p RPK証明書, P2PCoreDER)
 │   ├── Noise/                   # P2PSecurityNoise (XX pattern)
 │   ├── TLS/                     # P2PSecurityTLS
+│   ├── Pnet/                    # P2PPnet (PSK + XSalsa20)
 │   └── Plaintext/               # P2PSecurityPlaintext (テスト用)
 │
 ├── Mux/
@@ -82,10 +87,13 @@ Sources/
 │   └── P2PNegotiation/          # multistream-select (/multistream/1.0.0)
 │
 ├── Discovery/
-│   ├── P2PDiscovery/            # Protocol定義 (DiscoveryService)
+│   ├── P2PDiscovery/            # Protocol定義 (DiscoveryService, DiscoveryPipeline)
 │   ├── SWIM/                    # P2PDiscoverySWIM (メンバーシップ)
 │   ├── MDNS/                    # P2PDiscoveryMDNS (LAN探索)
-│   └── CYCLON/                  # P2PDiscoveryCYCLON (ピアサンプリング)
+│   ├── CYCLON/                  # P2PDiscoveryCYCLON (ピアサンプリング)
+│   ├── Plumtree/                # P2PDiscoveryPlumtree (アナウンス統合)
+│   ├── Beacon/                  # P2PDiscoveryBeacon (BLE/WiFi/LoRa 近接)
+│   └── WiFiBeacon/              # P2PDiscoveryWiFiBeacon (Wi-Fi アダプタ)
 │
 ├── NAT/
 │   ├── P2PNAT/                  # NAT Protocol定義
@@ -108,10 +116,15 @@ Sources/
 │   │   └── Transport/           # RelayTransport
 │   ├── DCUtR/                   # P2PDCUtR (/libp2p/dcutr)
 │   ├── AutoNAT/                 # P2PAutoNAT (/libp2p/autonat/1.0.0)
-│   └── Plumtree/                # P2PPlumtree (Epidemic Broadcast)
+│   ├── Plumtree/                # P2PPlumtree (Epidemic Broadcast)
+│   ├── Rendezvous/              # P2PRendezvous (/rendezvous/1.0.0)
+│   └── HTTP/                    # P2PHTTP (/http/1.1)
+│
+├── Runtime/
+│   └── P2PRuntime/              # 専門家向けランタイム (ConnectionProvider, Swarm, Pipeline)
 │
 └── Integration/
-    └── P2P/                     # 統合層 (Node, ConnectionUpgrader)
+    └── P2P/                     # facade 統合層 (Node, NodeGroup, NodeGroupBuilder)
         ├── Connection/          # ConnectionManager, ConnectionUpgrader
         └── Resource/            # ResourceManager, ResourceTrackedStream
 
@@ -185,21 +198,40 @@ Tests/
 
 | パッケージ | 用途 |
 |-----------|------|
-| `swift-nio` | TCP, WebSocket, バッファ管理 |
+| `swift-nio` | TCP, WebSocket, バッファ管理 (ByteBuffer) |
+| `swift-nio-ssl` | NIO SSL サポート |
 | `swift-crypto` | 暗号プリミティブ (SHA-256, HMAC, ChaChaPoly) |
 | `swift-log` | 構造化ロギング |
+| `swift-p2p-core` | Embedded-clean コア: `P2PCoreBytes` / `P2PCoreCrypto` / `P2PCoreDER` / `P2PCoreFoundation` / `P2PCoreTransport` |
 | `swift-quic` | QUIC トランスポート |
-| `swift-tls` | TLS セキュリティ |
+| `swift-tls` | TLS / DTLS セキュリティ (Tier-1 facade) |
 | `swift-webrtc` | WebRTC トランスポート |
-| `swift-mDNS` | mDNS ディスカバリ |
-| `swift-SWIM` | SWIM メンバーシップ |
+| `swift-mDNS` | mDNS ディスカバリ (`MDNS` facade) |
+| `swift-SWIM` | SWIM メンバーシップ (`SWIM` + `SWIMWire`) |
 | `swift-nio-udp` | UDP トランスポート (SWIM用) |
-| `swift-certificates` | X.509 証明書 (libp2p TLS) |
-| `swift-asn1` | ASN.1 エンコーディング |
+| `swift-certificates` | フル X.509（証明書パスは P2PCoreDER 経由のため非クリティカル） |
+| `swift-asn1` | ASN.1 エンコーディング（同上） |
 
 ---
 
 ## Package Details
+
+### LibP2PCore (Embedded-clean コア)
+
+**責務**: Foundation / NIO / Crypto に依存しない Embedded-clean な共通コア。
+PeerID/Multiaddr のバイト表現、Varint、Multihash、各種 protobuf-lite コーデック
+（Identify / DCUtR / AutoNAT / GossipSub / Kademlia / CircuitRelay / Plumtree 等）を
+すべて `[UInt8]` / `P2PCoreBytes` 上で実装する。Noise 暗号状態機械は
+`C: CryptoProvider` で generic 化されており、具象プロバイダはアダプタ側にある。
+
+**依存関係:** swift-p2p-core (`P2PCoreBytes`, `P2PCoreCrypto`)
+
+**パス:** `Sources/LibP2PCore`
+
+**注**: `P2PCore` は `LibP2PCore` の上に Foundation アダプタを重ね、歴史的な
+Data/NIO ベースの公開 API を復元する。
+
+---
 
 ### P2PCore (必須・最小限)
 
@@ -222,6 +254,8 @@ Tests/
 | | `Base58` | Base58エンコーディング |
 
 **依存関係:**
+- `LibP2PCore` (Embedded-clean コア)
+- `swift-p2p-core` (`P2PCoreFoundation` — Data/NIO アダプタ)
 - `swift-crypto` (暗号プリミティブ)
 - `swift-log` (ロギング)
 - `swift-nio` (NIOCore, NIOFoundationCompat — ByteBuffer)
@@ -273,6 +307,16 @@ QUIC は暗号化と多重化を内蔵するため、SecurityUpgrader と Muxer 
 
 ---
 
+### P2PTransportWebTransport (実装)
+
+**責務**: WebTransport over QUIC（ブラウザ互換、QUIC 上のデータストリーム）
+
+**依存関係:** P2PTransport, P2PCore, swift-quic
+
+**パス:** `Sources/Transport/WebTransport`
+
+---
+
 ### P2PTransportWebSocket (実装)
 
 **責務**: WebSocket トランスポート（Web 環境向け）
@@ -305,7 +349,11 @@ QUIC は暗号化と多重化を内蔵するため、SecurityUpgrader と Muxer 
 
 **責務**: libp2p TLS 証明書の生成・検証（X.509 拡張による PeerID 埋め込み）
 
-**依存関係:** P2PCore, swift-certificates, swift-asn1, swift-crypto
+**依存関係:** P2PCore, swift-crypto (`Crypto`), swift-p2p-core (`P2PCoreDER`)
+
+M6b 以降、libp2p Raw-Public-Key (RPK) 証明書の build/parse/verify は Embedded-clean な
+minimal-DER コーデック（`P2PCoreDER`）を経由する。swift-certificates / swift-asn1 は
+証明書パスからは外され、フル X.509 が必要な箇所のためにパッケージレベルの依存として残る。
 
 **パス:** `Sources/Security/Certificate`
 
@@ -344,6 +392,16 @@ QUIC は暗号化と多重化を内蔵するため、SecurityUpgrader と Muxer 
 **依存関係:** P2PSecurity のみ
 
 **パス:** `Sources/Security/Plaintext`
+
+---
+
+### P2PPnet (実装)
+
+**責務**: Private Network（PSK + XSalsa20、go-libp2p 互換）。設定された PSK は
+dial/listen 双方で security の前段に適用され、適用できない場合は fail-closed する
+（保護なしフォールバックなし）。
+
+**パス:** `Sources/Security/Pnet`
 
 ---
 
@@ -424,6 +482,38 @@ QUIC は暗号化と多重化を内蔵するため、SecurityUpgrader と Muxer 
 **依存関係:** P2PDiscovery, P2PCore
 
 **パス:** `Sources/Discovery/CYCLON`
+
+---
+
+### P2PDiscoveryPlumtree (実装)
+
+**責務**: Plumtree トピック上の自己アナウンス配信を `DiscoveryService` に統合
+
+**依存関係:** P2PDiscovery, P2PPlumtree
+
+**パス:** `Sources/Discovery/Plumtree`
+
+---
+
+### P2PDiscoveryBeacon (実装)
+
+**責務**: BLE / WiFi / LoRa 等の近接ビーコン発見。物理メディア抽象 (L0) +
+ビーコンエンコーディング (L1) + Trickle 協調 (L2) + Presence 集約 (L3) を担う
+（`docs/ARCHITECTURE_DECISION.md` 参照）。Bayesian presence と信頼度計算を含む。
+
+**依存関係:** P2PDiscovery
+
+**パス:** `Sources/Discovery/Beacon`
+
+---
+
+### P2PDiscoveryWiFiBeacon (実装)
+
+**責務**: Wi-Fi beacon（UDP マルチキャスト）受信を Beacon Discovery 観察へ変換するアダプタ
+
+**依存関係:** P2PDiscoveryBeacon
+
+**パス:** `Sources/Discovery/WiFiBeacon`
 
 ---
 
@@ -525,6 +615,36 @@ QUIC は暗号化と多重化を内蔵するため、SecurityUpgrader と Muxer 
 
 ---
 
+### P2PRendezvous (実装)
+
+**責務**: 名前空間ベースのピア発見（rendezvous server への register / discover）
+
+**プロトコルID:** `/rendezvous/1.0.0`
+
+**パス:** `Sources/Protocols/Rendezvous`
+
+---
+
+### P2PHTTP (実装)
+
+**責務**: libp2p ストリーム上の HTTP セマンティクス
+
+**プロトコルID:** `/http/1.1`
+
+**パス:** `Sources/Protocols/HTTP`
+
+---
+
+### P2PRuntime (専門家向けランタイム層)
+
+**責務**: 専門家向けランタイム API（`ConnectionProvider`, `RuntimeConfiguration`,
+`NodeRuntime`, `Swarm`, `ConnectionPool`, `ServicePipeline`, `DiscoveryPipeline`）。
+`P2P` facade はこの上に構築される。
+
+**パス:** `Sources/Runtime/P2PRuntime`
+
+---
+
 ### P2P (統合層)
 
 **責務**: 統合エントリーポイント（Node, ConnectionUpgrader, ResourceManager）
@@ -540,6 +660,8 @@ QUIC は暗号化と多重化を内蔵するため、SecurityUpgrader と Muxer 
 
 **含まないもの:**
 - 具体的な実装（TCP, Noise, Yamux等）への依存
+
+**パス:** `Sources/Integration/P2P`
 
 ---
 

@@ -6,18 +6,23 @@ TCP 接続用の TLS 1.3 セキュリティアップグレーダー。
 [swift-tls](https://github.com/1amageek/swift-tls) を使用し、libp2p TLS 仕様に準拠。
 SecurityUpgrader プロトコルを実装。
 
-## Deferred: libp2p-TLS peer-identity surfacing (fail-closed)
+## libp2p-TLS mutual authentication (complete, fail-closed)
 
-swift-tls の facade 再設計後、`TLS` facade の `TLSClient`/`TLSServer` は
-`certificateValidator` が返した `PeerIdentity` を破棄する（`peerIdentity` が常に
-`nil` を返す既知のギャップ）。libp2p-TLS upgrader は検証済み remote PeerID を
-`SecuredConnection` の構築に必須とするため、PeerID を取り出せない間は
-`TLSError.peerIdentityUnavailable` を **throw して FAIL-CLOSED** する
-（未認証/未識別ピアを黙って受理しない）。libp2p-TLS 認証の完成は、facade が
-`peerIdentity` を surfacing するという deferred 修正でアンブロックされる。
-それまで `TLSUpgrader.secure(...)` は常に reject する。
-`TLSCertificateHelper.makeCertificateValidator` は handshake 中に libp2p 拡張を
-検証し PeerID を再導出するので、不正/不一致証明書は handshake 内で reject される。
+libp2p-TLS の相互認証は **完成済み**。
+
+- **相互 TLS**: `requireClientCertificate: true` で両端が証明書を提示する。
+- **PeerID 抽出**: handshake 完了後、`TLSUpgrader` は `endpoint.peerIdentity`
+  （Tier-1 `TLS` facade が surfacing する検証済み `PeerIdentity`）から remote
+  PeerID を取り出し、`TLSSecuredConnection` にバインドする。
+- **`verifyPeer: false` は正しい設計**: libp2p 証明書は CA チェーンを持たない
+  自己署名 X.509 のため、facade 標準の CA チェーン検証は使わない。認証は弱まらない:
+  (1) CertificateVerify の所有証明（peer がリーフ秘密鍵を保持する証明）が in-core で
+  常に検証され、(2) custom `certificateValidator` が libp2p 拡張署名・PeerID 導出・
+  `expectedPeer` 一致を強制する。これは動作実績のある swift-quic libp2p-TLS パスと同じ。
+- **FAIL-CLOSED**: 検証済み identity が genuinely 取得できない場合のみ
+  `TLSError.peerIdentityUnavailable` を throw する（未識別ピアを黙って受理しない）。
+  さらに防御として、`expectedPeer` 指定時は surfacing された PeerID との一致を
+  upgrader 側でも再確認する（validator 単独に依存しない）。
 
 ## 依存ライブラリ
 
@@ -57,19 +62,20 @@ SignedKey {
 
 ```
 TLSUpgrader.secure()
-  └─> LibP2PCertificate.generate()         // P2PCoreDER で証明書生成（Embedded-clean）
-  └─> TLSCore.TLSConfiguration 構築        // ALPN, mTLS, certificateValidator 設定
-  └─> TLSRecord.TLSConnection 作成
-  └─> performHandshake()                   // Mutex<Bool> タイムアウト付き
-      ├─> startHandshake(isClient:)        // ClientHello / ServerHello 送信
-      └─> processReceivedData() ループ     // ハンドシェイク完了まで
-  └─> validatedPeerInfo → PeerID 抽出      // certificateValidator の結果
-  └─> TLSSecuredConnection(...)            // 暗号化接続を返す
+  └─> cachedIdentity(for:)                 // P2PCoreDER で自己署名証明書生成・identity 単位でキャッシュ
+  └─> TLSConfiguration 構築                // ALPN, mTLS (requireClientCertificate),
+  │                                        // verifyPeer:false, certificateValidator 設定
+  └─> makeEndpoint() → TLSClient/TLSServer // role に応じて Tier-1 facade endpoint を作成
+  └─> performTimedHandshake()              // Mutex<Bool> タイムアウト付き
+      ├─> endpoint.startHandshake()        // ClientHello / ServerHello 送信
+      └─> endpoint.receive() ループ        // endpoint.isEstablished まで
+  └─> endpoint.peerIdentity → PeerID 抽出  // certificateValidator が surfacing した検証済み identity
+  └─> TLSSecuredConnection(...)            // 暗号化接続を返す（early app data も保持）
 
 TLSSecuredConnection
-  ├─> read()  → underlying.read() → processReceivedData() → applicationData
-  ├─> write() → writeApplicationData() → underlying.write()
-  └─> close() → close() → underlying.write(close_notify) → underlying.close()
+  ├─> read()  → underlying.read() → endpoint.receive() → applicationData
+  ├─> write() → endpoint で暗号化 → underlying.write()
+  └─> close() → close_notify → underlying.close()
 ```
 
 ## 設計

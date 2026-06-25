@@ -44,6 +44,11 @@ dependencies: [
 ]
 ```
 
+> **Note:** The released `0.2.0` documents the prior API. The Embedded-first /
+> clean-break API described in this README (LibP2PCore, `[UInt8]`/`ByteBuffer`
+> payload paths, `DiscoveryPipeline`, `ConnectionProvider`) currently lives on the
+> unreleased `embedded` branch (M8 pending) and has not been tagged yet.
+
 `P2P` module re-exports common dependencies (batteries-included):
 
 ```swift
@@ -508,7 +513,6 @@ swift test --filter Interop
 | [swift-certificates](https://github.com/apple/swift-certificates) | X.509 handling |
 | [swift-asn1](https://github.com/apple/swift-asn1) | ASN.1 encoding |
 | [swift-log](https://github.com/apple/swift-log) | Logging |
-| [swift-atomics](https://github.com/apple/swift-atomics) | Lock-free primitives |
 | [swift-tls](https://github.com/1amageek/swift-tls) | TLS 1.3 (pure Swift) |
 | [swift-quic](https://github.com/1amageek/swift-quic) | QUIC (RFC 9000) |
 | [swift-webrtc](https://github.com/1amageek/swift-webrtc) | WebRTC Direct |

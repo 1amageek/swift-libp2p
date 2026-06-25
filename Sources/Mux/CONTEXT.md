@@ -47,9 +47,10 @@ public protocol MuxedConnection: Sendable {
 public protocol MuxedStream: Sendable {
     var id: UInt64 { get }
     var protocolID: String? { get }
-    func read() async throws -> Data
-    func write(_ data: Data) async throws
+    func read() async throws -> ByteBuffer
+    func write(_ data: ByteBuffer) async throws
     func closeWrite() async throws
+    func closeRead() async throws
     func close() async throws
     func reset() async throws
 }
@@ -79,8 +80,10 @@ MuxedStream (各アプリケーションプロトコル用)
 
 ```swift
 extension MuxedStream {
-    public func readLengthPrefixedMessage(maxSize: UInt64 = 64 * 1024) async throws -> Data
-    public func writeLengthPrefixedMessage(_ data: Data) async throws
+    public func readLengthPrefixedMessage(maxSize: UInt64 = 64 * 1024) async throws -> ByteBuffer
+    // 連続読み取りで余剰バイトを保持する版（zero-copy readSlice）
+    public func readLengthPrefixedMessage(buffer: inout ByteBuffer, maxSize: UInt64 = 64 * 1024) async throws -> ByteBuffer
+    public func writeLengthPrefixedMessage(_ data: ByteBuffer) async throws
 }
 ```
 

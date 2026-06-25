@@ -18,12 +18,18 @@ libp2p スタック全体で使用される基盤モジュール。
 スタック上の固定サイズタプルバッファ（最大10バイト）を使用し、ヒープアロケーションを回避する。
 
 ```swift
-// ゼロアロケーション版（ホットパス向け）
-let count = Varint.encode(value, into: buffer)
+// LibP2PCore のキャノニカル API は [UInt8] ベース（Embedded-clean）
 
-// Data 返却版（汎用）
-let data = Varint.encode(value)
+// アロケーション版（汎用）
+let bytes: [UInt8] = Varint.encodeBytes(value)
+
+// ゼロアロケーション版（ホットパス向け、既存配列へ追記）
+var buffer: [UInt8] = []
+let count = Varint.encode(value, into: &buffer)
 ```
+
+P2PCore は Foundation アダプタとして `Data` 返却版（`encode(_) -> Data`、
+`encode(_, into: inout Data)` 等）の互換シムも提供する（`Compat/VarintDataCompat.swift`）。
 
 ### ベンチマーク
 

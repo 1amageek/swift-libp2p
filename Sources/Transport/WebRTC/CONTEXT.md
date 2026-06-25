@@ -214,14 +214,19 @@ P2PTransportWebRTC
 ├── P2PCore (PeerID, Multiaddr, KeyPair)
 ├── P2PMux (MuxedConnection, MuxedStream protocols)
 ├── P2PCertificate (LibP2PCertificate, OID extension)
-└── WebRTC (swift-webrtc package)
-    ├── DTLSCore (DTLS 1.2 certificates, handshake)
-    ├── DTLSRecord (DTLS record layer)
-    ├── STUNCore (STUN message parsing)
-    ├── ICELite (ICE Lite agent)
-    ├── SCTPCore (SCTP association)
-    └── DataChannel (WebRTC data channels, DCEP)
+└── WebRTC (swift-webrtc package)  ← この単一プロダクトのみ import する
 ```
+
+`WebRTC` プロダクトは内部で全コンポーネントを束ねる。DTLS は swift-tls の
+Tier-1 `TLS` facade（`DTLSClient`/`DTLSServer`）経由で WebRTC が内部駆動する。
+swift-webrtc の `DTLSCore`/`DTLSRecord` は facade 再設計で **package target に降格**
+され、もはやライブラリプロダクトとして import できない（`WebRTCCertificate` 型は
+`WebRTC` プロダクトが所有する）。
+
+Package.swift では `WebRTC` プロダクトのみを依存に宣言する。ソースは `WebRTC` と
+`DataChannel`（DCEP/データチャネル型）を import する。swift-webrtc が export する
+他プロダクト（`STUNCore`/`STUNWireCore`, `ICELite`/`ICELiteCore`,
+`SCTPCore`/`SCTPWireCore`, `DataChannelCore` 等）は直接 import しない。
 
 ## Test Status
 

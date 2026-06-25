@@ -5,7 +5,7 @@ swift-libp2pとgo-libp2p/rust-libp2p間の相互運用テスト。
 ## 前提条件
 
 - Docker Engine with Docker Compose
-- Swift 5.9+
+- Swift 6.2+
 
 ## テストカバレッジ
 

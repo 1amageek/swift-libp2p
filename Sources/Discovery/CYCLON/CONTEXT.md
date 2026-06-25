@@ -10,7 +10,7 @@ CYCLON ランダムピアサンプリングプロトコルの実装。
 
 - **CYCLONDiscovery** (actor): `DiscoveryService` 準拠。低頻度シャッフル操作
 - **CYCLONPartialView** (final class + Mutex): 部分ビュー管理。高頻度アクセス
-- **EventBroadcaster<Observation>**: 多消費者イベントパターン (Discovery 層統一)
+- **EventBroadcaster<PeerObservation>**: 多消費者イベントパターン (Discovery 層統一)
 
 ## 通信
 
