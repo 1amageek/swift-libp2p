@@ -497,7 +497,12 @@ public enum QUICTLSHandshakeDriver<
         return [
             .supportedVersionsClient([0x0304]),                 // TLS 1.3
             .supportedGroupsList([group]),
-            .signatureAlgorithmsList([certVerifyScheme, .ed25519]),
+            // Advertise ONLY the schemes we actually verify in the peer's
+            // CertificateVerify. The leaf path verifies ECDSA P-256 only
+            // (see the SPKI `.p256` guards), so advertising `.ed25519` here would
+            // be a false promise — the libp2p identity Ed25519 key is a SEPARATE
+            // thing from the TLS CertificateVerify signature.
+            .signatureAlgorithmsList([certVerifyScheme]),
             .keyShareClient([KeyShareEntry(group: group, keyExchange: clientShareBytes)]),
             .alpnProtocols([alpn]),
             .quicTransportParameters(tpBytes),
@@ -602,6 +607,22 @@ public enum QUICTLSHandshakeDriver<
                 }
 
             case .certificateRequest:
+                // The CertificateRequest declares which signature schemes the server
+                // will accept in the client's CertificateVerify (RFC 8446 §4.3.2). The
+                // client signs ECDSA P-256 only (see `produceClientAuthFlight`); if the
+                // server does not offer that scheme the client cannot satisfy the
+                // request. Fail-closed here rather than signing P-256 anyway — otherwise
+                // the client could treat the handshake as established off a signature
+                // the server never agreed to accept.
+                let certRequest: CertificateRequest
+                do {
+                    certRequest = try CertificateRequest.decode(from: message.content)
+                } catch {
+                    throw .quicHandshakeFailed
+                }
+                guard Self.certificateRequestOffers(certRequest, scheme: certVerifyScheme) else {
+                    throw .quicHandshakePeerVerificationFailed
+                }
                 do {
                     try auth.ingestCertificateRequest(rawMessageBytes: message.raw)
                 } catch {
@@ -841,10 +862,12 @@ public enum QUICTLSHandshakeDriver<
 
         // Mutual auth (mTLS): the libp2p server REQUESTS a client certificate so the
         // accepted peer's PeerID is cryptographically verified (never anonymous). The
-        // CertificateRequest offers exactly the schemes the libp2p RPK leaf can sign
-        // (ECDSA-P256) and the identity-key signature scheme (Ed25519). An empty
-        // certificate_request_context (RFC 8446 §4.3.2) — the client echoes it.
-        let certificateRequestSchemes: [QUICTLSCore.SignatureScheme] = [certVerifyScheme, .ed25519]
+        // CertificateRequest offers EXACTLY the scheme the server will accept in the
+        // client's CertificateVerify — ECDSA P-256, the only scheme this leaf path
+        // signs and verifies. (The libp2p identity Ed25519 key signs the RPK cert's
+        // proof-of-possession, NOT the TLS CertificateVerify, so it must not appear
+        // here.) An empty certificate_request_context (RFC 8446 §4.3.2) — echoed back.
+        let certificateRequestSchemes: [QUICTLSCore.SignatureScheme] = [certVerifyScheme]
         let certificateRequestBytes = try encodeCertificateRequest(
             signatureAlgorithms: certificateRequestSchemes
         )
@@ -999,6 +1022,22 @@ public enum QUICTLSHandshakeDriver<
         } catch {
             throw .quicHandshakeFailed
         }
+    }
+
+    /// Whether a received CertificateRequest's `signature_algorithms` extension
+    /// offers `scheme`. RFC 8446 §4.3.2 makes the extension mandatory; its absence —
+    /// or omission of the scheme the client can sign — means the client cannot
+    /// produce an acceptable CertificateVerify, so the caller fails closed.
+    private static func certificateRequestOffers(
+        _ request: CertificateRequest,
+        scheme: QUICTLSCore.SignatureScheme
+    ) -> Bool {
+        for ext in request.extensions {
+            if case .signatureAlgorithms(let sigAlgs) = ext {
+                return sigAlgs.supportedSignatureAlgorithms.contains(scheme)
+            }
+        }
+        return false
     }
 
     /// Encodes the CertificateRequest (mTLS) with an empty context and the given

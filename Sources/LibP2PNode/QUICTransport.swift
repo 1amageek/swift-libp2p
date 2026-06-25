@@ -29,6 +29,7 @@ import QUIC                // QUICEngineClient / QUICPeerValidator
 import QUICTLSSignature    // QUICTLSSignatureProvider (DER ECDSA for the TLS path)
 import QUICConnectionEngineCore  // QUICConnectionEngineConfiguration / QUICEngineError
 import QUICConnectionCore        // TransportParametersCore
+import Synchronization           // Mutex (pending inbound-stream buffer)
 
 /// The libp2p node's QUIC transport, wrapping ``QUICEngineClient``.
 ///
@@ -260,6 +261,13 @@ public final class QUICConnection<
     private let timer: Timer
     private let runTask: Task<Void, Never>
 
+    /// Buffer of peer-opened stream IDs drained from the engine but not yet handed
+    /// out by ``acceptStream(deadlineNanos:)``. `takeNewStreams()` drains AND CLEARS
+    /// the engine's queue, so when several streams open within one poll we must keep
+    /// the surplus here and hand them out one per call — otherwise every stream past
+    /// the first is lost.
+    private let pendingStreams = Mutex<[UInt64]>([])
+
     /// The remote peer's verified PeerID multihash (from its RPK certificate). On
     /// BOTH the dial and the accept (mTLS) path this is the cryptographically-
     /// verified peer identity — never an unverified / anonymous value.
@@ -311,8 +319,10 @@ public final class QUICConnection<
         deadlineNanos: UInt64
     ) async -> QUICStream<Transport, Timer>? {
         while true {
-            let newStreams = client.takeNewStreams()
-            if let id = newStreams.first {
+            // Serve any buffered stream first, draining the engine into the buffer
+            // when empty. This is checked BEFORE `isClosed` so streams that opened
+            // just before close are still handed out rather than dropped.
+            if let id = nextPendingStream() {
                 return QUICStream(client: client, timer: timer, streamID: id)
             }
             if client.isClosed { return nil }
@@ -322,6 +332,24 @@ public final class QUICConnection<
             } catch {
                 return nil
             }
+        }
+    }
+
+    /// Returns the next peer-opened stream ID, preserving every stream the engine
+    /// drained in a single `takeNewStreams()` call. Pops from the buffer; when the
+    /// buffer is empty it drains the engine (which clears the engine's queue) and
+    /// buffers ALL drained IDs before handing out the first.
+    private func nextPendingStream() -> UInt64? {
+        // Fast path: a previously-buffered stream.
+        if let buffered = pendingStreams.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) {
+            return buffered
+        }
+        // Drain the engine outside our lock (it takes its own), then buffer all.
+        let drained = client.takeNewStreams()
+        guard !drained.isEmpty else { return nil }
+        return pendingStreams.withLock { buffer in
+            buffer.append(contentsOf: drained)
+            return buffer.isEmpty ? nil : buffer.removeFirst()
         }
     }
 

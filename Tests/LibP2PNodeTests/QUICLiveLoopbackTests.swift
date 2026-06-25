@@ -195,6 +195,84 @@ struct QUICLiveLoopbackTests {
         #expect(echoed == payload, "client did not receive the echoed payload")
     }
 
+    @Test("acceptStream hands out EVERY peer-opened stream, even when several open before the server polls",
+          .timeLimit(.minutes(1)))
+    func acceptStreamPreservesConcurrentlyOpenedStreams() async throws {
+        let clientIdentity = try #require(makeIdentity())
+        let serverIdentity = try #require(makeIdentity())
+
+        let clientDCID = try #require(ConnectionID.random(length: 8))
+        let clientSCID = try #require(ConnectionID.random(length: 8))
+        let serverSCID = try #require(ConnectionID.random(length: 8))
+
+        let clientEP = SocketEndpoint(v4: 127, 0, 0, 1, port: 4103)
+        let serverEP = SocketEndpoint(v4: 127, 0, 0, 1, port: 4104)
+
+        let clientT = LoopbackTransport(selfEndpoint: clientEP)
+        let serverT = LoopbackTransport(selfEndpoint: serverEP)
+        clientT.connect(to: serverT)
+        serverT.connect(to: clientT)
+
+        let timer = TestClock()
+        let clientTransport = QUICTransport(transport: clientT, timer: timer, wallClock: SystemWallClock())
+        let serverTransport = QUICTransport(transport: serverT, timer: timer, wallClock: SystemWallClock())
+
+        let clientConfig = makeConfig(
+            role: .client, localCID: clientSCID, peerCID: clientDCID, originalDCID: clientDCID)
+        let serverConfig = makeConfig(
+            role: .server, localCID: serverSCID, peerCID: clientSCID, originalDCID: clientDCID)
+
+        async let serverConnTask = serverTransport.listen(
+            configuration: serverConfig, peer: clientEP, identity: serverIdentity)
+        async let clientConnTask = clientTransport.dial(
+            configuration: clientConfig, peer: serverEP, identity: clientIdentity)
+
+        let clientConn = try await clientConnTask
+        let serverConn = try await serverConnTask
+        #expect(clientConn.isEstablished)
+        #expect(serverConn.isEstablished)
+
+        // Open SEVERAL streams (each flushed by its first write) BEFORE the server
+        // starts accepting, so their new-stream events queue together and a single
+        // `takeNewStreams()` drain returns more than one ID. The pre-fix code kept
+        // only `.first` and silently dropped the rest; the buffer must hand out all.
+        let streamCount = 4
+        let payloads = (0..<streamCount).map { Array("stream-payload-\($0)".utf8) }
+        for payload in payloads {
+            let s = try clientConn.openStream()
+            try await s.write(payload)
+        }
+
+        // Accept exactly `streamCount` streams and read each one's payload.
+        let acceptDeadline = timer.monotonicNanos() &+ 8_000_000_000
+        var received: [[UInt8]] = []
+        while received.count < streamCount {
+            guard let stream = await serverConn.acceptStream(deadlineNanos: acceptDeadline) else { break }
+            var buf: [UInt8] = []
+            let readDeadline = timer.monotonicNanos() &+ 4_000_000_000
+            while buf.isEmpty && timer.monotonicNanos() < readDeadline {
+                do {
+                    let chunk = try await stream.read()
+                    if !chunk.isEmpty { buf.append(contentsOf: chunk) }
+                } catch {
+                    break
+                }
+            }
+            received.append(buf)
+        }
+
+        await clientConn.close()
+        await serverConn.close()
+        await clientT.close()
+        await serverT.close()
+
+        // Every opened stream must have been accepted exactly once — none lost.
+        #expect(received.count == streamCount, "server accepted \(received.count)/\(streamCount) streams — streams were dropped")
+        let receivedSet = Set(received.map { String(decoding: $0, as: UTF8.self) })
+        let expectedSet = Set(payloads.map { String(decoding: $0, as: UTF8.self) })
+        #expect(receivedSet == expectedSet, "accepted streams did not carry every distinct payload")
+    }
+
     // MARK: - Identity helpers
 
     private func makeIdentity() -> NodeIdentity<Provider>? {
