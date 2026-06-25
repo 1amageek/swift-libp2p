@@ -174,6 +174,16 @@ let package = Package(
                 .product(name: "QUICConnectionEngineCore", package: "swift-quic"),
                 .product(name: "QUICConnectionCore", package: "swift-quic"),
                 .product(name: "QUICWire", package: "swift-quic"),
+                // The cored TLS 1.3 handshake FSMs + wire codecs the Embedded
+                // libp2p-over-QUIC handshake driver runs (`QUICClientHandshake` /
+                // `QUICServerHandshake` / `QUICClientAuthMachine` + message codecs).
+                .product(name: "QUICTLSCore", package: "swift-quic"),
+                // `QUICProtectionSuite` (the install-keys cipher seam).
+                .product(name: "QUICPacketProtectionCore", package: "swift-quic"),
+                // The Embedded-clean libp2p RPK certificate DER codec
+                // (`LibP2PCertificateDER` / `LibP2PSignedKeyDER` / `LibP2PIdentity`
+                // / `SubjectPublicKeyInfoDER`) for the QUIC TLS handshake identity.
+                .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
             path: "Sources/Embedded/LibP2PNodeEmbedded",
             swiftSettings: coreSettings
@@ -185,7 +195,14 @@ let package = Package(
                 "LibP2PCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                .product(name: "P2PCoreTransport", package: "swift-p2p-core"),
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
+                // The QUIC engine facade + cores the live loopback handshake test
+                // drives (`QUICEngineClient` over a loopback `DatagramTransport`).
+                .product(name: "QUIC", package: "swift-quic"),
+                .product(name: "QUICConnectionEngineCore", package: "swift-quic"),
+                .product(name: "QUICConnectionCore", package: "swift-quic"),
+                .product(name: "QUICWire", package: "swift-quic"),
             ],
             path: "Tests/Embedded/LibP2PNodeEmbeddedTests"
         ),

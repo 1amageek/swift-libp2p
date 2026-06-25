@@ -56,4 +56,18 @@ public struct EmbeddedNodeIdentity<C: CryptoProvider>: Sendable {
             throw .noiseHandshakeFailed
         }
     }
+
+    /// Signs the libp2p RPK proof-of-possession message
+    /// (`"libp2p-tls-handshake:" || SPKI`) with the identity key, for the QUIC
+    /// TLS certificate's libp2p extension.
+    ///
+    /// - Throws: ``EmbeddedNodeError/quicHandshakeCertificateFailed`` if signing
+    ///   fails (fail-closed — never a fabricated proof).
+    func signProofOfPossession(_ message: [UInt8]) throws(EmbeddedNodeError) -> [UInt8] {
+        do {
+            return try C.Ed25519.sign(message.span, with: signingKey)
+        } catch {
+            throw .quicHandshakeCertificateFailed
+        }
+    }
 }

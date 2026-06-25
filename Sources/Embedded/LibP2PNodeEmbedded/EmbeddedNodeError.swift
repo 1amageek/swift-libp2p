@@ -34,6 +34,31 @@ public enum EmbeddedNodeError: Error, Sendable, Equatable {
     /// site instead.
     case quicFeatureUnsupported
 
+    // MARK: - QUIC TLS 1.3 handshake (libp2p-over-QUIC security + mux)
+
+    /// Building the local libp2p RPK certificate failed (a crypto/DER step in the
+    /// handshake identity assembly). FAIL-CLOSED: no malformed cert is presented.
+    case quicHandshakeCertificateFailed
+
+    /// The QUIC TLS 1.3 handshake state machine failed (a wire-codec, key-schedule,
+    /// or message-ordering error driving ``QUICClientHandshake`` /
+    /// ``QUICServerHandshake`` / ``QUICClientAuthMachine``). FAIL-CLOSED.
+    case quicHandshakeFailed
+
+    /// The QUIC ECDHE (key share) negotiation failed: the peer offered no
+    /// supported group, sent a malformed key share, or the (EC)DHE agreement
+    /// itself failed. FAIL-CLOSED.
+    case quicHandshakeKeyExchangeFailed
+
+    /// The peer's libp2p RPK certificate did not verify (missing/invalid libp2p
+    /// extension, bad proof-of-possession signature, unsupported identity key type,
+    /// or an un-deriveable PeerID). FAIL-CLOSED: the peer is NEVER admitted.
+    case quicHandshakePeerVerificationFailed
+
+    /// The QUIC handshake did not complete within the configured deadline. The
+    /// half-open connection is torn down, never handed back. FAIL-CLOSED.
+    case quicHandshakeTimedOut
+
     // MARK: - Security (Noise)
 
     /// The Noise handshake failed (a crypto/state-machine error in the core).
