@@ -1,5 +1,5 @@
-// EmbeddedQUICStream.swift
-// Exposes a QUIC native stream as an ``EmbeddedMuxedStream`` (`[UInt8]` surface).
+// QUICStream.swift
+// Exposes a QUIC native stream as an ``MuxedStream`` (`[UInt8]` surface).
 // On the QUIC path the multiplexer IS QUIC: there is no Yamux. A QUIC stream maps
 // directly onto the mux stream the node hands protocol handlers — `read`/`write`/
 // `close` forward to `QUICEngineClient.readStream/writeStream/finishStream`.
@@ -16,11 +16,11 @@ import P2PCoreTransport    // DatagramTransport
 import QUIC                // QUICEngineClient
 import QUICConnectionEngineCore  // QUICEngineError
 
-/// A QUIC native stream presented as an Embedded mux stream (`[UInt8]`).
-public final class EmbeddedQUICStream<
+/// A QUIC native stream presented as a mux stream (`[UInt8]`).
+public final class QUICStream<
     Transport: DatagramTransport,
     Timer: AsyncTimer
->: EmbeddedMuxedStream {
+>: MuxedStream {
 
     private let client: QUICEngineClient<Transport, Timer>
     private let timer: Timer
@@ -37,7 +37,7 @@ public final class EmbeddedQUICStream<
 
     public var id: UInt64 { streamID }
 
-    public func read() async throws(EmbeddedNodeError) -> [UInt8] {
+    public func read() async throws(NodeError) -> [UInt8] {
         while true {
             if let bytes = client.readStream(streamID), !bytes.isEmpty {
                 return bytes
@@ -57,7 +57,7 @@ public final class EmbeddedQUICStream<
         }
     }
 
-    public func write(_ data: [UInt8]) async throws(EmbeddedNodeError) {
+    public func write(_ data: [UInt8]) async throws(NodeError) {
         do {
             try await client.writeStream(streamID, data: data)
         } catch {

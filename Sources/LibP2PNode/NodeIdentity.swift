@@ -1,5 +1,5 @@
-// EmbeddedNodeIdentity.swift
-// The local libp2p identity for the Embedded node: an Ed25519 signing key plus its
+// NodeIdentity.swift
+// The local libp2p identity for the node: an Ed25519 signing key plus its
 // protobuf-encoded public key. Used by the Noise upgrader to sign the static-key
 // proof and to advertise the local identity in the handshake payload.
 // Embedded-clean: generic over `C: CryptoProvider`, `[UInt8]` currency, no `any`.
@@ -14,7 +14,7 @@ import LibP2PCore
 /// the signing key (to prove ownership of the Noise static key) and the
 /// protobuf-encoded public key (the identity advertised in the Noise payload, and
 /// the basis of the local PeerID).
-public struct EmbeddedNodeIdentity<C: CryptoProvider>: Sendable {
+public struct NodeIdentity<C: CryptoProvider>: Sendable {
 
     /// The Ed25519 signing key.
     public let signingKey: C.Ed25519.SigningKey
@@ -34,22 +34,22 @@ public struct EmbeddedNodeIdentity<C: CryptoProvider>: Sendable {
 
     /// Generates a fresh Ed25519 identity through the crypto seam.
     ///
-    /// - Throws: ``EmbeddedNodeError/noiseHandshakeFailed`` if key generation fails
+    /// - Throws: ``NodeError/noiseHandshakeFailed`` if key generation fails
     ///   in the backend (surfaced as a node error so callers fail-closed).
-    public static func generate() throws(EmbeddedNodeError) -> EmbeddedNodeIdentity<C> {
+    public static func generate() throws(NodeError) -> NodeIdentity<C> {
         let key: C.Ed25519.SigningKey
         do {
             key = try C.Ed25519.generateSigningKey()
         } catch {
             throw .noiseHandshakeFailed
         }
-        return EmbeddedNodeIdentity(signingKey: key)
+        return NodeIdentity(signingKey: key)
     }
 
     /// Signs `message` with the identity key.
     ///
-    /// - Throws: ``EmbeddedNodeError/noiseHandshakeFailed`` if signing fails.
-    func sign(_ message: [UInt8]) throws(EmbeddedNodeError) -> [UInt8] {
+    /// - Throws: ``NodeError/noiseHandshakeFailed`` if signing fails.
+    func sign(_ message: [UInt8]) throws(NodeError) -> [UInt8] {
         do {
             return try C.Ed25519.sign(message.span, with: signingKey)
         } catch {
@@ -61,9 +61,9 @@ public struct EmbeddedNodeIdentity<C: CryptoProvider>: Sendable {
     /// (`"libp2p-tls-handshake:" || SPKI`) with the identity key, for the QUIC
     /// TLS certificate's libp2p extension.
     ///
-    /// - Throws: ``EmbeddedNodeError/quicHandshakeCertificateFailed`` if signing
+    /// - Throws: ``NodeError/quicHandshakeCertificateFailed`` if signing
     ///   fails (fail-closed — never a fabricated proof).
-    func signProofOfPossession(_ message: [UInt8]) throws(EmbeddedNodeError) -> [UInt8] {
+    func signProofOfPossession(_ message: [UInt8]) throws(NodeError) -> [UInt8] {
         do {
             return try C.Ed25519.sign(message.span, with: signingKey)
         } catch {

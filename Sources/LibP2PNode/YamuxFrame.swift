@@ -1,4 +1,4 @@
-// YamuxByteFrame.swift
+// YamuxFrame.swift
 // Embedded-clean Yamux frame codec over `[UInt8]`. Reimplements the proven
 // 12-byte-header Yamux wire format (the host `YamuxFrame` logic) at a `[UInt8]`
 // boundary — NO NIO `ByteBuffer`. This is the adapter wrapping the frame state
@@ -19,16 +19,16 @@
 // ```
 
 /// Yamux protocol version.
-public let yamuxByteVersion: UInt8 = 0
+public let yamuxVersion: UInt8 = 0
 
 /// Yamux header size in bytes.
-public let yamuxByteHeaderSize = 12
+public let yamuxHeaderSize = 12
 
 /// Maximum allowed Data-frame payload size (16 MiB) to bound memory (DoS).
-public let yamuxByteMaxFrameSize: UInt32 = 16 * 1024 * 1024
+public let yamuxMaxFrameSize: UInt32 = 16 * 1024 * 1024
 
 /// Yamux frame types.
-public enum YamuxByteFrameType: UInt8, Sendable, Equatable {
+public enum YamuxFrameType: UInt8, Sendable, Equatable {
     case data = 0
     case windowUpdate = 1
     case ping = 2
@@ -36,31 +36,31 @@ public enum YamuxByteFrameType: UInt8, Sendable, Equatable {
 }
 
 /// Yamux frame flags (bitset; multiple may be set).
-public struct YamuxByteFlags: OptionSet, Sendable, Equatable {
+public struct YamuxFlags: OptionSet, Sendable, Equatable {
     public let rawValue: UInt16
     public init(rawValue: UInt16) { self.rawValue = rawValue }
 
     /// Stream open.
-    public static let syn = YamuxByteFlags(rawValue: 0x0001)
+    public static let syn = YamuxFlags(rawValue: 0x0001)
     /// Stream acknowledge.
-    public static let ack = YamuxByteFlags(rawValue: 0x0002)
+    public static let ack = YamuxFlags(rawValue: 0x0002)
     /// Half-close (FIN).
-    public static let fin = YamuxByteFlags(rawValue: 0x0004)
+    public static let fin = YamuxFlags(rawValue: 0x0004)
     /// Reset stream.
-    public static let rst = YamuxByteFlags(rawValue: 0x0008)
+    public static let rst = YamuxFlags(rawValue: 0x0008)
 }
 
 /// GoAway reason codes.
-public enum YamuxByteGoAwayReason: UInt32, Sendable, Equatable {
+public enum YamuxGoAwayReason: UInt32, Sendable, Equatable {
     case normal = 0
     case protocolError = 1
     case internalError = 2
 }
 
 /// A decoded/encodable Yamux frame over `[UInt8]`.
-public struct YamuxByteFrame: Sendable, Equatable {
-    public let type: YamuxByteFrameType
-    public let flags: YamuxByteFlags
+public struct YamuxFrame: Sendable, Equatable {
+    public let type: YamuxFrameType
+    public let flags: YamuxFlags
     public let streamID: UInt32
     /// For Data frames this is the payload length; for windowUpdate the delta; for
     /// ping the opaque value; for goAway the reason code.
@@ -69,8 +69,8 @@ public struct YamuxByteFrame: Sendable, Equatable {
     public let data: [UInt8]
 
     public init(
-        type: YamuxByteFrameType,
-        flags: YamuxByteFlags,
+        type: YamuxFrameType,
+        flags: YamuxFlags,
         streamID: UInt32,
         length: UInt32,
         data: [UInt8]
@@ -85,26 +85,26 @@ public struct YamuxByteFrame: Sendable, Equatable {
     // MARK: - Constructors
 
     /// A Data frame carrying `payload`.
-    public static func makeData(streamID: UInt32, flags: YamuxByteFlags, payload: [UInt8]) -> YamuxByteFrame {
-        YamuxByteFrame(
+    public static func makeData(streamID: UInt32, flags: YamuxFlags, payload: [UInt8]) -> YamuxFrame {
+        YamuxFrame(
             type: .data, flags: flags, streamID: streamID,
             length: UInt32(truncatingIfNeeded: payload.count), data: payload
         )
     }
 
     /// A window-update frame granting `delta` bytes.
-    public static func makeWindowUpdate(streamID: UInt32, delta: UInt32) -> YamuxByteFrame {
-        YamuxByteFrame(type: .windowUpdate, flags: [], streamID: streamID, length: delta, data: [])
+    public static func makeWindowUpdate(streamID: UInt32, delta: UInt32) -> YamuxFrame {
+        YamuxFrame(type: .windowUpdate, flags: [], streamID: streamID, length: delta, data: [])
     }
 
     /// A ping frame (request or, with `.ack`, response).
-    public static func makePing(opaque: UInt32, ack: Bool) -> YamuxByteFrame {
-        YamuxByteFrame(type: .ping, flags: ack ? .ack : [], streamID: 0, length: opaque, data: [])
+    public static func makePing(opaque: UInt32, ack: Bool) -> YamuxFrame {
+        YamuxFrame(type: .ping, flags: ack ? .ack : [], streamID: 0, length: opaque, data: [])
     }
 
     /// A go-away frame signalling session termination.
-    public static func makeGoAway(reason: YamuxByteGoAwayReason) -> YamuxByteFrame {
-        YamuxByteFrame(type: .goAway, flags: [], streamID: 0, length: reason.rawValue, data: [])
+    public static func makeGoAway(reason: YamuxGoAwayReason) -> YamuxFrame {
+        YamuxFrame(type: .goAway, flags: [], streamID: 0, length: reason.rawValue, data: [])
     }
 
     // MARK: - Encoding
@@ -113,8 +113,8 @@ public struct YamuxByteFrame: Sendable, Equatable {
     public func encode() -> [UInt8] {
         let payloadSize = type == .data ? data.count : 0
         var out = [UInt8]()
-        out.reserveCapacity(yamuxByteHeaderSize + payloadSize)
-        out.append(yamuxByteVersion)
+        out.reserveCapacity(yamuxHeaderSize + payloadSize)
+        out.append(yamuxVersion)
         out.append(type.rawValue)
         out.append(UInt8(truncatingIfNeeded: flags.rawValue >> 8))
         out.append(UInt8(truncatingIfNeeded: flags.rawValue))
@@ -137,25 +137,25 @@ public struct YamuxByteFrame: Sendable, Equatable {
     /// The outcome of decoding from a buffer.
     public enum DecodeOutcome: Sendable, Equatable {
         /// A complete frame was decoded; `consumed` bytes were used from the front.
-        case frame(YamuxByteFrame, consumed: Int)
+        case frame(YamuxFrame, consumed: Int)
         /// The buffer does not yet hold a full frame; read more bytes.
         case needMoreData
     }
 
     /// Decodes one frame from `bytes` starting at `offset`.
     ///
-    /// Bounds-checked: a Data-frame length over ``yamuxByteMaxFrameSize`` is
+    /// Bounds-checked: a Data-frame length over ``yamuxMaxFrameSize`` is
     /// rejected before any slicing; a short buffer returns `.needMoreData`.
     ///
-    /// - Throws: ``EmbeddedNodeError/yamuxProtocolError`` on a bad version/type,
-    ///   ``EmbeddedNodeError/yamuxFrameTooLarge`` on an oversize Data frame.
+    /// - Throws: ``NodeError/yamuxProtocolError`` on a bad version/type,
+    ///   ``NodeError/yamuxFrameTooLarge`` on an oversize Data frame.
     public static func decode(
         from bytes: [UInt8], at offset: Int = 0
-    ) throws(EmbeddedNodeError) -> DecodeOutcome {
+    ) throws(NodeError) -> DecodeOutcome {
         guard offset >= 0, offset <= bytes.count else {
             throw .yamuxProtocolError
         }
-        guard bytes.count - offset >= yamuxByteHeaderSize else {
+        guard bytes.count - offset >= yamuxHeaderSize else {
             return .needMoreData
         }
 
@@ -173,36 +173,36 @@ public struct YamuxByteFrame: Sendable, Equatable {
             (UInt32(bytes[offset + 10]) << 8) |
             UInt32(bytes[offset + 11])
 
-        guard version == yamuxByteVersion else {
+        guard version == yamuxVersion else {
             throw .yamuxProtocolError
         }
-        guard let type = YamuxByteFrameType(rawValue: typeRaw) else {
+        guard let type = YamuxFrameType(rawValue: typeRaw) else {
             throw .yamuxProtocolError
         }
-        let flags = YamuxByteFlags(rawValue: flagsRaw)
+        let flags = YamuxFlags(rawValue: flagsRaw)
 
         // Only Data frames carry payload.
         if type == .data {
-            guard length <= yamuxByteMaxFrameSize else {
+            guard length <= yamuxMaxFrameSize else {
                 throw .yamuxFrameTooLarge
             }
         }
         let payloadLength = type == .data ? Int(length) : 0
 
-        let total = yamuxByteHeaderSize + payloadLength
+        let total = yamuxHeaderSize + payloadLength
         guard bytes.count - offset >= total else {
             return .needMoreData
         }
 
         let payload: [UInt8]
         if payloadLength > 0 {
-            let start = offset + yamuxByteHeaderSize
+            let start = offset + yamuxHeaderSize
             payload = Array(bytes[start..<(start + payloadLength)])
         } else {
             payload = []
         }
 
-        let frame = YamuxByteFrame(
+        let frame = YamuxFrame(
             type: type, flags: flags, streamID: streamID, length: length, data: payload
         )
         return .frame(frame, consumed: total)

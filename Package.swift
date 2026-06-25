@@ -31,8 +31,8 @@ let package = Package(
         .library(name: "LibP2PCore", targets: ["LibP2PCore"]),
         .library(name: "P2PCore", targets: ["P2PCore"]),
 
-        // MARK: - Embedded node (Embedded-clean [UInt8] data path; dual-build)
-        .library(name: "LibP2PNodeEmbedded", targets: ["LibP2PNodeEmbedded"]),
+        // MARK: - libp2p node (seam-based [UInt8] data path; host + Embedded)
+        .library(name: "LibP2PNode", targets: ["LibP2PNode"]),
 
         // MARK: - Transport
         .library(name: "P2PTransport", targets: ["P2PTransport"]),
@@ -152,16 +152,16 @@ let package = Package(
             path: "Tests/Core/P2PCoreTests"
         ),
 
-        // MARK: - Embedded node (Embedded-clean [UInt8] data path)
-        // The minimal Embedded libp2p node's data-path foundation: an Embedded-
-        // clean `[UInt8]` transport→security→mux→negotiation slice that compiles
-        // under Embedded Swift (`P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swift
-        // build --target LibP2PNodeEmbedded -c release`). It is ADDITIVE: the host
+        // MARK: - libp2p node (seam-based [UInt8] data path; host + Embedded)
+        // The minimal libp2p node's data-path foundation: a seam-based
+        // `[UInt8]` transport→security→mux→negotiation slice that compiles on BOTH
+        // host and Embedded Swift (`P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swift
+        // build --target LibP2PNode -c release`). It is ADDITIVE: the host
         // `P2P` / `Swarm` / host transports stay untouched and host-only. Builds
         // from the Embedded-clean cores only — `LibP2PCore` (Noise XX / multistream
         // codecs), the `QUIC` `[UInt8]` engine facade, and the crypto seam.
         .target(
-            name: "LibP2PNodeEmbedded",
+            name: "LibP2PNode",
             dependencies: [
                 "LibP2PCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
@@ -174,7 +174,7 @@ let package = Package(
                 .product(name: "QUICConnectionEngineCore", package: "swift-quic"),
                 .product(name: "QUICConnectionCore", package: "swift-quic"),
                 .product(name: "QUICWire", package: "swift-quic"),
-                // The cored TLS 1.3 handshake FSMs + wire codecs the Embedded
+                // The cored TLS 1.3 handshake FSMs + wire codecs the
                 // libp2p-over-QUIC handshake driver runs (`QUICClientHandshake` /
                 // `QUICServerHandshake` / `QUICClientAuthMachine` + message codecs).
                 .product(name: "QUICTLSCore", package: "swift-quic"),
@@ -185,13 +185,13 @@ let package = Package(
                 // / `SubjectPublicKeyInfoDER`) for the QUIC TLS handshake identity.
                 .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
-            path: "Sources/Embedded/LibP2PNodeEmbedded",
+            path: "Sources/LibP2PNode",
             swiftSettings: coreSettings
         ),
         .testTarget(
-            name: "LibP2PNodeEmbeddedTests",
+            name: "LibP2PNodeTests",
             dependencies: [
-                "LibP2PNodeEmbedded",
+                "LibP2PNode",
                 "LibP2PCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
@@ -204,7 +204,7 @@ let package = Package(
                 .product(name: "QUICConnectionCore", package: "swift-quic"),
                 .product(name: "QUICWire", package: "swift-quic"),
             ],
-            path: "Tests/Embedded/LibP2PNodeEmbeddedTests"
+            path: "Tests/LibP2PNodeTests"
         ),
 
         // MARK: - Transport (protocol definitions only, no NIO dependency)

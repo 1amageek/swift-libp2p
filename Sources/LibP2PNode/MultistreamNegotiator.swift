@@ -1,9 +1,9 @@
-// MultistreamByteNegotiator.swift
+// MultistreamNegotiator.swift
 // multistream-select protocol negotiation over a `[UInt8]` connection, driving the
 // Embedded-clean `MultistreamCodec` (LibP2PCore) with an `AsyncTimer` deadline.
 // Embedded-clean: `[UInt8]` currency, no `any`, no Foundation, no ContinuousClock,
 // typed throws. FAIL-CLOSED: a peer that does not agree the requested protocol
-// surfaces ``EmbeddedNodeError/negotiationRejected`` — never a silent proceed.
+// surfaces ``NodeError/negotiationRejected`` — never a silent proceed.
 
 import _Concurrency   // REQUIRED under Embedded for async/Task
 import LibP2PCore
@@ -16,8 +16,8 @@ import P2PCoreCrypto   // AsyncTimer / MonotonicClock seam
 /// the echo; the listener confirms the header then accepts the first offered id
 /// that it supports. The wire codec is `LibP2PCore.MultistreamCodec`; the deadline
 /// is enforced through the injected `AsyncTimer` (no `Task.sleep`).
-public struct MultistreamByteNegotiator<
-    R: EmbeddedRawConnection,
+public struct MultistreamNegotiator<
+    R: RawConnection,
     Timer: AsyncTimer
 >: Sendable {
 
@@ -42,10 +42,10 @@ public struct MultistreamByteNegotiator<
     /// Sends the multistream header and the protocol id, then reads until both the
     /// header echo and the protocol echo are confirmed. Returns on success.
     ///
-    /// - Throws: ``EmbeddedNodeError/negotiationRejected`` if the listener answers
-    ///   `na` or a different protocol, ``EmbeddedNodeError/negotiationTimedOut`` on
-    ///   deadline, ``EmbeddedNodeError/negotiationProtocolError`` on a malformed line.
-    public func dial(_ proto: String) async throws(EmbeddedNodeError) {
+    /// - Throws: ``NodeError/negotiationRejected`` if the listener answers
+    ///   `na` or a different protocol, ``NodeError/negotiationTimedOut`` on
+    ///   deadline, ``NodeError/negotiationProtocolError`` on a malformed line.
+    public func dial(_ proto: String) async throws(NodeError) {
         let deadline = timer.monotonicNanos() &+ timeoutNanos
 
         // Send header + proposed protocol in one flush.
@@ -82,10 +82,10 @@ public struct MultistreamByteNegotiator<
     /// it (accept) and returns it, or answers `na` (reject) and keeps reading.
     ///
     /// - Returns: The agreed protocol id.
-    /// - Throws: ``EmbeddedNodeError/negotiationTimedOut`` on deadline,
-    ///   ``EmbeddedNodeError/negotiationProtocolError`` on a malformed line,
-    ///   ``EmbeddedNodeError/negotiationRejected`` if the stream ends with no match.
-    public func listen(supported: [String]) async throws(EmbeddedNodeError) -> String {
+    /// - Throws: ``NodeError/negotiationTimedOut`` on deadline,
+    ///   ``NodeError/negotiationProtocolError`` on a malformed line,
+    ///   ``NodeError/negotiationRejected`` if the stream ends with no match.
+    public func listen(supported: [String]) async throws(NodeError) -> String {
         let deadline = timer.monotonicNanos() &+ timeoutNanos
 
         var buffer = [UInt8]()
@@ -126,7 +126,7 @@ public struct MultistreamByteNegotiator<
     /// from the front of `buffer`.
     private func readNextToken(
         into buffer: inout [UInt8], deadline: UInt64
-    ) async throws(EmbeddedNodeError) -> String {
+    ) async throws(NodeError) -> String {
         while true {
             // Try to decode a full message from what we already have.
             let outcome: MultistreamCodec.DecodeOutcome

@@ -1,18 +1,18 @@
 // PipeConnection.swift
-// Host-only test support: a pair of in-memory `EmbeddedRawConnection`s wired back
+// Host-only test support: a pair of in-memory `RawConnection`s wired back
 // to back, so a dialer and a listener exchange `[UInt8]` in-process. This lets the
-// Embedded data path (Noise → Yamux → multistream-select) round-trip without any
+// data path (Noise → Yamux → multistream-select) round-trip without any
 // real transport. Host test target — Foundation / Mutex are fine here.
 
 import Foundation
 import Synchronization
-import LibP2PNodeEmbedded
+import LibP2PNode
 
-/// One end of an in-memory byte pipe conforming to `EmbeddedRawConnection`.
+/// One end of an in-memory byte pipe conforming to `RawConnection`.
 ///
 /// Writes go to the peer's inbound queue; reads drain this end's inbound queue,
 /// suspending until bytes arrive (or the pipe closes → empty / closed error).
-final class PipeConnection: EmbeddedRawConnection, Sendable {
+final class PipeConnection: RawConnection, Sendable {
 
     private struct State {
         var inbound: [[UInt8]] = []
@@ -48,7 +48,7 @@ final class PipeConnection: EmbeddedRawConnection, Sendable {
         waiter?.resume(returning: bytes)
     }
 
-    func read() async throws(EmbeddedNodeError) -> [UInt8] {
+    func read() async throws(NodeError) -> [UInt8] {
         // Fast path: buffered or closed.
         enum Fast { case bytes([UInt8]); case eof; case park }
         let fast: Fast = state.withLock { s in
@@ -84,7 +84,7 @@ final class PipeConnection: EmbeddedRawConnection, Sendable {
         return result
     }
 
-    func write(_ data: [UInt8]) async throws(EmbeddedNodeError) {
+    func write(_ data: [UInt8]) async throws(NodeError) {
         let isClosed = state.withLock { $0.closed }
         if isClosed { throw .connectionClosed }
         guard let peerEnd = peer.withLock({ $0 }) else {

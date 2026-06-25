@@ -1,17 +1,17 @@
-// EmbeddedNodeError.swift
-// The single typed error surface for the Embedded libp2p node data path.
+// NodeError.swift
+// The single typed error surface for the libp2p node data path.
 // Embedded-clean: no Foundation, no `any`, no `String(describing:)`. Every
-// fallible entrypoint on the Embedded data path throws this closed enum so the
+// fallible entrypoint on the data path throws this closed enum so the
 // caller can pattern-match exhaustively (no silent fallback).
 
 import _Concurrency   // REQUIRED under Embedded for async/Task
 
-/// Errors surfaced by the Embedded libp2p node's data path
+/// Errors surfaced by the libp2p node's data path
 /// (transport → security → mux → negotiation).
 ///
 /// A closed enum (no `any Error`) so it crosses the typed-throws boundary cleanly
 /// under Embedded Swift. Each case names the failing layer; callers fail-closed.
-public enum EmbeddedNodeError: Error, Sendable, Equatable {
+public enum NodeError: Error, Sendable, Equatable {
 
     // MARK: - Transport
 

@@ -1,7 +1,7 @@
 // NoiseSecuredConnection.swift
 // A Noise-secured `[UInt8]` connection: wraps a raw connection with the post-
 // handshake transport cipher states, length-prefix-framing each encrypted message.
-// Conforms to `EmbeddedRawConnection` so the mux (Yamux) and negotiation
+// Conforms to `RawConnection` so the mux (Yamux) and negotiation
 // (multistream-select) run over it unchanged. Embedded-clean: actor-isolated
 // cipher state (Embedded-OK), `[UInt8]` currency, no `any`, no Foundation.
 
@@ -18,9 +18,9 @@ import LibP2PCore
 /// and surface plaintext. The cipher states advance a nonce per message, so all
 /// mutation is serialised on this actor.
 public final actor NoiseSecuredConnection<
-    R: EmbeddedRawConnection,
+    R: RawConnection,
     C: CryptoProvider
->: EmbeddedRawConnection {
+>: RawConnection {
 
     private let raw: R
     private var sendCipher: NoiseCipherStateCore<C>
@@ -54,9 +54,9 @@ public final actor NoiseSecuredConnection<
         self.closed = false
     }
 
-    // MARK: - EmbeddedRawConnection
+    // MARK: - RawConnection
 
-    public func read() async throws(EmbeddedNodeError) -> [UInt8] {
+    public func read() async throws(NodeError) -> [UInt8] {
         if !plaintextBuffer.isEmpty {
             let out = plaintextBuffer
             plaintextBuffer = []
@@ -97,7 +97,7 @@ public final actor NoiseSecuredConnection<
         }
     }
 
-    public func write(_ data: [UInt8]) async throws(EmbeddedNodeError) {
+    public func write(_ data: [UInt8]) async throws(NodeError) {
         if closed {
             throw .connectionClosed
         }

@@ -1,8 +1,8 @@
-// YamuxByteMuxer.swift
+// YamuxMuxer.swift
 // An Embedded-clean Yamux multiplexer over a secured `[UInt8]` connection. It owns
-// the wire: a frame read loop decodes inbound `YamuxByteFrame`s and routes them to
+// the wire: a frame read loop decodes inbound `YamuxFrame`s and routes them to
 // per-stream inbound buffers; stream writes frame outbound data. Produces
-// `EmbeddedMuxedStream` handles (`YamuxByteStream`). Embedded-clean: actor-isolated
+// `MuxedStream` handles (`YamuxStream`). Embedded-clean: actor-isolated
 // state (Embedded-OK), `[UInt8]` currency (no NIO `ByteBuffer`), no `any`, no
 // Foundation, no `Mutex`/`ContinuousClock`/`Task.sleep`, typed throws.
 //
@@ -15,14 +15,14 @@ import _Concurrency   // REQUIRED under Embedded for async/Task/withCheckedConti
 import P2PCoreCrypto   // AsyncTimer / MonotonicClock seam (deferred timers)
 
 /// The default per-stream + connection receive window (256 KiB).
-public let yamuxByteDefaultWindow: UInt32 = 256 * 1024
+public let yamuxDefaultWindow: UInt32 = 256 * 1024
 
 /// A Yamux multiplexer over a reliable `[UInt8]` connection.
 ///
 /// Monomorphic over the connection `R` (no `any`). Call ``run()`` once (typically in
 /// a child task) to drive the frame read loop; use ``open()`` to start a stream and
 /// ``accept()`` to receive a peer-initiated one.
-public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
+public final actor YamuxMuxer<R: RawConnection> {
 
     // MARK: - Per-stream state
 
@@ -59,9 +59,9 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
 
     /// Opens a new outbound stream, sending its SYN.
     ///
-    /// - Throws: ``EmbeddedNodeError/connectionClosed`` if the muxer is closed,
-    ///   ``EmbeddedNodeError/yamuxProtocolError`` if the id space is exhausted.
-    public func open() async throws(EmbeddedNodeError) -> YamuxByteStream<R> {
+    /// - Throws: ``NodeError/connectionClosed`` if the muxer is closed,
+    ///   ``NodeError/yamuxProtocolError`` if the id space is exhausted.
+    public func open() async throws(NodeError) -> YamuxStream<R> {
         if closed { throw .connectionClosed }
         let id = nextStreamID
         let (next, overflow) = id.addingReportingOverflow(2)
@@ -69,20 +69,20 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
         nextStreamID = next
 
         streams[UInt64(id)] = StreamState()
-        let syn = YamuxByteFrame.makeData(streamID: id, flags: .syn, payload: [])
+        let syn = YamuxFrame.makeData(streamID: id, flags: .syn, payload: [])
         try await writeFrame(syn)
-        return YamuxByteStream(id: UInt64(id), muxer: self)
+        return YamuxStream(id: UInt64(id), muxer: self)
     }
 
     /// Waits for the next peer-initiated stream.
     ///
-    /// - Throws: ``EmbeddedNodeError/connectionClosed`` if the muxer closes while
+    /// - Throws: ``NodeError/connectionClosed`` if the muxer closes while
     ///   waiting.
-    public func accept() async throws(EmbeddedNodeError) -> YamuxByteStream<R> {
+    public func accept() async throws(NodeError) -> YamuxStream<R> {
         if closed { throw .connectionClosed }
         if !pendingInbound.isEmpty {
             let id = pendingInbound.removeFirst()
-            return YamuxByteStream(id: id, muxer: self)
+            return YamuxStream(id: id, muxer: self)
         }
         let id = await withCheckedContinuation { (cont: CheckedContinuation<UInt64, Never>) in
             acceptWaiters.append(cont)
@@ -91,7 +91,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
         if id == UInt64.max {
             throw .connectionClosed
         }
-        return YamuxByteStream(id: id, muxer: self)
+        return YamuxStream(id: id, muxer: self)
     }
 
     // MARK: - Read loop
@@ -114,9 +114,9 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
 
             // Drain all complete frames.
             while true {
-                let outcome: YamuxByteFrame.DecodeOutcome
+                let outcome: YamuxFrame.DecodeOutcome
                 do {
-                    outcome = try YamuxByteFrame.decode(from: buffer, at: 0)
+                    outcome = try YamuxFrame.decode(from: buffer, at: 0)
                 } catch {
                     // Malformed frame — tear the session down.
                     await teardown()
@@ -125,7 +125,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
                 switch outcome {
                 case .needMoreData:
                     // Compact consumed prefix and read more.
-                    if buffer.count > yamuxByteCompactThreshold {
+                    if buffer.count > yamuxCompactThreshold {
                         buffer = []
                     }
                     break
@@ -140,9 +140,9 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
         await teardown()
     }
 
-    // MARK: - Stream I/O (called by YamuxByteStream handles)
+    // MARK: - Stream I/O (called by YamuxStream handles)
 
-    func readStream(_ id: UInt64) async throws(EmbeddedNodeError) -> [UInt8] {
+    func readStream(_ id: UInt64) async throws(NodeError) -> [UInt8] {
         // Fast path: buffered data or already-closed.
         if var state = streams[id] {
             if state.reset { throw .yamuxStreamClosed }
@@ -177,14 +177,14 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
         return result
     }
 
-    func writeStream(_ id: UInt64, data: [UInt8]) async throws(EmbeddedNodeError) {
+    func writeStream(_ id: UInt64, data: [UInt8]) async throws(NodeError) {
         if closed { throw .connectionClosed }
         guard let state = streams[id], !state.reset else {
             throw .yamuxStreamClosed
         }
         // Chunk to the max frame size (well under the 16 MiB bound).
         var offset = 0
-        let chunkSize = Int(yamuxByteDefaultWindow)
+        let chunkSize = Int(yamuxDefaultWindow)
         guard let sid32 = UInt32(exactly: id) else {
             throw .yamuxProtocolError
         }
@@ -195,7 +195,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
             let end = min(offset + chunkSize, data.count)
             let payload = Array(data[offset..<end])
             offset = end
-            let frame = YamuxByteFrame.makeData(streamID: sid32, flags: [], payload: payload)
+            let frame = YamuxFrame.makeData(streamID: sid32, flags: [], payload: payload)
             try await writeFrame(frame)
         }
     }
@@ -203,13 +203,13 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
     func closeStream(_ id: UInt64) async {
         guard let sid32 = UInt32(exactly: id) else { return }
         // Send FIN (best effort) and forget the stream's send side.
-        let fin = YamuxByteFrame.makeData(streamID: sid32, flags: .fin, payload: [])
+        let fin = YamuxFrame.makeData(streamID: sid32, flags: .fin, payload: [])
         await writeFrameBestEffort(fin)
     }
 
     // MARK: - Frame handling
 
-    private func handle(_ frame: YamuxByteFrame) async {
+    private func handle(_ frame: YamuxFrame) async {
         switch frame.type {
         case .data:
             await handleData(frame)
@@ -224,7 +224,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
         }
     }
 
-    private func handleData(_ frame: YamuxByteFrame) async {
+    private func handleData(_ frame: YamuxFrame) async {
         let id = UInt64(frame.streamID)
 
         // New inbound stream (SYN).
@@ -237,7 +237,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
             if streams[id] == nil {
                 streams[id] = StreamState()
                 // ACK the new stream.
-                let ack = YamuxByteFrame.makeData(streamID: frame.streamID, flags: .ack, payload: [])
+                let ack = YamuxFrame.makeData(streamID: frame.streamID, flags: .ack, payload: [])
                 await writeFrameBestEffort(ack)
                 deliverInbound(id)
             }
@@ -256,12 +256,12 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
         }
     }
 
-    private func handlePing(_ frame: YamuxByteFrame) async {
+    private func handlePing(_ frame: YamuxFrame) async {
         if frame.flags.contains(.ack) {
             // Pong for a ping we sent; slice-1 sends no pings, so ignore.
             return
         }
-        let pong = YamuxByteFrame.makePing(opaque: frame.length, ack: true)
+        let pong = YamuxFrame.makePing(opaque: frame.length, ack: true)
         await writeFrameBestEffort(pong)
     }
 
@@ -312,7 +312,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
 
     // MARK: - Wire writes
 
-    private func writeFrame(_ frame: YamuxByteFrame) async throws(EmbeddedNodeError) {
+    private func writeFrame(_ frame: YamuxFrame) async throws(NodeError) {
         if closed { throw .connectionClosed }
         try await raw.write(frame.encode())
     }
@@ -323,7 +323,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
     /// NOT a silent fallback on a data path — control delivery on a failing
     /// connection is genuinely best-effort, and the error is handled (the session
     /// closes), not swallowed into a wrong result.
-    private func writeFrameBestEffort(_ frame: YamuxByteFrame) async {
+    private func writeFrameBestEffort(_ frame: YamuxFrame) async {
         if closed { return }
         do {
             try await raw.write(frame.encode())
@@ -333,7 +333,7 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
     }
 
     private func sendResetBestEffort(_ streamID: UInt32) async {
-        let rst = YamuxByteFrame.makeData(streamID: streamID, flags: .rst, payload: [])
+        let rst = YamuxFrame.makeData(streamID: streamID, flags: .rst, payload: [])
         await writeFrameBestEffort(rst)
     }
 
@@ -381,4 +381,4 @@ public final actor YamuxByteMuxer<R: EmbeddedRawConnection> {
 }
 
 /// Read-buffer compaction threshold (64 KiB) for the frame read loop.
-let yamuxByteCompactThreshold = 64 * 1024
+let yamuxCompactThreshold = 64 * 1024

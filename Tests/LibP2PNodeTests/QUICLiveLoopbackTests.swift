@@ -1,12 +1,12 @@
 // QUICLiveLoopbackTests.swift
-// The live libp2p-over-QUIC handshake test: two `EmbeddedQUICTransport` over a
+// The live libp2p-over-QUIC handshake test: two `QUICTransport` over a
 // shared in-process loopback `DatagramTransport`, client dials server, the TLS 1.3
 // handshake COMPLETES (driving the cored TLS FSMs through the engine seam), both
 // bind the verified peer PeerID from the RPK certificate (fail-closed), the client
 // opens a QUIC stream, and a `[UInt8]` echo round-trips.
 //
 // This is a HOST test (it may use Foundation/Synchronization for the test doubles);
-// the code under test (`EmbeddedQUICTransport` / `QUICTLSHandshakeDriver` /
+// the code under test (`QUICTransport` / `QUICTLSHandshakeDriver` /
 // `LibP2PRPKCertificateBuilder`) is the dual-build Embedded-clean path.
 
 import Testing
@@ -19,7 +19,7 @@ import QUICWire
 import QUICConnectionCore
 import QUICConnectionEngineCore
 import QUIC
-@testable import LibP2PNodeEmbedded
+@testable import LibP2PNode
 
 private typealias Provider = DefaultCryptoProvider
 
@@ -116,8 +116,8 @@ struct QUICLiveLoopbackTests {
 
         let timer = TestClock()
 
-        let clientTransport = EmbeddedQUICTransport(transport: clientT, timer: timer)
-        let serverTransport = EmbeddedQUICTransport(transport: serverT, timer: timer)
+        let clientTransport = QUICTransport(transport: clientT, timer: timer)
+        let serverTransport = QUICTransport(transport: serverT, timer: timer)
 
         let clientConfig = makeConfig(
             role: .client, localCID: clientSCID, peerCID: clientDCID, originalDCID: clientDCID)
@@ -195,9 +195,9 @@ struct QUICLiveLoopbackTests {
 
     // MARK: - Identity helpers
 
-    private func makeIdentity() -> EmbeddedNodeIdentity<Provider>? {
+    private func makeIdentity() -> NodeIdentity<Provider>? {
         do {
-            return try EmbeddedNodeIdentity<Provider>.generate()
+            return try NodeIdentity<Provider>.generate()
         } catch {
             return nil
         }
@@ -206,7 +206,7 @@ struct QUICLiveLoopbackTests {
     /// Derives the PeerID multihash for an identity by running the same RPK
     /// certificate build + verify the handshake uses — so the test's expectation is
     /// exactly the value the driver extracts.
-    private func peerIDMultihash(of identity: EmbeddedNodeIdentity<Provider>) -> [UInt8]? {
+    private func peerIDMultihash(of identity: NodeIdentity<Provider>) -> [UInt8]? {
         do {
             let cert = try LibP2PRPKCertificateBuilder<Provider>.build(
                 identity: identity, nowEpochSeconds: 0)

@@ -1,5 +1,5 @@
-// EmbeddedQUICTransport.swift
-// The Embedded node's QUIC transport. It wraps swift-quic's `[UInt8]` engine facade
+// QUICTransport.swift
+// The libp2p node's QUIC transport. It wraps swift-quic's `[UInt8]` engine facade
 // (`QUICEngineClient<Transport, Timer>`) and drives the libp2p-over-QUIC TLS 1.3
 // handshake to a LIVE, verified connection.
 //
@@ -12,11 +12,11 @@
 //   2. start the engine's I/O + timer run loop in a child task,
 //   3. drive the TLS 1.3 handshake (``QUICTLSHandshakeDriver``) to completion,
 //      extracting the verified peer PeerID from the RPK cert (fail-closed),
-//   4. on success return an ``EmbeddedQUICConnection`` whose streams are QUIC
-//      native streams (``EmbeddedQUICStream``).
+//   4. on success return an ``QUICConnection`` whose streams are QUIC
+//      native streams (``QUICStream``).
 //
 // FAIL-CLOSED: on any handshake / verification failure the engine is torn down and
-// a typed ``EmbeddedNodeError`` is thrown — never a half-open connection.
+// a typed ``NodeError`` is thrown — never a half-open connection.
 //
 // Embedded-clean: monomorphic over `<C, Transport, Timer>`, `[UInt8]`/
 // `SocketEndpoint` currency, no `any`, no Foundation, typed throws, no try?/try!.
@@ -29,13 +29,13 @@ import QUIC                // QUICEngineClient / QUICPeerValidator
 import QUICConnectionEngineCore  // QUICConnectionEngineConfiguration / QUICEngineError
 import QUICConnectionCore        // TransportParametersCore
 
-/// The Embedded node's QUIC transport, wrapping ``QUICEngineClient``.
+/// The libp2p node's QUIC transport, wrapping ``QUICEngineClient``.
 ///
 /// Monomorphic over the injected `Transport` (UDP datagram I/O) and `Timer`
 /// (monotonic clock + sleep) seams. The crypto provider is pinned by the facade to
 /// ``DefaultCryptoProvider`` (host swift-crypto / Embedded BoringSSL), so the
 /// embedder never spells the crypto generic.
-public struct EmbeddedQUICTransport<
+public struct QUICTransport<
     Transport: DatagramTransport,
     Timer: AsyncTimer
 >: Sendable {
@@ -60,13 +60,13 @@ public struct EmbeddedQUICTransport<
     /// keys are installed can be re-fed (RFC 9001 §5.7) — see
     /// ``BufferingDatagramTransport``.
     ///
-    /// - Throws: ``EmbeddedNodeError/quicFeatureUnsupported`` if the engine facade
+    /// - Throws: ``NodeError/quicFeatureUnsupported`` if the engine facade
     ///   rejects the configuration (mapped from `QUICEngineError`).
     private func makeClient(
         configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
         wrapped: BufferingDatagramTransport<Transport>,
         peer: SocketEndpoint
-    ) throws(EmbeddedNodeError) -> QUICEngineClient<BufferingDatagramTransport<Transport>, Timer> {
+    ) throws(NodeError) -> QUICEngineClient<BufferingDatagramTransport<Transport>, Timer> {
         let client: QUICEngineClient<BufferingDatagramTransport<Transport>, Timer>
         do {
             client = try QUICEngineClient(
@@ -88,23 +88,23 @@ public struct EmbeddedQUICTransport<
     /// Drives the libp2p-over-QUIC TLS 1.3 client handshake (with the local RPK
     /// identity) over the injected transport + timer until established, extracting
     /// the server's verified PeerID from its RPK certificate. On success the QUIC
-    /// native streams are exposed via ``EmbeddedQUICConnection/openStream()``.
+    /// native streams are exposed via ``QUICConnection/openStream()``.
     ///
-    /// - Throws: a typed ``EmbeddedNodeError`` on any handshake / verification
+    /// - Throws: a typed ``NodeError`` on any handshake / verification
     ///   failure (fail-closed — never a half-open connection).
     public func dial(
         configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
         peer: SocketEndpoint,
-        identity: EmbeddedNodeIdentity<DefaultCryptoProvider>,
+        identity: NodeIdentity<DefaultCryptoProvider>,
         handshakeTimeoutNanos: UInt64? = nil
-    ) async throws(EmbeddedNodeError) -> EmbeddedQUICConnection<BufferingDatagramTransport<Transport>, Timer> {
+    ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
         let wrapped = BufferingDatagramTransport(inner: transport)
         let client = try makeClient(configuration: configuration, wrapped: wrapped, peer: peer)
         let runTask = Task { await client.run() }
         let deadline = timer.monotonicNanos()
             &+ (handshakeTimeoutNanos ?? Self.defaultHandshakeTimeoutNanos)
 
-        let outcome: Result<QUICHandshakeResult, EmbeddedNodeError>
+        let outcome: Result<QUICHandshakeResult, NodeError>
         do {
             let value = try await QUICTLSHandshakeDriver<DefaultCryptoProvider, BufferingDatagramTransport<Transport>, Timer>.runClient(
                 client: client,
@@ -116,7 +116,7 @@ public struct EmbeddedQUICTransport<
             )
             outcome = .success(value)
         } catch {
-            // `error` binds as `EmbeddedNodeError` (the only thrown type in the `do`).
+            // `error` binds as `NodeError` (the only thrown type in the `do`).
             outcome = .failure(error)
         }
         let result: QUICHandshakeResult
@@ -130,7 +130,7 @@ public struct EmbeddedQUICTransport<
             throw error
         }
 
-        return EmbeddedQUICConnection(
+        return QUICConnection(
             client: client,
             timer: timer,
             runTask: runTask,
@@ -148,21 +148,21 @@ public struct EmbeddedQUICTransport<
     /// slice), so the returned connection carries no peer PeerID; the SERVER
     /// proves its identity to the client.
     ///
-    /// - Throws: a typed ``EmbeddedNodeError`` on any handshake failure
+    /// - Throws: a typed ``NodeError`` on any handshake failure
     ///   (fail-closed — never a half-open connection).
     public func listen(
         configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
         peer: SocketEndpoint,
-        identity: EmbeddedNodeIdentity<DefaultCryptoProvider>,
+        identity: NodeIdentity<DefaultCryptoProvider>,
         handshakeTimeoutNanos: UInt64? = nil
-    ) async throws(EmbeddedNodeError) -> EmbeddedQUICConnection<BufferingDatagramTransport<Transport>, Timer> {
+    ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
         let wrapped = BufferingDatagramTransport(inner: transport)
         let client = try makeClient(configuration: configuration, wrapped: wrapped, peer: peer)
         let runTask = Task { await client.run() }
         let deadline = timer.monotonicNanos()
             &+ (handshakeTimeoutNanos ?? Self.defaultHandshakeTimeoutNanos)
 
-        let outcome: Result<QUICHandshakeResult, EmbeddedNodeError>
+        let outcome: Result<QUICHandshakeResult, NodeError>
         do {
             let value = try await QUICTLSHandshakeDriver<DefaultCryptoProvider, BufferingDatagramTransport<Transport>, Timer>.runServer(
                 server: client,
@@ -174,7 +174,7 @@ public struct EmbeddedQUICTransport<
             )
             outcome = .success(value)
         } catch {
-            // `error` binds as `EmbeddedNodeError` (the only thrown type in the `do`).
+            // `error` binds as `NodeError` (the only thrown type in the `do`).
             outcome = .failure(error)
         }
         let result: QUICHandshakeResult
@@ -187,7 +187,7 @@ public struct EmbeddedQUICTransport<
             throw error
         }
 
-        return EmbeddedQUICConnection(
+        return QUICConnection(
             client: client,
             timer: timer,
             runTask: runTask,
@@ -200,10 +200,10 @@ public struct EmbeddedQUICTransport<
 /// A live, handshake-verified libp2p-over-QUIC connection.
 ///
 /// Wraps the established ``QUICEngineClient`` and exposes QUIC native streams as
-/// ``EmbeddedQUICStream`` (`[UInt8]`). It owns the engine's run-loop task and tears
+/// ``QUICStream`` (`[UInt8]`). It owns the engine's run-loop task and tears
 /// it down on ``close()``. The remote's verified PeerID multihash (from the RPK
 /// certificate) is bound at construction; it is never a silent/unverified value.
-public final class EmbeddedQUICConnection<
+public final class QUICConnection<
     Transport: DatagramTransport,
     Timer: AsyncTimer
 >: Sendable {
@@ -240,11 +240,11 @@ public final class EmbeddedQUICConnection<
     /// Whether the connection has been closed (locally or by the peer).
     public var isClosed: Bool { client.isClosed }
 
-    /// Opens a new bidirectional QUIC stream and exposes it as an Embedded mux
+    /// Opens a new bidirectional QUIC stream and exposes it as a mux
     /// stream. Opening alone produces no wire bytes; the first write sends them.
     ///
-    /// - Throws: ``EmbeddedNodeError/connectionClosed`` if the connection is gone.
-    public func openStream() throws(EmbeddedNodeError) -> EmbeddedQUICStream<Transport, Timer> {
+    /// - Throws: ``NodeError/connectionClosed`` if the connection is gone.
+    public func openStream() throws(NodeError) -> QUICStream<Transport, Timer> {
         let id: UInt64
         do {
             id = try client.openStream(bidirectional: true)
@@ -252,7 +252,7 @@ public final class EmbeddedQUICConnection<
             // `error` binds as `QUICEngineError`; bare catch.
             throw .connectionClosed
         }
-        return EmbeddedQUICStream(client: client, timer: timer, streamID: id)
+        return QUICStream(client: client, timer: timer, streamID: id)
     }
 
     /// Waits for the next peer-opened stream and exposes it, or `nil` if none
@@ -260,11 +260,11 @@ public final class EmbeddedQUICConnection<
     /// over the injected timer (the facade has no callback seam).
     public func acceptStream(
         deadlineNanos: UInt64
-    ) async -> EmbeddedQUICStream<Transport, Timer>? {
+    ) async -> QUICStream<Transport, Timer>? {
         while true {
             let newStreams = client.takeNewStreams()
             if let id = newStreams.first {
-                return EmbeddedQUICStream(client: client, timer: timer, streamID: id)
+                return QUICStream(client: client, timer: timer, streamID: id)
             }
             if client.isClosed { return nil }
             if timer.monotonicNanos() >= deadlineNanos { return nil }

@@ -37,14 +37,14 @@ enum NoiseIdentityVerification<C: CryptoProvider> {
     /// decodes the identity public key, dispatches the signature check by key type,
     /// and returns the protobuf-encoded identity key on success.
     ///
-    /// - Throws: ``EmbeddedNodeError/noiseIdentityVerificationFailed`` on a bad
-    ///   signature, ``EmbeddedNodeError/noiseUnsupportedIdentityKeyType`` for an
-    ///   unsupported key type, ``EmbeddedNodeError/noiseInvalidPayload`` on a
+    /// - Throws: ``NodeError/noiseIdentityVerificationFailed`` on a bad
+    ///   signature, ``NodeError/noiseUnsupportedIdentityKeyType`` for an
+    ///   unsupported key type, ``NodeError/noiseInvalidPayload`` on a
     ///   malformed key.
     static func verify(
         payload: NoisePayloadFields,
         noiseStaticPublicKey: [UInt8]
-    ) throws(EmbeddedNodeError) -> [UInt8] {
+    ) throws(NodeError) -> [UInt8] {
         // Reconstruct the signed content: prefix bytes || noise static key.
         var signed = [UInt8](NoiseFraming.staticKeySignaturePrefix.utf8)
         signed.append(contentsOf: noiseStaticPublicKey)

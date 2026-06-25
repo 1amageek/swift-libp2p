@@ -1,5 +1,5 @@
 // DataPathLoopbackTests.swift
-// In-process round-trip of the Embedded data path: two pipe ends → Noise XX
+// In-process round-trip of the data path: two pipe ends → Noise XX
 // security (mutual fail-closed identity verification) → Yamux [UInt8] mux →
 // multistream-select negotiation → stream byte round-trip. This is the host-
 // runnable loopback the milestone asks for (transport → Noise → Yamux →
@@ -8,21 +8,21 @@
 import Testing
 import P2PCrypto
 import LibP2PCore
-@testable import LibP2PNodeEmbedded
+@testable import LibP2PNode
 
 private typealias Provider = DefaultCryptoProvider
 
-@Suite("Embedded data-path loopback")
+@Suite("data-path loopback")
 struct DataPathLoopbackTests {
 
     @Test("Noise XX secures a pipe and traffic round-trips both ways")
     func noiseSecuresPipe() async throws {
         let (clientEnd, serverEnd) = PipeConnection.makePair()
-        let clientID = try EmbeddedNodeIdentity<Provider>.generate()
-        let serverID = try EmbeddedNodeIdentity<Provider>.generate()
+        let clientID = try NodeIdentity<Provider>.generate()
+        let serverID = try NodeIdentity<Provider>.generate()
 
-        let dialer = NoiseByteUpgrader<PipeConnection, Provider>(raw: clientEnd, identity: clientID)
-        let listener = NoiseByteUpgrader<PipeConnection, Provider>(raw: serverEnd, identity: serverID)
+        let dialer = NoiseUpgrader<PipeConnection, Provider>(raw: clientEnd, identity: clientID)
+        let listener = NoiseUpgrader<PipeConnection, Provider>(raw: serverEnd, identity: serverID)
 
         async let clientSecured = dialer.dial()
         async let serverSecured = listener.listen()
@@ -51,19 +51,19 @@ struct DataPathLoopbackTests {
     @Test("Full stack: Noise → Yamux → multistream-select → stream echo")
     func fullStackRoundTrip() async throws {
         let (clientEnd, serverEnd) = PipeConnection.makePair()
-        let clientID = try EmbeddedNodeIdentity<Provider>.generate()
-        let serverID = try EmbeddedNodeIdentity<Provider>.generate()
+        let clientID = try NodeIdentity<Provider>.generate()
+        let serverID = try NodeIdentity<Provider>.generate()
 
-        let dialer = NoiseByteUpgrader<PipeConnection, Provider>(raw: clientEnd, identity: clientID)
-        let listener = NoiseByteUpgrader<PipeConnection, Provider>(raw: serverEnd, identity: serverID)
+        let dialer = NoiseUpgrader<PipeConnection, Provider>(raw: clientEnd, identity: clientID)
+        let listener = NoiseUpgrader<PipeConnection, Provider>(raw: serverEnd, identity: serverID)
         async let cs = dialer.dial()
         async let ss = listener.listen()
         let clientSecured = try await cs
         let serverSecured = try await ss
 
         // Yamux over the secured connections.
-        let clientMux = YamuxByteMuxer(raw: clientSecured, isInitiator: true)
-        let serverMux = YamuxByteMuxer(raw: serverSecured, isInitiator: false)
+        let clientMux = YamuxMuxer(raw: clientSecured, isInitiator: true)
+        let serverMux = YamuxMuxer(raw: serverSecured, isInitiator: false)
         let clientRun = Task { await clientMux.run() }
         let serverRun = Task { await serverMux.run() }
 
@@ -73,7 +73,7 @@ struct DataPathLoopbackTests {
         // Server: accept a stream, negotiate, echo one message.
         let serverWork = Task { () -> Bool in
             let stream = try await serverMux.accept()
-            let negotiator = MultistreamByteNegotiator(connection: StreamRawAdapter(stream), timer: clock)
+            let negotiator = MultistreamNegotiator(connection: StreamRawAdapter(stream), timer: clock)
             let agreed = try await negotiator.listen(supported: [proto])
             guard agreed == proto else { return false }
             let msg = try await stream.read()
@@ -83,7 +83,7 @@ struct DataPathLoopbackTests {
 
         // Client: open a stream, negotiate, send + read echo.
         let clientStream = try await clientMux.open()
-        let clientNeg = MultistreamByteNegotiator(connection: StreamRawAdapter(clientStream), timer: clock)
+        let clientNeg = MultistreamNegotiator(connection: StreamRawAdapter(clientStream), timer: clock)
         try await clientNeg.dial(proto)
 
         let payload: [UInt8] = Array("multiplexed-echo-payload".utf8)
@@ -102,7 +102,7 @@ struct DataPathLoopbackTests {
 
     @Test("Identity verification accepts a correctly-signed payload")
     func identityVerificationAccepts() throws {
-        let id = try EmbeddedNodeIdentity<Provider>.generate()
+        let id = try NodeIdentity<Provider>.generate()
         // A Noise static key the identity signs ownership of.
         let staticKey = [UInt8](repeating: 0x42, count: 32)
 
@@ -119,8 +119,8 @@ struct DataPathLoopbackTests {
 
     @Test("Identity verification rejects a wrong-key signature (fail-closed)")
     func identityVerificationRejectsForged() throws {
-        let advertised = try EmbeddedNodeIdentity<Provider>.generate()
-        let attacker = try EmbeddedNodeIdentity<Provider>.generate()
+        let advertised = try NodeIdentity<Provider>.generate()
+        let attacker = try NodeIdentity<Provider>.generate()
         let staticKey = [UInt8](repeating: 0x77, count: 32)
 
         // Sign with the ATTACKER's key but advertise the victim's identity key.
@@ -129,7 +129,7 @@ struct DataPathLoopbackTests {
         let forgedSig = try attacker.sign(signed)
 
         let payload = NoisePayloadFields(identityKey: advertised.protobufPublicKey, identitySig: forgedSig, data: [])
-        #expect(throws: EmbeddedNodeError.noiseIdentityVerificationFailed) {
+        #expect(throws: NodeError.noiseIdentityVerificationFailed) {
             _ = try NoiseIdentityVerification<Provider>.verify(
                 payload: payload, noiseStaticPublicKey: staticKey
             )
@@ -138,7 +138,7 @@ struct DataPathLoopbackTests {
 
     @Test("Identity verification rejects a signature over a different static key")
     func identityVerificationRejectsWrongStaticKey() throws {
-        let id = try EmbeddedNodeIdentity<Provider>.generate()
+        let id = try NodeIdentity<Provider>.generate()
         let signedKey = [UInt8](repeating: 0x11, count: 32)
         let presentedKey = [UInt8](repeating: 0x22, count: 32)
 
@@ -148,7 +148,7 @@ struct DataPathLoopbackTests {
 
         let payload = NoisePayloadFields(identityKey: id.protobufPublicKey, identitySig: sig, data: [])
         // Verify against a DIFFERENT static key than the one signed.
-        #expect(throws: EmbeddedNodeError.noiseIdentityVerificationFailed) {
+        #expect(throws: NodeError.noiseIdentityVerificationFailed) {
             _ = try NoiseIdentityVerification<Provider>.verify(
                 payload: payload, noiseStaticPublicKey: presentedKey
             )
@@ -158,13 +158,13 @@ struct DataPathLoopbackTests {
 
 // MARK: - Helpers
 
-/// Bridges an `EmbeddedMuxedStream` to the `EmbeddedRawConnection` surface the
+/// Bridges an `MuxedStream` to the `RawConnection` surface the
 /// negotiator consumes.
-struct StreamRawAdapter<S: EmbeddedMuxedStream>: EmbeddedRawConnection {
+struct StreamRawAdapter<S: MuxedStream>: RawConnection {
     let stream: S
     init(_ stream: S) { self.stream = stream }
-    func read() async throws(EmbeddedNodeError) -> [UInt8] { try await stream.read() }
-    func write(_ data: [UInt8]) async throws(EmbeddedNodeError) { try await stream.write(data) }
+    func read() async throws(NodeError) -> [UInt8] { try await stream.read() }
+    func write(_ data: [UInt8]) async throws(NodeError) { try await stream.write(data) }
     func close() async { await stream.close() }
 }
 
@@ -180,7 +180,7 @@ private func readExactly(
     return out
 }
 
-private func readExactlyStream<S: EmbeddedMuxedStream>(
+private func readExactlyStream<S: MuxedStream>(
     _ stream: S, count: Int
 ) async throws -> [UInt8] {
     var out = [UInt8]()

@@ -48,11 +48,11 @@ struct HandshakeReassembler {
     /// Takes one complete handshake message from `level`'s buffer, or `nil` if the
     /// buffer holds fewer than one complete message.
     ///
-    /// - Throws: ``EmbeddedNodeError/quicHandshakeFailed`` on a malformed handshake
+    /// - Throws: ``NodeError/quicHandshakeFailed`` on a malformed handshake
     ///   header (fail-closed — never a silently mis-parsed message).
     mutating func takeMessage(
         level: EncryptionLevel
-    ) throws(EmbeddedNodeError) -> Message? {
+    ) throws(NodeError) -> Message? {
         // Copy the level's buffer to a local (avoids an exclusivity violation from
         // passing `inout self.field` while `self` is being mutated). The local is
         // written back only if a message is consumed.
@@ -80,7 +80,7 @@ struct HandshakeReassembler {
             case .insufficientData:
                 return nil
             default:
-                throw EmbeddedNodeError.quicHandshakeFailed
+                throw NodeError.quicHandshakeFailed
             }
         }
         let raw = Array(buffer[0..<decoded.consumed])

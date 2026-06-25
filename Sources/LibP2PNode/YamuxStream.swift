@@ -1,6 +1,6 @@
-// YamuxByteStream.swift
-// A single Yamux stream over `[UInt8]`, conforming to `EmbeddedMuxedStream`. It is
-// a thin handle whose I/O delegates to the owning `YamuxByteMuxer` actor (which
+// YamuxStream.swift
+// A single Yamux stream over `[UInt8]`, conforming to `MuxedStream`. It is
+// a thin handle whose I/O delegates to the owning `YamuxMuxer` actor (which
 // owns the wire and the per-stream inbound buffers). Embedded-clean: no `any`, no
 // Foundation, typed throws.
 
@@ -14,21 +14,21 @@ import _Concurrency   // REQUIRED under Embedded for async/Task
 ///
 /// Generic only over the connection `R` — the muxer needs no crypto seam; it runs
 /// over any reliable `[UInt8]` connection (typically a `NoiseSecuredConnection`).
-public final class YamuxByteStream<R: EmbeddedRawConnection>: EmbeddedMuxedStream {
+public final class YamuxStream<R: RawConnection>: MuxedStream {
 
     public let id: UInt64
-    private let muxer: YamuxByteMuxer<R>
+    private let muxer: YamuxMuxer<R>
 
-    init(id: UInt64, muxer: YamuxByteMuxer<R>) {
+    init(id: UInt64, muxer: YamuxMuxer<R>) {
         self.id = id
         self.muxer = muxer
     }
 
-    public func read() async throws(EmbeddedNodeError) -> [UInt8] {
+    public func read() async throws(NodeError) -> [UInt8] {
         try await muxer.readStream(id)
     }
 
-    public func write(_ data: [UInt8]) async throws(EmbeddedNodeError) {
+    public func write(_ data: [UInt8]) async throws(NodeError) {
         try await muxer.writeStream(id, data: data)
     }
 

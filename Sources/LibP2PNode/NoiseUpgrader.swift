@@ -1,4 +1,4 @@
-// NoiseByteUpgrader.swift
+// NoiseUpgrader.swift
 // Drives the libp2p Noise XX handshake over a raw `[UInt8]` connection, producing a
 // `NoiseSecuredConnection`. Wraps the Embedded-clean `NoiseHandshakeCore<C>` and
 // frames each handshake message with the 2-byte length prefix (`NoiseFraming`).
@@ -23,15 +23,15 @@ import LibP2PCore
 /// generates the Noise static + ephemeral X25519 keys through the seam, runs the
 /// three XX messages, verifies the remote identity fail-closed, and returns a
 /// `NoiseSecuredConnection` carrying the verified remote identity public key.
-public struct NoiseByteUpgrader<
-    R: EmbeddedRawConnection,
+public struct NoiseUpgrader<
+    R: RawConnection,
     C: CryptoProvider
 >: Sendable {
 
     private let raw: R
-    private let identity: EmbeddedNodeIdentity<C>
+    private let identity: NodeIdentity<C>
 
-    public init(raw: R, identity: EmbeddedNodeIdentity<C>) {
+    public init(raw: R, identity: NodeIdentity<C>) {
         self.raw = raw
         self.identity = identity
     }
@@ -40,9 +40,9 @@ public struct NoiseByteUpgrader<
 
     /// Runs the XX handshake as the dialer and returns the secured connection.
     ///
-    /// - Throws: ``EmbeddedNodeError`` (`noise*` cases) on any handshake / identity
+    /// - Throws: ``NodeError`` (`noise*` cases) on any handshake / identity
     ///   failure (fail-closed).
-    public func dial() async throws(EmbeddedNodeError) -> NoiseSecuredConnection<R, C> {
+    public func dial() async throws(NodeError) -> NoiseSecuredConnection<R, C> {
         var core = try makeCore(isInitiator: true)
 
         // -> e
@@ -81,9 +81,9 @@ public struct NoiseByteUpgrader<
 
     /// Runs the XX handshake as the listener and returns the secured connection.
     ///
-    /// - Throws: ``EmbeddedNodeError`` (`noise*` cases) on any handshake / identity
+    /// - Throws: ``NodeError`` (`noise*` cases) on any handshake / identity
     ///   failure (fail-closed).
-    public func listen() async throws(EmbeddedNodeError) -> NoiseSecuredConnection<R, C> {
+    public func listen() async throws(NodeError) -> NoiseSecuredConnection<R, C> {
         var core = try makeCore(isInitiator: false)
 
         // -> e
@@ -119,7 +119,7 @@ public struct NoiseByteUpgrader<
 
     // MARK: - Private
 
-    private func makeCore(isInitiator: Bool) throws(EmbeddedNodeError) -> NoiseHandshakeCore<C> {
+    private func makeCore(isInitiator: Bool) throws(NodeError) -> NoiseHandshakeCore<C> {
         // Generate the Noise static + ephemeral X25519 keys through the seam.
         let staticPriv: C.X25519.PrivateKey
         let ephemeralPriv: C.X25519.PrivateKey
@@ -148,7 +148,7 @@ public struct NoiseByteUpgrader<
 
     /// Builds the signed handshake payload: the local identity public key plus the
     /// signature over `"noise-libp2p-static-key:" || localStaticKey`.
-    private func makeSignedPayload(core: NoiseHandshakeCore<C>) throws(EmbeddedNodeError) -> [UInt8] {
+    private func makeSignedPayload(core: NoiseHandshakeCore<C>) throws(NodeError) -> [UInt8] {
         var signed = [UInt8](NoiseFraming.staticKeySignaturePrefix.utf8)
         signed.append(contentsOf: core.localStaticPublicKey)
         let signature = try identity.sign(signed)
@@ -163,7 +163,7 @@ public struct NoiseByteUpgrader<
     /// Verifies the remote identity against the remote Noise static key, fail-closed.
     private func verifyRemote(
         payload: NoisePayloadFields, core: NoiseHandshakeCore<C>
-    ) throws(EmbeddedNodeError) {
+    ) throws(NodeError) {
         guard let remoteStatic = core.remoteStaticPublicKey else {
             throw .noiseHandshakeFailed
         }
@@ -186,7 +186,7 @@ public struct NoiseByteUpgrader<
 
     // MARK: - Framed handshake I/O
 
-    private func writeFramed(_ message: [UInt8]) async throws(EmbeddedNodeError) {
+    private func writeFramed(_ message: [UInt8]) async throws(NodeError) {
         let frame: [UInt8]
         do {
             frame = try NoiseFraming.encode(message)
@@ -197,7 +197,7 @@ public struct NoiseByteUpgrader<
     }
 
     /// Reads one length-prefixed handshake message, accumulating partial reads.
-    private func readFramed() async throws(EmbeddedNodeError) -> [UInt8] {
+    private func readFramed() async throws(NodeError) -> [UInt8] {
         var buffer = [UInt8]()
         while true {
             let framed: (message: [UInt8], consumed: Int)?

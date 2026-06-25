@@ -82,16 +82,16 @@ public enum QUICTLSHandshakeDriver<
     /// fail-closed RPK + CertificateVerify checks) → send the client Finished →
     /// mark complete. Bounded by `deadlineNanos` (fail-closed on timeout).
     ///
-    /// - Throws: a typed ``EmbeddedNodeError`` on any failure (NEVER a half-open
+    /// - Throws: a typed ``NodeError`` on any failure (NEVER a half-open
     ///   connection — the caller tears down on a throw).
     public static func runClient(
         client: QUICEngineClient<Transport, Timer>,
-        identity: EmbeddedNodeIdentity<C>,
+        identity: NodeIdentity<C>,
         localTransportParameters: TransportParametersCore,
         timer: Timer,
         deadlineNanos: UInt64,
         replayBuffered: @Sendable @escaping () -> Void
-    ) async throws(EmbeddedNodeError) -> QUICHandshakeResult {
+    ) async throws(NodeError) -> QUICHandshakeResult {
 
         // 1. Ephemeral x25519 key share.
         let ecdhePrivate: C.X25519.PrivateKey
@@ -264,12 +264,12 @@ public enum QUICTLSHandshakeDriver<
     ///   PeerID. The server therefore returns no peer PeerID.
     public static func runServer(
         server: QUICEngineClient<Transport, Timer>,
-        identity: EmbeddedNodeIdentity<C>,
+        identity: NodeIdentity<C>,
         localTransportParameters: TransportParametersCore,
         timer: Timer,
         deadlineNanos: UInt64,
         replayBuffered: @Sendable @escaping () -> Void
-    ) async throws(EmbeddedNodeError) -> QUICHandshakeResult {
+    ) async throws(NodeError) -> QUICHandshakeResult {
 
         var handshake = QUICServerHandshake<C>(cipherSuite: cipherSuiteCore)
         var reassembler = HandshakeReassembler()
@@ -350,7 +350,7 @@ public enum QUICTLSHandshakeDriver<
     private static func applyPeerTransportParameters(
         client: QUICEngineClient<Transport, Timer>,
         extensions: [TLSExtension]
-    ) throws(EmbeddedNodeError) {
+    ) throws(NodeError) {
         var tpBytes: [UInt8]? = nil
         for ext in extensions {
             if case .quicTransportParameters(let bytes) = ext {
@@ -391,7 +391,7 @@ public enum QUICTLSHandshakeDriver<
         rawMessage: [UInt8],
         content: [UInt8],
         ecdhePrivate: C.X25519.PrivateKey
-    ) throws(EmbeddedNodeError) {
+    ) throws(NodeError) {
         let serverHello: ServerHello
         do {
             serverHello = try ServerHello.decode(from: content)
@@ -450,7 +450,7 @@ public enum QUICTLSHandshakeDriver<
         reassembler: inout HandshakeReassembler,
         peerLeafKeyBytes: inout [UInt8]?,
         peerIDMultihash: inout [UInt8]?
-    ) throws(EmbeddedNodeError) -> ClientAuthOutcome {
+    ) throws(NodeError) -> ClientAuthOutcome {
         // Process every complete Handshake-level message currently available, in
         // order, until we either run out or process the server Finished.
         while true {
@@ -575,10 +575,10 @@ public enum QUICTLSHandshakeDriver<
         handshake: inout QUICServerHandshake<C>,
         clientHelloRaw: [UInt8],
         clientHelloContent: [UInt8],
-        identity: EmbeddedNodeIdentity<C>,
+        identity: NodeIdentity<C>,
         localTransportParameters: TransportParametersCore,
         timer: Timer
-    ) async throws(EmbeddedNodeError) {
+    ) async throws(NodeError) {
         let clientHello: ClientHello
         do {
             clientHello = try ClientHello.decode(from: clientHelloContent)
@@ -749,7 +749,7 @@ public enum QUICTLSHandshakeDriver<
         random: [UInt8],
         sessionIDEcho: [UInt8],
         serverShareBytes: [UInt8]
-    ) throws(EmbeddedNodeError) -> [UInt8] {
+    ) throws(NodeError) -> [UInt8] {
         do {
             let serverHello = try ServerHello(
                 random: random,
@@ -768,7 +768,7 @@ public enum QUICTLSHandshakeDriver<
 
     private static func encodeEncryptedExtensions(
         localTransportParameters: TransportParametersCore
-    ) throws(EmbeddedNodeError) -> [UInt8] {
+    ) throws(NodeError) -> [UInt8] {
         let tpBytes = TransportParameterCodecCore.encode(localTransportParameters)
         do {
             return try EncryptedExtensions(extensions: [
@@ -782,7 +782,7 @@ public enum QUICTLSHandshakeDriver<
 
     private static func encodeCertificate(
         certificateDER: [UInt8]
-    ) throws(EmbeddedNodeError) -> [UInt8] {
+    ) throws(NodeError) -> [UInt8] {
         do {
             return try Certificate(certificates: [certificateDER]).encodeAsHandshakeBytes()
         } catch {

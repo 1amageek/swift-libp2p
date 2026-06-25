@@ -56,12 +56,12 @@ public enum LibP2PRPKCertificateBuilder<C: CryptoProvider> {
     ///   - nowEpochSeconds: The current time as Unix epoch seconds (the validity
     ///     window is `[now - 3600, now + 365 days]`). Sourced from the injected
     ///     clock seam by the caller — there is no `Date` here.
-    /// - Throws: ``EmbeddedNodeError/quicHandshakeCertificateFailed`` if any
+    /// - Throws: ``NodeError/quicHandshakeCertificateFailed`` if any
     ///   crypto/DER step fails (fail-closed — never a malformed cert).
     public static func build(
-        identity: EmbeddedNodeIdentity<C>,
+        identity: NodeIdentity<C>,
         nowEpochSeconds: Int64
-    ) throws(EmbeddedNodeError) -> LibP2PRPKCertificate<C> {
+    ) throws(NodeError) -> LibP2PRPKCertificate<C> {
 
         // 1. Ephemeral P-256 TLS leaf key.
         let leafKey: C.P256Signature.SigningKey
@@ -119,16 +119,16 @@ public enum LibP2PRPKCertificateBuilder<C: CryptoProvider> {
                 serial16: serial,
                 notBefore: notBefore,
                 notAfter: notAfter,
-                signFn: { (tbs: [UInt8]) throws(EmbeddedNodeError) -> [UInt8] in
+                signFn: { (tbs: [UInt8]) throws(NodeError) -> [UInt8] in
                     do {
                         return try C.P256Signature.sign(tbs.span, with: leafKey)
                     } catch {
-                        throw EmbeddedNodeError.quicHandshakeCertificateFailed
+                        throw NodeError.quicHandshakeCertificateFailed
                     }
                 }
             )
         } catch {
-            // `error` binds as `EmbeddedNodeError` (the signFn's thrown type).
+            // `error` binds as `NodeError` (the signFn's thrown type).
             throw .quicHandshakeCertificateFailed
         }
 
@@ -160,7 +160,7 @@ public enum LibP2PRPKCertificateBuilder<C: CryptoProvider> {
     ///   handshake driver verifies separately).
     public static func verify(
         certificateDER: [UInt8]
-    ) throws(EmbeddedNodeError) -> (peerIDMultihash: [UInt8], leafSPKI: [UInt8]) {
+    ) throws(NodeError) -> (peerIDMultihash: [UInt8], leafSPKI: [UInt8]) {
 
         // 1. Parse the leaf.
         let leaf: LibP2PCertificateDER.LeafView
