@@ -1,6 +1,8 @@
 # swift-libp2p
 
-A modern Swift implementation of the [libp2p](https://libp2p.io/) networking stack with wire-protocol compatibility with Go and Rust implementations. Built on Swift Concurrency (async/await, actors) for safe, high-performance peer-to-peer networking.
+A modern Swift implementation of the [libp2p](https://libp2p.io/) networking stack with wire-protocol compatibility with Go and Rust implementations. Built on Swift Concurrency (async/await, actors) for safe, high-performance peer-to-peer networking. The data plane is moving toward an Embedded-first, `[UInt8]`/`ByteBuffer`-currency stance on the `embedded` branch.
+
+> **Release status.** The released `0.2.0` ships the prior API. The Embedded-first API documented here (LibP2PCore, `[UInt8]`/`ByteBuffer` payload paths, `DiscoveryPipeline`, `ConnectionProvider`) lives on the unreleased `embedded` branch (M8 pending) and is not tagged — pin to the branch to use it.
 
 ## Features
 
@@ -38,16 +40,22 @@ Traversal Coordinator (local direct -> direct IP -> hole punch -> relay fallback
 
 ## Installation
 
+To use the Embedded-first API documented here, pin to the `embedded` branch
+(see the release status caveat above):
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/1amageek/swift-libp2p.git", branch: "embedded")
+]
+```
+
+The released tag ships the prior API:
+
 ```swift
 dependencies: [
     .package(url: "https://github.com/1amageek/swift-libp2p.git", from: "0.2.0")
 ]
 ```
-
-> **Note:** The released `0.2.0` documents the prior API. The Embedded-first /
-> clean-break API described in this README (LibP2PCore, `[UInt8]`/`ByteBuffer`
-> payload paths, `DiscoveryPipeline`, `ConnectionProvider`) currently lives on the
-> unreleased `embedded` branch (M8 pending) and has not been tagged yet.
 
 `P2P` module re-exports common dependencies (batteries-included):
 
@@ -93,93 +101,9 @@ let stream = try await node.newStream(to: peer, protocol: "/chat/1.0.0")
 try await stream.write(ByteBuffer(string: "Hello!"))
 ```
 
-## Current Status
+## Products
 
-The public surface is now split into two layers:
-
-- `P2P`: batteries-included facade with `Node`, `NodeGroup`, `Service`, `Discovery`, and the `NodeGroupBuilder` result builder
-- `P2PRuntime`: expert-facing runtime APIs such as `ConnectionProvider` and `RuntimeConfiguration`
-
-Current refactor goals:
-
-- runtime-facing connections are unified behind `ConnectionProvider`
-- service composition is explicit through `ServicePipeline`
-- discovery composition is explicit through `DiscoveryPipeline`
-- payload paths are normalized on `ByteBuffer`
-
-## Architecture
-
-### Layer Stack
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Application                                                │
-│  (GossipSub, Kademlia, your protocols)                      │
-├─────────────────────────────────────────────────────────────┤
-│  P2P facade                                                 │
-│  Node / NodeGroup / NodeGroupBuilder(result builder)        │
-├─────────────────────────────────────────────────────────────┤
-│  P2PRuntime                                                 │
-│  NodeRuntime / Swarm / ConnectionPool / Traversal           │
-│  ServicePipeline / DiscoveryPipeline                        │
-├─────────────────────────────────────────────────────────────┤
-│  Runtime connection contract                                │
-│  ConnectionProvider / ConnectionAcceptor / Candidate        │
-├─────────────────────────────────────────────────────────────┤
-│  Protocol Negotiation (multistream-select)                  │
-├─────────────────────────────────────────────────────────────┤
-│  Stream Multiplexing          Yamux, Mplex                  │
-├─────────────────────────────────────────────────────────────┤
-│  Security                     Noise, TLS 1.3, Pnet          │
-├─────────────────────────────────────────────────────────────┤
-│  Transport      TCP, QUIC, WebSocket, WebRTC, WebTransport  │
-├─────────────────────────────────────────────────────────────┤
-│  NAT Traversal  Circuit Relay v2, AutoNAT, DCUtR            │
-├─────────────────────────────────────────────────────────────┤
-│  Core           PeerID, Multiaddr, KeyPair, Events          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Composition Model
-
-- `Node` is the facade composition root
-- `NodeRuntime` owns startup ordering, listeners, swarm startup, and discovery auto-connect
-- `ServicePipeline` resolves service components into lifecycle services, inbound handlers, peer observers, discovery sources, and listen-address contributors
-- `DiscoveryPipeline` owns child discovery services and their startup hooks
-
-### Data Plane
-
-The payload path is designed around `ByteBuffer`.
-
-- transports, security wrappers, muxers, and stream I/O exchange `ByteBuffer`
-- control-plane codecs may still use `Data`
-- crypto and native adapter boundaries may still require `Data`
-- `DataPathCopyGuardTests` prevents new `Data(buffer:)` / `ByteBuffer(bytes:)` bridges from re-entering runtime-facing paths
-
-This keeps hot-path payload movement on `ByteBuffer` while isolating unavoidable `Data` conversions to protocol and crypto boundaries. The currently allowed exceptions are the Noise decrypt boundary, the plaintext handshake protobuf decode, and legacy `MplexFrame` convenience APIs.
-
-### Connection Flow
-
-```
-connect(to: Multiaddr)
-  │
-  ├─ Traversal Coordinator (stage-by-stage)
-  │    ├─ 1. Local Direct (same LAN)
-  │    ├─ 2. Direct IP
-  │    ├─ 3. Hole Punch (AutoNAT + DCUtR)
-  │    └─ 4. Relay (Circuit Relay v2)
-  │
-  ├─ ConnectionProvider.dial()
-  │    ├─ transport -> security -> mux pipeline
-  │    └─ or native secured provider (QUIC/WebRTC/WebTransport)
-  │
-  ├─ ConnectionPool.add()
-  ├─ Swarm emits .peerConnected (fire-and-forget)
-  ├─ Node event loop -> PeerObserver dispatch
-  └─ Node emits NodeEvent.peerConnected
-```
-
-## Module Structure
+The `P2P` umbrella re-exports the common batteries-included set; individual modules can also be imported directly.
 
 ### Core
 
@@ -253,40 +177,85 @@ connect(to: Multiaddr)
 
 | Module | Description |
 |--------|-------------|
-| `P2PRuntime` | expert-facing runtime layer |
-| `P2P` | facade layer with `Node`, `NodeGroup`, and the `NodeGroupBuilder` result builder |
+| `P2PRuntime` | expert-facing runtime layer with `ConnectionProvider` and `RuntimeConfiguration` |
+| `P2P` | batteries-included facade with `Node`, `NodeGroup`, `Service`, `Discovery`, and the `NodeGroupBuilder` result builder |
 
-## Benchmark Snapshot
+## Architecture
 
-Current release benchmark snapshot from the in-tree benchmark harness:
+The public surface is split into two layers: `P2P` (the batteries-included facade) and
+`P2PRuntime` (expert-facing runtime APIs). Runtime-facing connections are unified behind
+`ConnectionProvider`, service composition is explicit through `ServicePipeline`, discovery
+composition through `DiscoveryPipeline`, and payload paths are normalized on `ByteBuffer`.
 
-### Noise Crypto
+### Layer Stack
 
-- encrypt 32B: `1621.57 ns/op`
-- encrypt 256B: `1896.24 ns/op`
-- decrypt 256B: `2317.60 ns/op`
-- roundtrip 1KB: `5877.08 ns/op`
-
-### Data Path
-
-- `Memory + Plaintext + Yamux connect`: `49644.06 ns/op`
-- `Memory + Noise + Yamux connect`: `569969.08 ns/op`
-- `Memory + TLS + Yamux connect`: `1429667.75 ns/op`
-- `Memory + Plaintext + Yamux roundtrip 1KB`: `12.00 MiB/s`
-- `Memory + Noise + Yamux roundtrip 1KB`: `23.18 MiB/s`
-- `Memory + TLS + Yamux roundtrip 1KB`: `36.28 MiB/s`
-- `Memory + Noise + Yamux roundtrip 32KB`: `86.04 MiB/s`
-
-Production-readiness gate:
-
-```bash
-scripts/production-gate.sh
-scripts/production-gate.sh --include-benchmarks
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Application                                                │
+│  (GossipSub, Kademlia, your protocols)                      │
+├─────────────────────────────────────────────────────────────┤
+│  P2P facade                                                 │
+│  Node / NodeGroup / NodeGroupBuilder(result builder)        │
+├─────────────────────────────────────────────────────────────┤
+│  P2PRuntime                                                 │
+│  NodeRuntime / Swarm / ConnectionPool / Traversal           │
+│  ServicePipeline / DiscoveryPipeline                        │
+├─────────────────────────────────────────────────────────────┤
+│  Runtime connection contract                                │
+│  ConnectionProvider / ConnectionAcceptor / Candidate        │
+├─────────────────────────────────────────────────────────────┤
+│  Protocol Negotiation (multistream-select)                  │
+├─────────────────────────────────────────────────────────────┤
+│  Stream Multiplexing          Yamux, Mplex                  │
+├─────────────────────────────────────────────────────────────┤
+│  Security                     Noise, TLS 1.3, Pnet          │
+├─────────────────────────────────────────────────────────────┤
+│  Transport      TCP, QUIC, WebSocket, WebRTC, WebTransport  │
+├─────────────────────────────────────────────────────────────┤
+│  NAT Traversal  Circuit Relay v2, AutoNAT, DCUtR            │
+├─────────────────────────────────────────────────────────────┤
+│  Core           PeerID, Multiaddr, KeyPair, Events          │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-This gate runs the runtime-facing copy guard, the public `Node` DSL tests,
-and the Node end-to-end suite. With `--include-benchmarks`, it also runs the
-release benchmark snapshot for `DataPathBenchmarks` and `NoiseCryptoBenchmarks`.
+### Composition Model
+
+- `Node` is the facade composition root
+- `NodeRuntime` owns startup ordering, listeners, swarm startup, and discovery auto-connect
+- `ServicePipeline` resolves service components into lifecycle services, inbound handlers, peer observers, discovery sources, and listen-address contributors
+- `DiscoveryPipeline` owns child discovery services and their startup hooks
+
+### Data Plane
+
+The payload path is designed around `ByteBuffer`.
+
+- transports, security wrappers, muxers, and stream I/O exchange `ByteBuffer`
+- control-plane codecs may still use `Data`
+- crypto and native adapter boundaries may still require `Data`
+- `DataPathCopyGuardTests` prevents new `Data(buffer:)` / `ByteBuffer(bytes:)` bridges from re-entering runtime-facing paths
+
+This keeps hot-path payload movement on `ByteBuffer` while isolating unavoidable `Data` conversions to protocol and crypto boundaries. The currently allowed exceptions are the Noise decrypt boundary, the plaintext handshake protobuf decode, and legacy `MplexFrame` convenience APIs.
+
+### Connection Flow
+
+```
+connect(to: Multiaddr)
+  │
+  ├─ Traversal Coordinator (stage-by-stage)
+  │    ├─ 1. Local Direct (same LAN)
+  │    ├─ 2. Direct IP
+  │    ├─ 3. Hole Punch (AutoNAT + DCUtR)
+  │    └─ 4. Relay (Circuit Relay v2)
+  │
+  ├─ ConnectionProvider.dial()
+  │    ├─ transport -> security -> mux pipeline
+  │    └─ or native secured provider (QUIC/WebRTC/WebTransport)
+  │
+  ├─ ConnectionPool.add()
+  ├─ Swarm emits .peerConnected (fire-and-forget)
+  ├─ Node event loop -> PeerObserver dispatch
+  └─ Node emits NodeEvent.peerConnected
+```
 
 ## Configuration
 
@@ -489,6 +458,42 @@ Task {
 | Plumtree | `/plumtree/1.0.0` | [paper](https://asc.di.fct.unl.pt/~jleitao/pdf/srds07-leitao.pdf) |
 | CYCLON | `/cyclon/1.0.0` | [paper](https://link.springer.com/article/10.1007/s10922-005-4441-x) |
 | WebRTC Direct | `/webrtc-direct` | [spec](https://github.com/libp2p/specs/blob/master/webrtc/webrtc-direct.md) |
+
+## Performance
+
+Hot paths are optimized to avoid heap churn and super-linear work: Base58 decode and
+`Multiaddr.bytes` are O(n); Kademlia `closestPeers` uses partial sort + bucket-proximity
+expansion; the GossipSub message cache and SWIM/Discovery peer stores use O(1) indexed/LRU
+structures; Noise HKDF avoids intermediate `Data` allocations; Yamux/Mplex read/write paths
+use offset tracking instead of repeated slice copies.
+
+Representative numbers from the in-tree benchmark harness (`DataPathBenchmarks`,
+`NoiseCryptoBenchmarks`):
+
+| Benchmark | Result |
+|-----------|--------|
+| Noise encrypt 32B | 1621.57 ns/op |
+| Noise encrypt 256B | 1896.24 ns/op |
+| Noise decrypt 256B | 2317.60 ns/op |
+| Noise roundtrip 1KB | 5877.08 ns/op |
+| Memory + Plaintext + Yamux connect | 49644.06 ns/op |
+| Memory + Noise + Yamux connect | 569969.08 ns/op |
+| Memory + TLS + Yamux connect | 1429667.75 ns/op |
+| Memory + Plaintext + Yamux roundtrip 1KB | 12.00 MiB/s |
+| Memory + Noise + Yamux roundtrip 1KB | 23.18 MiB/s |
+| Memory + TLS + Yamux roundtrip 1KB | 36.28 MiB/s |
+| Memory + Noise + Yamux roundtrip 32KB | 86.04 MiB/s |
+
+Run the benchmarks via the production-readiness gate:
+
+```bash
+scripts/production-gate.sh
+scripts/production-gate.sh --include-benchmarks
+```
+
+The gate runs the runtime-facing copy guard, the public `Node` DSL tests, and the Node
+end-to-end suite. With `--include-benchmarks` it also runs the release benchmark snapshot
+for `DataPathBenchmarks` and `NoiseCryptoBenchmarks`.
 
 ## Testing
 
