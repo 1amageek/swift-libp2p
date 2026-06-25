@@ -1,42 +1,42 @@
-# P2PDiscoveryMDNS
+# mDNS Discovery — CONTEXT
+Scope/role: LAN peer discovery via mDNS (RFC 6762) / DNS-SD (RFC 6763)
+(`P2PDiscoveryMDNS`). A `DiscoveryService` whose reach is limited to the same link.
 
-mDNS (RFC 6762) / DNS-SD (RFC 6763) によるLAN内ピア発見。
+`MDNSDiscovery` advertises and browses libp2p peers over Multicast DNS via the swift-mDNS
+Tier-1 facade. It follows the Discovery-layer conventions (actor + EventBroadcaster +
+async `shutdown`). The subtle part is that mDNS goodbyes do not give value-level
+add/remove distinction, which constrains what observations may be emitted.
 
-## 概要
+## Contracts (the load-bearing rules)
+- `MDNSDiscovery` is an `actor` (low-frequency, user-facing), uses
+  `EventBroadcaster<PeerObservation>` (Discovery-layer multi-consumer), and matches its
+  sibling pattern (`SWIMMembership`/`CYCLONDiscovery`).
+- PeerID inference order: `dnsaddr` (preferred) → `pk` → legacy service name. The design does
+  NOT depend on the service instance name, so `peerNameStrategy = .random` (the default)
+  still recovers the PeerID; `.peerID` is an opt-in compatibility mode.
 
-ローカルネットワークセグメント上で libp2p ピアをアドバタイズ・発見する
-`DiscoveryService` 実装。Multicast DNS を使うため到達範囲は同一リンクに限定される。
+## Invariants (must hold; tests guard them)
+- **Upsert-only; never synthesize `.unreachable`.** The facade re-sends the last
+  `MDNSService` value even on a goodbye (TTL 0), with no value-level way to tell add/update
+  from remove. To avoid fabricating events the service emits only `.announcement`/`.reachable`
+  and keeps `knownServicesByPeerID` as an upsert-only cache.
+- `shutdown()` is idempotent: cancels the forwarding task, stops browser/responder, resets
+  internal maps + `sequenceNumber`; `deinit` calls `broadcaster.shutdown()` (idempotent).
+- A/AAAA fallback skips scope-less link-local IPv6 (`fe80::/10`) to avoid unusable
+  candidates; `/ip6/...%zone/...` zone identifiers are preserved through parsing.
 
-## キーとなる型
+## Dependencies & seams
+- swift-mDNS Tier-1 facade (`import MDNS`): `MDNSBrowser`/`MDNSResponder` (auto-start via
+  `browse`/`advertise`), `MDNSService`/`MDNSDiscoveries`, `MDNSError`. `P2PCore` (PeerID,
+  Multiaddr). `PeerIDServiceCodec` maps PeerID ↔ mDNS service using `dnsaddr=` TXT attributes
+  (libp2p spec), with A/AAAA + port as a back-compat fallback.
 
-- **MDNSDiscovery** (`actor`): `DiscoveryService` 準拠。低頻度・ユーザー向けAPI
-- **MDNSConfiguration**: サービスタイプ (`_p2p._udp`)、クエリ間隔 (120秒等)、
-  IPv4/IPv6、`peerNameStrategy`（既定 `.random`、`.peerID` は opt-in 互換モード）
-- **PeerIDServiceCodec**: PeerID ↔ mDNS サービスの変換（`dnsaddr=` TXT 属性 優先）
+## Wire protocol notes
+- Service type `_p2p._udp`, query interval ~120s. libp2p mDNS spec: each multiaddr is a
+  `dnsaddr=` TXT attribute (multiple allowed), p2p component auto-added; invalid multiaddrs
+  skipped.
 
-## 依存 (swift-mDNS facade)
+## Build
+- Host: `swift build`. Tests: `swift test --filter MDNS` (with a timeout).
 
-`import MDNS` で Tier-1 facade を使う。主に利用する型:
-- `MDNSBrowser` / `MDNSResponder`（`browse(_:)` / `advertise(_:)` で auto-start）
-- `MDNSService`（発見されたサービス値）/ `MDNSDiscoveries`（upsert ストリーム）
-- `MDNSError`（typed エラー）
-
-## 不変条件
-
-- **EventBroadcaster<PeerObservation>**: 多消費者イベント（Discovery 層統一）
-- **Upsert-only / `.unreachable` を合成しない**: facade は goodbye (TTL 0) でも
-  最後の `MDNSService` 値を再送するだけで、add/update と値レベルで区別できない。
-  存在しないイベントを捏造しないため、本サービスは `.announcement` / `.reachable`
-  のみを emit し、`knownServicesByPeerID` は upsert-only キャッシュとする
-- **shutdown 契約**: `func shutdown() async throws` を実装。`forwardTask` を cancel し
-  browser/responder を stop、内部マップ・`sequenceNumber` をリセット。冪等
-- `deinit` で `broadcaster.shutdown()`（idempotent）
-
-## PeerID 推定順序
-
-`dnsaddr`（優先）→ `pk` → legacy service name。service name に依存しない設計のため
-`peerNameStrategy = .random` でも復元できる。
-
-## 同モジュール内パターン
-
-`SWIMMembership` / `CYCLONDiscovery`（actor + EventBroadcaster<PeerObservation>）。
+Last reviewed: 2026-06-25

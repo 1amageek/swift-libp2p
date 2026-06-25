@@ -1,46 +1,28 @@
-# P2PDiscoveryCYCLON
+# CYCLON Discovery — CONTEXT
+Scope/role: CYCLON random peer sampling (`P2PDiscoveryCYCLON`). Each node keeps a partial
+view and periodically shuffles entries with a random peer to randomize overlay topology.
 
-CYCLON ランダムピアサンプリングプロトコルの実装。
+A `DiscoveryService` that maintains a bounded partial view and exchanges it with peers to
+keep the overlay well-mixed. It follows the Discovery-layer conventions.
 
-## 概要
+## Contracts (the load-bearing rules)
+- `CYCLONDiscovery` is an `actor` (low-frequency shuffle), uses
+  `EventBroadcaster<PeerObservation>` (Discovery-layer multi-consumer), and matches its
+  sibling pattern (`SWIMMembership`). The high-frequency partial view
+  (`CYCLONPartialView`) is `final class + Mutex`.
+- Node integration via `NodeDiscoveryHandlerRegistrable` +
+  `NodeDiscoveryStartableWithOpener`; streams exchanged through an injected `StreamOpener`.
 
-各ノードが部分ビュー (partial view) を維持し、定期的にランダムなピアとエントリを交換 (shuffle) することで、ネットワーク全体のトポロジをランダム化する。
+## Invariants (must hold; tests guard them)
+- The partial view is bounded; shuffle exchanges and eviction keep it within its size limit.
 
-## アーキテクチャ
+## Dependencies & seams
+- `P2PDiscovery` (DiscoveryService), `P2PCore`. Streams via `StreamOpener`.
 
-- **CYCLONDiscovery** (actor): `DiscoveryService` 準拠。低頻度シャッフル操作
-- **CYCLONPartialView** (final class + Mutex): 部分ビュー管理。高頻度アクセス
-- **EventBroadcaster<PeerObservation>**: 多消費者イベントパターン (Discovery 層統一)
+## Wire protocol notes
+- Protocol ID `/cyclon/1.0.0`. Hand-written protobuf, length-prefixed messages.
 
-## 通信
+## Build
+- Host: `swift build`. Tests: `swift test --filter CYCLON` (with a timeout).
 
-- プロトコルID: `/cyclon/1.0.0`
-- ワイヤフォーマット: 手書き protobuf
-- ストリーム: `StreamOpener` 経由で length-prefixed メッセージ交換
-- Node統合: `NodeDiscoveryHandlerRegistrable` + `NodeDiscoveryStartableWithOpener` に準拠
-
-## 参考
-
-- 論文: "CYCLON: Inexpensive Membership Management for Unstructured P2P Overlays"
-- 同モジュール内パターン: `SWIMMembership` (actor + EventBroadcaster)
-
-<!-- CONTEXT_EVAL_START -->
-## 実装評価 (2026-02-16)
-
-- 総合評価: **A** (86/100)
-- 対象ターゲット: `P2PDiscoveryCYCLON`
-- 実装読解範囲: 7 Swift files / 781 LOC
-- テスト範囲: 3 files / 27 cases / targets 1
-- 公開API: types 6 / funcs 8
-- 参照網羅率: type 0.67 / func 0.5
-- 未参照公開型: 2 件（例: `CYCLONConfiguration`, `CYCLONError`）
-- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
-- 評価所見: 公開関数の直接参照テストが薄い
-
-### 重点アクション
-- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
-- API名での直接参照だけでなく、振る舞い検証中心の統合テストを補強する。
-
-※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
-
-<!-- CONTEXT_EVAL_END -->
+Last reviewed: 2026-06-25

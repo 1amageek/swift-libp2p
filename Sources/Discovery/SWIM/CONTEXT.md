@@ -1,48 +1,41 @@
-# P2PDiscoverySWIM
+# SWIM Discovery — CONTEXT
+Scope/role: cluster membership + failure detection via SWIM (`P2PDiscoverySWIM`). A
+`DiscoveryService` that runs SWIM over UDP and gossips member alive/suspect/dead status.
 
-SWIM (Scalable Weakly-consistent Infection-style Membership) によるクラスタ
-メンバーシップ管理と障害検出。
+`SWIMMembership` drives the swift-SWIM engine over a NIO UDP transport and translates SWIM
+status transitions into `PeerObservation`s. It follows the Discovery-layer conventions
+(actor + EventBroadcaster + async `shutdown`). The membership model differs from other
+discovery services: you join a cluster, you don't merely announce.
 
-## 概要
+## Contracts (the load-bearing rules)
+- `SWIMMembership` is an `actor`, uses `EventBroadcaster<PeerObservation>`, and matches its
+  sibling pattern (`MDNSDiscovery`/`CYCLONDiscovery`).
+- `announce(addresses:)` does NOT change cluster membership — it only records the local
+  address. Cluster membership is via `join(seeds:)` / `leave()`. SWIM-specific operations
+  (`join`/`leave`/`members`/`aliveCount`) are outside the `DiscoveryService` requirements and
+  are guarded by `DiscoveryServiceOwnershipRegistry.preconditionAccessible` once the service
+  is handed to a pipeline.
 
-UDP 上で SWIM プロトコルを動かし、メンバーの alive/suspect/dead を追跡しゴシップで
-伝播する `DiscoveryService` 実装。
+## Invariants (must hold; tests guard them)
+- **Advertised host must be routable.** `0.0.0.0` / `::` are bind-only and rejected for
+  advertising; `resolveAdvertisedHost()` validates (auto-detects when `advertisedHost` is nil).
+- `shutdown()` is ordered and idempotent: cancel forwarding task → `swim.leave()` →
+  `swim.shutdown()` → `transport.shutdown()` → reset state → `broadcaster.shutdown()`;
+  `deinit` calls `broadcaster.shutdown()`.
+- Malformed datagrams / missing sender address are logged at debug, never silently skipped.
 
-## キーとなる型
+## Dependencies & seams
+- swift-SWIM: `import SWIM` for the `SWIMCluster` engine (init shape +
+  `start/shutdown/join/leave/members/aliveCount/events` API; renamed from `SWIMInstance`),
+  `Member`/`MemberID`/`SWIMConfiguration`; `import SWIMWire` for the Tier-3 `SWIMMessageCodec`
+  (used by the transport adapter); `import NIOUDPTransport`. `SWIMTransportAdapter` adapts
+  `NIOUDPTransport` to SWIM's `SWIMTransport`; `SWIMBridge` converts PeerID/Multiaddr ↔
+  SWIM `MemberID`.
 
-- **SWIMMembership** (`actor`): `DiscoveryService` 準拠。低頻度・ユーザー向けAPI
-- **SWIMMembershipConfiguration**: `port` (既定 7946)、`bindHost` (`0.0.0.0`)、
-  `advertisedHost`（routable 必須、nil なら自動検出）、`swimConfig`
-- **SWIMTransportAdapter**: `NIOUDPTransport` を SWIM の `SWIMTransport` に適合させる
-- **SWIMBridge**: PeerID/Multiaddr ↔ SWIM `MemberID` の変換ユーティリティ
+## Wire protocol notes
+- SWIM over UDP. Defaults: `port` 7946, `bindHost` `0.0.0.0`.
 
-## 依存 (swift-SWIM facade)
+## Build
+- Host: `swift build`. Tests: `swift test --filter SWIM` (with a timeout).
 
-- `import SWIM` — エンジン `SWIMCluster`（旧 `SWIMInstance` から改名。init 形状と
-  `start/shutdown/join/leave/members/aliveCount/events` API は同一）、`Member` /
-  `MemberID` / `SWIMConfiguration`
-- `import SWIMWire` — Tier-3 ワイヤコーデック `SWIMMessageCodec`（transport adapter で使用）
-- `import NIOUDPTransport` — UDP datagram トランスポート
-
-## 不変条件
-
-- **EventBroadcaster<PeerObservation>**: 多消費者イベント（Discovery 層統一）。
-  SWIM ステータス遷移を `PeerObservation` に変換して emit する
-- **advertisedHost は routable**: `0.0.0.0` / `::` は bind 専用。広告には不可
-  （`resolveAdvertisedHost()` が検証）
-- **announce ≠ メンバーシップ**: SWIM は明示 announce を使わず、`join(seeds:)` で
-  クラスタに参加する。`announce(addresses:)` は localAddress 記録のみ
-- **shutdown 契約**: `func shutdown() async throws` を実装。`forwardTask` cancel →
-  `swim.leave()` → `swim.shutdown()` → `transport.shutdown()` → 状態リセット →
-  `broadcaster.shutdown()`。冪等
-- `deinit` で `broadcaster.shutdown()`（idempotent）
-
-## SWIM 固有 API
-
-`join(seeds:)` / `leave()` / `members` / `aliveCount` — `DiscoveryService` 要件外の
-クラスタ操作。`DiscoveryServiceOwnershipRegistry.preconditionAccessible` で
-pipeline 移譲後の直接アクセスをガードする。
-
-## 同モジュール内パターン
-
-`MDNSDiscovery` / `CYCLONDiscovery`（actor + EventBroadcaster<PeerObservation>）。
+Last reviewed: 2026-06-25

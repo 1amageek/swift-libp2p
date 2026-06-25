@@ -1,117 +1,45 @@
-# P2PDiscoveryBeacon Module
+# Beacon Discovery — CONTEXT
+Scope/role: proximity-aware peer discovery over physical media (BLE, WiFi Direct, LoRa, NFC)
+(`P2PDiscoveryBeacon`). A `DiscoveryService` facade over a layered beacon pipeline. Migrated
+from the standalone `swift-p2p-discovery` repo and adapted to `P2PCore` types.
 
-## Purpose
+Beacon discovery ingests raw beacon sightings from a transport adapter, decodes them
+(tiered formats), filters/coordinates scanning, and aggregates them into presence estimates
+that become `P2PDiscovery.Observation`s. The pipeline is the structure; the load-bearing
+parts are the anti-Sybil/anti-spoof defenses and the variable-length identity wire format.
 
-Beacon-based peer discovery for proximity-aware networking over physical media
-(BLE, WiFi Direct, LoRa, NFC). Migrated from the standalone `swift-p2p-discovery`
-repository and adapted to use `P2PCore` types (`PeerID`, `KeyPair`, `Envelope`,
-`Multiaddr`).
+## Contracts (the load-bearing rules)
+- Pipeline layering: L0 Medium (`TransportAdapter` → `RawDiscovery`) → L1 Encoding
+  (`BeaconEncoderService`, Tier1/2/3 beacons → `DecodedBeacon`) → L2 Coordination
+  (`BeaconFilter`, `ScanCoordinator`, `TrickleTimer`) → L3 Aggregation
+  (`AggregationIngest`, `BayesianPresence`, `BeaconPeerStore`) → `BeaconDiscovery` facade.
+  The transport adapter is injected (`TransportAdapter` protocol).
+- Concurrency: all types are `class + Mutex` (not actor); `BeaconDiscovery` uses
+  `EventBroadcaster` (Discovery-layer multi-consumer) and `func shutdown() async`.
+- Uses `P2PCore` types: `P2PCore.PeerID` (variable-length multihash, not fixed 32B),
+  `P2PCore.KeyPair`, and `Envelope` + `BeaconPeerRecord` (a `SignedRecord`) for confirmed
+  records. `BeaconObservation` is named to avoid collision with `P2PDiscovery.Observation`.
 
-## Architecture
+## Invariants (must hold; tests guard them)
+- Anti-abuse defenses are integral: `MicroPoW` (SHA-256 proof-of-work), `MicroTESLA`
+  (delayed-key-disclosure authentication), `PhysicalFingerprint` (Sybil detection),
+  `BeaconFilter` (PoW + rate-limit + Sybil). Confirmed peer records are Envelope-signed.
+- `BayesianPresence` uses Noisy-OR estimation; `FreshnessFunction` applies medium-specific
+  decay; `TrickleTimer` is RFC 6206 adaptive interval. RSSI is smoothed (EMA) and trust is
+  medium-specific.
 
-The module follows a layered pipeline:
+## Dependencies & seams
+- `P2PCore` (PeerID, KeyPair, Envelope, Multiaddr), `P2PDiscovery`. Physical media are
+  plugged in via `TransportAdapter` implementations (e.g. `P2PDiscoveryWiFiBeacon`); peer
+  storage via the `BeaconPeerStore` protocol (`InMemoryBeaconPeerStore` default).
 
-```
-L0 Medium (TransportAdapter)
-    |
-    v  RawDiscovery
-L1 Encoding (BeaconEncoderService, Tier1/2/3Beacon)
-    |
-    v  DecodedBeacon
-L2 Coordination (BeaconFilter, ScanCoordinator, TrickleTimer)
-    |
-    v  BeaconDiscoveryEvent
-L3 Aggregation (AggregationIngest, BayesianPresence, BeaconPeerStore)
-    |
-    v  AggregationResult -> P2PDiscovery.Observation
-BeaconDiscovery (DiscoveryService facade)
-```
+## Wire protocol notes
+- Tier 1: 10-byte minimal beacon; Tier 2: 32-byte TESLA beacon; Tier 3: variable-length full
+  identity. Tier 3 format:
+  `Tag(1B) + PeerIDLen(2B) + PeerID(var) + Nonce(4B) + EnvelopeLen(2B) + Envelope(var)`
+  (length-prefixed variable PeerID + Envelope, replacing the old fixed 32-byte PeerID).
 
-## Key Design Decisions
+## Build
+- Host: `swift build`. Tests: `swift test --filter Beacon` (with a timeout).
 
-### Type Replacements (from swift-p2p-discovery)
-- `DiscoveryCore.PeerID` (fixed 32B) -> `P2PCore.PeerID` (variable-length multihash)
-- `DiscoveryCore.KeyPair` / `LocalIdentity` -> `P2PCore.KeyPair`
-- `DiscoveryCore.Signature` -> `Data` (raw bytes)
-- `SignedPeerRecord` -> `Envelope` + `BeaconPeerRecord` (implements `SignedRecord`)
-- `DiscoveryCore.Observation` -> `BeaconObservation` (avoid collision with `P2PDiscovery.Observation`)
-
-### Tier 3 Wire Format Change
-Old format used fixed 32-byte PeerID. New format uses length-prefixed variable PeerID
-and Envelope serialization:
-```
-Tag(1B) + PeerIDLen(2B) + PeerID(var) + Nonce(4B) + EnvelopeLen(2B) + Envelope(var)
-```
-
-### Concurrency Model
-- All types use `Class + Mutex` (not Actor) per project convention
-- `EventBroadcaster` for BeaconDiscovery (Discovery layer = multi-consumer)
-- `func shutdown() async` lifecycle (Discovery layer convention)
-
-## File Organization
-
-### Core Types (from DiscoveryCore)
-- `BeaconTier.swift` - Tier enum and tag byte encoding
-- `OpaqueAddress.swift` - Transport-specific opaque address (internal)
-- `PhysicalFingerprint.swift` - Sybil detection fingerprint
-- `FreshnessFunction.swift` - Medium-specific freshness decay
-- `BeaconObservation.swift` - Single observation event (renamed from Observation)
-- `UnconfirmedSighting.swift` - Tier 1/2 unconfirmed sighting
-- `ConfirmedPeerRecord.swift` - Verified peer record with Envelope
-- `BeaconPeerRecord.swift` - SignedRecord implementation for Envelope
-- `BeaconAddressCodec.swift` - OpaqueAddress <-> Multiaddr conversion
-
-### L1 Encoding
-- `Tier1Beacon.swift` - 10-byte minimal beacon
-- `Tier2Beacon.swift` - 32-byte TESLA beacon
-- `Tier3Beacon.swift` - Variable-length full identity beacon
-- `MicroPoW.swift` - SHA-256 proof-of-work
-- `MicroTESLA.swift` - Delayed key disclosure authentication
-- `EphIDGenerator.swift` - HKDF-based ephemeral ID generation
-- `DecodedBeacon.swift` - Decoded beacon result type
-- `BeaconEncoderService.swift` - Encoding/decoding facade
-- `DataHelpers.swift` - Big-endian integer reading extensions
-
-### L2 Coordination
-- `TrickleTimer.swift` - RFC 6206 adaptive interval
-- `BeaconFilter.swift` - PoW + rate limit + Sybil filter
-- `ScanCoordinator.swift` - Per-medium scan scheduling
-- `BLEDiscoveryScheduler.swift` - BLE channel-specific scheduling
-
-### L3 Aggregation
-- `AggregationIngest.swift` - Event processing pipeline
-- `BayesianPresence.swift` - Noisy-OR presence estimation
-- `BeaconPeerStore.swift` - Storage protocol
-- `InMemoryBeaconPeerStore.swift` - In-memory implementation
-- `RSSISmoother.swift` - EMA RSSI filter
-- `TrustCalculator.swift` - Medium-specific trust scoring
-
-### L0 Medium Abstractions
-- `MediumCharacteristics.swift` - Physical medium capabilities
-- `RawDiscovery.swift` - Raw beacon event
-- `TransportAdapter.swift` - Transport abstraction protocol
-- `TransportAdapterErrors.swift` - Transport error types
-
-### Service Facade
-- `BeaconDiscovery.swift` - Main DiscoveryService implementation
-- `BeaconDiscoveryConfiguration.swift` - Configuration struct
-
-<!-- CONTEXT_EVAL_START -->
-## 実装評価 (2026-02-16)
-
-- 総合評価: **A** (100/100)
-- 対象ターゲット: `P2PDiscoveryBeacon`
-- 実装読解範囲: 34 Swift files / 3023 LOC
-- テスト範囲: 34 files / 225 cases / targets 2
-- 公開API: types 40 / funcs 48
-- 参照網羅率: type 0.93 / func 0.96
-- 未参照公開型: 3 件（例: `Directionality`, `TransmitDecision`, `TransportAdapter`）
-- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
-- 評価所見: 重大な静的リスクは検出されず
-
-### 重点アクション
-- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
-
-※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
-
-<!-- CONTEXT_EVAL_END -->
+Last reviewed: 2026-06-25

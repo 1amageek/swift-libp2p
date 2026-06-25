@@ -1,195 +1,37 @@
-# Mux Layer
+# Mux — CONTEXT
+Scope/role: stream-multiplexing layer — protocol (`P2PMux`) plus implementations
+(`P2PMuxYamux`, `P2PMuxMplex`). Turns a `SecuredConnection` into a `MuxedConnection`
+carrying many logical `MuxedStream`s. Read this before changing the muxer protocols or the
+length-prefixed helpers.
 
-## 概要
-ストリーム多重化層のプロトコル定義と実装を含むグループ。
+`P2PMux` is protocol-only (`Muxer` / `MuxedConnection` / `MuxedStream`). A muxer is
+negotiated by multistream-select over the secured connection, then `multiplex()` yields a
+`MuxedConnection` from which streams are opened/accepted. The implementations carry the
+flow-control / cancellation invariants — see the per-muxer CONTEXTs.
 
-## ディレクトリ構造
-```
-Mux/
-├── P2PMux/           # Protocol定義のみ
-├── Yamux/            # P2PMuxYamux
-└── Mplex/            # P2PMuxMplex
-```
+## Contracts (the load-bearing rules)
+- Protocol/implementation split: `P2PMux` defines `Muxer`/`MuxedConnection`/`MuxedStream`
+  and depends on `P2PCore`; Yamux/Mplex depend on `P2PMux`.
+- Length-prefixed helpers on `MuxedStream`
+  (`readLengthPrefixedMessage(maxSize:)`, the buffer-preserving overload, and
+  `writeLengthPrefixedMessage`) use libp2p-standard Varint length prefixes and bound the
+  message at `maxSize` (default 64KB), throwing `messageTooLarge`. Keep these bounded;
+  `streamClosed`/`emptyMessage` are the other error cases.
 
-## 設計原則
-- **Protocol定義と実装の分離**: P2PMuxはprotocolのみ
-- **SecuredConnection → MuxedConnection**: 多重化アップグレード
-- **双方向ストリーム**: 同一接続上で複数の論理ストリーム
+## Invariants (must hold; tests guard them)
+- Stream-ID parity: Initiator opens odd IDs (1,3,5,…), Responder even (2,4,6,…); ID 0 is
+  control. This holds for both Yamux and Mplex.
+- A muxed stream exposes `closeWrite`/`closeRead`/`close`/`reset` distinctly (half-close vs
+  full close vs abort). `MuxedStream.protocolID` holds the multistream-select-agreed protocol.
 
-## サブモジュール
+## Dependencies & seams
+- `P2PMux` → `P2PCore`. `SecuredConnection` (the input) is defined in `P2PCore`.
 
-| ターゲット | 責務 | 依存関係 |
-|-----------|------|----------|
-| `P2PMux` | Muxer/MuxedConnection/MuxedStreamプロトコル | P2PCore |
-| `P2PMuxYamux` | Yamux multiplexer実装 | P2PMux |
-| `P2PMuxMplex` | Mplex multiplexer実装 | P2PMux |
+## Wire protocol notes
+- Muxer protocol IDs negotiated via multistream-select: `/yamux/1.0.0`, `/mplex/6.7.0`. See
+  the per-muxer CONTEXT for framing details.
 
-## 主要なプロトコル
+## Build
+- Host: `swift build`. Tests: `swift test --filter Mux` (with a timeout).
 
-```swift
-public protocol Muxer: Sendable {
-    var protocolID: String { get }
-    func multiplex(
-        _ connection: any SecuredConnection,
-        isInitiator: Bool
-    ) async throws -> MuxedConnection
-}
-
-public protocol MuxedConnection: Sendable {
-    var localPeer: PeerID { get }
-    var remotePeer: PeerID { get }
-    func newStream() async throws -> MuxedStream
-    func acceptStream() async throws -> MuxedStream
-    var inboundStreams: AsyncStream<MuxedStream> { get }
-    func close() async throws
-}
-
-public protocol MuxedStream: Sendable {
-    var id: UInt64 { get }
-    var protocolID: String? { get }
-    func read() async throws -> ByteBuffer
-    func write(_ data: ByteBuffer) async throws
-    func closeWrite() async throws
-    func closeRead() async throws
-    func close() async throws
-    func reset() async throws
-}
-```
-
-## 接続フロー
-```
-SecuredConnection
-    ↓ multistream-select (/yamux/1.0.0)
-    ↓ Muxer.multiplex()
-MuxedConnection
-    ↓ newStream() / acceptStream()
-MuxedStream (各アプリケーションプロトコル用)
-```
-
-## Wire Protocol IDs
-- `/yamux/1.0.0` - Yamux
-- `/mplex/6.7.0` - Mplex
-
-## ストリームID規則
-- Initiator: 奇数 (1, 3, 5, ...)
-- Responder: 偶数 (2, 4, 6, ...)
-
-## Length-Prefixed Message Utilities
-
-`MuxedStream`プロトコルには、length-prefixedメッセージ用の便利な拡張が含まれる:
-
-```swift
-extension MuxedStream {
-    public func readLengthPrefixedMessage(maxSize: UInt64 = 64 * 1024) async throws -> ByteBuffer
-    // 連続読み取りで余剰バイトを保持する版（zero-copy readSlice）
-    public func readLengthPrefixedMessage(buffer: inout ByteBuffer, maxSize: UInt64 = 64 * 1024) async throws -> ByteBuffer
-    public func writeLengthPrefixedMessage(_ data: ByteBuffer) async throws
-}
-```
-
-これらのメソッドは、libp2p標準のVarintエンコーディングを使用して長さプレフィックスを自動的に処理する。
-
-### StreamMessageError
-- `streamClosed` - 読み取り中にストリームが閉じられた
-- `messageTooLarge(UInt64)` - メッセージがmaxSizeを超過
-- `emptyMessage` - 空のメッセージを受信
-
-## MuxedConnection追加プロパティ
-
-```swift
-public protocol MuxedConnection: Sendable {
-    var localPeer: PeerID { get }
-    var remotePeer: PeerID { get }
-    var localAddress: Multiaddr? { get }   // ローカルアドレス
-    var remoteAddress: Multiaddr { get }    // リモートアドレス
-    func newStream() async throws -> MuxedStream
-    func acceptStream() async throws -> MuxedStream
-    var inboundStreams: AsyncStream<MuxedStream> { get }
-    func close() async throws
-}
-```
-
-## Yamux実装詳細
-
-### フロー制御
-- **デフォルトウィンドウサイズ**: 256KB (256 * 1024バイト)
-- **ウィンドウ更新タイミング**: 受信ウィンドウが半分以下（128KB）になったら更新送信
-- **ウィンドウ更新戦略**: Fire-and-forget（送信成功後にローカルウィンドウ更新）
-
-### 書き込み待機
-- 送信ウィンドウが0の場合、WindowUpdateフレーム受信を待機
-- **タイムアウト**: 30秒（ハードコード）
-- アトミックなウィンドウ予約でTOCTOU競合を防止
-
-### フレームフォーマット
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|   Version (8) |     Type (8)  |          Flags (16)          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Stream ID (32)                        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         Length (32)                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-- Version: 常に0
-- Type: Data(0), WindowUpdate(1), Ping(2), GoAway(3)
-- Flags: SYN(0x0001), ACK(0x0002), FIN(0x0004), RST(0x0008)
-
-## 実装ステータス
-
-| 実装 | ステータス | 説明 |
-|-----|----------|------|
-| Yamux | ✅ 実装済み | フロー制御、keep-alive、DoS対策、42+テスト |
-| Mplex | ✅ 実装済み | フレームエンコード/デコード、接続管理。フレームレベルテストのみ |
-
-## テスト実装状況
-
-| テスト | ステータス | 説明 |
-|-------|----------|------|
-| MuxTests | ⚠️ プレースホルダー | 1テストのみ |
-| YamuxFrameTests | ✅ 実装済み | フレームエンコード/デコード、設定、エラー型 |
-| YamuxConnectionTests | ✅ 実装済み | GoAway、close、ストリーム管理 |
-| YamuxStreamTests | ✅ 実装済み | ウィンドウオーバーフロー保護 |
-| MplexFrameTests | ✅ 実装済み | フレームエンコード/デコード |
-| MplexConnection/StreamTests | ❌ なし | 接続レベル・ストリームレベルのテストが不足 |
-
-## 品質向上TODO
-
-### 高優先度
-- [x] **Yamuxフレームエンコード/デコードテスト** - ✅ 実装済み
-- [x] **Yamuxフロー制御テスト** - ✅ ウィンドウオーバーフロー保護テスト実装済み
-- [x] **Mplex実装** - ✅ 実装済み（フレームレベルテスト完了）
-- [ ] **Mplexコネクション/ストリームテスト** - 接続レベル・ストリームレベルのテスト追加
-- [ ] **Yamuxストレステスト** - 大量ストリーム同時オープンテスト
-
-### 中優先度
-- [ ] **Keep-alive設定の公開** - YamuxConfigurationへの追加
-- [ ] **ストリーム統計の追加** - 送受信バイト数、エラー数等
-- [ ] **GoAway理由の詳細化** - アプリケーション固有の理由コード対応
-
-### 低優先度
-- [ ] **ストリーム優先度** - 重要なストリームの優先処理
-- [ ] **フロー制御のチューニングオプション** - ウィンドウサイズの動的調整
-
-<!-- CONTEXT_EVAL_START -->
-## 実装評価 (2026-02-16)
-
-- 総合評価: **A** (100/100)
-- 対象ターゲット: `P2PMux`, `P2PMuxMplex`, `P2PMuxYamux`
-- 実装読解範囲: 9 Swift files / 2797 LOC
-- テスト範囲: 90 files / 1274 cases / targets 16
-- 公開API: types 15 / funcs 12
-- 参照網羅率: type 0.93 / func 1.0
-- 未参照公開型: 1 件（例: `MplexFlag`）
-- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
-- 評価所見: 重大な静的リスクは検出されず
-
-### 重点アクション
-- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
-
-※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
-
-<!-- CONTEXT_EVAL_END -->
+Last reviewed: 2026-06-25

@@ -1,106 +1,40 @@
-# Mplex 実装
+# Mplex — CONTEXT
+Scope/role: Mplex multiplexer (`P2PMuxMplex`). Varint-framed stream multiplexing with NO
+flow control. Read this before changing the control-frame queue or the per-stream buffer
+bound — they prevent head-of-line stalls and unbounded buffering.
 
-## 概要
+`MplexConnection` runs a read loop and demultiplexes varint-framed messages into
+`MplexStream`s. Unlike Yamux there is no window-based flow control, so the safety net is the
+per-stream read-buffer cap and the bounded control-frame queue.
 
-Mplex (`/mplex/6.7.0`) は libp2p のストリーム多重化プロトコル。
-Yamux と異なり、フロー制御がなく、varint ベースのフレーミングを使用する。
+## Contracts (the load-bearing rules)
+- Concurrency: `Mutex<State>` for high-frequency stream state (same as Yamux); an
+  `actor` frame writer serializes writes. No EventEmitting (internal).
+- **Control frames (RST) go through a bounded queue, not inline.** RST from the read loop is
+  sent by a separate task via `MplexControlFrameQueue` to prevent the read loop wedging on
+  lower-layer write backpressure. The queue is bounded; on overflow the connection is
+  dropped — NO silent drop.
+- Cleanup is best-effort but explicit: shutdown/reject-path `sendFrame`/`stream.close()` are
+  `do-catch`ed and the failure reason logged at debug — not silently swallowed.
 
-## フレーム形式
+## Invariants (must hold; tests guard them)
+- **Per-stream read buffer is bounded by `maxReadBufferSizePerStream` (default 1MB),
+  separate from `maxFrameSize`.** Frame size and "max unread stream buffer" are distinct
+  concepts; do not conflate them again.
+- Stream-ID parity (same as Yamux): Initiator odd, Responder even. Half-close
+  (CloseInitiator/CloseReceiver) and reset (ResetInitiator/ResetReceiver) are distinct
+  per-direction operations.
 
-```
-[header: varint] [length: varint] [data: bytes]
+## Dependencies & seams
+- `P2PMux` (Muxer).
 
-header = (streamID << 3) | flag
+## Wire protocol notes
+- Protocol ID `/mplex/6.7.0`. Frame: `[header: varint][length: varint][data: bytes]` where
+  `header = (streamID << 3) | flag`. Flags: NewStream 0, MessageReceiver 1,
+  MessageInitiator 2, CloseReceiver 3, CloseInitiator 4, ResetReceiver 5, ResetInitiator 6.
+  No flow control and no keep-alive (vs Yamux).
 
-flag:
-  0 = NewStream       - 新規ストリーム開始
-  1 = MessageReceiver - データ (受信側視点)
-  2 = MessageInitiator- データ (送信側視点)
-  3 = CloseReceiver   - 半閉鎖 (受信側視点)
-  4 = CloseInitiator  - 半閉鎖 (送信側視点)
-  5 = ResetReceiver   - リセット (受信側視点)
-  6 = ResetInitiator  - リセット (送信側視点)
-```
+## Build
+- Host: `swift build`. Tests: `swift test --filter Mplex` (with a timeout).
 
-## Yamux との主な違い
-
-| 機能 | Mplex | Yamux |
-|------|-------|-------|
-| ヘッダー形式 | varint | 12バイト固定 |
-| フロー制御 | なし | ウィンドウベース |
-| KeepAlive | なし | Ping/Pong |
-| 視点表現 | Initiator/Receiver | なし |
-
-## Stream ID ルール
-
-Yamux と同じ:
-- **Initiator**: 奇数 ID (1, 3, 5, ...)
-- **Responder**: 偶数 ID (2, 4, 6, ...)
-
-## ファイル構成
-
-- `MplexFrame.swift` - フレームエンコード/デコード
-- `MplexStream.swift` - ストリーム状態管理
-- `MplexConnection.swift` - 接続管理 + readLoop
-- `MplexMuxer.swift` - Muxer プロトコル実装
-
-## 設計原則
-
-1. **Mutex<State> パターン**: Yamux と同様に高頻度操作用
-2. **actor FrameWriter**: 書き込みシリアライズ
-3. **EventEmitting 不要**: 内部実装のため
-
-## テストカバレッジ
-
-84テスト / 5スイート:
-- `MplexFrameTests` (15) — フレームエンコード/デコード
-- `MplexMuxerTests` (5) — Muxer プロトコル準拠
-- `MplexConnectionTests` (32) — 接続管理、ストリーム生成、close 伝播、並行性
-- `MplexStreamTests` (26) — ストリーム状態、半閉鎖、バッファ、リセット
-- `MplexConcurrencyTests` (6) — 並行読書、ストリーム独立性
-
-## Known Issues
-
-### LOW: FrameWriter 命名の不一致
-
-**場所**: `MplexConnection.swift:11`
-
-```swift
-private actor MplexFrameWriter  // Mplex 固有名
-// Yamux は汎用名: private actor FrameWriter
-```
-
-**対応**: 一貫性のため汎用名に変更を検討
-
-## Head-of-Line & Buffer Config Fixes (2026-06)
-
-- **制御フレームキュー**: read loop からの RST 送信は `MplexControlFrameQueue` 経由で別タスクが送信する — 下層書き込みのバックプレッシャーで read loop が wedge するのを防ぐため。キューは有界（満杯時は接続破棄、サイレントドロップ禁止）
-- **専用ストリームバッファ設定**: `MplexConfiguration.maxReadBufferSizePerStream`（デフォルト 1MB）を追加し、`MplexStream` のバッファ上限を `maxFrameSize`（単一フレームサイズ）から分離した — フレームサイズと「未読ストリームバッファ上限」は別概念のため
-
-### INFO: best-effort cleanup
-
-**場所**: `MplexConnection.swift`, `MplexStream.swift`
-
-**現状**: シャットダウン時や拒否応答時の `sendFrame` / `stream.close()` は
-`do-catch` で明示処理し、失敗理由を debug ログに記録する。
-
-<!-- CONTEXT_EVAL_START -->
-## 実装評価 (2026-02-16)
-
-- 総合評価: **A** (100/100)
-- 対象ターゲット: `P2PMuxMplex`
-- 実装読解範囲: 4 Swift files / 1084 LOC
-- テスト範囲: 6 files / 84 cases / targets 2
-- 公開API: types 7 / funcs 10
-- 参照網羅率: type 0.86 / func 1.0
-- 未参照公開型: 1 件（例: `MplexFlag`）
-- 実装リスク指標: try?=0, forceUnwrap=0, forceCast=0, @unchecked Sendable=0, EventLoopFuture=0, DispatchQueue=0
-- 評価所見: 重大な静的リスクは検出されず
-
-### 重点アクション
-- [x] Connection/Stream レベルのテスト追加（32+26+6テスト追加済み）
-- 未参照の公開型に対する直接テスト（生成・失敗系・境界値）を追加する。
-
-※ 参照網羅率は「テストコード内での公開API名参照」を基準にした静的評価であり、動的実行結果そのものではありません。
-
-<!-- CONTEXT_EVAL_END -->
+Last reviewed: 2026-06-25
