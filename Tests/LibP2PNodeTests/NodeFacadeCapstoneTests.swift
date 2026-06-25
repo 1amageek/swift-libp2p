@@ -20,6 +20,8 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
+import P2PCryptoFoundation
+import QUICTLSSignature
 import LibP2PCore
 import QUICWire
 import QUICConnectionCore
@@ -27,7 +29,7 @@ import QUICConnectionEngineCore
 import QUIC
 @testable import LibP2PNode
 
-private typealias Provider = DefaultCryptoProvider
+private typealias Provider = QUICTLSSignatureProvider
 
 // MARK: - In-memory loopback transport
 
@@ -153,6 +155,7 @@ struct NodeFacadeCapstoneTests {
             identity: identityA,
             datagramTransport: transportA,
             timer: timer,
+            wallClock: SystemWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: DialPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/capstone-A"
@@ -161,6 +164,7 @@ struct NodeFacadeCapstoneTests {
             identity: identityB,
             datagramTransport: transportB,
             timer: timer,
+            wallClock: SystemWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: AcceptPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/capstone-B"

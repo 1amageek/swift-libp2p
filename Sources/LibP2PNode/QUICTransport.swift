@@ -22,10 +22,11 @@
 // `SocketEndpoint` currency, no `any`, no Foundation, typed throws, no try?/try!.
 
 import _Concurrency   // REQUIRED under Embedded for async/Task
-import P2PCoreCrypto       // AsyncTimer
+import P2PCoreCrypto       // AsyncTimer / WallClock
 import P2PCoreTransport    // DatagramTransport / SocketEndpoint
 import P2PCrypto           // DefaultCryptoProvider
 import QUIC                // QUICEngineClient / QUICPeerValidator
+import QUICTLSSignature    // QUICTLSSignatureProvider (DER ECDSA for the TLS path)
 import QUICConnectionEngineCore  // QUICConnectionEngineConfiguration / QUICEngineError
 import QUICConnectionCore        // TransportParametersCore
 
@@ -37,15 +38,18 @@ import QUICConnectionCore        // TransportParametersCore
 /// embedder never spells the crypto generic.
 public struct QUICTransport<
     Transport: DatagramTransport,
-    Timer: AsyncTimer
+    Timer: AsyncTimer,
+    Clock: WallClock
 >: Sendable {
 
     private let transport: Transport
     private let timer: Timer
+    private let wallClock: Clock
 
-    public init(transport: Transport, timer: Timer) {
+    public init(transport: Transport, timer: Timer, wallClock: Clock) {
         self.transport = transport
         self.timer = timer
+        self.wallClock = wallClock
     }
 
     /// The default handshake deadline (10 seconds in nanoseconds). The handshake
@@ -95,7 +99,7 @@ public struct QUICTransport<
     public func dial(
         configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
         peer: SocketEndpoint,
-        identity: NodeIdentity<DefaultCryptoProvider>,
+        identity: NodeIdentity<QUICTLSSignatureProvider>,
         handshakeTimeoutNanos: UInt64? = nil
     ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
         let wrapped = BufferingDatagramTransport(inner: transport)
@@ -106,11 +110,12 @@ public struct QUICTransport<
 
         let outcome: Result<QUICHandshakeResult, NodeError>
         do {
-            let value = try await QUICTLSHandshakeDriver<DefaultCryptoProvider, BufferingDatagramTransport<Transport>, Timer>.runClient(
+            let value = try await QUICTLSHandshakeDriver<QUICTLSSignatureProvider, BufferingDatagramTransport<Transport>, Timer, Clock>.runClient(
                 client: client,
                 identity: identity,
                 localTransportParameters: configuration.localTransportParameters,
                 timer: timer,
+                wallClock: wallClock,
                 deadlineNanos: deadline,
                 replayBuffered: { wrapped.replayBuffered() }
             )
@@ -153,7 +158,7 @@ public struct QUICTransport<
     public func listen(
         configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
         peer: SocketEndpoint,
-        identity: NodeIdentity<DefaultCryptoProvider>,
+        identity: NodeIdentity<QUICTLSSignatureProvider>,
         handshakeTimeoutNanos: UInt64? = nil
     ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
         try await Self.acceptServer(
@@ -162,6 +167,7 @@ public struct QUICTransport<
             peer: peer,
             identity: identity,
             timer: timer,
+            wallClock: wallClock,
             handshakeTimeoutNanos: handshakeTimeoutNanos
         )
     }
@@ -180,8 +186,9 @@ public struct QUICTransport<
         over innerTransport: Transport,
         configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
         peer: SocketEndpoint,
-        identity: NodeIdentity<DefaultCryptoProvider>,
+        identity: NodeIdentity<QUICTLSSignatureProvider>,
         timer: Timer,
+        wallClock: Clock,
         handshakeTimeoutNanos: UInt64? = nil
     ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
         let wrapped = BufferingDatagramTransport(inner: innerTransport)
@@ -204,11 +211,12 @@ public struct QUICTransport<
 
         let outcome: Result<QUICHandshakeResult, NodeError>
         do {
-            let value = try await QUICTLSHandshakeDriver<DefaultCryptoProvider, BufferingDatagramTransport<Transport>, Timer>.runServer(
+            let value = try await QUICTLSHandshakeDriver<QUICTLSSignatureProvider, BufferingDatagramTransport<Transport>, Timer, Clock>.runServer(
                 server: client,
                 identity: identity,
                 localTransportParameters: configuration.localTransportParameters,
                 timer: timer,
+                wallClock: wallClock,
                 deadlineNanos: deadline,
                 replayBuffered: { wrapped.replayBuffered() }
             )

@@ -15,13 +15,15 @@ import Synchronization
 import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCrypto
+import P2PCryptoFoundation
+import QUICTLSSignature
 import QUICWire
 import QUICConnectionCore
 import QUICConnectionEngineCore
 import QUIC
 @testable import LibP2PNode
 
-private typealias Provider = DefaultCryptoProvider
+private typealias Provider = QUICTLSSignatureProvider
 
 // MARK: - In-memory loopback transport
 
@@ -70,7 +72,7 @@ struct QUICLiveLoopbackTests {
         localCID: ConnectionID,
         peerCID: ConnectionID,
         originalDCID: ConnectionID
-    ) -> QUICConnectionEngineConfiguration<Provider> {
+    ) -> QUICConnectionEngineConfiguration<DefaultCryptoProvider> {
         var tp = TransportParametersCore()
         tp.initialMaxData = 1_000_000
         tp.initialMaxStreamDataBidiLocal = 256 * 1024
@@ -78,7 +80,7 @@ struct QUICLiveLoopbackTests {
         tp.initialMaxStreamDataUni = 256 * 1024
         tp.initialMaxStreamsBidi = 100
         tp.initialMaxStreamsUni = 100
-        return QUICConnectionEngineConfiguration<Provider>(
+        return QUICConnectionEngineConfiguration<DefaultCryptoProvider>(
             role: role,
             version: .v1,
             localConnectionID: localCID,
@@ -116,8 +118,8 @@ struct QUICLiveLoopbackTests {
 
         let timer = TestClock()
 
-        let clientTransport = QUICTransport(transport: clientT, timer: timer)
-        let serverTransport = QUICTransport(transport: serverT, timer: timer)
+        let clientTransport = QUICTransport(transport: clientT, timer: timer, wallClock: SystemWallClock())
+        let serverTransport = QUICTransport(transport: serverT, timer: timer, wallClock: SystemWallClock())
 
         let clientConfig = makeConfig(
             role: .client, localCID: clientSCID, peerCID: clientDCID, originalDCID: clientDCID)

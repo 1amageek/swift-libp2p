@@ -21,6 +21,8 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
+import P2PCryptoFoundation
+import QUICTLSSignature
 import LibP2PCore
 import QUICWire
 import QUICConnectionCore
@@ -28,7 +30,7 @@ import QUICConnectionEngineCore
 import QUIC
 @testable import LibP2PNode
 
-private typealias Provider = DefaultCryptoProvider
+private typealias Provider = QUICTLSSignatureProvider
 
 // MARK: - In-memory loopback transport
 
@@ -77,7 +79,7 @@ struct PingIdentifyLiveTests {
         localCID: ConnectionID,
         peerCID: ConnectionID,
         originalDCID: ConnectionID
-    ) -> QUICConnectionEngineConfiguration<Provider> {
+    ) -> QUICConnectionEngineConfiguration<DefaultCryptoProvider> {
         var tp = TransportParametersCore()
         tp.initialMaxData = 1_000_000
         tp.initialMaxStreamDataBidiLocal = 256 * 1024
@@ -85,7 +87,7 @@ struct PingIdentifyLiveTests {
         tp.initialMaxStreamDataUni = 256 * 1024
         tp.initialMaxStreamsBidi = 100
         tp.initialMaxStreamsUni = 100
-        return QUICConnectionEngineConfiguration<Provider>(
+        return QUICConnectionEngineConfiguration<DefaultCryptoProvider>(
             role: role,
             version: .v1,
             localConnectionID: localCID,
@@ -123,8 +125,8 @@ struct PingIdentifyLiveTests {
 
         let timer = TestClock()
 
-        let nodeATransport = QUICTransport(transport: transportA, timer: timer)
-        let nodeBTransport = QUICTransport(transport: transportB, timer: timer)
+        let nodeATransport = QUICTransport(transport: transportA, timer: timer, wallClock: SystemWallClock())
+        let nodeBTransport = QUICTransport(transport: transportB, timer: timer, wallClock: SystemWallClock())
 
         let configA = makeConfig(role: .client, localCID: scidA, peerCID: dcidA, originalDCID: dcidA)
         let configB = makeConfig(role: .server, localCID: scidB, peerCID: scidA, originalDCID: dcidA)

@@ -37,9 +37,10 @@
 
 import _Concurrency   // REQUIRED under Embedded for async/Task
 import P2PCoreBytes
-import P2PCoreCrypto       // AsyncTimer
+import P2PCoreCrypto       // AsyncTimer / WallClock
 import P2PCoreTransport    // DatagramTransport / SocketEndpoint
 import P2PCrypto           // DefaultCryptoProvider
+import QUICTLSSignature    // QUICTLSSignatureProvider (DER ECDSA for the TLS path)
 import LibP2PCore          // IdentifyFields
 import QUICConnectionEngineCore  // QUICEngineRole
 
@@ -53,7 +54,8 @@ import QUICConnectionEngineCore  // QUICEngineRole
 public actor Node<
     Transport: DatagramTransport,
     Timer: AsyncTimer,
-    IDs: ConnectionIDPlan
+    IDs: ConnectionIDPlan,
+    Clock: WallClock
 > {
 
     /// The concrete inbound-stream type the node hands protocol handlers: a
@@ -70,9 +72,10 @@ public actor Node<
 
     // MARK: - Injected seams + composed parts
 
-    private let identity: NodeIdentity<DefaultCryptoProvider>
-    private let transport: QUICTransport<Transport, Timer>
+    private let identity: NodeIdentity<QUICTLSSignatureProvider>
+    private let transport: QUICTransport<Transport, Timer, Clock>
     private let timer: Timer
+    private let wallClock: Clock
     private let parameters: QUICConnectionParameters
     private let connectionIDPlan: IDs
     private let connections: ConnectionManager<BufferingDatagramTransport<Transport>, Timer>
@@ -109,6 +112,10 @@ public actor Node<
     ///   - identity: the node's Ed25519 libp2p identity.
     ///   - datagramTransport: the UDP datagram seam the QUIC transport binds over.
     ///   - timer: the monotonic-clock + sleep seam (no `ContinuousClock`).
+    ///   - wallClock: the wall-clock (calendar) seam used to timestamp the libp2p
+    ///     RPK certificate's notBefore/notAfter as real Unix-epoch seconds. REQUIRED
+    ///     (no silent fallback to the monotonic clock): on host pass
+    ///     `SystemWallClock()`; on Embedded supply a device-RTC-backed clock.
     ///   - parameters: the QUIC transport-parameter / timeout template.
     ///   - connectionIDPlan: the per-connection CID source (see
     ///     ``QUICConnectionParameters``).
@@ -116,9 +123,10 @@ public actor Node<
     ///   - agentVersion: the Identify `agentVersion` string.
     ///   - negotiationTimeoutNanos: the multistream-select deadline budget.
     public init(
-        identity: NodeIdentity<DefaultCryptoProvider>,
+        identity: NodeIdentity<QUICTLSSignatureProvider>,
         datagramTransport: Transport,
         timer: Timer,
+        wallClock: Clock,
         parameters: QUICConnectionParameters,
         connectionIDPlan: IDs,
         protocolVersion: String = "ipfs/0.1.0",
@@ -126,8 +134,9 @@ public actor Node<
         negotiationTimeoutNanos: UInt64 = 10_000_000_000
     ) {
         self.identity = identity
-        self.transport = QUICTransport(transport: datagramTransport, timer: timer)
+        self.transport = QUICTransport(transport: datagramTransport, timer: timer, wallClock: wallClock)
         self.timer = timer
+        self.wallClock = wallClock
         self.parameters = parameters
         self.connectionIDPlan = connectionIDPlan
         self.connections = ConnectionManager()
@@ -279,12 +288,13 @@ public actor Node<
         let configuration = parameters.configuration(role: .server, connectionIDs: ids)
         let connection: Connection
         do {
-            connection = try await QUICTransport<Transport, Timer>.acceptServer(
+            connection = try await QUICTransport<Transport, Timer, Clock>.acceptServer(
                 over: dialer.transport,
                 configuration: configuration,
                 peer: dialer.dialerEndpoint,
                 identity: identity,
-                timer: timer
+                timer: timer,
+                wallClock: wallClock
             )
         } catch {
             // Handshake / verification failed — fail-closed: tear the routed transport

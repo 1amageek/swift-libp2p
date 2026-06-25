@@ -22,6 +22,8 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
+import P2PCryptoFoundation
+import QUICTLSSignature
 import LibP2PCore
 import QUICWire
 import QUICConnectionCore
@@ -29,7 +31,7 @@ import QUICConnectionEngineCore
 import QUIC
 @testable import LibP2PNode
 
-private typealias Provider = DefaultCryptoProvider
+private typealias Provider = QUICTLSSignatureProvider
 
 // MARK: - In-memory loopback transport (pair-wired)
 
@@ -129,6 +131,7 @@ struct MutualAuthTests {
             identity: identityA,
             datagramTransport: transportA,
             timer: timer,
+            wallClock: SystemWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: MACPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/mtls-A"
@@ -137,6 +140,7 @@ struct MutualAuthTests {
             identity: identityB,
             datagramTransport: transportB,
             timer: timer,
+            wallClock: SystemWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: MACPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/mtls-B"
@@ -262,8 +266,8 @@ struct MutualAuthTests {
         } catch { return nil }
     }
 
-    private func connectedPeers<T: DatagramTransport, M: AsyncTimer, I: ConnectionIDPlan>(
-        of node: Node<T, M, I>
+    private func connectedPeers<T: DatagramTransport, M: AsyncTimer, I: ConnectionIDPlan, W: WallClock>(
+        of node: Node<T, M, I, W>
     ) async -> [[UInt8]] {
         await node.connectedPeerIDs()
     }

@@ -50,7 +50,8 @@ public struct QUICHandshakeResult: Sendable {
 public enum QUICTLSHandshakeDriver<
     C: CryptoProvider,
     Transport: DatagramTransport,
-    Timer: AsyncTimer
+    Timer: AsyncTimer,
+    Clock: WallClock
 > {
 
     // MARK: - Shared parameters
@@ -89,6 +90,7 @@ public enum QUICTLSHandshakeDriver<
         identity: NodeIdentity<C>,
         localTransportParameters: TransportParametersCore,
         timer: Timer,
+        wallClock: Clock,
         deadlineNanos: UInt64,
         replayBuffered: @Sendable @escaping () -> Void
     ) async throws(NodeError) -> QUICHandshakeResult {
@@ -221,7 +223,7 @@ public enum QUICTLSHandshakeDriver<
                         let clientFlightBytes = try produceClientAuthFlight(
                             auth: &auth,
                             identity: identity,
-                            timer: timer
+                            wallClock: wallClock
                         )
                         clientFlight.append(contentsOf: clientFlightBytes)
                     }
@@ -281,6 +283,7 @@ public enum QUICTLSHandshakeDriver<
         identity: NodeIdentity<C>,
         localTransportParameters: TransportParametersCore,
         timer: Timer,
+        wallClock: Clock,
         deadlineNanos: UInt64,
         replayBuffered: @Sendable @escaping () -> Void
     ) async throws(NodeError) -> QUICHandshakeResult {
@@ -321,7 +324,7 @@ public enum QUICTLSHandshakeDriver<
                     clientHelloContent: message.content,
                     identity: identity,
                     localTransportParameters: localTransportParameters,
-                    timer: timer
+                    wallClock: wallClock
                 )
                 flightSent = true
                 // Replay any buffered datagrams now that handshake read keys exist,
@@ -699,11 +702,13 @@ public enum QUICTLSHandshakeDriver<
     private static func produceClientAuthFlight(
         auth: inout QUICClientAuthMachine<C>,
         identity: NodeIdentity<C>,
-        timer: Timer
+        wallClock: Clock
     ) throws(NodeError) -> [UInt8] {
         // 1. Build the client's libp2p RPK certificate (fresh ephemeral P-256 leaf
-        //    + identity-key proof-of-possession).
-        let nowSeconds = Int64(timer.monotonicNanos() / 1_000_000_000)
+        //    + identity-key proof-of-possession). The cert's notBefore/notAfter MUST
+        //    be real wall-clock Unix-epoch seconds (NOT the monotonic clock, which
+        //    looks like ~1970) so a remote peer's validity check accepts it.
+        let nowSeconds = wallClock.nowUnixSeconds()
         let certificate = try LibP2PRPKCertificateBuilder<C>.build(
             identity: identity, nowEpochSeconds: nowSeconds
         )
@@ -767,7 +772,7 @@ public enum QUICTLSHandshakeDriver<
         clientHelloContent: [UInt8],
         identity: NodeIdentity<C>,
         localTransportParameters: TransportParametersCore,
-        timer: Timer
+        wallClock: Clock
     ) async throws(NodeError) {
         let clientHello: ClientHello
         do {
@@ -812,8 +817,10 @@ public enum QUICTLSHandshakeDriver<
             throw .quicHandshakeKeyExchangeFailed
         }
 
-        // Build the local libp2p RPK certificate.
-        let nowSeconds = Int64(timer.monotonicNanos() / 1_000_000_000)
+        // Build the local libp2p RPK certificate. The cert's notBefore/notAfter MUST
+        // be real wall-clock Unix-epoch seconds (NOT the monotonic clock, which looks
+        // like ~1970) so a remote peer's validity check accepts it.
+        let nowSeconds = wallClock.nowUnixSeconds()
         let certificate = try LibP2PRPKCertificateBuilder<C>.build(
             identity: identity, nowEpochSeconds: nowSeconds
         )

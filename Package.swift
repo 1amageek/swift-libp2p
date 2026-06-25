@@ -169,6 +169,10 @@ let package = Package(
                 .product(name: "P2PCoreTransport", package: "swift-p2p-core"),
                 // The unified crypto provider (`DefaultCryptoProvider`).
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
+                // The DER-ECDSA TLS-signature provider (`QUICTLSSignatureProvider`):
+                // DefaultCryptoProvider with ECDSA overridden to DER for the TLS
+                // CertificateVerify + X.509 leaf wire (RFC 8446 §4.4.3). Dual-build.
+                .product(name: "QUICTLSSignature", package: "swift-quic"),
                 // The QUIC `[UInt8]` engine facade (`QUICEngineClient`).
                 .product(name: "QUIC", package: "swift-quic"),
                 .product(name: "QUICConnectionEngineCore", package: "swift-quic"),
@@ -200,6 +204,10 @@ let package = Package(
                 // cross-check in the Ping + Identify live test.
                 .product(name: "P2PCoreDER", package: "swift-p2p-core"),
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
+                // `SystemWallClock` (host wall-clock seam) for the node cert timestamps.
+                .product(name: "P2PCryptoFoundation", package: "swift-p2p-crypto"),
+                // `QUICTLSSignatureProvider` (the node identity's DER-ECDSA provider).
+                .product(name: "QUICTLSSignature", package: "swift-quic"),
                 // The QUIC engine facade + cores the live loopback handshake test
                 // drives (`QUICEngineClient` over a loopback `DatagramTransport`).
                 .product(name: "QUIC", package: "swift-quic"),

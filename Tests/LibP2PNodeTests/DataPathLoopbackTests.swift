@@ -7,10 +7,12 @@
 
 import Testing
 import P2PCrypto
+import P2PCryptoFoundation
+import QUICTLSSignature
 import LibP2PCore
 @testable import LibP2PNode
 
-private typealias Provider = DefaultCryptoProvider
+private typealias Provider = QUICTLSSignatureProvider
 
 @Suite("data-path loopback")
 struct DataPathLoopbackTests {
