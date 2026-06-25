@@ -182,13 +182,15 @@ public actor Node<
     // MARK: - Listen
 
     /// Binds the QUIC transport, accepts ONE inbound connection on `endpoint`,
-    /// upgrades it (QUIC TLS 1.3 → verified peer), tracks it, and serves the
-    /// registered protocol handlers on its inbound streams until the node closes.
+    /// upgrades it (QUIC TLS 1.3 + mTLS → verified peer), tracks it by its verified
+    /// PeerID, and serves the registered protocol handlers on its inbound streams
+    /// until the node closes.
     ///
-    /// SCOPE: the minimal node accepts a single inbound connection per `listen` (the
-    /// QUIC engine facade has no inbound-packet-demux primitive to fan out arbitrary
-    /// unknown dialers — see ``QUICConnectionParameters``). Multi-connection accept
-    /// is out-of-scope for this slice (noted, never silently mis-handled).
+    /// SCOPE: this single-accept path needs the dialer's original-DCID coordinated up
+    /// front through the ``ConnectionIDPlan`` seam (RFC 9001 §5.2). To fan out
+    /// arbitrary unknown dialers over one shared transport, use ``serve(on:)`` — it
+    /// demultiplexes inbound datagrams by Destination Connection ID and spins up a
+    /// per-dialer connection (see ``ServerDemultiplexer``).
     ///
     /// - Throws: a typed ``NodeError`` if the accept/upgrade fails (fail-closed —
     ///   never a half-open connection).
@@ -201,10 +203,112 @@ public actor Node<
             peer: endpoint,
             identity: identity
         )
-        // The minimal server path does not run mTLS, so the inbound peer is
-        // unauthenticated at the TLS layer — track it anonymously (still owned, torn
-        // down on close). Its peer PeerID is bound only after a mutually-auth slice.
-        await connections.register(connection, peerID: connection.remotePeerIDMultihash)
+        // mTLS: the inbound peer presented + proved its libp2p RPK certificate, so the
+        // server has the CLIENT's cryptographically-verified PeerID. Track it by that
+        // verified identity — never anonymously. An empty PeerID would mean an
+        // unverified peer slipped through; refuse it (fail-closed, never admitted).
+        let peerID = connection.remotePeerIDMultihash
+        guard !peerID.isEmpty else {
+            await connection.close()
+            throw .quicHandshakePeerVerificationFailed
+        }
+        let displaced = await connections.register(connection, peerID: peerID)
+        if let displaced {
+            await displaced.close()
+        }
+        startServing(connection)
+    }
+
+    // MARK: - Serve (server-demux: fan out arbitrary unknown dialers)
+
+    /// Serves arbitrary concurrent inbound dialers over one shared `DatagramTransport`
+    /// via the ``ServerDemultiplexer``.
+    ///
+    /// Unlike ``listen(on:)`` — which accepts ONE connection whose DCID is coordinated
+    /// up front through the ``ConnectionIDPlan`` seam — `serve` reads each inbound
+    /// datagram's QUIC long-header Destination Connection ID (parsed, not decrypted),
+    /// spins up a per-dialer connection over a routed transport, completes the mTLS
+    /// handshake, and tracks the dialer by its VERIFIED PeerID. One `serve` therefore
+    /// fans out many dialers; the node serves protocol handlers on each, and its own
+    /// ``newStream(to:protocol:)`` / ``ping(_:)`` / ``identify(_:)`` reach any of them
+    /// by verified PeerID (so the listener can `identify` a dialer back).
+    ///
+    /// The node's `Transport` must be the demux's per-dialer routed transport
+    /// (`DemuxRoutedTransport<Shared>`); construct such a node with the shared transport
+    /// and start the demux's reader before calling `serve` (see the multi-dialer test).
+    ///
+    /// This returns immediately after starting the demux-drive loop; inbound dialers
+    /// are handshaked + served on background tasks the node owns (cancelled on
+    /// ``close()``).
+    public func serve<Shared: DatagramTransport>(
+        over demultiplexer: ServerDemultiplexer<Shared>
+    ) async throws(NodeError) where Transport == DemuxRoutedTransport<Shared> {
+        if isClosed { throw .connectionClosed }
+        // The demux-drive loop. It captures `self` strongly: the resulting cycle (the
+        // node holds the task in `serveTasks`; the task holds the node) is broken by
+        // ``close()`` (cancels the task + shuts the demux down) and by the demux
+        // finishing `newDialers` — both end the loop, releasing the capture (mirrors
+        // ``BufferingDatagramTransport``; Embedded Swift forbids `weak`). Each dialer
+        // is handshaked on its OWN child task so a slow / failed handshake never blocks
+        // the others.
+        let driveTask = Task {
+            for await dialer in demultiplexer.newDialers {
+                if Task.isCancelled { return }
+                // The drive task inherits the actor's isolation, so `acceptDemuxedDialer`
+                // and `serveTasks` mutation are same-actor; the child handshakes the
+                // dialer concurrently without blocking the next.
+                let child = Task { await self.acceptDemuxedDialer(dialer) }
+                self.serveTasks.append(child)
+            }
+        }
+        serveTasks.append(driveTask)
+    }
+
+    /// Completes one demuxed dialer's mTLS handshake over its routed transport, tracks
+    /// it by its verified PeerID, and starts serving it. Fail-closed: an unverified
+    /// dialer is dropped (never admitted); a handshake failure tears the routed
+    /// transport down.
+    private func acceptDemuxedDialer<Shared: DatagramTransport>(
+        _ dialer: ServerDemultiplexer<Shared>.NewDialer
+    ) async where Transport == DemuxRoutedTransport<Shared> {
+        let ids = ConnectionIDs(
+            localConnectionID: dialer.serverConnectionID,
+            peerConnectionID: dialer.dialerSourceConnectionID,
+            originalDestinationConnectionID: dialer.originalDestinationConnectionID
+        )
+        let configuration = parameters.configuration(role: .server, connectionIDs: ids)
+        let connection: Connection
+        do {
+            connection = try await QUICTransport<Transport, Timer>.acceptServer(
+                over: dialer.transport,
+                configuration: configuration,
+                peer: dialer.dialerEndpoint,
+                identity: identity,
+                timer: timer
+            )
+        } catch {
+            // Handshake / verification failed — fail-closed: tear the routed transport
+            // down (its `incoming` ends so the demux drops further datagrams for it).
+            dialer.transport.finish()
+            return
+        }
+        let peerID = connection.remotePeerIDMultihash
+        guard !peerID.isEmpty else {
+            await connection.close()
+            dialer.transport.finish()
+            return
+        }
+        if isClosed {
+            // The node closed during the dialer's handshake; tear the connection down
+            // rather than leak it.
+            await connection.close()
+            dialer.transport.finish()
+            return
+        }
+        let displaced = await connections.register(connection, peerID: peerID)
+        if let displaced {
+            await displaced.close()
+        }
         startServing(connection)
     }
 
@@ -335,6 +439,11 @@ public actor Node<
         if let displaced {
             await displaced.close()
         }
+        // Serve inbound streams on the dialed connection too: a libp2p node answers
+        // protocol requests (Ping / Identify / app handlers) on EVERY connection,
+        // not just the ones it accepted. Without this the peer we dialed could not
+        // `identify` / `ping` us back over the same connection.
+        startServing(connection)
         return peerID
     }
 
@@ -414,6 +523,15 @@ public actor Node<
             on: stream,
             verifiedPeerIDMultihash: connection.remotePeerIDMultihash
         )
+    }
+
+    // MARK: - Connected peers
+
+    /// The verified PeerIDs of all currently-tracked live connections (dialed or
+    /// mTLS-accepted). Every entry is a cryptographically-verified identity — an
+    /// unverified peer is never tracked.
+    public func connectedPeerIDs() async -> [[UInt8]] {
+        await connections.connectedPeers()
     }
 
     // MARK: - Close

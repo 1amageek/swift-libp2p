@@ -103,12 +103,6 @@ public enum QUICTLSHandshakeDriver<
         let ecdhePublic = C.X25519.publicKey(for: ecdhePrivate)
         let clientShareBytes = C.X25519.rawRepresentation(of: ecdhePublic)
 
-        // The minimal client does NOT authenticate to the server (no mTLS on this
-        // slice): the server does not send a CertificateRequest, so the client
-        // presents no libp2p RPK certificate. `identity` is reserved for the future
-        // mutual-auth slice (the client would then build + present its own RPK leaf).
-        _ = identity
-
         // 2. Assemble + produce ClientHello.
         var handshake = QUICClientHandshake<C>(cipherSuite: cipherSuiteCore)
         let random = C.random.randomBytes(32)
@@ -215,17 +209,34 @@ public enum QUICTLSHandshakeDriver<
                           let serverApp = auth.serverApplicationSecret else {
                         throw .quicHandshakeFailed
                     }
-                    // Produce the client Finished BEFORE installing 1-RTT write
-                    // keys — but the client Finished is sent at the HANDSHAKE level,
-                    // so install app keys first, then send Finished at handshake.
+                    // The whole client Handshake-level flight (mTLS Certificate +
+                    // CertificateVerify, if the server requested client auth, then
+                    // Finished). All three messages ride the HANDSHAKE level, so the
+                    // 1-RTT (application) write keys are installed AFTER this flight.
+                    var clientFlight = [UInt8]()
+                    if auth.clientCertificateRequested {
+                        // Mutual auth: present the client's libp2p RPK certificate and
+                        // prove possession (CertificateVerify), folded into the
+                        // transcript BEFORE producing the client Finished.
+                        let clientFlightBytes = try produceClientAuthFlight(
+                            auth: &auth,
+                            identity: identity,
+                            timer: timer
+                        )
+                        clientFlight.append(contentsOf: clientFlightBytes)
+                    }
+                    // Produce the client Finished BEFORE installing 1-RTT write keys —
+                    // but the client Finished is sent at the HANDSHAKE level, so install
+                    // app keys after the whole handshake flight is queued.
                     let clientFinished: [UInt8]
                     do {
                         clientFinished = try auth.produceClientFinished()
                     } catch {
                         throw .quicHandshakeFailed
                     }
+                    clientFlight.append(contentsOf: clientFinished)
                     authMachine = auth
-                    await client.queueHandshake(clientFinished, level: .handshake)
+                    await client.queueHandshake(clientFlight, level: .handshake)
                     do {
                         try client.installKeys(
                             level: .application,
@@ -253,15 +264,18 @@ public enum QUICTLSHandshakeDriver<
     /// Drives the server side of the handshake to completion over `server`.
     ///
     /// Waits for the ClientHello (Initial), produces the full server flight
-    /// (ServerHello + EncryptedExtensions + Certificate(RPK) + CertificateVerify +
-    /// Finished), installs handshake + application keys, then waits for the client
-    /// Finished and marks complete. Bounded by `deadlineNanos` (fail-closed).
+    /// (ServerHello + EncryptedExtensions + CertificateRequest + Certificate(RPK) +
+    /// CertificateVerify + Finished), installs handshake + application keys, then
+    /// waits for the client's auth flight (Certificate + CertificateVerify) and the
+    /// client Finished and marks complete. Bounded by `deadlineNanos` (fail-closed).
     ///
-    /// - Note: the minimal node does NOT request a client certificate (no mTLS),
-    ///   so the client is unauthenticated at the TLS layer. Mutual libp2p
-    ///   authentication on the QUIC path is a later slice; here the SERVER proves
-    ///   its PeerID to the client, and the client learns the server's verified
-    ///   PeerID. The server therefore returns no peer PeerID.
+    /// MUTUAL AUTH (mTLS): the server sends a CertificateRequest in its flight, the
+    /// client presents its own libp2p RPK certificate + CertificateVerify (proof of
+    /// possession), and the server verifies the client cert in-core (fail-closed),
+    /// deriving the CLIENT's verified PeerID from the RPK extension. The returned
+    /// ``QUICHandshakeResult`` carries the CLIENT's PeerID so the listener tracks the
+    /// inbound connection by a cryptographically-verified identity (never anonymous).
+    /// An unverified client is NEVER admitted.
     public static func runServer(
         server: QUICEngineClient<Transport, Timer>,
         identity: NodeIdentity<C>,
@@ -274,6 +288,8 @@ public enum QUICTLSHandshakeDriver<
         var handshake = QUICServerHandshake<C>(cipherSuite: cipherSuiteCore)
         var reassembler = HandshakeReassembler()
         var flightSent = false
+        var clientPeerIDMultihash: [UInt8]? = nil
+        var clientLeafKeyBytes: [UInt8]? = nil
 
         while true {
             if timer.monotonicNanos() >= deadlineNanos {
@@ -315,30 +331,129 @@ public enum QUICTLSHandshakeDriver<
                 continue
             }
 
-            // 2. Client Finished (Handshake).
-            guard let message = try reassembler.takeMessage(level: .handshake) else {
-                continue
+            // 2. Client auth flight (Handshake): Certificate, CertificateVerify,
+            //    Finished — processed in order as they reassemble.
+            let outcome = try driveServerClientAuth(
+                handshake: &handshake,
+                reassembler: &reassembler,
+                clientPeerIDMultihash: &clientPeerIDMultihash,
+                clientLeafKeyBytes: &clientLeafKeyBytes
+            )
+            if outcome == .clientFinishedProcessed {
+                await server.markHandshakeComplete()
+                // The client MUST have presented a verified libp2p RPK certificate
+                // (mTLS); a missing PeerID here means an unauthenticated client —
+                // refuse rather than admit it (fail-closed).
+                guard let verifiedClient = clientPeerIDMultihash, !verifiedClient.isEmpty else {
+                    throw .quicHandshakePeerVerificationFailed
+                }
+                return QUICHandshakeResult(peerIDMultihash: verifiedClient)
             }
-            guard message.type == .finished else {
-                throw .quicHandshakeFailed
-            }
-            let finished: Finished
+        }
+    }
+
+    /// The result of one server-side client-auth drive step.
+    private enum ServerClientAuthOutcome: Equatable {
+        case needMore
+        case clientFinishedProcessed
+    }
+
+    /// Processes the client's mTLS auth flight (Certificate, CertificateVerify,
+    /// Finished) in order, verifying the libp2p RPK certificate + proof-of-possession
+    /// signature in-core (fail-closed) and deriving the client's verified PeerID.
+    private static func driveServerClientAuth(
+        handshake: inout QUICServerHandshake<C>,
+        reassembler: inout HandshakeReassembler,
+        clientPeerIDMultihash: inout [UInt8]?,
+        clientLeafKeyBytes: inout [UInt8]?
+    ) throws(NodeError) -> ServerClientAuthOutcome {
+        while true {
+            let maybeMessage: HandshakeReassembler.Message?
             do {
-                finished = try Finished.decode(from: message.content)
+                maybeMessage = try reassembler.takeMessage(level: .handshake)
             } catch {
                 throw .quicHandshakeFailed
             }
-            do {
-                try handshake.ingestClientFinished(verifyData: finished.verifyData)
-            } catch {
+            guard let message = maybeMessage else {
+                return .needMore
+            }
+
+            switch message.type {
+            case .certificate:
+                let certificate: Certificate
+                do {
+                    certificate = try Certificate.decode(from: message.content)
+                } catch {
+                    throw .quicHandshakeFailed
+                }
+                let presented = !certificate.isEmpty
+                // A libp2p client MUST present its RPK leaf — an empty client
+                // Certificate is an unauthenticated peer; fail-closed.
+                guard presented, let leafDER = certificate.leafCertificate else {
+                    throw .quicHandshakePeerVerificationFailed
+                }
+                // Verify the libp2p RPK cert + extract the verified client PeerID.
+                let verified = try LibP2PRPKCertificateBuilder<C>.verify(
+                    certificateDER: leafDER)
+                clientPeerIDMultihash = verified.peerIDMultihash
+                // The CertificateVerify is checked against the leaf's P-256 key.
+                let parsedSPKI: SubjectPublicKeyInfoDER.Parsed
+                do {
+                    parsedSPKI = try SubjectPublicKeyInfoDER.parse(verified.leafSPKI)
+                } catch {
+                    throw .quicHandshakePeerVerificationFailed
+                }
+                guard parsedSPKI.curve == .p256 else {
+                    throw .quicHandshakePeerVerificationFailed
+                }
+                clientLeafKeyBytes = parsedSPKI.keyBytes
+                do {
+                    _ = try handshake.ingestClientCertificate(
+                        certificatePresented: presented, rawMessageBytes: message.raw)
+                } catch {
+                    throw .quicHandshakeFailed
+                }
+
+            case .certificateVerify:
+                let certVerify: CertificateVerify
+                do {
+                    certVerify = try CertificateVerify.decode(from: message.content)
+                } catch {
+                    throw .quicHandshakeFailed
+                }
+                guard let leafKey = clientLeafKeyBytes else {
+                    throw .quicHandshakePeerVerificationFailed
+                }
+                let clientKey = QUICServerHandshake<C>.ClientPublicKey(
+                    bytes: leafKey, scheme: certVerifyScheme)
+                do {
+                    try handshake.ingestClientCertificateVerify(
+                        algorithm: certVerify.algorithm,
+                        signature: certVerify.signature,
+                        clientPublicKey: clientKey,
+                        rawMessageBytes: message.raw
+                    )
+                } catch {
+                    throw .quicHandshakePeerVerificationFailed
+                }
+
+            case .finished:
+                let finished: Finished
+                do {
+                    finished = try Finished.decode(from: message.content)
+                } catch {
+                    throw .quicHandshakeFailed
+                }
+                do {
+                    try handshake.ingestClientFinished(verifyData: finished.verifyData)
+                } catch {
+                    throw .quicHandshakeFailed
+                }
+                return .clientFinishedProcessed
+
+            default:
                 throw .quicHandshakeFailed
             }
-            await server.markHandshakeComplete()
-            // The minimal server does not authenticate the client (no mTLS), so it
-            // returns its own identity's PeerID as a placeholder is wrong — return
-            // an empty peer (the client is unauthenticated). Callers that need a
-            // mutually-verified PeerID use a later mTLS slice.
-            return QUICHandshakeResult(peerIDMultihash: [])
         }
     }
 
@@ -568,6 +683,81 @@ public enum QUICTLSHandshakeDriver<
         }
     }
 
+    /// Builds + folds the client's mTLS authentication flight (Certificate +
+    /// CertificateVerify) into the auth FSM, returning the assembled Handshake-level
+    /// bytes for the engine. Called only when the server sent a CertificateRequest.
+    ///
+    /// The client presents its OWN libp2p RPK certificate (its ephemeral P-256 leaf
+    /// + the identity-key proof-of-possession) and signs a CertificateVerify with the
+    /// leaf key over the CH..client-Certificate transcript (RFC 8446 §4.4.3,
+    /// `isServer: false`). Both messages are folded so the subsequent client Finished
+    /// is computed over the correct transcript.
+    ///
+    /// - Returns: `Certificate || CertificateVerify` handshake-message bytes.
+    /// - Throws: a typed ``NodeError`` on any cert-build / sign / fold failure
+    ///   (fail-closed — the client never sends an unsigned or partial auth flight).
+    private static func produceClientAuthFlight(
+        auth: inout QUICClientAuthMachine<C>,
+        identity: NodeIdentity<C>,
+        timer: Timer
+    ) throws(NodeError) -> [UInt8] {
+        // 1. Build the client's libp2p RPK certificate (fresh ephemeral P-256 leaf
+        //    + identity-key proof-of-possession).
+        let nowSeconds = Int64(timer.monotonicNanos() / 1_000_000_000)
+        let certificate = try LibP2PRPKCertificateBuilder<C>.build(
+            identity: identity, nowEpochSeconds: nowSeconds
+        )
+
+        // 2. Encode + fold the client Certificate. The certificate_request_context is
+        //    empty (the server's CertificateRequest carried an empty context).
+        let certificateBytes: [UInt8]
+        do {
+            certificateBytes = try Certificate(
+                certificateRequestContext: [],
+                certificates: [certificate.certificateDER]
+            ).encodeAsHandshakeBytes()
+        } catch {
+            throw .quicHandshakeCertificateFailed
+        }
+        do {
+            try auth.foldClientCertificate(rawMessageBytes: certificateBytes)
+        } catch {
+            throw .quicHandshakeFailed
+        }
+
+        // 3. Sign the CertificateVerify over CH..client-Certificate with the leaf key.
+        let cvTranscript = auth.clientCertificateVerifyTranscript
+        let cvSignature: [UInt8]
+        do {
+            cvSignature = try TLSSignatureSigner<C>.sign(
+                algorithm: certVerifyScheme,
+                privateKeyBytes: certificate.leafSigningKeyBytes.span,
+                transcriptHash: cvTranscript.span,
+                isServer: false
+            )
+        } catch {
+            throw .quicHandshakeFailed
+        }
+        let certVerifyBytes: [UInt8]
+        do {
+            certVerifyBytes = try CertificateVerify(
+                algorithm: certVerifyScheme, signature: cvSignature
+            ).encodeAsHandshakeBytes()
+        } catch {
+            throw .quicHandshakeFailed
+        }
+        do {
+            try auth.foldClientCertificateVerify(rawMessageBytes: certVerifyBytes)
+        } catch {
+            throw .quicHandshakeFailed
+        }
+
+        var flight = [UInt8]()
+        flight.append(contentsOf: certificateBytes)
+        flight.append(contentsOf: certVerifyBytes)
+        return flight
+    }
+
     // MARK: - Server helpers
 
     private static func produceServerFlight(
@@ -642,14 +832,24 @@ public enum QUICTLSHandshakeDriver<
             certificateDER: certificate.certificateDER
         )
 
+        // Mutual auth (mTLS): the libp2p server REQUESTS a client certificate so the
+        // accepted peer's PeerID is cryptographically verified (never anonymous). The
+        // CertificateRequest offers exactly the schemes the libp2p RPK leaf can sign
+        // (ECDSA-P256) and the identity-key signature scheme (Ed25519). An empty
+        // certificate_request_context (RFC 8446 §4.3.2) — the client echoes it.
+        let certificateRequestSchemes: [QUICTLSCore.SignatureScheme] = [certVerifyScheme, .ed25519]
+        let certificateRequestBytes = try encodeCertificateRequest(
+            signatureAlgorithms: certificateRequestSchemes
+        )
+
         // Drive the FSM: begin flight → sign CertificateVerify → finish flight.
         let flightParameters = QUICServerHandshake<C>.FlightParameters(
             cipherSuite: cipherSuiteCore,
             acceptedPSK: nil,
             sharedSecret: sharedSecret,
             earlyDataAccepted: false,
-            requestClientCertificate: false,
-            certificateRequestSignatureAlgorithms: nil
+            requestClientCertificate: true,
+            certificateRequestSignatureAlgorithms: certificateRequestSchemes
         )
         let beginResult: (
             handshakeSecrets: (client: [UInt8], server: [UInt8]),
@@ -662,7 +862,7 @@ public enum QUICTLSHandshakeDriver<
                 parameters: flightParameters,
                 serverHelloBytes: serverHelloBytes,
                 encryptedExtensionsBytes: encryptedExtensionsBytes,
-                certificateRequestBytes: nil,
+                certificateRequestBytes: certificateRequestBytes,
                 serverCertificateBytes: serverCertificateBytes
             )
         } catch {
@@ -722,11 +922,15 @@ public enum QUICTLSHandshakeDriver<
             throw .quicHandshakeFailed
         }
 
-        // Send the whole Handshake-level flight: EncryptedExtensions, Certificate,
-        // CertificateVerify, Finished. (ServerHello goes at Initial.)
+        // Send the whole Handshake-level flight: EncryptedExtensions,
+        // CertificateRequest (mTLS), Certificate, CertificateVerify, Finished.
+        // (ServerHello goes at Initial.) The CertificateRequest MUST be folded into
+        // the transcript BEFORE the server Certificate, so it is also placed before
+        // the Certificate on the wire (RFC 8446 §4.3.2 message order).
         await server.queueHandshake(serverHelloBytes, level: .initial)
         var handshakeFlight = [UInt8]()
         handshakeFlight.append(contentsOf: encryptedExtensionsBytes)
+        handshakeFlight.append(contentsOf: certificateRequestBytes)
         handshakeFlight.append(contentsOf: serverCertificateBytes)
         handshakeFlight.append(contentsOf: certVerifyMessage)
         handshakeFlight.append(contentsOf: finishResult.serverFinished)
@@ -785,6 +989,25 @@ public enum QUICTLSHandshakeDriver<
     ) throws(NodeError) -> [UInt8] {
         do {
             return try Certificate(certificates: [certificateDER]).encodeAsHandshakeBytes()
+        } catch {
+            throw .quicHandshakeFailed
+        }
+    }
+
+    /// Encodes the CertificateRequest (mTLS) with an empty context and the given
+    /// `signature_algorithms` (the only signature schemes the server will accept in
+    /// the client CertificateVerify, RFC 8446 §4.3.2).
+    private static func encodeCertificateRequest(
+        signatureAlgorithms: [QUICTLSCore.SignatureScheme]
+    ) throws(NodeError) -> [UInt8] {
+        do {
+            let sigAlgsExtension = SignatureAlgorithmsExtension(
+                supportedSignatureAlgorithms: signatureAlgorithms
+            )
+            return try CertificateRequest(
+                certificateRequestContext: [],
+                extensions: [.signatureAlgorithms(sigAlgsExtension)]
+            ).encodeAsHandshakeBytes()
         } catch {
             throw .quicHandshakeFailed
         }

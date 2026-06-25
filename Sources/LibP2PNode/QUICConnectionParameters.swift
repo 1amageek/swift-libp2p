@@ -67,6 +67,31 @@ public protocol ConnectionIDPlan: Sendable {
     ///
     /// - Throws: ``NodeError/quicFeatureUnsupported`` if CIDs cannot be supplied.
     func acceptConnectionIDs() throws(NodeError) -> ConnectionIDs
+
+    /// The server's own source connection ID for ONE demultiplexed inbound dialer.
+    ///
+    /// On the demux path the server learns the dialer's chosen DCID + SCID from the
+    /// first Initial packet's long header (parsed, not decrypted); the only CID the
+    /// server still freely chooses is its OWN source CID, which becomes the routing
+    /// key for the dialer's post-ServerHello packets (the client switches its DCID to
+    /// the server's SCID, RFC 9000 §7.2). Each call MUST return a FRESH, distinct CID
+    /// so concurrent dialers never collide on the same routing key.
+    ///
+    /// - Throws: ``NodeError/quicFeatureUnsupported`` if a CID cannot be minted.
+    func serverConnectionID() throws(NodeError) -> ConnectionID
+}
+
+extension ConnectionIDPlan {
+
+    /// Default: reuse the accept-side server source CID. The single-accept
+    /// ``Node/listen(on:)`` path never calls this (it coordinates CIDs up front);
+    /// only the demux ``Node/serve(over:)`` path does, and a plan that drives the
+    /// demux MUST override this to mint a FRESH, distinct CID per dialer (the default
+    /// would collide across concurrent dialers). The default keeps non-demux plans
+    /// source-compatible without forcing a stub.
+    public func serverConnectionID() throws(NodeError) -> ConnectionID {
+        try acceptConnectionIDs().localConnectionID
+    }
 }
 
 /// The QUIC transport-parameter + timeout template shared by every connection the

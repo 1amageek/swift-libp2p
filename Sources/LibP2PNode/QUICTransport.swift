@@ -143,10 +143,10 @@ public struct QUICTransport<
     /// LIVE, verified QUIC connection.
     ///
     /// Drives the libp2p-over-QUIC TLS 1.3 server handshake (presenting the local
-    /// RPK identity) over the injected transport + timer until established. The
-    /// minimal server does not request a client certificate (no mTLS on this
-    /// slice), so the returned connection carries no peer PeerID; the SERVER
-    /// proves its identity to the client.
+    /// RPK identity AND requesting the client's via mTLS) over the injected
+    /// transport + timer until established. The server requests + verifies the
+    /// client's libp2p RPK certificate (fail-closed), so the returned connection
+    /// carries the CLIENT's cryptographically-verified PeerID.
     ///
     /// - Throws: a typed ``NodeError`` on any handshake failure
     ///   (fail-closed — never a half-open connection).
@@ -156,8 +156,48 @@ public struct QUICTransport<
         identity: NodeIdentity<DefaultCryptoProvider>,
         handshakeTimeoutNanos: UInt64? = nil
     ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
-        let wrapped = BufferingDatagramTransport(inner: transport)
-        let client = try makeClient(configuration: configuration, wrapped: wrapped, peer: peer)
+        try await Self.acceptServer(
+            over: transport,
+            configuration: configuration,
+            peer: peer,
+            identity: identity,
+            timer: timer,
+            handshakeTimeoutNanos: handshakeTimeoutNanos
+        )
+    }
+
+    /// Accepts a server-side connection over a SPECIFIC datagram transport instance
+    /// (not the stored injected one), with explicit configuration + peer.
+    ///
+    /// This is the server-demux accept seam: the ``ServerDemultiplexer`` hands one
+    /// per-dialer routed transport per dialer, and the `Node` builds the inbound
+    /// connection over it. The handshake runs the mTLS server flow, so the returned
+    /// connection carries the CLIENT's cryptographically-verified PeerID.
+    ///
+    /// - Throws: a typed ``NodeError`` on any handshake / verification failure
+    ///   (fail-closed — never a half-open connection).
+    static func acceptServer(
+        over innerTransport: Transport,
+        configuration: QUICConnectionEngineConfiguration<DefaultCryptoProvider>,
+        peer: SocketEndpoint,
+        identity: NodeIdentity<DefaultCryptoProvider>,
+        timer: Timer,
+        handshakeTimeoutNanos: UInt64? = nil
+    ) async throws(NodeError) -> QUICConnection<BufferingDatagramTransport<Transport>, Timer> {
+        let wrapped = BufferingDatagramTransport(inner: innerTransport)
+        let client: QUICEngineClient<BufferingDatagramTransport<Transport>, Timer>
+        do {
+            client = try QUICEngineClient(
+                configuration: configuration,
+                transport: wrapped,
+                timer: timer,
+                peer: peer,
+                peerValidator: nil
+            )
+        } catch {
+            // `error` binds as `QUICEngineError`; bare catch (no cross-type `as`).
+            throw .quicFeatureUnsupported
+        }
         let runTask = Task { await client.run() }
         let deadline = timer.monotonicNanos()
             &+ (handshakeTimeoutNanos ?? Self.defaultHandshakeTimeoutNanos)
@@ -212,8 +252,9 @@ public final class QUICConnection<
     private let timer: Timer
     private let runTask: Task<Void, Never>
 
-    /// The remote peer's verified PeerID multihash (from its RPK certificate), or
-    /// empty when the peer is unauthenticated on this path (server-side, no mTLS).
+    /// The remote peer's verified PeerID multihash (from its RPK certificate). On
+    /// BOTH the dial and the accept (mTLS) path this is the cryptographically-
+    /// verified peer identity — never an unverified / anonymous value.
     public let remotePeerIDMultihash: [UInt8]
 
     /// Whether this side dialed (`true`) or accepted (`false`) — determines which
