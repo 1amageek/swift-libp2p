@@ -207,7 +207,9 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
                 discard(webrtcConn)
                 return
             }
-            remotePeerID = try LibP2PCertificate.extractPeerID(from: certDER)
+            // swift-webrtc surfaces the DER as `[UInt8]`; bridge to the
+            // `Data`-based certificate parser at this boundary (byte-identical).
+            remotePeerID = try LibP2PCertificate.extractPeerID(from: Data(certDER))
         } catch {
             logger.warning("Rejecting inbound WebRTC connection: certificate PeerID extraction failed: \(error)")
             discard(webrtcConn)

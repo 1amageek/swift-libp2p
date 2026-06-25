@@ -206,7 +206,9 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
                 }
                 let remotePeerID: PeerID
                 do {
-                    remotePeerID = try LibP2PCertificate.extractPeerID(from: certDER)
+                    // swift-webrtc surfaces the DER as `[UInt8]`; bridge to the
+                    // `Data`-based certificate parser here (byte-identical).
+                    remotePeerID = try LibP2PCertificate.extractPeerID(from: Data(certDER))
                 } catch {
                     throw WebRTCTransportError.certificateInvalid("PeerID extraction failed: \(error)")
                 }
@@ -220,9 +222,10 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
                     )
                 }
 
-                // Build local address from bound socket
+                // Build local address from bound socket. swift-webrtc surfaces the
+                // multihash as `[UInt8]`; bridge to the `Data`-based multiaddr API.
                 let localAddress = channel.localAddress?.toWebRTCDirectMultiaddr(
-                    certhash: certificate.fingerprint.multihash
+                    certhash: Data(certificate.fingerprint.multihash)
                 )
 
                 let muxed = WebRTCMuxedConnection(
@@ -300,9 +303,11 @@ public final class WebRTCTransport: SecuredTransport, Sendable {
         // Create socket without onNewPeer (set after construction to avoid circular reference)
         let listenSocket = WebRTCUDPSocket(channel: channel)
 
-        // Compute local address with certhash from the bound socket
+        // Compute local address with certhash from the bound socket. swift-webrtc
+        // surfaces the multihash as `[UInt8]`; bridge to the `Data`-based
+        // multiaddr APIs here (byte-identical).
         let boundAddress = channel.localAddress
-        let certhash = certificate.fingerprint.multihash
+        let certhash = Data(certificate.fingerprint.multihash)
         let localAddress: Multiaddr
         if let bound = boundAddress?.toWebRTCDirectMultiaddr(certhash: certhash) {
             localAddress = bound

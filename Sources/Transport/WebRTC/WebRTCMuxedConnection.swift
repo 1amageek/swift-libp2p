@@ -174,7 +174,9 @@ public final class WebRTCMuxedConnection: MuxedConnection, Sendable {
         guard let certDER = webrtcConnection.remoteCertificateDER else {
             return nil
         }
-        let peerID = try LibP2PCertificate.extractPeerID(from: certDER)
+        // swift-webrtc surfaces the DER as `[UInt8]`; bridge to the `Data`-based
+        // certificate parser at this boundary (byte-identical, no behavior change).
+        let peerID = try LibP2PCertificate.extractPeerID(from: Data(certDER))
         updateRemotePeer(peerID)
         return peerID
     }
