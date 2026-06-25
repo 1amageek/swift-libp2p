@@ -89,6 +89,11 @@ public final class YamuxConnection: MuxedConnection, Sendable {
         state.withLock { !$0.streams.isEmpty }
     }
 
+    /// Internal diagnostic used by tests to wait for deterministic accept parking.
+    var pendingAcceptCountForTesting: Int {
+        state.withLock { $0.pendingAccepts.count }
+    }
+
     private let underlying: any SecuredConnection
     private let isInitiator: Bool
     let configuration: YamuxConfiguration
@@ -263,25 +268,34 @@ public final class YamuxConnection: MuxedConnection, Sendable {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<MuxedStream, Error>) in
-                state.withLock { state in
+                let immediateError: Error? = state.withLock { state in
                     if state.isClosed {
-                        continuation.resume(throwing: YamuxError.connectionClosed)
-                        return
+                        return YamuxError.connectionClosed
                     }
-                    // Fast path: the task was already cancelled before parking.
-                    // Resume with cancellation and never register, so neither
-                    // delivery, cancel, nor shutdown finds anything to resume.
-                    if Task.isCancelled {
-                        continuation.resume(throwing: CancellationError())
-                        return
-                    }
+
                     state.pendingAccepts.append((id: id, continuation: continuation))
+
+                    // Close the race where cancellation fires before or during
+                    // registration. The waiter is registered first, then removed
+                    // under the same lock if the task is already cancelled.
+                    if Task.isCancelled {
+                        if let index = state.pendingAccepts.firstIndex(where: { $0.id == id }) {
+                            _ = state.pendingAccepts.remove(at: index)
+                        }
+                        return CancellationError()
+                    }
+
+                    return nil
+                }
+
+                if let immediateError {
+                    continuation.resume(throwing: immediateError)
                 }
             }
         } onCancel: {
-            // Hop off the cancellation handler so the Mutex removal/resume is
-            // serialized with delivery and shutdown.
-            Task { self.cancelPendingAccept(id) }
+            // Remove synchronously so `cancel()` cannot return while this waiter
+            // is still eligible for inbound-stream delivery.
+            self.cancelPendingAccept(id)
         }
     }
 

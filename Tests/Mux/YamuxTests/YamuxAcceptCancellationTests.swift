@@ -39,21 +39,51 @@ struct YamuxAcceptCancellationTests {
     /// a prompt failure instead of stalling until the suite-level time limit.
     private func withDeadline<T: Sendable>(
         _ timeout: Duration,
+        onTimeout: @escaping @Sendable () async -> Void = {},
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
         try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask { try await operation() }
             group.addTask {
                 try await Task.sleep(for: timeout)
+                await onTimeout()
                 throw DeadlineError.timedOut
             }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            do {
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
         }
     }
 
     private enum DeadlineError: Error { case timedOut }
+
+    private func waitForPendingAccepts(
+        _ expectedCount: Int,
+        in connection: YamuxConnection,
+        timeout: Duration = .seconds(5)
+    ) async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        while connection.pendingAcceptCountForTesting < expectedCount {
+            if start.duration(to: clock.now) >= timeout {
+                throw DeadlineError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    private static func closeForDeadline(_ connection: YamuxConnection) async {
+        do {
+            try await connection.close()
+        } catch {
+            Issue.record("deadline cleanup failed: \(error)")
+        }
+    }
 
     /// A task cancelled while parked in `acceptStream()` (connection still open)
     /// throws `CancellationError` promptly and frees its slot, while a second,
@@ -75,26 +105,8 @@ struct YamuxAcceptCancellationTests {
             try await connection.acceptStream()
         }
 
-        // Give both acceptors time to actually park inside the connection. There
-        // is no public hook to observe pending-accept depth, so yield generously.
-        for _ in 0..<50 { await Task.yield() }
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitForPendingAccepts(2, in: connection)
 
-        // Cancel the first acceptor: it must throw CancellationError promptly,
-        // not hang and not return a stream.
-        cancelledAccept.cancel()
-        await #expect(throws: CancellationError.self) {
-            _ = try await self.withDeadline(.seconds(5)) {
-                try await cancelledAccept.value
-            }
-        }
-
-        // The connection is still open (the cancel did not close it).
-        #expect(connection.hasActiveStreams == false)
-        #expect(mock.wasClosed == false)
-
-        // Inject a single valid inbound SYN (even ID = from responder). It must
-        // be delivered to the surviving acceptor — never to the cancelled one.
         let synFrame = YamuxFrame(
             type: .data,
             flags: .syn,
@@ -102,9 +114,28 @@ struct YamuxAcceptCancellationTests {
             length: 0,
             data: nil
         )
+
+        // Cancel the first acceptor, then immediately inject a stream. The
+        // cancellation handler must have removed the first waiter before
+        // `cancel()` returns, otherwise this stream can be mis-delivered to the
+        // cancelled task.
+        cancelledAccept.cancel()
         mock.injectInbound(synFrame.encode())
 
-        let delivered = try await withDeadline(.seconds(5)) {
+        await #expect(throws: CancellationError.self) {
+            _ = try await self.withDeadline(.seconds(5), onTimeout: {
+                await Self.closeForDeadline(connection)
+            }) {
+                try await cancelledAccept.value
+            }
+        }
+
+        // The connection is still open (the cancel did not close it).
+        #expect(mock.wasClosed == false)
+
+        let delivered = try await withDeadline(.seconds(5), onTimeout: {
+            await Self.closeForDeadline(connection)
+        }) {
             try await survivingAccept.value
         }
         #expect(delivered.id == 2)
@@ -128,7 +159,9 @@ struct YamuxAcceptCancellationTests {
         }
 
         await #expect(throws: CancellationError.self) {
-            _ = try await self.withDeadline(.seconds(5)) {
+            _ = try await self.withDeadline(.seconds(5), onTimeout: {
+                await Self.closeForDeadline(connection)
+            }) {
                 try await preCancelled.value
             }
         }
@@ -138,8 +171,7 @@ struct YamuxAcceptCancellationTests {
         let realAccept = Task { () -> MuxedStream in
             try await connection.acceptStream()
         }
-        for _ in 0..<50 { await Task.yield() }
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitForPendingAccepts(1, in: connection)
 
         let synFrame = YamuxFrame(
             type: .data,
@@ -150,7 +182,9 @@ struct YamuxAcceptCancellationTests {
         )
         mock.injectInbound(synFrame.encode())
 
-        let delivered = try await withDeadline(.seconds(5)) {
+        let delivered = try await withDeadline(.seconds(5), onTimeout: {
+            await Self.closeForDeadline(connection)
+        }) {
             try await realAccept.value
         }
         #expect(delivered.id == 2)
@@ -169,13 +203,14 @@ struct YamuxAcceptCancellationTests {
         let parkedAccept = Task { () -> MuxedStream in
             try await connection.acceptStream()
         }
-        for _ in 0..<50 { await Task.yield() }
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitForPendingAccepts(1, in: connection)
 
         try await connection.close()
 
         do {
-            _ = try await withDeadline(.seconds(5)) {
+            _ = try await withDeadline(.seconds(5), onTimeout: {
+                await Self.closeForDeadline(connection)
+            }) {
                 try await parkedAccept.value
             }
             Issue.record("parked accept should not return a stream after close")
