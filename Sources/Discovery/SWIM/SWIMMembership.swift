@@ -66,9 +66,12 @@ public actor SWIMMembership: DiscoveryService {
     public let localPeerID: PeerID
     private let configuration: SWIMMembershipConfiguration
     private var transport: SWIMTransportAdapter?
-    // The SWIM redesign renamed the engine `SWIMInstance` -> `SWIMCluster`
-    // (same init shape + start/shutdown/join/leave/members/aliveCount/events API).
-    private var swim: SWIMCluster?
+    // The SWIM redesign renamed the engine `SWIMInstance` -> `SWIMCluster` and made
+    // it generic over its injected transport + clock (the `any` existentials were
+    // the last Embedded blocker). We pin the concrete arguments here: our
+    // `SWIMTransportAdapter` over the host `SystemSWIMClock`. The
+    // start/shutdown/join/leave/members/aliveCount/events API is unchanged.
+    private var swim: SWIMCluster<SWIMTransportAdapter, SystemSWIMClock>?
 
     private var isStarted = false
     private var sequenceNumber: UInt64 = 0
@@ -125,11 +128,14 @@ public actor SWIMMembership: DiscoveryService {
             )
         )
 
-        // Create SWIM cluster engine
+        // Create SWIM cluster engine. `SWIMCluster` is generic over its clock;
+        // inject the host `SystemSWIMClock` explicitly since `Clock` cannot be
+        // inferred from the call (Swift has no default generic parameters).
         let swim = SWIMCluster(
             localMember: localMember,
             config: configuration.swimConfig,
-            transport: transport
+            transport: transport,
+            clock: SystemSWIMClock()
         )
         self.swim = swim
 

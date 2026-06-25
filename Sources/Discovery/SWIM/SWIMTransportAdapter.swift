@@ -97,9 +97,39 @@ public final class SWIMTransportAdapter: SWIMTransport, Sendable {
     // MARK: - SWIMTransport Protocol
 
     /// Sends a SWIM message to a member.
-    public func send(_ message: SWIMMessage, to member: MemberID) async throws {
-        let data = try SWIMMessageCodec.encode(message)
-        try await udpTransport.send(data, to: SocketAddress(hostPort: member.address))
+    ///
+    /// Reports failures through the protocol's typed ``SWIMTransportError`` rather
+    /// than propagating the raw `SWIMCodecError` / NIO error: the SWIM orchestrator
+    /// now expects a single typed transport error (and untyped `throws` is rejected
+    /// under Embedded). Each underlying failure is mapped into
+    /// ``SWIMTransportError/sendFailed(reason:)`` with the original error preserved
+    /// in the reason string — never silently dropped.
+    public func send(_ message: SWIMMessage, to member: MemberID) async throws(SWIMTransportError) {
+        let data: Data
+        do {
+            data = try SWIMMessageCodec.encode(message)
+        } catch {
+            // `encode` is typed-throws `SWIMCodecError`; surface it as a transport
+            // failure with the original codec error preserved.
+            throw SWIMTransportError.sendFailed(reason: "Encode failed: \(error)")
+        }
+
+        let address: SocketAddress
+        do {
+            address = try SocketAddress(hostPort: member.address)
+        } catch {
+            // `SocketAddress(hostPort:)` throws an untyped NIO/address error; map it.
+            throw SWIMTransportError.sendFailed(
+                reason: "Invalid address '\(member.address)': \(error)"
+            )
+        }
+
+        do {
+            try await udpTransport.send(data, to: address)
+        } catch {
+            // `udpTransport.send` throws an untyped NIO error; map it.
+            throw SWIMTransportError.sendFailed(reason: "UDP send failed: \(error)")
+        }
     }
 
     // MARK: - Private Methods
