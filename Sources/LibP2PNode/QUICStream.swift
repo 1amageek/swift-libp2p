@@ -42,6 +42,13 @@ public final class QUICStream<
             if let bytes = client.readStream(streamID), !bytes.isEmpty {
                 return bytes
             }
+            // Stream-level FIN: the peer half-closed and all bytes are drained. An
+            // empty return signals clean end-of-stream (EOF) to the caller. This is
+            // distinct from the whole connection closing — a long-lived connection
+            // can carry many streams, each ending independently.
+            if client.streamReadFinished(streamID) {
+                return []
+            }
             if client.isClosed {
                 // Clean end-of-stream when the connection is gone with nothing
                 // buffered. An empty return signals the remote half-closed (FIN).

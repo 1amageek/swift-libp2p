@@ -196,6 +196,9 @@ let package = Package(
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
                 .product(name: "P2PCoreTransport", package: "swift-p2p-core"),
+                // `LibP2PIdentity` PeerID derivation, for the Identify binding
+                // cross-check in the Ping + Identify live test.
+                .product(name: "P2PCoreDER", package: "swift-p2p-core"),
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
                 // The QUIC engine facade + cores the live loopback handshake test
                 // drives (`QUICEngineClient` over a loopback `DatagramTransport`).

@@ -46,6 +46,22 @@ public struct MultistreamNegotiator<
     ///   `na` or a different protocol, ``NodeError/negotiationTimedOut`` on
     ///   deadline, ``NodeError/negotiationProtocolError`` on a malformed line.
     public func dial(_ proto: String) async throws(NodeError) {
+        _ = try await dialReturningResidual(proto)
+    }
+
+    /// Proposes `proto` as the dialer and returns any *residual* application bytes.
+    ///
+    /// Identical to ``dial(_:)`` but returns the bytes the peer sent *after* the
+    /// protocol echo that this negotiator over-read into its buffer. A peer that
+    /// writes its application payload coalesced with the negotiation echo (e.g.
+    /// Identify, which the server writes immediately after accepting) would
+    /// otherwise have those leading bytes silently dropped when the negotiator is
+    /// discarded. The caller MUST feed the residual to the protocol handler before
+    /// the next stream read (see ``BufferedMuxedStream``) — fail-closed against
+    /// losing application bytes.
+    ///
+    /// - Returns: The residual application bytes (empty if the peer sent none yet).
+    public func dialReturningResidual(_ proto: String) async throws(NodeError) -> [UInt8] {
         let deadline = timer.monotonicNanos() &+ timeoutNanos
 
         // Send header + proposed protocol in one flush.
@@ -66,7 +82,9 @@ public struct MultistreamNegotiator<
             }
             // Protocol-id echo.
             if token == proto {
-                return
+                // Anything still buffered is the peer's application payload that
+                // arrived coalesced with the echo — hand it back, never drop it.
+                return buffer
             }
             // `na` or any other id means the listener did not accept our proposal.
             throw .negotiationRejected
@@ -86,6 +104,25 @@ public struct MultistreamNegotiator<
     ///   ``NodeError/negotiationProtocolError`` on a malformed line,
     ///   ``NodeError/negotiationRejected`` if the stream ends with no match.
     public func listen(supported: [String]) async throws(NodeError) -> String {
+        let (proto, _) = try await listenReturningResidual(supported: supported)
+        return proto
+    }
+
+    /// Confirms the header as the listener, accepts the first offered protocol id in
+    /// `supported`, and returns the agreed id plus any *residual* application bytes.
+    ///
+    /// Identical to ``listen(supported:)`` but also returns the bytes the dialer
+    /// sent *after* the accepted protocol id that this negotiator over-read. A
+    /// dialer that writes its request payload coalesced with the protocol id would
+    /// otherwise have those leading bytes silently dropped. The caller MUST feed the
+    /// residual to the protocol handler before the next read — fail-closed against
+    /// losing application bytes.
+    ///
+    /// - Returns: The agreed protocol id and the residual application bytes (empty
+    ///   if the dialer sent none yet).
+    public func listenReturningResidual(
+        supported: [String]
+    ) async throws(NodeError) -> (proto: String, residual: [UInt8]) {
         let deadline = timer.monotonicNanos() &+ timeoutNanos
 
         var buffer = [UInt8]()
@@ -112,7 +149,9 @@ public struct MultistreamNegotiator<
             }
             if Self.contains(supported, offered) {
                 try await connection.write(MultistreamCodec.encode(offered))
-                return offered
+                // Anything still buffered is the dialer's application payload that
+                // arrived coalesced with the id — hand it back, never drop it.
+                return (offered, buffer)
             }
             // Decline this offer; the dialer may propose another.
             try await connection.write(MultistreamCodec.encode("na"))

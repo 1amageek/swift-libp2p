@@ -99,4 +99,33 @@ public enum NodeError: Error, Sendable, Equatable {
 
     /// The negotiation deadline elapsed before a complete exchange.
     case negotiationTimedOut
+
+    // MARK: - Ping (`/ipfs/ping/1.0.0`)
+
+    /// A ping echo did not byte-match the 32 bytes the client sent.
+    /// FAIL-CLOSED: a mismatched echo is never accepted as a successful ping.
+    case pingMismatch
+
+    /// A ping echo ended (stream FIN / close) before the full 32-byte frame
+    /// arrived. FAIL-CLOSED: a truncated echo is a failure, never a partial pass.
+    case pingTruncated
+
+    /// The entropy seam returned fewer than the 32 bytes the ping payload
+    /// requires. FAIL-CLOSED: the node never sends a short / predictable ping.
+    case pingEntropyFailed
+
+    // MARK: - Identify (`/ipfs/id/1.0.0`)
+
+    /// The Identify protobuf failed to decode (truncated / malformed framing).
+    case identifyDecodeFailed
+
+    /// The peer's Identify message carried no `publicKey` field, so its advertised
+    /// identity cannot be bound to the handshake PeerID. FAIL-CLOSED.
+    case identifyMissingPublicKey
+
+    /// The PeerID derived from the Identify-advertised `publicKey` did not match the
+    /// cryptographically-verified PeerID from the QUIC TLS 1.3 handshake.
+    /// FAIL-CLOSED: the handshake identity always wins; an Identify message can
+    /// NEVER re-assert a different identity than the one the handshake proved.
+    case identifyPeerIDMismatch
 }
