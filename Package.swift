@@ -31,6 +31,9 @@ let package = Package(
         .library(name: "LibP2PCore", targets: ["LibP2PCore"]),
         .library(name: "P2PCore", targets: ["P2PCore"]),
 
+        // MARK: - Embedded node (Embedded-clean [UInt8] data path; dual-build)
+        .library(name: "LibP2PNodeEmbedded", targets: ["LibP2PNodeEmbedded"]),
+
         // MARK: - Transport
         .library(name: "P2PTransport", targets: ["P2PTransport"]),
         .library(name: "P2PTransportTCP", targets: ["P2PTransportTCP"]),
@@ -103,6 +106,10 @@ let package = Package(
         .package(path: "../swift-tls"),
         .package(path: "../swift-webrtc"),
         .package(path: "../swift-p2p-core"),
+        // The unified crypto provider (`DefaultCryptoProvider`: host swift-crypto /
+        // Embedded BoringSSL). Required by the Embedded node target to specialise
+        // the Embedded-clean Noise / QUIC facade at a concrete crypto seam.
+        .package(path: "../swift-p2p-crypto"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -143,6 +150,44 @@ let package = Package(
             name: "P2PCoreTests",
             dependencies: ["P2PCore", "LibP2PCore"],
             path: "Tests/Core/P2PCoreTests"
+        ),
+
+        // MARK: - Embedded node (Embedded-clean [UInt8] data path)
+        // The minimal Embedded libp2p node's data-path foundation: an Embedded-
+        // clean `[UInt8]` transport→security→mux→negotiation slice that compiles
+        // under Embedded Swift (`P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swift
+        // build --target LibP2PNodeEmbedded -c release`). It is ADDITIVE: the host
+        // `P2P` / `Swarm` / host transports stay untouched and host-only. Builds
+        // from the Embedded-clean cores only — `LibP2PCore` (Noise XX / multistream
+        // codecs), the `QUIC` `[UInt8]` engine facade, and the crypto seam.
+        .target(
+            name: "LibP2PNodeEmbedded",
+            dependencies: [
+                "LibP2PCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                .product(name: "P2PCoreTransport", package: "swift-p2p-core"),
+                // The unified crypto provider (`DefaultCryptoProvider`).
+                .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
+                // The QUIC `[UInt8]` engine facade (`QUICEngineClient`).
+                .product(name: "QUIC", package: "swift-quic"),
+                .product(name: "QUICConnectionEngineCore", package: "swift-quic"),
+                .product(name: "QUICConnectionCore", package: "swift-quic"),
+                .product(name: "QUICWire", package: "swift-quic"),
+            ],
+            path: "Sources/Embedded/LibP2PNodeEmbedded",
+            swiftSettings: coreSettings
+        ),
+        .testTarget(
+            name: "LibP2PNodeEmbeddedTests",
+            dependencies: [
+                "LibP2PNodeEmbedded",
+                "LibP2PCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
+            ],
+            path: "Tests/Embedded/LibP2PNodeEmbeddedTests"
         ),
 
         // MARK: - Transport (protocol definitions only, no NIO dependency)
