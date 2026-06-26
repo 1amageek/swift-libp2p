@@ -74,6 +74,14 @@ public enum QUICTLSHandshakeDriver<
     /// the `QUICTLSCore` wire enum.
     private static var certVerifyScheme: QUICTLSCore.SignatureScheme { .ecdsa_secp256r1_sha256 }
 
+    /// The `certificate_request_context` (RFC 8446 §4.3.2): the opaque value the
+    /// server places in its CertificateRequest and the client MUST echo verbatim in
+    /// its Certificate (§4.4.2). It is the SINGLE source of truth for both the
+    /// server's send and the server's echo-validation. It is empty: a non-empty
+    /// context is only used for post-handshake authentication (§4.6.2), which this
+    /// in-handshake mTLS path does not perform.
+    private static var handshakeCertificateRequestContext: [UInt8] { [] }
+
     // MARK: - Client
 
     /// Drives the client side of the handshake to completion over `client`.
@@ -135,6 +143,9 @@ public enum QUICTLSHandshakeDriver<
         var authMachine: QUICClientAuthMachine<C>? = nil
         var peerLeafKeyBytes: [UInt8]? = nil
         var peerIDMultihash: [UInt8]? = nil
+        // The server's certificate_request_context, captured when the CertificateRequest
+        // is processed and echoed verbatim in the client Certificate (RFC 8446 §4.4.2).
+        var certificateRequestContext: [UInt8] = []
 
         while true {
             if timer.monotonicNanos() >= deadlineNanos {
@@ -202,7 +213,8 @@ public enum QUICTLSHandshakeDriver<
                     auth: &auth,
                     reassembler: &reassembler,
                     peerLeafKeyBytes: &peerLeafKeyBytes,
-                    peerIDMultihash: &peerIDMultihash
+                    peerIDMultihash: &peerIDMultihash,
+                    certificateRequestContext: &certificateRequestContext
                 )
                 authMachine = auth
                 if outcome == .serverFinishedProcessed {
@@ -234,7 +246,8 @@ public enum QUICTLSHandshakeDriver<
                     let clientFlightBytes = try produceClientAuthFlight(
                         auth: &auth,
                         identity: identity,
-                        wallClock: wallClock
+                        wallClock: wallClock,
+                        certificateRequestContext: certificateRequestContext
                     )
                     clientFlight.append(contentsOf: clientFlightBytes)
                     // Produce the client Finished BEFORE installing 1-RTT write keys —
@@ -398,6 +411,13 @@ public enum QUICTLSHandshakeDriver<
                     certificate = try Certificate.decode(from: message.content)
                 } catch {
                     throw .quicHandshakeFailed
+                }
+                // RFC 8446 §4.4.2: the client MUST echo the server's
+                // certificate_request_context verbatim. Validate it equals what the
+                // server sent (§4.3.2 empty for a normal handshake); a mismatch is a
+                // protocol violation — fail-closed.
+                guard certificate.certificateRequestContext == Self.handshakeCertificateRequestContext else {
+                    throw .quicHandshakePeerVerificationFailed
                 }
                 let presented = !certificate.isEmpty
                 // A libp2p client MUST present its RPK leaf — an empty client
@@ -582,7 +602,8 @@ public enum QUICTLSHandshakeDriver<
         auth: inout QUICClientAuthMachine<C>,
         reassembler: inout HandshakeReassembler,
         peerLeafKeyBytes: inout [UInt8]?,
-        peerIDMultihash: inout [UInt8]?
+        peerIDMultihash: inout [UInt8]?,
+        certificateRequestContext: inout [UInt8]
     ) throws(NodeError) -> ClientAuthOutcome {
         // Process every complete Handshake-level message currently available, in
         // order, until we either run out or process the server Finished.
@@ -633,6 +654,10 @@ public enum QUICTLSHandshakeDriver<
                 guard Self.certificateRequestOffers(certRequest, scheme: certVerifyScheme) else {
                     throw .quicHandshakePeerVerificationFailed
                 }
+                // RFC 8446 §4.4.2: the client's Certificate MUST echo this exact
+                // certificate_request_context. Capture it verbatim so the client
+                // auth flight echoes it (empty in a normal handshake per §4.3.2).
+                certificateRequestContext = certRequest.certificateRequestContext
                 do {
                     try auth.ingestCertificateRequest(rawMessageBytes: message.raw)
                 } catch {
@@ -733,7 +758,8 @@ public enum QUICTLSHandshakeDriver<
     private static func produceClientAuthFlight(
         auth: inout QUICClientAuthMachine<C>,
         identity: NodeIdentity<C>,
-        wallClock: Clock
+        wallClock: Clock,
+        certificateRequestContext: [UInt8]
     ) throws(NodeError) -> [UInt8] {
         // 1. Build the client's libp2p RPK certificate (fresh ephemeral P-256 leaf
         //    + identity-key proof-of-possession). The cert's notBefore/notAfter MUST
@@ -744,12 +770,13 @@ public enum QUICTLSHandshakeDriver<
             identity: identity, nowEpochSeconds: nowSeconds
         )
 
-        // 2. Encode + fold the client Certificate. The certificate_request_context is
-        //    empty (the server's CertificateRequest carried an empty context).
+        // 2. Encode + fold the client Certificate, echoing the server's
+        //    certificate_request_context VERBATIM (RFC 8446 §4.4.2). It is captured
+        //    from the received CertificateRequest (empty in a normal handshake).
         let certificateBytes: [UInt8]
         do {
             certificateBytes = try Certificate(
-                certificateRequestContext: [],
+                certificateRequestContext: certificateRequestContext,
                 certificates: [certificate.certificateDER]
             ).encodeAsHandshakeBytes()
         } catch {
@@ -1061,7 +1088,7 @@ public enum QUICTLSHandshakeDriver<
                 supportedSignatureAlgorithms: signatureAlgorithms
             )
             return try CertificateRequest(
-                certificateRequestContext: [],
+                certificateRequestContext: Self.handshakeCertificateRequestContext,
                 extensions: [.signatureAlgorithms(sigAlgsExtension)]
             ).encodeAsHandshakeBytes()
         } catch {
