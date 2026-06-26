@@ -215,18 +215,28 @@ public enum QUICTLSHandshakeDriver<
                     // CertificateVerify, if the server requested client auth, then
                     // Finished). All three messages ride the HANDSHAKE level, so the
                     // 1-RTT (application) write keys are installed AFTER this flight.
-                    var clientFlight = [UInt8]()
-                    if auth.clientCertificateRequested {
-                        // Mutual auth: present the client's libp2p RPK certificate and
-                        // prove possession (CertificateVerify), folded into the
-                        // transcript BEFORE producing the client Finished.
-                        let clientFlightBytes = try produceClientAuthFlight(
-                            auth: &auth,
-                            identity: identity,
-                            wallClock: wallClock
-                        )
-                        clientFlight.append(contentsOf: clientFlightBytes)
+                    // libp2p mandates MUTUAL authentication: the dialer MUST present and
+                    // prove its own libp2p RPK certificate so the listener binds the
+                    // dialer's verified PeerID. The generic TLS auth machine permits
+                    // OPTIONAL client auth (a client presents its certificate only when
+                    // the server sent a CertificateRequest); libp2p does NOT. A server
+                    // that completes its flight WITHOUT a CertificateRequest is not a
+                    // compliant libp2p peer — fail-closed here rather than silently
+                    // establishing a one-way-authenticated connection in which we never
+                    // proved who we are. (The symmetric server-side requirement is
+                    // enforced in `runServer`, which refuses an empty/absent client cert.)
+                    guard auth.clientCertificateRequested else {
+                        throw .quicHandshakePeerVerificationFailed
                     }
+                    // Present the client's RPK certificate + CertificateVerify (proof of
+                    // possession), folded into the transcript BEFORE the client Finished.
+                    var clientFlight = [UInt8]()
+                    let clientFlightBytes = try produceClientAuthFlight(
+                        auth: &auth,
+                        identity: identity,
+                        wallClock: wallClock
+                    )
+                    clientFlight.append(contentsOf: clientFlightBytes)
                     // Produce the client Finished BEFORE installing 1-RTT write keys —
                     // but the client Finished is sent at the HANDSHAKE level, so install
                     // app keys after the whole handshake flight is queued.

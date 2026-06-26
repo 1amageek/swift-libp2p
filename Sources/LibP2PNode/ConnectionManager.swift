@@ -25,25 +25,21 @@ import P2PCoreTransport    // DatagramTransport
 /// Keyed by the verified peer PeerID multihash (`[UInt8]`, which is `Hashable`).
 /// A dial that finds an existing live connection to the same peer REUSES it rather
 /// than opening a second one; inbound (accepted) connections are tracked the same
-/// way once their peer is known (or in an anonymous list when the minimal server
-/// path leaves the peer unauthenticated — see ``QUICTLSHandshakeDriver`` server
-/// notes). `closeAll()` tears every tracked connection down.
+/// way, keyed by their mTLS-verified PeerID — there is NO anonymous/unauthenticated
+/// entry (the QUIC path is always mutually authenticated). `drainAll()` tears every
+/// tracked connection down.
 public actor ConnectionManager<
     Transport: DatagramTransport,
     Timer: AsyncTimer
 > {
 
-    /// Connections whose peer PeerID is known (dialed, or accepted-with-mTLS).
+    /// Connections keyed by their handshake-verified peer PeerID multihash. Every
+    /// tracked peer is mTLS-verified; there is no anonymous/unauthenticated entry
+    /// (callers fail-closed on an empty PeerID before registering — see `register`).
     private var byPeer: [[UInt8]: QUICConnection<Transport, Timer>]
-
-    /// Accepted connections whose peer is unauthenticated on the minimal server
-    /// path (no mTLS this slice). Tracked so `closeAll()` still tears them down —
-    /// never leaked.
-    private var anonymousInbound: [QUICConnection<Transport, Timer>]
 
     public init() {
         self.byPeer = [:]
-        self.anonymousInbound = []
     }
 
     // MARK: - Lookup
@@ -77,24 +73,28 @@ public actor ConnectionManager<
 
     // MARK: - Registration
 
-    /// Registers a connection under its verified `peerID`.
+    /// Registers a connection under its handshake-verified `peerID`.
     ///
     /// If a different live connection to the same peer already exists it is REPLACED
     /// (the caller — `dial` — only registers after deciding to open a new one); the
     /// previous connection is returned so the caller can tear it down off-isolation
-    /// (no I/O under the actor's lock other than shutdown). An empty `peerID`
-    /// (unauthenticated inbound) is tracked anonymously instead.
+    /// (no I/O under the actor's lock other than shutdown).
     ///
+    /// - Precondition: `peerID` is the mTLS-verified, NON-EMPTY peer PeerID. Callers
+    ///   (`dial` / `listen` / `serve`) already fail-closed on an empty PeerID — close
+    ///   the connection and reject — BEFORE calling. An empty `peerID` is refused here
+    ///   too (never tracked) so the "verified PeerID never anonymous" invariant holds
+    ///   structurally at the storage layer, not just by caller discipline.
     /// - Returns: the displaced connection to close, or `nil` if none.
     @discardableResult
     public func register(
         _ connection: QUICConnection<Transport, Timer>,
         peerID: [UInt8]
     ) -> QUICConnection<Transport, Timer>? {
-        guard !peerID.isEmpty else {
-            anonymousInbound.append(connection)
-            return nil
-        }
+        // Fail-closed: never hold an unverified (empty-PeerID) connection. Unreachable
+        // given the callers' guards; refusing here prevents a future caller from
+        // regressing the invariant into an anonymous entry.
+        guard !peerID.isEmpty else { return nil }
         let displaced = byPeer[peerID]
         byPeer[peerID] = connection
         return displaced
@@ -120,15 +120,11 @@ public actor ConnectionManager<
     /// section pattern, and lets the node close them concurrently.
     public func drainAll() -> [QUICConnection<Transport, Timer>] {
         var all = [QUICConnection<Transport, Timer>]()
-        all.reserveCapacity(byPeer.count + anonymousInbound.count)
+        all.reserveCapacity(byPeer.count)
         for (_, connection) in byPeer {
             all.append(connection)
         }
-        for connection in anonymousInbound {
-            all.append(connection)
-        }
         byPeer.removeAll()
-        anonymousInbound.removeAll()
         return all
     }
 }
