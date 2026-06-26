@@ -1,5 +1,5 @@
 {
-  "originHash" : "c2165c58f32214e1a3a820bfe1934e45c946b4d1071f176a505eafb9b203b7ba",
+  "originHash" : "c35e9024cb27cc75cfa6bdbb537212b8600b5f38612a5835682bd0dc275ccaaf",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-mDNS.git",
       "state" : {
-        "revision" : "276f395309ada0c9ef11f3f271fc0b1f960914bf",
-        "version" : "1.2.1"
+        "revision" : "a55f20099a7b65649b3d0be3b4285a9d86734d9b",
+        "version" : "1.2.2"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-nio-udp.git",
       "state" : {
-        "revision" : "77b7a79fa492af445898c41ce6ddcfcfd1e93fe9",
-        "version" : "1.1.2"
+        "revision" : "8836ebcab91f3e945159e6706a2cb3eae79bdf4b",
+        "version" : "1.1.3"
       }
     },
     {
@@ -114,8 +114,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-quic.git",
       "state" : {
-        "revision" : "42c90c8de9bd9c1beac6030b43fcf6db244d1cc3",
-        "version" : "1.3.1"
+        "revision" : "efb806067548aba15da96ccdaf4ec42c94ec9b11",
+        "version" : "1.3.2"
       }
     },
     {
@@ -123,8 +123,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-SWIM.git",
       "state" : {
-        "revision" : "c011381618cff8cf70379188561e3ec8fa8dbe8f",
-        "version" : "1.2.1"
+        "revision" : "c835ce74cffae0767c602185527db1b536e0f34b",
+        "version" : "1.2.2"
       }
     },
     {
