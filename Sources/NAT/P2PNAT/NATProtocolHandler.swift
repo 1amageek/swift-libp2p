@@ -6,6 +6,9 @@ import Foundation
 /// Abstracts the differences between UPnP and NAT-PMP so that
 /// `NATPortMapper` can iterate over handlers without branching.
 protocol NATProtocolHandler: Sendable {
+    /// Returns whether this handler owns the given discovered gateway.
+    func canHandle(_ gateway: NATGatewayType) -> Bool
+
     /// Discovers a gateway using this protocol.
     func discoverGateway(configuration: NATPortMapperConfiguration) async throws -> NATGatewayType
 

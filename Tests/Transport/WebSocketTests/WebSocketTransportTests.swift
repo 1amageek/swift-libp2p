@@ -5,6 +5,7 @@ import NIOPosix
 import NIOEmbedded
 import NIOWebSocket
 import NIOSSL
+import P2PTestSupport
 @testable import P2PCore
 @testable import P2PTransport
 @testable import P2PTransportWebSocket
@@ -14,7 +15,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Basic Connection Tests
 
-    @Test("Basic dial and listen", .timeLimit(.minutes(1)))
+    @Test("Basic dial and listen", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBasicConnection() async throws {
         let transport = WebSocketTransport()
 
@@ -43,7 +44,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Bidirectional communication", .timeLimit(.minutes(1)))
+    @Test("Bidirectional communication", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBidirectionalCommunication() async throws {
         let transport = WebSocketTransport()
 
@@ -72,7 +73,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Multiple messages in sequence", .timeLimit(.minutes(1)))
+    @Test("Multiple messages in sequence", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testMultipleMessages() async throws {
         let transport = WebSocketTransport()
 
@@ -97,7 +98,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Large message transfer", .timeLimit(.minutes(1)))
+    @Test("Large message transfer", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testLargeMessage() async throws {
         let transport = WebSocketTransport()
 
@@ -124,7 +125,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Multiple Connection Tests
 
-    @Test("Multiple connections to same listener", .timeLimit(.minutes(1)))
+    @Test("Multiple connections to same listener", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testMultipleConnections() async throws {
         let transport = WebSocketTransport()
 
@@ -161,7 +162,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Concurrent dial and accept", .timeLimit(.minutes(1)))
+    @Test("Concurrent dial and accept", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testConcurrentDialAndAccept() async throws {
         let transport = WebSocketTransport()
 
@@ -213,7 +214,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Close Behavior Tests
 
-    @Test("Close connection", .timeLimit(.minutes(1)))
+    @Test("Close connection", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testCloseConnection() async throws {
         let transport = WebSocketTransport()
 
@@ -237,7 +238,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Write after close throws error", .timeLimit(.minutes(1)))
+    @Test("Write after close throws error", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWriteAfterClose() async throws {
         let transport = WebSocketTransport()
 
@@ -258,7 +259,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Listener close rejects pending accept", .timeLimit(.minutes(1)))
+    @Test("Listener close rejects pending accept", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testListenerClose() async throws {
         let transport = WebSocketTransport()
 
@@ -281,7 +282,7 @@ struct WebSocketTransportTests {
         }
     }
 
-    @Test("Buffered data before close is readable", .timeLimit(.minutes(1)))
+    @Test("Buffered data before close is readable", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBufferedDataBeforeClose() async throws {
         let transport = WebSocketTransport()
 
@@ -510,7 +511,7 @@ struct WebSocketTransportTests {
         #expect(hasWSS6)
     }
 
-    @Test("Dial WSS to non-existent DNS server throws connection error", .timeLimit(.minutes(1)))
+    @Test("Dial WSS to non-existent DNS server throws connection error", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testDialWSSConnectionRefused() async throws {
         let transport = WebSocketTransport()
         let addr = Multiaddr(uncheckedProtocols: [.dns4("localhost"), .tcp(59999), .wss])
@@ -536,7 +537,7 @@ struct WebSocketTransportTests {
         }
     }
 
-    @Test("Dial WS supports dns4 hostname addresses", .timeLimit(.minutes(1)))
+    @Test("Dial WS supports dns4 hostname addresses", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testDialWSSupportsDNS4Hostname() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -565,11 +566,9 @@ struct WebSocketTransportTests {
     }
 
     // MARK: - Buffer Overflow Tests (DoS Protection)
-    // NOTE: WebSocket silently drops frames on overflow (unlike TCP which closes connection).
-    // This is a design inconsistency documented in CONTEXT.md.
 
-    @Test("WS buffer overflow silently drops frames without closing", .timeLimit(.minutes(1)))
-    func testWSBufferOverflowSilentlyDropsFrames() async throws {
+    @Test("WS buffer overflow closes connection fail-closed", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
+    func testWSBufferOverflowClosesConnectionFailClosed() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
 
@@ -584,31 +583,56 @@ struct WebSocketTransportTests {
         }
         try await Task.sleep(for: .milliseconds(200))
 
-        // This frame should be dropped (buffer full)
-        try await clientConn.write(ByteBuffer(string: "dropped"))
+        // This frame exceeds the unread buffer cap. The WebSocket transport must
+        // close the byte stream instead of dropping bytes and continuing.
+        try await clientConn.write(ByteBuffer(string: "overflow"))
         try await Task.sleep(for: .milliseconds(100))
 
-        // Drain the buffer by reading all 16 chunks
-        var totalRead = 0
-        while totalRead < 1024 * 1024 {
-            let data = try await serverConn.read()
-            totalRead += data.readableBytes
+        await #expect(throws: TransportError.self) {
+            _ = try await serverConn.read()
         }
-
-        // Connection should still be alive after overflow (unlike TCP)
-        let afterOverflow = ByteBuffer(string: "still alive")
-        try await clientConn.write(afterOverflow)
-        let received = try await serverConn.read()
-        #expect(String(buffer: received) == "still alive")
 
         try await clientConn.close()
         try await serverConn.close()
         try await listener.close()
     }
 
+    @Test("WS oversized frame closes even when a reader is waiting", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
+    func testWSOversizedFrameClosesWaitingReader() async throws {
+        let transport = WebSocketTransport()
+        let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
+
+        async let acceptTask = listener.accept()
+        let clientConn = try await transport.dial(listener.localAddress)
+        let serverConn = try await acceptTask
+        guard let serverWSConn = serverConn as? WebSocketConnection else {
+            Issue.record("Expected WebSocketConnection from WebSocket transport")
+            return
+        }
+
+        let readTask = Task { try await serverConn.read() }
+        try await Task.sleep(for: .milliseconds(30))
+
+        let oversizedCount = 1024 * 1024 + 1
+        let payload = ByteBuffer(repeating: 0x5A, count: oversizedCount)
+        serverWSConn.dataReceived(payload)
+
+        await #expect(throws: TransportError.self) {
+            _ = try await readTask.value
+        }
+
+        do {
+            try await clientConn.close()
+            try await serverConn.close()
+        } catch {
+            // The server side is expected to close fail-closed before cleanup.
+        }
+        try await listener.close()
+    }
+
     // MARK: - WebSocket Close Frame Handshake (RFC 6455)
 
-    @Test("Close frame handshake closes both sides", .timeLimit(.minutes(1)))
+    @Test("Close frame handshake closes both sides", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testCloseFrameHandshake() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -635,7 +659,7 @@ struct WebSocketTransportTests {
         try await listener.close()
     }
 
-    @Test("Server-initiated close frame handshake", .timeLimit(.minutes(1)))
+    @Test("Server-initiated close frame handshake", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testServerInitiatedCloseFrameHandshake() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -821,7 +845,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Idempotent Close
 
-    @Test("WS double close is idempotent", .timeLimit(.minutes(1)))
+    @Test("WS double close is idempotent", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWSIdempotentClose() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -838,7 +862,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Concurrent Read Waiters
 
-    @Test("WS concurrent reads are served FIFO", .timeLimit(.minutes(1)))
+    @Test("WS concurrent reads are served FIFO", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWSConcurrentReadsFIFO() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -875,7 +899,7 @@ struct WebSocketTransportTests {
 
     // MARK: - IPv6 WebSocket
 
-    @Test("IPv6 WebSocket connection", .timeLimit(.minutes(1)))
+    @Test("IPv6 WebSocket connection", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWSIPv6Connection() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "::1", port: 0))
@@ -925,7 +949,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Listener Close Resource Cleanup
 
-    @Test("WS listener close cleans up pending connections", .timeLimit(.minutes(1)))
+    @Test("WS listener close cleans up pending connections", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWSListenerCloseCleansPendingConnections() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -969,7 +993,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Buffer Then Error on Close
 
-    @Test("WS read returns buffered data then error on close", .timeLimit(.minutes(1)))
+    @Test("WS read returns buffered data then error on close", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWSReadReturnsBufferThenErrorOnClose() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -1000,7 +1024,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Accept After Close
 
-    @Test("Accept after close throws listenerClosed", .timeLimit(.minutes(1)))
+    @Test("Accept after close throws listenerClosed", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testAcceptAfterClose() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -1023,7 +1047,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Multiple Concurrent Accept Waiters Woken on Close
 
-    @Test("Multiple concurrent accept waiters all woken on close", .timeLimit(.minutes(1)))
+    @Test("Multiple concurrent accept waiters all woken on close", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testMultipleConcurrentAcceptWaitersAllWokenOnClose() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -1053,7 +1077,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Non-Upgrade (Plain HTTP) Request to WS Listener
 
-    @Test("Plain TCP connection to WS listener does not break accept loop", .timeLimit(.minutes(1)))
+    @Test("Plain TCP connection to WS listener does not break accept loop", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testPlainTCPConnectionToWSListener() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -1104,7 +1128,7 @@ struct WebSocketTransportTests {
 
     // MARK: - Listener Double Close
 
-    @Test("WS listener double close is idempotent", .timeLimit(.minutes(1)))
+    @Test("WS listener double close is idempotent", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWSListenerDoubleClose() async throws {
         let transport = WebSocketTransport()
         let listener = try await transport.listen(.ws(host: "127.0.0.1", port: 0))
@@ -1125,7 +1149,7 @@ struct WebSocketTransportTests {
         let handler = WebSocketFrameHandler(isClient: false)
         try channel.pipeline.syncOperations.addHandler(handler)
         // Activate the channel so isActive reflects open/close state.
-        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).get()
 
         // Attach a connection so completed messages would be delivered (we
         // expect overflow before any completion).
@@ -1156,7 +1180,13 @@ struct WebSocketTransportTests {
         // The handler closed the channel on overflow.
         #expect(!channel.isActive, "Channel must close when fragmented message exceeds the cap")
 
-        _ = try? channel.finish()
+        if channel.isActive {
+            do {
+                _ = try channel.finish()
+            } catch {
+                Issue.record("EmbeddedChannel cleanup failed: \(error)")
+            }
+        }
     }
 
     @Test("Fragmented message within the cap reassembles and delivers", .timeLimit(.minutes(1)))
@@ -1164,7 +1194,7 @@ struct WebSocketTransportTests {
         let channel = EmbeddedChannel()
         let handler = WebSocketFrameHandler(isClient: false)
         try channel.pipeline.syncOperations.addHandler(handler)
-        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).get()
 
         let conn = WebSocketConnection(
             channel: channel,
@@ -1189,6 +1219,12 @@ struct WebSocketTransportTests {
         let received = try await conn.read()
         #expect(Data(buffer: received) == Data([0x01, 0x02, 0x03, 0x04, 0x05]))
 
-        _ = try? channel.finish()
+        if channel.isActive {
+            do {
+                _ = try channel.finish()
+            } catch {
+                Issue.record("EmbeddedChannel cleanup failed: \(error)")
+            }
+        }
     }
 }

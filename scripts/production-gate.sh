@@ -3,6 +3,7 @@ set -euo pipefail
 
 include_benchmarks=0
 include_interop=1
+include_live_network=1
 test_timeout_seconds=60
 build_timeout_seconds=240
 benchmark_timeout_seconds=600
@@ -10,16 +11,19 @@ benchmark_build_timeout_seconds=600
 interop_mode="smoke"
 interop_timeout_seconds=90
 interop_build_timeout_seconds=900
+live_timeout_seconds=90
+live_build_timeout_seconds=180
 extra_args=()
 
 usage() {
   cat <<'EOF' >&2
 Usage:
-  scripts/production-gate.sh [--skip-interop] [--interop-mode MODE] [--include-benchmarks] [--timeout S] [--build-timeout S] [--benchmark-timeout S] [--benchmark-build-timeout S] [-- <swift test args...>]
+  scripts/production-gate.sh [--skip-live-network] [--skip-interop] [--interop-mode MODE] [--include-benchmarks] [--timeout S] [--build-timeout S] [--live-timeout S] [--live-build-timeout S] [--benchmark-timeout S] [--benchmark-build-timeout S] [-- <swift test args...>]
 
 Examples:
   scripts/production-gate.sh
   scripts/production-gate.sh --include-benchmarks
+  scripts/production-gate.sh --skip-live-network
   scripts/production-gate.sh --skip-interop
   scripts/production-gate.sh --timeout 90 --build-timeout 300
 EOF
@@ -36,6 +40,10 @@ while [[ $# -gt 0 ]]; do
       include_interop=0
       shift
       ;;
+    --skip-live-network)
+      include_live_network=0
+      shift
+      ;;
     --interop-mode)
       interop_mode="$2"
       shift 2
@@ -46,6 +54,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --interop-build-timeout)
       interop_build_timeout_seconds="$2"
+      shift 2
+      ;;
+    --live-timeout)
+      live_timeout_seconds="$2"
+      shift 2
+      ;;
+    --live-build-timeout)
+      live_build_timeout_seconds="$2"
       shift 2
       ;;
     --timeout)
@@ -81,7 +97,9 @@ for value in \
   "$benchmark_timeout_seconds" \
   "$benchmark_build_timeout_seconds" \
   "$interop_timeout_seconds" \
-  "$interop_build_timeout_seconds"
+  "$interop_build_timeout_seconds" \
+  "$live_timeout_seconds" \
+  "$live_build_timeout_seconds"
 do
   [[ "$value" =~ ^[0-9]+$ ]] || usage
   (( value > 0 )) || usage
@@ -100,6 +118,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 timeout_runner="$script_dir/swift-test-timeout.sh"
 benchmark_runner="$script_dir/run-benchmarks.sh"
 interop_runner="$script_dir/interop-test.sh"
+live_network_runner="$script_dir/live-network-test.sh"
 
 [[ -x "$timeout_runner" ]] || {
   echo "Missing executable: $timeout_runner" >&2
@@ -111,6 +130,10 @@ interop_runner="$script_dir/interop-test.sh"
 }
 [[ -x "$interop_runner" ]] || {
   echo "Missing executable: $interop_runner" >&2
+  exit 2
+}
+[[ -x "$live_network_runner" ]] || {
+  echo "Missing executable: $live_network_runner" >&2
   exit 2
 }
 
@@ -139,6 +162,19 @@ run_suite() {
 run_suite "$build_timeout_seconds" "DataPathCopyGuardTests"
 run_suite "$test_timeout_seconds" "NodeDSLTests"
 run_suite "$test_timeout_seconds" "NodeE2ETests"
+
+if (( include_live_network == 1 )); then
+  echo
+  echo "==> Live localhost network tests"
+  live_args=(
+    --timeout "$live_timeout_seconds"
+    --build-timeout "$live_build_timeout_seconds"
+  )
+  if (( ${#extra_args[@]} > 0 )); then
+    live_args+=(-- "${extra_args[@]}")
+  fi
+  "$live_network_runner" "${live_args[@]}"
+fi
 
 if (( include_interop == 1 )); then
   echo

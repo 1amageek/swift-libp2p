@@ -18,6 +18,7 @@ import Synchronization
 @testable import P2PCore
 @testable import P2PRuntime
 @testable import P2PTransport
+@testable import P2PTransportSecured
 @testable import P2PTransportMemory
 @testable import P2PSecurity
 @testable import P2PSecurityNoise
@@ -165,7 +166,7 @@ struct SecurityHardeningTests {
         // construction guard, carries operationalProfile, and start() — which
         // re-validates against that stored profile — succeeds without throwing.
         let hub = MemoryHub()
-        let config = NodeConfiguration(
+        let config = try NodeConfiguration(
             profile: .production,
             auditPolicy: .permissive,
             transports: [MemoryTransport(hub: hub)],

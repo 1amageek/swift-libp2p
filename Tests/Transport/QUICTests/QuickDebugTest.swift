@@ -2,13 +2,14 @@
 import Testing
 import Foundation
 import NIOCore
+import P2PTestSupport
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
 @testable import P2PMux
 import QUIC
 
-@Suite("Quick Debug")
+@Suite("Quick Debug", .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct QuickDebugTest {
 
     @Test("Server write reaches client", .timeLimit(.minutes(1)))

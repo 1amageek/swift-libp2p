@@ -6,13 +6,14 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOEmbedded
+import P2PTestSupport
 
 @Suite("TCP Transport Tests")
 struct TCPTransportTests {
 
     // MARK: - Basic Connection Tests
 
-    @Test("Basic dial and listen", .timeLimit(.minutes(1)))
+    @Test("Basic dial and listen", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBasicConnection() async throws {
         let transport = TCPTransport()
 
@@ -37,7 +38,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Bidirectional communication", .timeLimit(.minutes(1)))
+    @Test("Bidirectional communication", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBidirectionalCommunication() async throws {
         let transport = TCPTransport()
 
@@ -66,7 +67,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Multiple messages in sequence", .timeLimit(.minutes(1)))
+    @Test("Multiple messages in sequence", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testMultipleMessages() async throws {
         let transport = TCPTransport()
 
@@ -91,7 +92,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Large message transfer", .timeLimit(.minutes(1)))
+    @Test("Large message transfer", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testLargeMessage() async throws {
         let transport = TCPTransport()
 
@@ -122,7 +123,7 @@ struct TCPTransportTests {
 
     // MARK: - Multiple Connections Tests
 
-    @Test("Multiple connections to same listener", .timeLimit(.minutes(1)))
+    @Test("Multiple connections to same listener", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testMultipleConnections() async throws {
         let transport = TCPTransport()
 
@@ -159,7 +160,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Multiple listeners on different ports", .timeLimit(.minutes(1)))
+    @Test("Multiple listeners on different ports", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testMultipleListeners() async throws {
         let transport = TCPTransport()
 
@@ -199,7 +200,7 @@ struct TCPTransportTests {
 
     // MARK: - Close Behavior Tests
 
-    @Test("Connection close propagates to remote", .timeLimit(.minutes(1)))
+    @Test("Connection close propagates to remote", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testClosePropagatesEOF() async throws {
         let transport = TCPTransport()
 
@@ -223,7 +224,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Write after close throws error", .timeLimit(.minutes(1)))
+    @Test("Write after close throws error", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testWriteAfterClose() async throws {
         let transport = TCPTransport()
 
@@ -245,7 +246,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Listener close rejects pending accept", .timeLimit(.minutes(1)))
+    @Test("Listener close rejects pending accept", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testListenerCloseRejectsPendingAccept() async throws {
         let transport = TCPTransport()
 
@@ -268,7 +269,7 @@ struct TCPTransportTests {
         }
     }
 
-    @Test("Read returns buffered data before connection close", .timeLimit(.minutes(1)))
+    @Test("Read returns buffered data before connection close", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBufferedDataBeforeClose() async throws {
         let transport = TCPTransport()
 
@@ -298,7 +299,7 @@ struct TCPTransportTests {
 
     // MARK: - Error Handling Tests
 
-    @Test("Dial to unreachable host times out or fails", .timeLimit(.minutes(1)))
+    @Test("Dial to unreachable host times out or fails", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testDialToUnreachable() async throws {
         let transport = TCPTransport()
 
@@ -354,7 +355,7 @@ struct TCPTransportTests {
 
     // MARK: - IPv6 Tests
 
-    @Test("IPv6 basic connection", .timeLimit(.minutes(1)))
+    @Test("IPv6 basic connection", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testIPv6Connection() async throws {
         let transport = TCPTransport()
 
@@ -380,7 +381,7 @@ struct TCPTransportTests {
 
     // MARK: - EventLoopGroup Lifecycle Tests
 
-    @Test("Transport with external EventLoopGroup", .timeLimit(.minutes(1)))
+    @Test("Transport with external EventLoopGroup", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testExternalEventLoopGroup() async throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
 
@@ -440,7 +441,7 @@ struct TCPTransportTests {
 
     // MARK: - Concurrent Connection Tests
 
-    @Test("Concurrent connections to listener", .timeLimit(.minutes(1)))
+    @Test("Concurrent connections to listener", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testConcurrentConnections() async throws {
         let transport = TCPTransport()
 
@@ -491,7 +492,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Concurrent accept calls are queued without deadlock", .timeLimit(.minutes(1)))
+    @Test("Concurrent accept calls are queued without deadlock", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testConcurrentAcceptQueueing() async throws {
         let transport = TCPTransport()
 
@@ -522,7 +523,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Concurrent reads preserve waiter queue and wake on close", .timeLimit(.minutes(1)))
+    @Test("Concurrent reads preserve waiter queue and wake on close", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testConcurrentReadWaiters() async throws {
         let transport = TCPTransport()
 
@@ -575,7 +576,7 @@ struct TCPTransportTests {
 
     // MARK: - Rapid Read/Write Tests
 
-    @Test("Rapid sequential read/write", .timeLimit(.minutes(1)))
+    @Test("Rapid sequential read/write", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testRapidReadWrite() async throws {
         let transport = TCPTransport()
 
@@ -609,7 +610,7 @@ struct TCPTransportTests {
 
     // MARK: - Diagnostic Tests for Race Condition
 
-    @Test("Diagnose: immediate write after connect (expect hang if race condition exists)", .timeLimit(.minutes(1)))
+    @Test("Diagnose: immediate write after connect (expect hang if race condition exists)", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testDiagnoseImmediateWrite() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -633,7 +634,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Diagnose: delayed write after connect (should pass)", .timeLimit(.minutes(1)))
+    @Test("Diagnose: delayed write after connect (should pass)", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testDiagnoseDelayedWrite() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -661,7 +662,7 @@ struct TCPTransportTests {
 
     // MARK: - Buffer Overflow Tests (DoS Protection)
 
-    @Test("Buffer overflow closes connection when >1MB unread data", .timeLimit(.minutes(1)))
+    @Test("Buffer overflow closes connection when >1MB unread data", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBufferOverflowClosesConnection() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -699,7 +700,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Buffer overflow fails pending read waiters", .timeLimit(.minutes(1)))
+    @Test("Buffer overflow fails pending read waiters", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testBufferOverflowFailsPendingReadWaiters() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -736,7 +737,7 @@ struct TCPTransportTests {
 
     // MARK: - Idempotent Close Tests
 
-    @Test("Double close is idempotent", .timeLimit(.minutes(1)))
+    @Test("Double close is idempotent", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testIdempotentClose() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -751,7 +752,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Listener double close does not hang", .timeLimit(.minutes(1)))
+    @Test("Listener double close does not hang", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testIdempotentListenerClose() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -792,7 +793,7 @@ struct TCPTransportTests {
 
     // MARK: - Buffer Then Error on Close
 
-    @Test("Read returns buffered data then error on close", .timeLimit(.minutes(1)))
+    @Test("Read returns buffered data then error on close", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testReadReturnsBufferThenErrorOnClose() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -826,7 +827,7 @@ struct TCPTransportTests {
 
     // MARK: - Listener Close Resource Cleanup Tests
 
-    @Test("Listener close cleans up pending connections", .timeLimit(.minutes(1)))
+    @Test("Listener close cleans up pending connections", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testListenerCloseCleansPendingConnections() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -845,7 +846,7 @@ struct TCPTransportTests {
         }
     }
 
-    @Test("Dial after listener close fails", .timeLimit(.minutes(1)))
+    @Test("Dial after listener close fails", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testDialAfterListenerClose() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -909,7 +910,7 @@ struct TCPTransportTests {
 
     // MARK: - Other Edge Cases
 
-    @Test("Close on already-inactive channel does not throw", .timeLimit(.minutes(1)))
+    @Test("Close on already-inactive channel does not throw", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testCloseOnInactiveChannel() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))
@@ -927,7 +928,7 @@ struct TCPTransportTests {
         try await listener.close()
     }
 
-    @Test("Concurrent reads are served FIFO", .timeLimit(.minutes(1)))
+    @Test("Concurrent reads are served FIFO", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func testConcurrentReadsFIFO() async throws {
         let transport = TCPTransport()
         let listener = try await transport.listen(.tcp(host: "127.0.0.1", port: 0))

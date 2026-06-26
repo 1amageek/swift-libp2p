@@ -13,6 +13,7 @@
 import Foundation
 import P2PCore
 import P2PTransport
+import P2PTransportSecured
 import P2PMux
 import P2PCertificate
 import WebRTC

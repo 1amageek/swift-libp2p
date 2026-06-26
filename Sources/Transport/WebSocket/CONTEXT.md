@@ -19,8 +19,8 @@ All payload frames are sent as Binary opcode.
 
 ## Invariants (must hold; tests guard them)
 - DoS bounds: `wsMaxReadBufferSize` (1MB) caps the read buffer; `wsMaxFrameSize` (1MB) caps
-  frame size. (Overflow currently drops frames silently — a known TCP-vs-WS design
-  difference, covered by `testWSBufferOverflowSilentlyDropsFrames`.)
+  frame size. Overflow closes the connection fail-closed; WebSocket must preserve the
+  byte-stream contract for the Security -> Mux pipeline.
 - Concurrent reads are FIFO-ordered; `close()` is idempotent; `read()` returns buffered data
   before reporting closed.
 - `wss` is restricted: dial only with client TLS `.fullVerification` and a DNS hostname (IP

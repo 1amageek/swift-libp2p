@@ -142,30 +142,66 @@ public final class WebSocketConnection: RawConnection, Sendable {
     }
 
     // Called by WebSocketFrameHandler when data is received
-    fileprivate func dataReceived(_ data: ByteBuffer) {
+    func dataReceived(_ data: ByteBuffer) {
         wsConnectionLogger.debug("dataReceived(): Received \(data.readableBytes) bytes")
-        let (waiter, bufferSize) = state.withLock { s -> (CheckedContinuation<ByteBuffer, Error>?, Int) in
+        enum ReceiveAction {
+            case deliver(CheckedContinuation<ByteBuffer, Error>)
+            case buffered(Int)
+            case close([CheckedContinuation<ByteBuffer, Error>])
+            case ignoredClosed
+        }
+
+        let action = state.withLock { s -> ReceiveAction in
+            guard !s.isClosed else {
+                return .ignoredClosed
+            }
+
+            // Enforce the byte-stream read cap before both direct delivery and
+            // buffering. A waiting reader must not bypass the same DoS bound that
+            // protects the unread buffer.
+            guard data.readableBytes <= wsMaxReadBufferSize else {
+                s.isClosed = true
+                s.readBuffer = ByteBuffer()
+                let waiters = s.readWaiters
+                s.readWaiters.removeAll()
+                return .close(waiters)
+            }
+
             // FIFO: dequeue the first waiter if any
             if !s.readWaiters.isEmpty {
-                return (s.readWaiters.removeFirst(), 0)
-            } else {
-                // Buffer size limit for DoS protection
-                if s.readBuffer.readableBytes + data.readableBytes > wsMaxReadBufferSize {
-                    return (nil, -1)  // -1 indicates buffer full
-                }
-                var incoming = data
-                s.readBuffer.writeBuffer(&incoming)
-                return (nil, s.readBuffer.readableBytes)
+                return .deliver(s.readWaiters.removeFirst())
             }
+
+            // Buffer size limit for DoS protection. WebSocket is a byte stream for
+            // the upper Security -> Mux pipeline, so overflow must close rather
+            // than dropping bytes and continuing with a corrupted stream.
+            if s.readBuffer.readableBytes + data.readableBytes > wsMaxReadBufferSize {
+                s.isClosed = true
+                s.readBuffer = ByteBuffer()
+                let waiters = s.readWaiters
+                s.readWaiters.removeAll()
+                return .close(waiters)
+            }
+
+            var incoming = data
+            s.readBuffer.writeBuffer(&incoming)
+            return .buffered(s.readBuffer.readableBytes)
         }
-        // Log and resume waiter outside of lock to avoid deadlock
-        if let waiter = waiter {
+
+        switch action {
+        case .deliver(let waiter):
             wsConnectionLogger.debug("dataReceived(): Delivering to waiting reader")
             waiter.resume(returning: data)
-        } else if bufferSize == -1 {
-            wsConnectionLogger.warning("dataReceived(): Buffer full, dropping data")
-        } else {
+        case .buffered(let bufferSize):
             wsConnectionLogger.debug("dataReceived(): Buffering data (buffer size: \(bufferSize))")
+        case .close(let waiters):
+            wsConnectionLogger.warning("dataReceived(): Buffer full, closing connection")
+            for waiter in waiters {
+                waiter.resume(throwing: TransportError.connectionClosed)
+            }
+            channel.close(promise: nil)
+        case .ignoredClosed:
+            wsConnectionLogger.debug("dataReceived(): Ignoring data on closed connection")
         }
     }
 

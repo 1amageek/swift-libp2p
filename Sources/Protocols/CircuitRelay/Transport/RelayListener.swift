@@ -151,14 +151,15 @@ public final class RelayListener: Listener, Sendable {
     ///
     /// Called when the RelayClient receives an incoming connection via Stop protocol.
     /// If the queue is at capacity, the oldest connection is dropped.
-    func enqueue(_ connection: RelayedConnection) {
-        let dropped: RelayedConnection? = state.withLock { s in
-            guard !s.isClosed else { return nil }
+    @discardableResult
+    func enqueue(_ connection: RelayedConnection) -> Bool {
+        let result: (accepted: Bool, dropped: RelayedConnection?) = state.withLock { s in
+            guard !s.isClosed else { return (false, nil) }
 
             if let continuation = s.waitingContinuation {
                 s.waitingContinuation = nil
                 continuation.resume(returning: RelayedRawConnection(relayedConnection: connection))
-                return nil
+                return (true, nil)
             } else {
                 // Enforce queue size limit - drop oldest if at capacity
                 var droppedConnection: RelayedConnection? = nil
@@ -166,12 +167,12 @@ public final class RelayListener: Listener, Sendable {
                     droppedConnection = s.incomingConnections.removeFirst()
                 }
                 s.incomingConnections.append(connection)
-                return droppedConnection
+                return (true, droppedConnection)
             }
         }
 
         // Close dropped connection asynchronously (outside lock)
-        if let dropped = dropped {
+        if let dropped = result.dropped {
             Task {
                 do {
                     try await dropped.close()
@@ -180,6 +181,7 @@ public final class RelayListener: Listener, Sendable {
                 }
             }
         }
+        return result.accepted
     }
 
     // MARK: - Private

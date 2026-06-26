@@ -4,6 +4,7 @@ import Foundation
 import Synchronization
 import P2PCore
 import P2PTransport
+import P2PTransportSecured
 import P2PMux
 import QUIC
 import QUICCrypto
@@ -194,18 +195,34 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
                 // Start forwarding incoming streams for this connection
                 muxedConnection.startForwarding()
 
-                let shouldYield = self.state.withLock { s -> Bool in
-                    guard !s.isClosed else { return false }
-                    s.connectionsContinuation?.yield(muxedConnection)
-                    return true
+                let continuation = self.state.withLock { s -> AsyncStream<any MuxedConnection>.Continuation? in
+                    guard !s.isClosed else { return nil }
+                    return s.connectionsContinuation
                 }
-                if !shouldYield { break }
+                guard let continuation else {
+                    do {
+                        try await muxedConnection.close()
+                    } catch {
+                        quicListenerLogger.debug("Failed to close orphaned QUIC connection: \(String(describing: error))")
+                    }
+                    break
+                }
+                guard case .enqueued = continuation.yield(muxedConnection) else {
+                    do {
+                        try await muxedConnection.close()
+                    } catch {
+                        quicListenerLogger.debug("Failed to close dropped QUIC connection: \(String(describing: error))")
+                    }
+                    continue
+                }
             }
 
-            self.state.withLock { s in
-                s.connectionsContinuation?.finish()
+            let continuation = self.state.withLock { s -> AsyncStream<any MuxedConnection>.Continuation? in
+                let continuation = s.connectionsContinuation
                 s.connectionsContinuation = nil
+                return continuation
             }
+            continuation?.finish()
         }
 
         state.withLock { $0.forwardingTask = task }
@@ -230,16 +247,20 @@ public final class QUICSecuredListener: SecuredListener, Sendable {
 
     /// Closes the listener.
     public func close() async throws {
-        let task = state.withLock { s -> Task<Void, Never>? in
+        let cleanup = state.withLock { s -> (
+            Task<Void, Never>?,
+            AsyncStream<any MuxedConnection>.Continuation?
+        ) in
             s.isClosed = true
-            s.connectionsContinuation?.finish()
+            let continuation = s.connectionsContinuation
             s.connectionsContinuation = nil
             let t = s.forwardingTask
             s.forwardingTask = nil
-            return t
+            return (t, continuation)
         }
 
-        task?.cancel()
+        cleanup.1?.finish()
+        cleanup.0?.cancel()
         try await endpoint.shutdown()
         do {
             _ = try await endpointTask.value

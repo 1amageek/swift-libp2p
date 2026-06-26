@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import P2PCore
 import P2PTransport
+import P2PTransportSecured
 import P2PMux
 import QUIC
 
@@ -20,7 +21,13 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
         var continuation: AsyncStream<any MuxedConnection>.Continuation?
         var forwardingTask: Task<Void, Never>?
         var rotationTask: Task<Void, Never>?
-        var activeConnections: [any QUICConnectionProtocol] = []
+        var nextActiveConnectionID: UInt64 = 0
+        var activeConnections: [ActiveConnection] = []
+    }
+
+    private struct ActiveConnection: Sendable {
+        let id: UInt64
+        let connection: any QUICConnectionProtocol
     }
 
     private let state: Mutex<State>
@@ -80,12 +87,14 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
             guard let self = self else { return }
 
             for await quicConnection in await self.endpoint.incomingConnections {
-                let isClosed = self.state.withLock { state in
-                    guard !state.isClosed else { return true }
-                    state.activeConnections.append(quicConnection)
-                    return false
+                let activeConnectionID: UInt64? = self.state.withLock { state in
+                    guard !state.isClosed else { return nil }
+                    let id = state.nextActiveConnectionID
+                    state.nextActiveConnectionID += 1
+                    state.activeConnections.append(ActiveConnection(id: id, connection: quicConnection))
+                    return id
                 }
-                if isClosed { break }
+                guard let activeConnectionID else { break }
 
                 do {
                     try await WebTransportQUICPeerExtractor.waitForHandshake(
@@ -108,17 +117,35 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
                         localPeer: self.localKeyPair.peerID,
                         remotePeer: peerInfo.peerID,
                         localAddress: localAddress,
-                        remoteCertificateHashes: [remoteHash]
+                        remoteCertificateHashes: [remoteHash],
+                        onClose: { [weak self] in
+                            self?.removeActiveConnection(id: activeConnectionID)
+                        }
                     )
                     connection.startForwarding()
 
-                    let shouldContinue = self.state.withLock { state -> Bool in
-                        guard !state.isClosed else { return false }
-                        state.continuation?.yield(connection)
-                        return true
+                    let continuation = self.state.withLock { state -> AsyncStream<any MuxedConnection>.Continuation? in
+                        guard !state.isClosed else { return nil }
+                        return state.continuation
                     }
-                    if !shouldContinue { break }
+                    guard let continuation else {
+                        do {
+                            try await connection.close()
+                        } catch {
+                            // The underlying QUIC connection is being torn down anyway.
+                        }
+                        break
+                    }
+                    guard case .enqueued = continuation.yield(connection) else {
+                        do {
+                            try await connection.close()
+                        } catch {
+                            // The underlying QUIC connection is being torn down anyway.
+                        }
+                        continue
+                    }
                 } catch {
+                    self.removeActiveConnection(id: activeConnectionID)
                     await quicConnection.close(
                         applicationError: 0x100,
                         reason: "webtransport accept failed"
@@ -126,10 +153,12 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
                 }
             }
 
-            self.state.withLock { state in
-                state.continuation?.finish()
+            let continuation = self.state.withLock { state -> AsyncStream<any MuxedConnection>.Continuation? in
+                let continuation = state.continuation
                 state.continuation = nil
+                return continuation
             }
+            continuation?.finish()
         }
 
         state.withLock { state in
@@ -172,14 +201,21 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
         return oneHour
     }
 
+    private func removeActiveConnection(id: UInt64) {
+        state.withLock { state in
+            state.activeConnections.removeAll { $0.id == id }
+        }
+    }
+
     public func close() async throws {
         let cleanup = state.withLock { state -> (
             Task<Void, Never>?,
             Task<Void, Never>?,
-            [any QUICConnectionProtocol]
+            AsyncStream<any MuxedConnection>.Continuation?,
+            [ActiveConnection]
         ) in
             state.isClosed = true
-            state.continuation?.finish()
+            let continuation = state.continuation
             state.continuation = nil
             let forwardingTask = state.forwardingTask
             state.forwardingTask = nil
@@ -187,14 +223,15 @@ public final class WebTransportSecuredListener: SecuredListener, Sendable {
             state.rotationTask = nil
             let activeConnections = state.activeConnections
             state.activeConnections.removeAll()
-            return (forwardingTask, rotationTask, activeConnections)
+            return (forwardingTask, rotationTask, continuation, activeConnections)
         }
 
+        cleanup.2?.finish()
         cleanup.0?.cancel()
         cleanup.1?.cancel()
         await cleanup.1?.value
-        for connection in cleanup.2 {
-            await connection.close(error: nil)
+        for entry in cleanup.3 {
+            await entry.connection.close(error: nil)
         }
         var shutdownError: Error?
         do {

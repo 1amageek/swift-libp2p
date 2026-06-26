@@ -31,7 +31,7 @@ public struct RPCHandleResult: Sendable {
 ///
 /// Manages mesh state, message routing, and control message handling.
 /// Uses class + Mutex pattern for high-frequency operations.
-public final class GossipSubRouter: EventEmitting, Sendable {
+public final class GossipSubRouter: Sendable {
 
     // MARK: - Properties
 
@@ -83,8 +83,8 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         var bytes: Int = 0
     }
 
-    /// Event channel.
-    private let channel = EventChannel<GossipSubEvent>()
+    /// Multi-consumer event broadcaster.
+    private let broadcaster = EventBroadcaster<GossipSubEvent>()
 
     // MARK: - Initialization
 
@@ -213,7 +213,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     // MARK: - Event Stream
 
     /// Event stream for monitoring router events.
-    public var events: AsyncStream<GossipSubEvent> { channel.stream }
+    public var events: AsyncStream<GossipSubEvent> { broadcaster.subscribe() }
 
     // MARK: - Subscription Management
 
@@ -1508,7 +1508,7 @@ public final class GossipSubRouter: EventEmitting, Sendable {
     // MARK: - Event Emission
 
     private func emit(_ event: GossipSubEvent) {
-        channel.yield(event)
+        broadcaster.emit(event)
     }
 
     // MARK: - Helper Methods
@@ -1542,6 +1542,6 @@ public final class GossipSubRouter: EventEmitting, Sendable {
         validators.withLock { $0.removeAll() }
         directPeerState.withLock { $0.removeAll() }
 
-        channel.finish()
+        broadcaster.shutdown()
     }
 }

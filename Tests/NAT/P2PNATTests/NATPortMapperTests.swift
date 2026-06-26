@@ -1,7 +1,145 @@
 /// NATPortMapperTests - Tests for NAT port mapping
 import Testing
 import Foundation
+import Synchronization
 @testable import P2PNAT
+
+private final class NATMappingReleaseRecorder: Sendable {
+    private let mappings = Mutex<[PortMapping]>([])
+
+    func append(_ mapping: PortMapping) {
+        mappings.withLock { $0.append(mapping) }
+    }
+
+    var snapshot: [PortMapping] {
+        mappings.withLock { $0 }
+    }
+}
+
+private struct MockNATProtocolHandler: NATProtocolHandler {
+    let recorder: NATMappingReleaseRecorder
+
+    func canHandle(_ gateway: NATGatewayType) -> Bool {
+        if case .pcp = gateway { return true }
+        return false
+    }
+
+    func discoverGateway(configuration: NATPortMapperConfiguration) async throws -> NATGatewayType {
+        .pcp(gatewayIP: "192.168.1.1")
+    }
+
+    func getExternalAddress(
+        gateway: NATGatewayType,
+        configuration: NATPortMapperConfiguration
+    ) async throws -> String {
+        "203.0.113.5"
+    }
+
+    func requestMapping(
+        gateway: NATGatewayType,
+        internalPort: UInt16,
+        externalPort: UInt16,
+        protocol: NATTransportProtocol,
+        duration: Duration,
+        externalAddress: String,
+        configuration: NATPortMapperConfiguration
+    ) async throws -> PortMapping {
+        PortMapping(
+            internalPort: internalPort,
+            externalPort: externalPort,
+            externalAddress: externalAddress,
+            protocol: `protocol`,
+            expiration: ContinuousClock.now + duration,
+            gatewayType: gateway
+        )
+    }
+
+    func releaseMapping(_ mapping: PortMapping, configuration: NATPortMapperConfiguration) async throws {
+        recorder.append(mapping)
+    }
+}
+
+private actor NATMappingGate {
+    private var isOpen = false
+    private var isReleased = false
+    private var openWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func suspendUntilReleased() async {
+        isOpen = true
+        let waiters = openWaiters
+        openWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+
+        if isReleased { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilOpen() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation in
+            openWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
+private struct SuspendingNATProtocolHandler: NATProtocolHandler {
+    let recorder: NATMappingReleaseRecorder
+    let gate: NATMappingGate
+
+    func canHandle(_ gateway: NATGatewayType) -> Bool {
+        if case .pcp = gateway { return true }
+        return false
+    }
+
+    func discoverGateway(configuration: NATPortMapperConfiguration) async throws -> NATGatewayType {
+        .pcp(gatewayIP: "192.168.1.1")
+    }
+
+    func getExternalAddress(
+        gateway: NATGatewayType,
+        configuration: NATPortMapperConfiguration
+    ) async throws -> String {
+        "203.0.113.5"
+    }
+
+    func requestMapping(
+        gateway: NATGatewayType,
+        internalPort: UInt16,
+        externalPort: UInt16,
+        protocol: NATTransportProtocol,
+        duration: Duration,
+        externalAddress: String,
+        configuration: NATPortMapperConfiguration
+    ) async throws -> PortMapping {
+        await gate.suspendUntilReleased()
+        return PortMapping(
+            internalPort: internalPort,
+            externalPort: externalPort,
+            externalAddress: externalAddress,
+            protocol: `protocol`,
+            expiration: ContinuousClock.now + duration,
+            gatewayType: gateway
+        )
+    }
+
+    func releaseMapping(_ mapping: PortMapping, configuration: NATPortMapperConfiguration) async throws {
+        recorder.append(mapping)
+    }
+}
 
 @Suite("NATPortMapper Tests")
 struct NATPortMapperTests {
@@ -173,6 +311,51 @@ struct NATPortMapperTests {
         _ = events2
 
         try await mapper.shutdown()
+    }
+
+    @Test("TCP and UDP mappings on same internal port remain distinct", .timeLimit(.minutes(1)))
+    func sameInternalPortDifferentProtocolsRemainDistinct() async throws {
+        let recorder = NATMappingReleaseRecorder()
+        let mapper = NATPortMapper(
+            configuration: NATPortMapperConfiguration(autoRenew: false),
+            handlers: [MockNATProtocolHandler(recorder: recorder)]
+        )
+
+        _ = try await mapper.requestMapping(internalPort: 4_001, protocol: .tcp)
+        _ = try await mapper.requestMapping(internalPort: 4_001, protocol: .udp)
+
+        try await mapper.shutdown()
+
+        let releasedProtocols = recorder.snapshot.map(\.protocol)
+        #expect(releasedProtocols.contains(.tcp))
+        #expect(releasedProtocols.contains(.udp))
+        #expect(releasedProtocols.count == 2)
+    }
+
+    @Test("Mapping completion after shutdown is released and rejected", .timeLimit(.minutes(1)))
+    func mappingCompletionAfterShutdownIsReleasedAndRejected() async throws {
+        let recorder = NATMappingReleaseRecorder()
+        let gate = NATMappingGate()
+        let mapper = NATPortMapper(
+            configuration: NATPortMapperConfiguration(autoRenew: true),
+            handlers: [SuspendingNATProtocolHandler(recorder: recorder, gate: gate)]
+        )
+
+        let mappingTask = Task {
+            try await mapper.requestMapping(internalPort: 4_001, protocol: .tcp)
+        }
+
+        await gate.waitUntilOpen()
+        try await mapper.shutdown()
+        await gate.release()
+
+        await #expect(throws: NATPortMapperError.self) {
+            _ = try await mappingTask.value
+        }
+
+        let released = recorder.snapshot
+        #expect(released.count == 1)
+        #expect(released.first?.internalPort == 4_001)
     }
 
     // MARK: - Error Type Tests

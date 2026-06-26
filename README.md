@@ -492,8 +492,9 @@ scripts/production-gate.sh --include-benchmarks
 ```
 
 The gate runs the runtime-facing copy guard, the public `Node` DSL tests, and the Node
-end-to-end suite. With `--include-benchmarks` it also runs the release benchmark snapshot
-for `DataPathBenchmarks` and `NoiseCryptoBenchmarks`.
+end-to-end suite, then the opt-in live localhost network lane and interop smoke lane.
+With `--include-benchmarks` it also runs the release benchmark snapshot for
+`DataPathBenchmarks` and `NoiseCryptoBenchmarks`.
 
 ## Testing
 
@@ -501,12 +502,18 @@ for `DataPathBenchmarks` and `NoiseCryptoBenchmarks`.
 # Build
 swift build
 
-# Run specific test suite (always use timeout)
-swift test --filter P2PTests 2>&1 &
-PID=$!; sleep 120; kill $PID 2>/dev/null; wait $PID 2>/dev/null
+# Run deterministic correctness tests (always use timeout)
+scripts/swift-test-timeout.sh 120 --disable-sandbox
+scripts/swift-test-timeout.sh 60 --disable-sandbox --filter P2PTests
 
-# Interoperability tests (requires Docker)
-swift test --filter Interop
+# Live localhost network tests are opt-in: TCP, UDP, QUIC, WebSocket, WebTransport, WebRTC, NAT, and discovery
+scripts/live-network-test.sh
+
+# Interoperability tests are opt-in and require Docker
+scripts/interop-test.sh smoke
+
+# Benchmarks are opt-in and kept out of default `swift test`
+scripts/run-benchmarks.sh --configuration release
 ```
 
 ## Dependencies

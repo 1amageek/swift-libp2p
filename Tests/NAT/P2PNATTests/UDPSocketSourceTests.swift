@@ -1,6 +1,7 @@
 /// UDPSocketSourceTests - Verifies UDP source verification (anti-spoofing).
 import Testing
 import Foundation
+import P2PTestSupport
 @testable import P2PNAT
 
 #if canImport(Darwin)
@@ -9,7 +10,7 @@ import Darwin
 import Glibc
 #endif
 
-@Suite("UDP Source Verification Tests", .serialized)
+@Suite("UDP Source Verification Tests", .serialized, .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct UDPSocketSourceTests {
 
     /// A minimal blocking UDP echo/responder bound to a loopback port.

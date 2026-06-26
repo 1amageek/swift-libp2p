@@ -68,7 +68,7 @@ struct EventBroadcasterTests {
         broadcaster.shutdown()
     }
 
-    @Test("Subscriber after shutdown receives no events", .timeLimit(.minutes(1)))
+    @Test("Subscriber after shutdown finishes immediately", .timeLimit(.minutes(1)))
     func subscribeAfterShutdown() async throws {
         let broadcaster = EventBroadcaster<TestEvent>()
         broadcaster.emit(.ping)
@@ -83,8 +83,7 @@ struct EventBroadcasterTests {
         for await event in stream {
             received.append(event)
         }
-        // Should receive pong (emitted after subscribe) but not ping
-        #expect(received == [.pong])
+        #expect(received.isEmpty)
     }
 
     @Test("Shutdown finishes active streams", .timeLimit(.minutes(1)))
@@ -101,5 +100,21 @@ struct EventBroadcasterTests {
         }
         // Stream should complete after shutdown
         #expect(count == 1)
+    }
+
+    @Test("Buffering policy bounds retained events", .timeLimit(.minutes(1)))
+    func bufferingPolicyBoundsRetainedEvents() async throws {
+        let broadcaster = EventBroadcaster<TestEvent>(bufferingPolicy: .bufferingNewest(1))
+        let stream = broadcaster.subscribe()
+
+        broadcaster.emit(.ping)
+        broadcaster.emit(.data(42))
+        broadcaster.shutdown()
+
+        var received: [TestEvent] = []
+        for await event in stream {
+            received.append(event)
+        }
+        #expect(received == [.data(42)])
     }
 }

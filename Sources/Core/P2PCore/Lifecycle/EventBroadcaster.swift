@@ -34,6 +34,7 @@ import Synchronization
 public final class EventBroadcaster<T: Sendable>: Sendable {
 
     private let state: Mutex<BroadcastState>
+    private let bufferingPolicy: AsyncStream<T>.Continuation.BufferingPolicy
 
     private struct Entry: Sendable {
         let id: UInt64
@@ -43,9 +44,16 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
     private struct BroadcastState: Sendable {
         var entries: [Entry] = []
         var nextID: UInt64 = 0
+        var isShutdown = false
     }
 
-    public init() {
+    private enum SubscribeAction: Sendable {
+        case registered(UInt64)
+        case finishImmediately
+    }
+
+    public init(bufferingPolicy: AsyncStream<T>.Continuation.BufferingPolicy = .bufferingNewest(1024)) {
+        self.bufferingPolicy = bufferingPolicy
         self.state = Mutex(BroadcastState())
     }
 
@@ -53,6 +61,7 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
         let entries = state.withLock { s in
             let e = s.entries
             s.entries.removeAll()
+            s.isShutdown = true
             return e
         }
         for entry in entries { entry.continuation.finish() }
@@ -64,17 +73,24 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
     /// future events. The subscription is automatically cleaned up when
     /// the stream is terminated (e.g., by cancelling the consuming Task).
     public func subscribe() -> AsyncStream<T> {
-        let (stream, continuation) = AsyncStream<T>.makeStream()
-        let id = state.withLock { s -> UInt64 in
+        let (stream, continuation) = AsyncStream<T>.makeStream(bufferingPolicy: bufferingPolicy)
+        let action = state.withLock { s -> SubscribeAction in
+            guard !s.isShutdown else { return .finishImmediately }
             let id = s.nextID
             s.nextID += 1
             s.entries.append(Entry(id: id, continuation: continuation))
-            return id
+            return .registered(id)
         }
-        continuation.onTermination = { [weak self] _ in
-            self?.state.withLock { s in
-                s.entries.removeAll(where: { $0.id == id })
+
+        switch action {
+        case .registered(let id):
+            continuation.onTermination = { [weak self] _ in
+                self?.state.withLock { s in
+                    s.entries.removeAll(where: { $0.id == id })
+                }
             }
+        case .finishImmediately:
+            continuation.finish()
         }
         return stream
     }
@@ -84,7 +100,9 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
     /// Events are delivered to each subscriber's stream independently.
     /// If no subscribers are registered, the event is silently dropped.
     public func emit(_ event: T) {
-        let entries = state.withLock { $0.entries }
+        let entries = state.withLock { state -> [Entry] in
+            state.isShutdown ? [] : state.entries
+        }
         for entry in entries {
             entry.continuation.yield(event)
         }
@@ -92,11 +110,13 @@ public final class EventBroadcaster<T: Sendable>: Sendable {
 
     /// Terminates all subscriber streams and releases resources.
     ///
-    /// After shutdown, existing subscribers' `for await` loops will complete.
-    /// New subscribers can still call `subscribe()` after shutdown.
+    /// After shutdown, existing subscribers' `for await` loops will complete and
+    /// new subscribers receive an already-finished stream.
     /// This method is idempotent.
     public func shutdown() {
         let entries = state.withLock { s -> [Entry] in
+            guard !s.isShutdown else { return [] }
+            s.isShutdown = true
             let e = s.entries
             s.entries.removeAll()
             return e

@@ -3,6 +3,7 @@
 import Foundation
 import P2PCore
 import P2PTransport
+import P2PTransportSecured
 import P2PMux
 import QUIC
 import QUICCrypto

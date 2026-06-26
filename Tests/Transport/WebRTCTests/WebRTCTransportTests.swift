@@ -2,11 +2,14 @@
 
 import Testing
 import Foundation
+import NIOEmbedded
+import NIOPosix
+@testable import WebRTC
 @testable import P2PTransportWebRTC
 @testable import P2PCore
 @testable import P2PTransport
 
-@Suite("WebRTC Transport Tests")
+@Suite("WebRTC Transport Tests", .serialized)
 struct WebRTCTransportTests {
 
     @Test("WebRTC transport protocol chains")
@@ -112,6 +115,113 @@ struct WebRTCTransportTests {
 
         await #expect(throws: TransportError.self) {
             _ = try await transport.dialSecured(addr, localKeyPair: keyPair)
+        }
+    }
+
+    @Test(
+        "Inbound WebRTC capacity is enforced before raw accept",
+        .timeLimit(.minutes(1)),
+        .enabled(if: webRTCLiveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
+    func inboundCapacityIsEnforcedBeforeRawAccept() async throws {
+        let certificate = try WebRTCCertificate.generateSelfSigned()
+        let endpoint = WebRTCEndpoint(certificate: certificate)
+        try await withWebRTCTestSocket { socket in
+            let rawListener = try endpoint.listen()
+            let securedListener = WebRTCSecuredListener(
+                listener: rawListener,
+                socket: socket,
+                localAddress: try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+                localKeyPair: KeyPair.generateEd25519()
+            )
+
+            for port in 10_000..<(10_000 + 64) {
+                let address = try SocketAddress(ipAddress: "127.0.0.1", port: port)
+                securedListener.handleNewPeer(address)
+                #expect(rawListener.connection(for: address.addressKey) != nil)
+            }
+
+            let rejectedAddress = try SocketAddress(ipAddress: "127.0.0.1", port: 10_064)
+            securedListener.handleNewPeer(rejectedAddress)
+            #expect(rawListener.connection(for: rejectedAddress.addressKey) == nil)
+
+            try await securedListener.close()
+        }
+    }
+
+    @Test(
+        "Inbound WebRTC capacity slot is released when handshake connection closes",
+        .timeLimit(.minutes(1)),
+        .enabled(if: webRTCLiveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
+    func inboundCapacitySlotReleasedAfterClose() async throws {
+        let certificate = try WebRTCCertificate.generateSelfSigned()
+        let endpoint = WebRTCEndpoint(certificate: certificate)
+        try await withWebRTCTestSocket { socket in
+            let rawListener = try endpoint.listen()
+            let securedListener = WebRTCSecuredListener(
+                listener: rawListener,
+                socket: socket,
+                localAddress: try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+                localKeyPair: KeyPair.generateEd25519()
+            )
+            securedListener.startAccepting()
+
+            var admittedAddresses: [SocketAddress] = []
+            for port in 11_000..<(11_000 + 64) {
+                let address = try SocketAddress(ipAddress: "127.0.0.1", port: port)
+                admittedAddresses.append(address)
+                securedListener.handleNewPeer(address)
+                #expect(rawListener.connection(for: address.addressKey) != nil)
+            }
+
+            let firstConnection = try #require(rawListener.connection(for: admittedAddresses[0].addressKey))
+            firstConnection.close()
+
+            let replacementAddress = try SocketAddress(ipAddress: "127.0.0.1", port: 11_064)
+            for _ in 0..<50 {
+                securedListener.handleNewPeer(replacementAddress)
+                if rawListener.connection(for: replacementAddress.addressKey) != nil {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+
+            #expect(rawListener.connection(for: replacementAddress.addressKey) != nil)
+            try await securedListener.close()
+        }
+    }
+
+    private func withWebRTCTestSocket<T>(
+        _ body: (WebRTCUDPSocket) async throws -> T
+    ) async throws -> T {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        do {
+            let channel = try await DatagramBootstrap(group: group)
+                .bind(host: "127.0.0.1", port: 0)
+                .get()
+            let socket = WebRTCUDPSocket(channel: channel)
+            do {
+                let result = try await body(socket)
+                socket.close()
+                try await group.shutdownGracefully()
+                return result
+            } catch {
+                socket.close()
+                do {
+                    try await group.shutdownGracefully()
+                } catch {
+                    Issue.record("Failed to shut down WebRTC test event loop: \(error)")
+                }
+                throw error
+            }
+        } catch {
+            do {
+                try await group.shutdownGracefully()
+            } catch {
+                Issue.record("Failed to shut down WebRTC test event loop: \(error)")
+            }
+            throw error
         }
     }
 }

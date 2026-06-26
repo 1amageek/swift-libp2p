@@ -24,6 +24,11 @@ struct UPnPHandler: NATProtocolHandler {
         "urn:schemas-upnp-org:service:WANPPPConnection:1"
     ]
 
+    func canHandle(_ gateway: NATGatewayType) -> Bool {
+        if case .upnp = gateway { return true }
+        return false
+    }
+
     func discoverGateway(configuration: NATPortMapperConfiguration) async throws -> NATGatewayType {
         // SSDP M-SEARCH for Internet Gateway Device
         let ssdpAddress = "239.255.255.250"

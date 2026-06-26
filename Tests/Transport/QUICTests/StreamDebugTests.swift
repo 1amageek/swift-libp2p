@@ -5,13 +5,14 @@
 import Testing
 import Foundation
 import NIOCore
+import P2PTestSupport
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
 @testable import P2PMux
 import QUIC
 
-@Suite("Stream Debug Tests")
+@Suite("Stream Debug Tests", .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct StreamDebugTests {
 
     // MARK: - Step 1: Verify Connection Establishment

@@ -18,19 +18,20 @@
 
 ## Build, Test, and Development Commands
 - `swift build` — build all SwiftPM targets.
-- `swift test` — run the full test suite.
-- `swift test --filter <SuiteOrTestName>` — run a focused test.
+- `scripts/swift-test-timeout.sh 120 --disable-sandbox` — run the default deterministic correctness suite with a timeout.
+- `scripts/swift-test-timeout.sh 60 --disable-sandbox --filter <SuiteOrTestName>` — run a focused test with a timeout.
+- `scripts/live-network-test.sh` — run opt-in localhost live network tests sequentially.
 - `swift run PingPongDemo server|client` — run the demo app.
 
 ### Benchmark Commands
-- `swift test --filter P2PBenchmarks` — run all benchmarks.
-- `swift test --filter P2PBenchmarks/DataPathBenchmarks` — runtime data-path throughput and connect costs.
-- `swift test --filter P2PBenchmarks/KademliaKeyBenchmarks` — KademliaKey benchmarks.
-- `swift test --filter P2PBenchmarks/VarintBenchmarks` — Varint benchmarks.
-- `swift test --filter P2PBenchmarks/MessageIDBenchmarks` — MessageID benchmarks.
-- `swift test --filter P2PBenchmarks/TopicBenchmarks` — Topic benchmarks.
-- `swift test --filter P2PBenchmarks/YamuxFrameBenchmarks` — YamuxFrame benchmarks.
-- `swift test --filter P2PBenchmarks/NoiseCryptoBenchmarks` — NoiseCryptoState benchmarks.
+- `scripts/run-benchmarks.sh` — run all benchmark suites with benchmark targets enabled.
+- `scripts/run-benchmarks.sh --suite DataPathBenchmarks` — runtime data-path throughput and connect costs.
+- `scripts/run-benchmarks.sh --suite KademliaKeyBenchmarks` — KademliaKey benchmarks.
+- `scripts/run-benchmarks.sh --suite VarintBenchmarks` — Varint benchmarks.
+- `scripts/run-benchmarks.sh --suite MessageIDBenchmarks` — MessageID benchmarks.
+- `scripts/run-benchmarks.sh --suite TopicBenchmarks` — Topic benchmarks.
+- `scripts/run-benchmarks.sh --suite YamuxFrameBenchmarks` — YamuxFrame benchmarks.
+- `scripts/run-benchmarks.sh --suite NoiseCryptoBenchmarks` — NoiseCryptoState benchmarks.
 
 ### Module-Specific Test Commands
 - `swift test --filter P2PCoreTests` — Core tests.
@@ -51,7 +52,7 @@
 - `swift test --filter AutoNATTests` — AutoNAT tests.
 - `swift test --filter P2PTests` — Integration/Node E2E tests.
 - `swift test --filter Traversal` — Traversal orchestration tests.
-- `swift test --filter GoInteropTests` — Go interop tests.
+- `scripts/interop-test.sh smoke|transport|protocol|full` — Docker-backed Go/Rust interop tests. These targets are opt-in and are not part of default `swift test`.
 
 ## Coding Style & Naming Conventions
 - Follow Swift API Design Guidelines; prefer `async/await` (avoid `EventLoopFuture`).
@@ -73,7 +74,7 @@
   `SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.cache/clang scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 -- --disable-sandbox --filter <SuiteOrTestName>`
 - `scripts/swift-test-hang-guard.sh` is intentionally serialized (single active run). Do not run multiple hang-guard jobs concurrently.
 - Hang-guard logs and diagnostics are stored under `.test-artifacts/hang-guard/<timestamp>/`.
-- For production-readiness checks, use `scripts/production-gate.sh`; add `--include-benchmarks` before cutting a release candidate.
+- For production-readiness checks, use `scripts/production-gate.sh`; it includes live localhost network tests and interop smoke by default. Add `--include-benchmarks` before cutting a release candidate.
 
 ## Commit & Pull Request Guidelines
 - Use concise, imperative commit subjects with a subsystem hint (e.g., `Transport: handle half-close`).

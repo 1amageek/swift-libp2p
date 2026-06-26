@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import P2PTestSupport
 @testable import P2PDiscoveryWiFiBeacon
 @testable import P2PDiscoveryBeacon
 
@@ -74,7 +75,7 @@ struct WiFiBeaconAdapterTests {
         #expect(count == 0)
     }
 
-    @Test("loopback receives own beacon", .timeLimit(.minutes(1)))
+    @Test("loopback receives own beacon", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func loopbackReceivesOwnBeacon() async throws {
         let config = WiFiBeaconConfiguration(
             port: 0,
@@ -105,7 +106,7 @@ struct WiFiBeaconAdapterTests {
         try await adapter.shutdown()
     }
 
-    @Test("stopBeacon clears payload", .timeLimit(.minutes(1)))
+    @Test("stopBeacon clears payload", .timeLimit(.minutes(1)), .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
     func stopBeaconClearsPayload() async throws {
         let config = WiFiBeaconConfiguration(
             port: 0,

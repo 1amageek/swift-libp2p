@@ -264,9 +264,8 @@ public final class AggregationIngest: Sendable {
 
     @discardableResult
     private func emit(_ event: AggregationResult) -> AsyncStream<AggregationResult>.Continuation.YieldResult? {
-        eventState.withLock { state in
-            state.continuation?.yield(event)
-        }
+        let continuation = eventState.withLock { $0.continuation }
+        return continuation?.yield(event)
     }
 
     private func freshnessFunction(for mediumID: String) -> FreshnessFunction {

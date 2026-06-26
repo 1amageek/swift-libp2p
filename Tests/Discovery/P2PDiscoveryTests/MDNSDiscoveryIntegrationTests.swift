@@ -1,11 +1,24 @@
 /// MDNSDiscoveryIntegrationTests - End-to-end tests for mDNS peer discovery
 import Testing
 import Foundation
+import P2PTestSupport
 @testable import P2PDiscoveryMDNS
 @testable import P2PDiscovery
 @testable import P2PCore
 
-@Suite("MDNSDiscovery Integration Tests")
+private func shutdownInBackground(_ discoveries: MDNSDiscovery...) {
+    Task {
+        for discovery in discoveries {
+            do {
+                try await discovery.shutdown()
+            } catch {
+                Issue.record("Failed to shut down mDNS discovery during cleanup: \(error)")
+            }
+        }
+    }
+}
+
+@Suite("MDNSDiscovery Integration Tests", .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct MDNSDiscoveryIntegrationTests {
 
     // MARK: - Basic Discovery
@@ -29,12 +42,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery1.start()
         try await discovery2.start()
 
-        defer {
-            Task {
-                try await discovery1.shutdown()
-                try await discovery2.shutdown()
-            }
-        }
+        defer { shutdownInBackground(discovery1, discovery2) }
 
         // Announce peer1
         let addr1 = try Multiaddr("/ip4/127.0.0.1/tcp/4001")
@@ -84,9 +92,7 @@ struct MDNSDiscoveryIntegrationTests {
         let discovery = MDNSDiscovery(localPeerID: localPeer, configuration: config)
         try await discovery.start()
 
-        defer {
-            Task { try await discovery.shutdown() }
-        }
+        defer { shutdownInBackground(discovery) }
 
         // Announce multiple addresses
         let addresses = [
@@ -120,12 +126,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery1.start()
         try await discovery2.start()
 
-        defer {
-            Task {
-                try await discovery1.shutdown()
-                try await discovery2.shutdown()
-            }
-        }
+        defer { shutdownInBackground(discovery1, discovery2) }
 
         // Announce peer2
         let addr2 = try Multiaddr("/ip4/127.0.0.1/tcp/4002")
@@ -162,12 +163,7 @@ struct MDNSDiscoveryIntegrationTests {
         try await discovery1.start()
         try await discovery2.start()
 
-        defer {
-            Task {
-                try await discovery1.shutdown()
-                try await discovery2.shutdown()
-            }
-        }
+        defer { shutdownInBackground(discovery1, discovery2) }
 
         // Announce peer2
         let addr2 = try Multiaddr("/ip4/127.0.0.1/tcp/4002")
@@ -197,9 +193,7 @@ struct MDNSDiscoveryIntegrationTests {
         let discovery = MDNSDiscovery(localPeerID: localPeer, configuration: config)
         try await discovery.start()
 
-        defer {
-            Task { try await discovery.shutdown() }
-        }
+        defer { shutdownInBackground(discovery) }
 
         // Create subscription for target peer
         let subscription = discovery.subscribe(to: targetPeer)
@@ -256,9 +250,7 @@ struct MDNSDiscoveryIntegrationTests {
         let discovery = MDNSDiscovery(localPeerID: peer, configuration: config)
         try await discovery.start()
 
-        defer {
-            Task { try await discovery.shutdown() }
-        }
+        defer { shutdownInBackground(discovery) }
 
         // Should start without error
         #expect(Bool(true))
@@ -315,9 +307,7 @@ struct MDNSDiscoveryIntegrationTests {
         let discovery = MDNSDiscovery(localPeerID: peer, configuration: config)
         try await discovery.start()
 
-        defer {
-            Task { try await discovery.shutdown() }
-        }
+        defer { shutdownInBackground(discovery) }
 
         // Create valid multiaddr
         let validAddr = try Multiaddr("/ip4/127.0.0.1/tcp/4001")

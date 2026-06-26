@@ -21,6 +21,7 @@ import Logging
 import NIOCore
 import P2PCore
 import P2PTransport
+import P2PTransportSecured
 import P2PMux
 import P2PCertificate
 import WebRTC
@@ -28,9 +29,9 @@ import WebRTC
 /// A listener that yields pre-secured WebRTC connections.
 public final class WebRTCSecuredListener: SecuredListener, Sendable {
 
-    /// Cap on connections concurrently performing the DTLS + SCTP
-    /// handshake. Excess connections are rejected explicitly instead of
-    /// queueing without bound.
+    /// Cap on connections admitted into the DTLS + SCTP handshake path.
+    /// The slot is reserved before raw connection creation so source-address
+    /// floods cannot force unbounded `WebRTCListener.acceptConnection()` work.
     private static let maxConcurrentHandshakes = 64
 
     private let listener: WebRTCListener
@@ -60,9 +61,34 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
         /// tombstone tells it to abandon the registration. Always
         /// consumed by the in-flight `handleNewPeer` call.
         var discardedWithoutEntry: Set<ObjectIdentifier> = []
-        var handshakeCount: Int = 0
+        /// Source-address keys that have either an in-flight handshake or an
+        /// active routed connection. This closes the duplicate-new-peer race
+        /// before the socket route is visible.
+        var reservedPeerKeys: Set<String> = []
+        /// Raw connections that still occupy a handshake admission slot.
+        var handshakingConnections: Set<ObjectIdentifier> = []
+        var activeHandshakeReservations: Int = 0
         var didStartAccepting: Bool = false
         var isClosed: Bool = false
+
+        mutating func decrementActiveHandshakeReservations() {
+            if activeHandshakeReservations > 0 {
+                activeHandshakeReservations -= 1
+            }
+        }
+    }
+
+    private enum PeerAdmission: Sendable {
+        case admitted
+        case duplicate
+        case capacityReached
+        case closed
+    }
+
+    private enum Registration: Sendable {
+        case registered
+        case discardedEarly
+        case closed
     }
 
     public var localAddress: Multiaddr { _localAddress }
@@ -99,32 +125,29 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
     /// Called by the shared UDP socket's onNewPeer callback.
     func handleNewPeer(_ remoteAddress: SocketAddress) {
         let key = remoteAddress.addressKey
-        let sendHandler = socket.makeSendHandler(remoteAddress: remoteAddress)
-        guard let connection = listener.acceptConnection(peerID: key, sendHandler: sendHandler) else {
-            // The underlying listener is closed — nothing to route
+        switch reservePeerAdmission(key: key) {
+        case .admitted:
+            break
+        case .duplicate:
+            return
+        case .capacityReached:
+            logger.warning(
+                "Rejecting inbound WebRTC peer \(key): handshake capacity (\(Self.maxConcurrentHandshakes)) reached"
+            )
+            return
+        case .closed:
             return
         }
 
-        enum Admission {
-            case admitted
-            case discardedEarly
-            case closed
+        let sendHandler = socket.makeSendHandler(remoteAddress: remoteAddress)
+        guard let connection = listener.acceptConnection(peerID: key, sendHandler: sendHandler) else {
+            // The underlying listener is closed — nothing to route
+            releaseReservedPeer(key: key)
+            return
         }
 
-        let admission = listenerState.withLock { state -> Admission in
-            // The accept loop may have rejected this connection already —
-            // its discard() could not clean the upstream entry because the
-            // route key was not registered yet
-            if state.discardedWithoutEntry.remove(ObjectIdentifier(connection)) != nil {
-                return .discardedEarly
-            }
-            guard !state.isClosed else { return .closed }
-            state.peers[ObjectIdentifier(connection)] = PeerEntry(key: key, address: remoteAddress)
-            return .admitted
-        }
-
-        switch admission {
-        case .admitted:
+        switch registerAcceptedPeer(connection, key: key, remoteAddress: remoteAddress) {
+        case .registered:
             if !socket.addRoute(remoteAddress: remoteAddress, connection: connection) {
                 logger.warning("Socket closed while admitting peer \(key); discarding connection")
                 discard(connection)
@@ -161,25 +184,15 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
         Task { [weak self] in
             guard let self else { return }
             for await webrtcConn in self.listener.connections {
-                let admitted = self.listenerState.withLock { state -> Bool in
-                    guard !state.isClosed,
-                          state.handshakeCount < Self.maxConcurrentHandshakes else {
-                        return false
-                    }
-                    state.handshakeCount += 1
-                    return true
-                }
-                guard admitted else {
-                    self.logger.warning(
-                        "Rejecting inbound WebRTC connection: listener closed or handshake capacity (\(Self.maxConcurrentHandshakes)) reached"
-                    )
+                let isClosed = self.listenerState.withLock { $0.isClosed }
+                guard !isClosed else {
                     self.discard(webrtcConn)
                     continue
                 }
                 Task { [weak self] in
                     guard let self else { return }
                     defer {
-                        self.listenerState.withLock { $0.handshakeCount -= 1 }
+                        self.finishHandshakeAdmission(for: webrtcConn)
                     }
                     await self.handleAccepted(webrtcConn)
                 }
@@ -260,7 +273,12 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
     /// registry entry.
     private func discard(_ connection: WebRTCConnection) {
         let entry = listenerState.withLock { state -> PeerEntry? in
+            let identifier = ObjectIdentifier(connection)
             if let entry = state.peers.removeValue(forKey: ObjectIdentifier(connection)) {
+                state.reservedPeerKeys.remove(entry.key)
+                if state.handshakingConnections.remove(identifier) != nil {
+                    state.decrementActiveHandshakeReservations()
+                }
                 return entry
             }
             // Not registered yet: handleNewPeer is still between
@@ -287,6 +305,63 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
         }
     }
 
+    private func reservePeerAdmission(key: String) -> PeerAdmission {
+        listenerState.withLock { state -> PeerAdmission in
+            guard !state.isClosed else { return .closed }
+            guard !state.reservedPeerKeys.contains(key) else { return .duplicate }
+            guard state.activeHandshakeReservations < Self.maxConcurrentHandshakes else {
+                return .capacityReached
+            }
+            state.reservedPeerKeys.insert(key)
+            state.activeHandshakeReservations += 1
+            return .admitted
+        }
+    }
+
+    private func releaseReservedPeer(key: String) {
+        listenerState.withLock { state in
+            if state.reservedPeerKeys.remove(key) != nil {
+                state.decrementActiveHandshakeReservations()
+            }
+        }
+    }
+
+    private func registerAcceptedPeer(
+        _ connection: WebRTCConnection,
+        key: String,
+        remoteAddress: SocketAddress
+    ) -> Registration {
+        listenerState.withLock { state -> Registration in
+            let identifier = ObjectIdentifier(connection)
+            // The accept loop may have rejected this connection already:
+            // its discard() could not clean the upstream entry because the
+            // route key was not registered yet.
+            if state.discardedWithoutEntry.remove(identifier) != nil {
+                if state.reservedPeerKeys.remove(key) != nil {
+                    state.decrementActiveHandshakeReservations()
+                }
+                return .discardedEarly
+            }
+            guard !state.isClosed else {
+                if state.reservedPeerKeys.remove(key) != nil {
+                    state.decrementActiveHandshakeReservations()
+                }
+                return .closed
+            }
+            state.peers[identifier] = PeerEntry(key: key, address: remoteAddress)
+            state.handshakingConnections.insert(identifier)
+            return .registered
+        }
+    }
+
+    private func finishHandshakeAdmission(for connection: WebRTCConnection) {
+        listenerState.withLock { state in
+            if state.handshakingConnections.remove(ObjectIdentifier(connection)) != nil {
+                state.decrementActiveHandshakeReservations()
+            }
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Closes the listener, its UDP socket, and all raw connections. Idempotent.
@@ -296,6 +371,9 @@ public final class WebRTCSecuredListener: SecuredListener, Sendable {
             state.isClosed = true
             state.peers.removeAll()
             state.discardedWithoutEntry.removeAll()
+            state.reservedPeerKeys.removeAll()
+            state.handshakingConnections.removeAll()
+            state.activeHandshakeReservations = 0
             let continuation = state.connectionsContinuation
             state.connectionsContinuation = nil
             return continuation

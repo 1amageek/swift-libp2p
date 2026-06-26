@@ -1154,8 +1154,8 @@ struct NodeE2ETests {
     }
 
     @Test("Production profile keeps validation report clean for transparent Noise composition", .timeLimit(.minutes(1)))
-    func productionProfileValidationReportIsClean() {
-        let configuration = NodeConfiguration(
+    func productionProfileValidationReportIsClean() throws {
+        let configuration = try NodeConfiguration(
             profile: .production,
             keyPair: .generateEd25519(),
             listenAddresses: [.memory(id: "production-validation")],

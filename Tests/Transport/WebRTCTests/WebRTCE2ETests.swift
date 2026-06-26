@@ -12,7 +12,36 @@ import NIOCore
 @testable import P2PCore
 @testable import P2PMux
 
-@Suite("WebRTC E2E Tests")
+private enum WebRTCTestTimeout: Error {
+    case step(String)
+}
+
+private actor WebRTCTestTimeoutGate<T: Sendable> {
+    private let continuation: CheckedContinuation<T, Error>
+    private var didResume = false
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: T) {
+        guard !didResume else { return }
+        didResume = true
+        continuation.resume(returning: value)
+    }
+
+    func resume(throwing error: Error) {
+        guard !didResume else { return }
+        didResume = true
+        continuation.resume(throwing: error)
+    }
+}
+
+@Suite(
+    "WebRTC E2E Tests",
+    .serialized,
+    .enabled(if: webRTCLiveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+)
 struct WebRTCE2ETests {
 
     // MARK: - Basic Connection Tests
@@ -531,30 +560,80 @@ struct WebRTCE2ETests {
         try await firstStream.write(ByteBuffer(bytes: Data("first".utf8)))
 
         // Wait until the server has closed its side of the first stream
-        let barrier = try await clientConnection.acceptStream()
-        _ = try await barrier.read()
+        let barrier = try await withWebRTCStepTimeout("barrier accept") {
+            try await clientConnection.acceptStream()
+        }
+        _ = try await withWebRTCStepTimeout("barrier read") {
+            try await barrier.read()
+        }
 
         // Late data for the closed channel — must be dropped server-side
         // without poisoning the connection's pending buffers
-        for _ in 0..<8 {
-            try await firstStream.write(ByteBuffer(bytes: Data(repeating: 0xEE, count: 32 * 1024)))
+        for index in 0..<8 {
+            try await withWebRTCStepTimeout("late write \(index)") {
+                try await firstStream.write(ByteBuffer(bytes: Data(repeating: 0xEE, count: 32 * 1024)))
+            }
         }
 
         // A fresh stream must still work end-to-end
-        let secondStream = try await clientConnection.newStream()
+        let secondStream = try await withWebRTCStepTimeout("new second stream") {
+            try await clientConnection.newStream()
+        }
         let payload = Data("second".utf8)
-        try await secondStream.write(ByteBuffer(bytes: payload))
-        try await secondStream.closeWrite()
-        let echoed = try await secondStream.read()
+        try await withWebRTCStepTimeout("second stream write") {
+            try await secondStream.write(ByteBuffer(bytes: payload))
+        }
+        try await withWebRTCStepTimeout("second stream closeWrite") {
+            try await secondStream.closeWrite()
+        }
+        let echoed = try await withWebRTCStepTimeout("second stream read", timeout: .seconds(10)) {
+            try await secondStream.read()
+        }
         #expect(Data(buffer: echoed) == payload)
 
         // Cleanup
-        let serverConnection = try await serverTask.value
+        let serverConnection = try await withWebRTCStepTimeout("server task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
         try await clientConnection.close()
         if let serverConnection {
             do { try await serverConnection.close() } catch { }
         }
         try await listener.close()
+    }
+
+    private func withWebRTCStepTimeout<T: Sendable>(
+        _ step: String,
+        timeout: Duration = .seconds(5),
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            let gate = WebRTCTestTimeoutGate<T>(continuation)
+            let task = Task {
+                try await operation()
+            }
+            let timer = Task {
+                do {
+                    try await Task.sleep(for: timeout)
+                    task.cancel()
+                    await gate.resume(throwing: WebRTCTestTimeout.step(step))
+                } catch is CancellationError {
+                    // The operation completed before the timeout.
+                } catch {
+                    await gate.resume(throwing: error)
+                }
+            }
+            Task {
+                do {
+                    let result = try await task.value
+                    timer.cancel()
+                    await gate.resume(returning: result)
+                } catch {
+                    timer.cancel()
+                    await gate.resume(throwing: error)
+                }
+            }
+        }
     }
 
     @Test("Invalid multiaddr throws unsupportedAddress", .timeLimit(.minutes(1)))

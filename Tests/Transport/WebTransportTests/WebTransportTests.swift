@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import NIOCore
+import P2PTestSupport
 @testable import P2PTransportWebTransport
 @testable import P2PCore
 
@@ -367,7 +368,11 @@ struct WebTransportTransportTests {
         #expect(!transport.canListen(dnsListen))
     }
 
-    @Test("listenSecured and dialSecured establish muxed connection", .timeLimit(.minutes(1)))
+    @Test(
+        "listenSecured and dialSecured establish muxed connection",
+        .timeLimit(.minutes(1)),
+        .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
     func securedDialListen() async throws {
         let serverKey = KeyPair.generateEd25519()
         let clientKey = KeyPair.generateEd25519()
@@ -406,7 +411,11 @@ struct WebTransportTransportTests {
         try await listener.close()
     }
 
-    @Test("dialSecured rejects certificate hash mismatch", .timeLimit(.minutes(1)))
+    @Test(
+        "dialSecured rejects certificate hash mismatch",
+        .timeLimit(.minutes(1)),
+        .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
     func rejectsMismatchedCertHash() async throws {
         let serverKey = KeyPair.generateEd25519()
         let clientKey = KeyPair.generateEd25519()
@@ -437,7 +446,11 @@ struct WebTransportTransportTests {
         try await listener.close()
     }
 
-    @Test("dialSecured supports dns4 addresses", .timeLimit(.minutes(1)))
+    @Test(
+        "dialSecured supports dns4 addresses",
+        .timeLimit(.minutes(1)),
+        .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
     func securedDialListenWithDNS4Address() async throws {
         let serverKey = KeyPair.generateEd25519()
         let clientKey = KeyPair.generateEd25519()
@@ -474,7 +487,11 @@ struct WebTransportTransportTests {
         try await listener.close()
     }
 
-    @Test("dialSecured supports dns4 hostname addresses", .timeLimit(.minutes(1)))
+    @Test(
+        "dialSecured supports dns4 hostname addresses",
+        .timeLimit(.minutes(1)),
+        .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
     func securedDialListenWithDNS4HostnameAddress() async throws {
         let serverKey = KeyPair.generateEd25519()
         let clientKey = KeyPair.generateEd25519()
@@ -511,7 +528,11 @@ struct WebTransportTransportTests {
         try await listener.close()
     }
 
-    @Test("listener localAddress updates cert hashes after rotation", .timeLimit(.minutes(1)))
+    @Test(
+        "listener localAddress updates cert hashes after rotation",
+        .timeLimit(.minutes(1)),
+        .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1")
+    )
     func listenerAddressRotatesHashes() async throws {
         let serverKey = KeyPair.generateEd25519()
         let transport = WebTransportTransport(

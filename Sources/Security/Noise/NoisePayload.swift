@@ -114,24 +114,25 @@ struct NoisePayload: Sendable {
 
 /// Reads a length-prefixed Noise message from data.
 ///
-/// Delegates the `[UInt8]` framing to the Embedded-clean core (`NoiseFraming`);
-/// the `Data` surface stays adapter-side.
-///
 /// - Parameter data: Buffer containing messages
 /// - Returns: (message, bytesConsumed) or nil if incomplete
 /// - Throws: `NoiseError.frameTooLarge` if the frame exceeds max size
 func readNoiseMessage(from data: Data) throws -> (message: Data, bytesConsumed: Int)? {
-    do {
-        guard let result = try NoiseFraming.read(from: [UInt8](data)) else {
-            return nil
-        }
-        return (Data(result.message), result.consumed)
-    } catch let error as NoiseFramingError {
-        switch error {
-        case .frameTooLarge(let size, let max):
-            throw NoiseError.frameTooLarge(size: size, max: max)
-        }
+    guard data.count >= 2 else {
+        return nil
     }
+    let start = data.startIndex
+    let length = Int(data[start]) << 8 | Int(data[data.index(after: start)])
+    guard length <= noiseMaxMessageSize else {
+        throw NoiseError.frameTooLarge(size: length, max: noiseMaxMessageSize)
+    }
+    let bytesConsumed = 2 + length
+    guard data.count >= bytesConsumed else {
+        return nil
+    }
+    let messageStart = data.index(start, offsetBy: 2)
+    let messageEnd = data.index(messageStart, offsetBy: length)
+    return (data.subdata(in: messageStart..<messageEnd), bytesConsumed)
 }
 
 /// Reads a length-prefixed Noise message from a ByteBuffer.
@@ -149,20 +150,17 @@ func readNoiseMessage(from buffer: inout ByteBuffer) throws -> ByteBuffer? {
 
 /// Encodes a Noise message with length prefix.
 ///
-/// Delegates the `[UInt8]` framing to the Embedded-clean core (`NoiseFraming`);
-/// the `Data` surface stays adapter-side.
-///
 /// - Parameter message: The message to encode
 /// - Returns: Length-prefixed message
 func encodeNoiseMessage(_ message: Data) throws -> Data {
-    do {
-        return Data(try NoiseFraming.encode([UInt8](message)))
-    } catch let error as NoiseFramingError {
-        switch error {
-        case .frameTooLarge(let size, let max):
-            throw NoiseError.frameTooLarge(size: size, max: max)
-        }
+    guard message.count <= noiseMaxMessageSize else {
+        throw NoiseError.frameTooLarge(size: message.count, max: noiseMaxMessageSize)
     }
+    var framed = Data(capacity: 2 + message.count)
+    framed.append(UInt8((message.count >> 8) & 0xFF))
+    framed.append(UInt8(message.count & 0xFF))
+    framed.append(message)
+    return framed
 }
 
 /// Encodes a Noise message with length prefix into a ByteBuffer.

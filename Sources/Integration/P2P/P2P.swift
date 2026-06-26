@@ -9,6 +9,7 @@ import Synchronization
 // Protocol abstractions
 @_exported import P2PCore
 @_exported import P2PTransport
+@_exported import P2PTransportSecured
 @_exported import P2PSecurity
 @_exported import P2PMux
 @_exported import P2PNegotiation
@@ -295,7 +296,7 @@ public struct NodeConfiguration: Sendable {
         maxNegotiatingInboundStreams: Int = 128,
         services: ServicePipeline = .empty,
         discovery: DiscoveryPipeline? = nil
-    ) {
+    ) throws {
         let connectionProviderAuditMode: NodeConnectionProviderAuditMode = connectionProviders.isEmpty
             ? .transparentComposition
             : .opaqueProviders
@@ -310,7 +311,7 @@ public struct NodeConfiguration: Sendable {
             resourceManager: Self.defaultResourceManager(for: profile)
         )
         guard validation.errors.isEmpty else {
-            preconditionFailure("Invalid node configuration for \(profile): \(validation.errors)")
+            throw NodeStartValidationError(profile: profile, validation: validation)
         }
 
         self.runtime = RuntimeConfiguration(
@@ -684,7 +685,7 @@ public actor Node:
         @NodeGroupBuilder _ content: () -> NodeGroup = { NodeGroup() }
     ) throws {
         let components = try content().resolveNodeComponents()
-        self.init(configuration: NodeConfiguration(
+        self.init(configuration: try NodeConfiguration(
             profile: profile,
             auditPolicy: auditPolicy,
             keyPair: keyPair,

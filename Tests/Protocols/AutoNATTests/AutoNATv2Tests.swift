@@ -977,23 +977,6 @@ struct AutoNATv2ServerDialTests {
     }
 }
 
-// MARK: - Handler Tests
-
-@Suite("AutoNATv2 Handler Tests")
-struct AutoNATv2HandlerTests {
-
-    @Test("Handler initializes with service")
-    func handlerInitialization() async throws {
-        let service = AutoNATv2Service()
-        let handler = AutoNATv2Handler(service: service)
-
-        // Handler should be created without issues
-        _ = handler
-
-        try await service.shutdown()
-    }
-}
-
 // MARK: - Protocol Constants Tests
 
 @Suite("AutoNATv2 Protocol Constants Tests")

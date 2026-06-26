@@ -6,6 +6,7 @@
 import Testing
 import Foundation
 import NIOCore
+import P2PTestSupport
 @testable import P2PTransportQUIC
 @testable import P2PTransport
 @testable import P2PCore
@@ -20,7 +21,7 @@ private func optionalAsync<T>(_ operation: () async throws -> T) async -> T? {
     }
 }
 
-@Suite("QUIC E2E Tests")
+@Suite("QUIC E2E Tests", .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct QUICE2ETests {
 
     // MARK: - Basic Connection Tests

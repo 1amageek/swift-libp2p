@@ -57,11 +57,12 @@ scripts/interop-test.sh protocol
 scripts/interop-test.sh full
 ```
 
-`scripts/production-gate.sh` はデフォルトで `scripts/interop-test.sh smoke` を実行します。Docker を使えない環境でローカルの非リリース確認だけ行う場合のみ `--skip-interop` を明示します。
+`scripts/production-gate.sh` はデフォルトで live localhost network lane と `scripts/interop-test.sh smoke` を実行します。Docker を使えない環境でローカルの非リリース確認だけ行う場合のみ `--skip-interop` を明示します。
 
 ```bash
 scripts/production-gate.sh
 scripts/production-gate.sh --interop-mode full
+scripts/production-gate.sh --skip-live-network
 scripts/production-gate.sh --skip-interop
 ```
 
@@ -93,56 +94,29 @@ scripts/swift-test-hang-guard.sh --repeats 3 --timeout 30 --build-timeout 120 --
 ### Phase 1: Transport Layer Tests
 
 ```bash
-# TCP Transport
-swift test --filter TCPInteropTests
-
-# WebSocket Transport
-swift test --filter WebSocketInteropTests
-
-# Noise Security
-swift test --filter NoiseInteropTests
-
-# Yamux Mux
-swift test --filter YamuxInteropTests
+# Transport profile
+scripts/interop-test.sh transport
 ```
 
 ### Phase 2: Protocol Layer Tests
 
 ```bash
-# Ping
-swift test --filter PingInteropTests
-
-# Identify
-swift test --filter IdentifyInteropTests
-
-# GossipSub
-swift test --filter GossipSubInteropTests
-
-# Kademlia DHT
-swift test --filter KademliaInteropTests
-
-# Circuit Relay
-swift test --filter CircuitRelayInteropTests
+# Protocol profile
+scripts/interop-test.sh protocol
 ```
 
 ### Phase 3: Integration Tests
 
 ```bash
-# Full Stack Tests
-swift test --filter FullStackInteropTests
+# Full profile
+scripts/interop-test.sh full
 ```
 
-### 既存テスト
+### Focused Swift Test
 
 ```bash
-# go-libp2p QUIC Tests
-swift test --filter GoLibp2pInteropTests
-
-# rust-libp2p QUIC Tests
-swift test --filter RustInteropTests
-
-# All Interop Tests
-swift test --filter Interop
+SWIFT_LIBP2P_ENABLE_INTEROP_TESTS=1 \
+scripts/swift-test-timeout.sh 90 --disable-sandbox --filter GoInteropTests.PingInteropTests
 ```
 
 ## ファイル構成
@@ -228,7 +202,8 @@ scripts/interop-test.sh up --keep-running
 scripts/interop-test.sh up --profile transport --keep-running
 
 # テスト実行
-swift test --filter TopologyInteropTests
+SWIFT_LIBP2P_ENABLE_INTEROP_TESTS=1 \
+scripts/swift-test-timeout.sh 90 --disable-sandbox --filter TopologyInteropTests
 
 # 終了
 scripts/interop-test.sh down
@@ -255,7 +230,7 @@ ERROR: Cannot connect to the Docker daemon
 ```bash
 # 特定イメージを削除して再ビルド
 docker rmi go-libp2p-tcp-test
-swift test --filter TCPInteropTests
+scripts/interop-test.sh transport --filter GoInteropTests.TCPInteropTests
 
 # 全イメージを削除
 docker rmi go-libp2p-test rust-libp2p-test go-libp2p-tcp-test go-libp2p-noise-test go-libp2p-yamux-test

@@ -57,9 +57,7 @@ struct GossipSubSecurityTests {
         peers: [ControlMessage.Prune.PeerInfo],
         from sender: PeerID
     ) async throws -> [GossipSubEvent] {
-        // Access the stream FIRST so the EventChannel continuation exists and
-        // buffers events emitted during handleRPC (yields before any stream
-        // access are dropped).
+        // Subscribe first so the broadcaster has a consumer before handleRPC emits.
         let stream = router.events
 
         var control = ControlMessageBatch()

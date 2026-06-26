@@ -3,17 +3,18 @@ Scope/role: transport-layer protocol definitions (`P2PTransport`) plus implement
 (TCP, Memory, QUIC, WebRTC, WebSocket, WebTransport). Read this before adding a transport
 or touching the dial/listen contract.
 
-`P2PTransport` is protocol-only and depends on `P2PCore` alone (no NIO). A "raw" transport
-(`Transport`) returns a `RawConnection` that the Security and Mux layers then upgrade.
-"Secured" transports (QUIC/WebRTC/WebTransport) bypass that pipeline and return a
-`MuxedConnection` directly because they bring their own TLS/DTLS + multiplexing.
+`P2PTransport` is protocol-only and depends on `P2PCore` alone (no NIO, no mux). A "raw"
+transport (`Transport`) returns a `RawConnection` that the Security and Mux layers then
+upgrade. `P2PTransportSecured` is the bridge target for "secured" transports
+(QUIC/WebRTC/WebTransport) that bypass that pipeline and return a `MuxedConnection`
+directly because they bring their own TLS/DTLS + multiplexing.
 
 ## Contracts (the load-bearing rules)
 - Protocol/implementation split: `P2PTransport` carries only the `Transport` / `Listener`
   protocols and depends only on `P2PCore`. Implementations live in separate targets and
   depend on `P2PTransport`. Do not pull NIO into `P2PTransport`.
 - A raw `Transport.dial`/`listen` returns `RawConnection`; securing is the Security layer's
-  job. Secured transports implement `dialSecured`/`listenSecured` and return an
+  job. Secured transports implement `P2PTransportSecured.SecuredTransport` and return an
   already-secured-and-muxed connection. Keep these two shapes distinct.
 - Concurrency: async/await throughout; do not use `EventLoopFuture` in transport surfaces.
   Use `class + Mutex` only where channel state must be tracked.
@@ -34,8 +35,10 @@ or touching the dial/listen contract.
   concurrent `read()`/`accept()` throw `TransportError.unsupportedOperation`, not hang.
 
 ## Dependencies & seams
-- `P2PTransport` → `P2PCore`. TCP → NIO; QUIC → swift-quic + `P2PMux`; WebRTC → swift-webrtc
-  + `P2PMux` + `P2PCertificate`; WebSocket → NIOWebSocket/NIOHTTP1; Memory → none.
+- `P2PTransport` → `P2PCore`. `P2PTransportSecured` → `P2PTransport` + `P2PMux`.
+  TCP → NIO; QUIC → swift-quic + `P2PTransportSecured`; WebRTC → swift-webrtc +
+  `P2PTransportSecured` + `P2PCertificate`; WebSocket → NIOWebSocket/NIOHTTP1;
+  Memory → none.
 
 ## Wire protocol notes
 - `Transport.protocols` advertises the multiaddr component stacks each transport handles

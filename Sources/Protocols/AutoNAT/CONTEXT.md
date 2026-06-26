@@ -8,9 +8,9 @@ consistent failure means behind-NAT. The dangerous surface is the server side: d
 is an amplification vector, so the server is heavily rate-limited and address-validated.
 
 ## Contracts (the load-bearing rules)
-- v1 (`AutoNATService`) combines client and server. v2 splits into
-  `AutoNATv2Service`/`AutoNATv2Handler` and is EventEmitting (single-consumer); keep the
-  v2 service on the EventEmitting pattern.
+- v1 (`AutoNATService`) combines client and server. v2 server handling is centralized in
+  `AutoNATv2Service.handleIncomingStream(context:dialer:)` and is EventEmitting
+  (single-consumer); do not add a separate server-side handler path.
 - The server dialer is injected (`dialer` closure); local addresses come from a
   `getLocalAddresses` closure. Do not hard-wire the swarm into the service.
 

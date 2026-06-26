@@ -285,7 +285,8 @@ public final class WiFiBeaconAdapter: TransportAdapter, Sendable {
                 physicalFingerprint: nil
             )
 
-            state.withLock { _ = $0.discoveryContinuation?.yield(discovery) }
+            let continuation = state.withLock { $0.discoveryContinuation }
+            _ = continuation?.yield(discovery)
         }
     }
 

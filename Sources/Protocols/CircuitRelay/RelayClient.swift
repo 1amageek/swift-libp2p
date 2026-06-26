@@ -109,6 +109,7 @@ public final class RelayClient: EventEmitting, Sendable {
         var incomingConnections: [RelayedConnection] = []
         var connectionWaiters: [WaiterKey: ConnectionWaiter] = [:]
         var nextWaiterID: UInt64 = 0
+        var isShutdown = false
     }
 
     /// Reference to stream opener for renewal.
@@ -266,6 +267,8 @@ public final class RelayClient: EventEmitting, Sendable {
         on relay: PeerID,
         using opener: any StreamOpener
     ) async throws -> Reservation {
+        try throwIfShutdown()
+
         // Open stream to relay with Hop protocol
         let stream = try await opener.newStream(
             to: relay,
@@ -273,6 +276,8 @@ public final class RelayClient: EventEmitting, Sendable {
         )
 
         do {
+            try throwIfShutdown()
+
             // Send RESERVE message
             let request = HopMessage.reserve()
             var requestData = ByteBuffer()
@@ -310,9 +315,14 @@ public final class RelayClient: EventEmitting, Sendable {
             )
 
             // Store reservation and opener reference for renewal
-            clientState.withLock { s in
+            let stored = clientState.withLock { s -> Bool in
+                guard !s.isShutdown else { return false }
                 s.reservations[relay] = reservation
                 s.reservationOpeners[relay] = OpenerRef(opener)
+                return true
+            }
+            guard stored else {
+                throw CircuitRelayError.circuitClosed
             }
 
             emit(.reservationCreated(relay: relay, reservation: reservation))
@@ -346,6 +356,8 @@ public final class RelayClient: EventEmitting, Sendable {
         to target: PeerID,
         using opener: any StreamOpener
     ) async throws -> RelayedConnection {
+        try throwIfShutdown()
+
         // Open stream to relay with Hop protocol
         let stream = try await opener.newStream(
             to: relay,
@@ -353,6 +365,8 @@ public final class RelayClient: EventEmitting, Sendable {
         )
 
         do {
+            try throwIfShutdown()
+
             // Send CONNECT message
             let request = HopMessage.connect(to: target)
             var requestData = ByteBuffer()
@@ -380,6 +394,7 @@ public final class RelayClient: EventEmitting, Sendable {
                 limit: response.limit ?? .default
             )
 
+            try throwIfShutdown()
             emit(.circuitEstablished(relay: relay, remote: target))
 
             return connection
@@ -425,7 +440,10 @@ public final class RelayClient: EventEmitting, Sendable {
         remote: PeerID? = nil
     ) async throws -> RelayedConnection {
         // Check for queued connections first
-        let queued: RelayedConnection? = clientState.withLock { s in
+        let queued: RelayedConnection? = try clientState.withLock { s throws(CircuitRelayError) in
+            guard !s.isShutdown else {
+                throw CircuitRelayError.circuitClosed
+            }
             if let idx = s.incomingConnections.firstIndex(where: { conn in
                 (relay == nil || conn.relay == relay) &&
                 (remote == nil || conn.remotePeer == remote)
@@ -472,7 +490,10 @@ public final class RelayClient: EventEmitting, Sendable {
                 }
 
                 // Register waiter and check for cancellation atomically
-                let alreadyCancelled = clientState.withLock { s -> Bool in
+                let registration = clientState.withLock { s -> Result<Bool, CircuitRelayError> in
+                    guard !s.isShutdown else {
+                        return .failure(.circuitClosed)
+                    }
                     let waiter = ConnectionWaiter(
                         relay: relay,
                         remote: remote,
@@ -482,7 +503,17 @@ public final class RelayClient: EventEmitting, Sendable {
                     s.connectionWaiters[waiterKey] = waiter
 
                     // Check if cancelled AFTER registration (race window closed)
-                    return Task.isCancelled
+                    return .success(Task.isCancelled)
+                }
+
+                let alreadyCancelled: Bool
+                switch registration {
+                case .success(let value):
+                    alreadyCancelled = value
+                case .failure(let error):
+                    timeoutTask.cancel()
+                    continuation.resume(throwing: error)
+                    return
                 }
 
                 // If we were cancelled during registration, clean up immediately
@@ -542,6 +573,11 @@ public final class RelayClient: EventEmitting, Sendable {
                 limit: connect.limit ?? .default
             )
 
+            guard !clientState.withLock({ $0.isShutdown }) else {
+                try await connection.close()
+                return
+            }
+
             // Route to registered listener if exists (Listener Registry pattern)
             let registeredListener: RelayListener? = listeners.withLock { l in
                 l[connection.relay]?.listener
@@ -549,10 +585,16 @@ public final class RelayClient: EventEmitting, Sendable {
 
             if let listener = registeredListener {
                 // Direct routing to registered listener
-                listener.enqueue(connection)
+                guard listener.enqueue(connection) else {
+                    try await connection.close()
+                    return
+                }
             } else {
                 // Fallback: Deliver to pending waiter or shared queue
                 let (matchedWaiter, evicted): (ConnectionWaiter?, RelayedConnection?) = clientState.withLock { s in
+                    guard !s.isShutdown else {
+                        return (nil, connection)
+                    }
                     // Find a waiter that matches this connection
                     for (key, waiter) in s.connectionWaiters {
                         if waiter.matches(connection) {
@@ -660,6 +702,12 @@ public final class RelayClient: EventEmitting, Sendable {
         channel.yield(event)
     }
 
+    private func throwIfShutdown() throws {
+        if clientState.withLock({ $0.isShutdown }) {
+            throw CircuitRelayError.circuitClosed
+        }
+    }
+
     // MARK: - Shutdown
 
     /// Shuts down the client and finishes the event stream.
@@ -667,14 +715,39 @@ public final class RelayClient: EventEmitting, Sendable {
     /// Call this method when the client is no longer needed to properly
     /// terminate any consumers waiting on the `events` stream.
     public func shutdown() async throws {
-        // Cancel all renewal tasks
-        clientState.withLock { s in
-            for (_, task) in s.renewalTasks {
-                task.cancel()
+        let shutdownState = clientState.withLock { s -> (
+            renewalTasks: [Task<Void, Never>],
+            waiters: [ConnectionWaiter],
+            queuedConnections: [RelayedConnection]
+        ) in
+            guard !s.isShutdown else {
+                return ([], [], [])
             }
+            s.isShutdown = true
+            let renewalTasks = Array(s.renewalTasks.values)
+            let waiters = Array(s.connectionWaiters.values)
+            let queuedConnections = s.incomingConnections
             s.renewalTasks.removeAll()
             s.reservations.removeAll()
             s.reservationOpeners.removeAll()
+            s.connectionWaiters.removeAll()
+            s.incomingConnections.removeAll()
+            return (renewalTasks, waiters, queuedConnections)
+        }
+
+        for task in shutdownState.renewalTasks {
+            task.cancel()
+        }
+        for waiter in shutdownState.waiters {
+            waiter.timeoutTask.cancel()
+            waiter.continuation.resume(throwing: CircuitRelayError.circuitClosed)
+        }
+        for connection in shutdownState.queuedConnections {
+            do {
+                try await connection.close()
+            } catch {
+                logger.debug("Failed to close queued relay connection during shutdown: \(error)")
+            }
         }
 
         channel.finish()
@@ -685,13 +758,17 @@ public final class RelayClient: EventEmitting, Sendable {
     /// Schedules renewal or expiration handling for a reservation.
     private func scheduleRenewalOrExpiration(relay: PeerID, at expiration: ContinuousClock.Instant) {
         // Cancel any existing renewal task for this relay
-        clientState.withLock { s in
+        let shouldSchedule = clientState.withLock { s -> Bool in
+            guard !s.isShutdown else { return false }
             s.renewalTasks[relay]?.cancel()
             s.renewalTasks.removeValue(forKey: relay)
+            return s.reservations[relay] != nil
         }
+        guard shouldSchedule else { return }
 
         let task = Task { [weak self, configuration] in
             guard let self = self else { return }
+            guard !self.clientState.withLock({ $0.isShutdown }) else { return }
 
             if configuration.autoRenewReservations {
                 // Schedule renewal before expiration
@@ -709,6 +786,7 @@ public final class RelayClient: EventEmitting, Sendable {
 
                 // Check for cancellation
                 guard !Task.isCancelled else { return }
+                guard !self.clientState.withLock({ $0.isShutdown }) else { return }
 
                 // Attempt renewal
                 do {
@@ -735,6 +813,7 @@ public final class RelayClient: EventEmitting, Sendable {
                         }
                     }
                     guard !Task.isCancelled else { return }
+                    guard !self.clientState.withLock({ $0.isShutdown }) else { return }
                     self.handleReservationExpired(relay: relay)
                 }
             } else {
@@ -749,13 +828,19 @@ public final class RelayClient: EventEmitting, Sendable {
                     }
                 }
                 guard !Task.isCancelled else { return }
+                guard !self.clientState.withLock({ $0.isShutdown }) else { return }
                 self.handleReservationExpired(relay: relay)
             }
         }
 
         // Store the task
-        clientState.withLock { s in
+        let retained = clientState.withLock { s -> Bool in
+            guard !s.isShutdown, s.reservations[relay] != nil else { return false }
             s.renewalTasks[relay] = task
+            return true
+        }
+        if !retained {
+            task.cancel()
         }
     }
 
@@ -764,6 +849,8 @@ public final class RelayClient: EventEmitting, Sendable {
     /// - Parameter relay: The relay peer to renew reservation on.
     /// - Throws: `CircuitRelayError` if renewal fails.
     private func renewReservation(on relay: PeerID) async throws {
+        try throwIfShutdown()
+
         // Get the stored opener
         let openerRef: OpenerRef? = clientState.withLock { s in
             s.reservationOpeners[relay]
@@ -782,6 +869,8 @@ public final class RelayClient: EventEmitting, Sendable {
         )
 
         do {
+            try throwIfShutdown()
+
             // Send RESERVE message
             let request = HopMessage.reserve()
             var requestData = ByteBuffer()
@@ -815,8 +904,13 @@ public final class RelayClient: EventEmitting, Sendable {
             )
 
             // Update stored reservation
-            clientState.withLock { s in
+            let updated = clientState.withLock { s -> Bool in
+                guard !s.isShutdown, s.reservationOpeners[relay] != nil else { return false }
                 s.reservations[relay] = reservation
+                return true
+            }
+            guard updated else {
+                throw CircuitRelayError.circuitClosed
             }
 
             emit(.reservationRenewed(relay: relay, newExpiration: expiration))
@@ -838,6 +932,7 @@ public final class RelayClient: EventEmitting, Sendable {
 
     private func handleReservationExpired(relay: PeerID) {
         let removed: Bool = clientState.withLock { s in
+            guard !s.isShutdown else { return false }
             if let res = s.reservations[relay], !res.isValid {
                 s.reservations.removeValue(forKey: relay)
                 s.reservationOpeners.removeValue(forKey: relay)

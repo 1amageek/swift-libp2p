@@ -22,7 +22,6 @@ struct DataPathCopyGuardTests {
             "Sources/Protocols/CircuitRelay/RelayServer.swift",
             "Sources/Protocols/AutoNAT/AutoNATService.swift",
             "Sources/Protocols/AutoNAT/AutoNATv2Service.swift",
-            "Sources/Protocols/AutoNAT/AutoNATv2Handler.swift",
         ]
 
         let bannedPatterns = [

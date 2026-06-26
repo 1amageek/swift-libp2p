@@ -333,6 +333,7 @@ run_swift_tests() {
   local module_cache_dir="${SWIFTPM_MODULECACHE_OVERRIDE:-$repo_root/.cache/clang-interop}"
   mkdir -p "$module_cache_dir"
   export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache_dir"
+  export SWIFT_LIBP2P_ENABLE_INTEROP_TESTS=1
 
   cd "$repo_root"
 

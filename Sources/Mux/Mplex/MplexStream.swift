@@ -192,50 +192,77 @@ public final class MplexStream: MuxedStream, Sendable {
 
     /// Called when data is received for this stream.
     func dataReceived(_ data: ByteBuffer) {
-        let shouldReset: Bool = state.withLock { state in
+        enum DataReceiveAction {
+            case ignore
+            case deliver(CheckedContinuation<ByteBuffer, Error>)
+            case reset([CheckedContinuation<ByteBuffer, Error>])
+        }
+
+        let action = state.withLock { state -> DataReceiveAction in
             // Ignore if reset or read-closed
             if state.isReset || state.localReadClosed {
-                return false
+                return .ignore
+            }
+
+            // Enforce the per-stream unread-data bound before both direct
+            // delivery and buffering. A waiting reader must not bypass the DoS
+            // guard that protects streams without flow control.
+            guard data.readableBytes <= maxReadBufferSize else {
+                state.isReset = true
+                state.localWriteClosed = true
+                state.localReadClosed = true
+                state.remoteWriteClosed = true
+                state.readBuffer = ByteBuffer()
+                let conts = state.readContinuations
+                state.readContinuations = []
+                return .reset(conts)
             }
 
             // Deliver to waiting reader or buffer
             if !state.readContinuations.isEmpty {
                 let cont = state.readContinuations.removeFirst()
-                cont.resume(returning: data)
-                return false
-            } else {
-                // Check buffer size limit (DoS protection)
-                // Mplex has no flow control, so reset is the only safe response
-                if state.readBuffer.readableBytes + data.readableBytes > maxReadBufferSize {
-                    state.isReset = true
-                    state.localWriteClosed = true
-                    state.localReadClosed = true
-                    state.remoteWriteClosed = true
-                    state.readBuffer = ByteBuffer()
-                    let conts = state.readContinuations
-                    state.readContinuations = []
-                    for cont in conts {
-                        cont.resume(throwing: MplexError.readBufferOverflow)
-                    }
-                    return true
-                }
-                state.readBuffer.writeImmutableBuffer(data)
-                return false
+                return .deliver(cont)
+            }
+
+            // Check buffer size limit (DoS protection).
+            // Mplex has no flow control, so reset is the only safe response.
+            if state.readBuffer.readableBytes + data.readableBytes > maxReadBufferSize {
+                state.isReset = true
+                state.localWriteClosed = true
+                state.localReadClosed = true
+                state.remoteWriteClosed = true
+                state.readBuffer = ByteBuffer()
+                let conts = state.readContinuations
+                state.readContinuations = []
+                return .reset(conts)
+            }
+
+            state.readBuffer.writeImmutableBuffer(data)
+            return .ignore
+        }
+
+        switch action {
+        case .ignore:
+            return
+        case .deliver(let cont):
+            cont.resume(returning: data)
+            return
+        case .reset(let conts):
+            for cont in conts {
+                cont.resume(throwing: MplexError.readBufferOverflow)
             }
         }
 
         // Send reset frame outside lock to avoid deadlock
-        if shouldReset {
-            Task { [weak self] in
-                guard let self else { return }
-                let frame = MplexFrame.reset(id: self.id, isInitiator: self.isInitiator)
-                do {
-                    try await self.connection.sendFrame(frame)
-                } catch {
-                    logger.debug("Failed to send reset for overflowed Mplex stream \(self.id): \(error)")
-                }
-                self.connection.removeStream(id: self.id, initiatedLocally: self.isInitiator)
+        Task { [weak self] in
+            guard let self else { return }
+            let frame = MplexFrame.reset(id: self.id, isInitiator: self.isInitiator)
+            do {
+                try await self.connection.sendFrame(frame)
+            } catch {
+                logger.debug("Failed to send reset for overflowed Mplex stream \(self.id): \(error)")
             }
+            self.connection.removeStream(id: self.id, initiatedLocally: self.isInitiator)
         }
     }
 

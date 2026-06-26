@@ -17,6 +17,18 @@ struct PCPHandler: NATProtocolHandler {
     // PCP result codes
     private static let resultSuccess: UInt8 = 0
 
+    struct MapRequest: Sendable {
+        let data: Data
+        let nonce: [UInt8]
+        let internalPort: UInt16
+        let requestedProtocol: UInt8
+    }
+
+    func canHandle(_ gateway: NATGatewayType) -> Bool {
+        if case .pcp = gateway { return true }
+        return false
+    }
+
     func discoverGateway(configuration: NATPortMapperConfiguration) async throws -> NATGatewayType {
         let gatewayIP = try await getDefaultGateway()
 
@@ -71,12 +83,17 @@ struct PCPHandler: NATProtocolHandler {
         let response = try socket.sendAndReceive(
             to: gatewayIP,
             port: configuration.natpmpPort,
-            data: Array(request),
+            data: Array(request.data),
             responseSize: 60,
             timeout: configuration.discoveryTimeout
         )
 
-        return try parseExternalAddress(from: response)
+        return try parseExternalAddress(
+            from: response,
+            expectedNonce: request.nonce,
+            expectedProtocol: request.requestedProtocol,
+            expectedInternalPort: request.internalPort
+        )
     }
 
     func requestMapping(
@@ -106,7 +123,7 @@ struct PCPHandler: NATProtocolHandler {
         let response = try socket.sendAndReceive(
             to: gatewayIP,
             port: configuration.natpmpPort,
-            data: Array(request),
+            data: Array(request.data),
             responseSize: 60,
             timeout: configuration.discoveryTimeout
         )
@@ -114,8 +131,9 @@ struct PCPHandler: NATProtocolHandler {
         return try parseMAPResponse(
             response,
             gateway: gateway,
-            internalPort: internalPort,
-            externalAddress: externalAddress,
+            expectedNonce: request.nonce,
+            expectedInternalPort: internalPort,
+            expectedProtocol: ianaProtocol,
             requestedDuration: duration,
             configuration: configuration
         )
@@ -143,12 +161,12 @@ struct PCPHandler: NATProtocolHandler {
         return data
     }
 
-    private func buildMAPRequest(
+    func buildMAPRequest(
         internalPort: UInt16,
         suggestedExternalPort: UInt16,
         protocol: UInt8,
         lifetime: UInt32
-    ) -> Data {
+    ) -> MapRequest {
         var data = Data(count: 60) // 24 header + 36 MAP payload
 
         // Header
@@ -166,8 +184,12 @@ struct PCPHandler: NATProtocolHandler {
 
         // MAP payload (offset 24)
         // Nonce (12 bytes) - random for tracking
+        var nonce: [UInt8] = []
+        nonce.reserveCapacity(12)
         for i in 24..<36 {
-            data[i] = UInt8.random(in: 0...255)
+            let byte = UInt8.random(in: 0...255)
+            data[i] = byte
+            nonce.append(byte)
         }
         data[36] = `protocol` // Protocol
         // Reserved (3 bytes) = 0
@@ -177,10 +199,20 @@ struct PCPHandler: NATProtocolHandler {
         data[43] = UInt8(suggestedExternalPort & 0xFF)
         // Suggested external address (16 bytes): all zeros = wildcard
 
-        return data
+        return MapRequest(
+            data: data,
+            nonce: nonce,
+            internalPort: internalPort,
+            requestedProtocol: `protocol`
+        )
     }
 
-    func parseExternalAddress(from response: [UInt8]) throws -> String {
+    func parseExternalAddress(
+        from response: [UInt8],
+        expectedNonce: [UInt8]? = nil,
+        expectedProtocol: UInt8? = nil,
+        expectedInternalPort: UInt16? = nil
+    ) throws -> String {
         guard response.count >= 60 else {
             throw NATPortMapperError.invalidResponse
         }
@@ -189,9 +221,33 @@ struct PCPHandler: NATProtocolHandler {
             throw NATPortMapperError.invalidResponse
         }
 
+        guard response[1] == (0x80 | PCPHandler.mapOpcode) else {
+            throw NATPortMapperError.invalidResponse
+        }
+
         let resultCode = response[3]
         guard resultCode == PCPHandler.resultSuccess else {
             throw NATPortMapperError.requestDenied("PCP error code: \(resultCode)")
+        }
+
+        if let expectedNonce {
+            guard expectedNonce.count == 12,
+                  Array(response[24..<36]) == expectedNonce else {
+                throw NATPortMapperError.invalidResponse
+            }
+        }
+
+        if let expectedProtocol {
+            guard response[36] == expectedProtocol else {
+                throw NATPortMapperError.invalidResponse
+            }
+        }
+
+        if let expectedInternalPort {
+            let responseInternalPort = UInt16(response[40]) << 8 | UInt16(response[41])
+            guard responseInternalPort == expectedInternalPort else {
+                throw NATPortMapperError.invalidResponse
+            }
         }
 
         // Assigned external address at offset 44, 16 bytes (IPv6 or IPv4-mapped)
@@ -219,11 +275,12 @@ struct PCPHandler: NATProtocolHandler {
         return externalAddress
     }
 
-    private func parseMAPResponse(
+    func parseMAPResponse(
         _ response: [UInt8],
         gateway: NATGatewayType,
-        internalPort: UInt16,
-        externalAddress: String,
+        expectedNonce: [UInt8],
+        expectedInternalPort: UInt16,
+        expectedProtocol: UInt8,
         requestedDuration: Duration,
         configuration: NATPortMapperConfiguration
     ) throws -> PortMapping {
@@ -235,9 +292,18 @@ struct PCPHandler: NATProtocolHandler {
             throw NATPortMapperError.invalidResponse
         }
 
+        guard response[1] == (0x80 | PCPHandler.mapOpcode) else {
+            throw NATPortMapperError.invalidResponse
+        }
+
         let resultCode = response[3]
         guard resultCode == PCPHandler.resultSuccess else {
             throw NATPortMapperError.requestDenied("PCP error code: \(resultCode)")
+        }
+
+        guard expectedNonce.count == 12,
+              Array(response[24..<36]) == expectedNonce else {
+            throw NATPortMapperError.invalidResponse
         }
 
         // Lifetime from response header (offset 4-7)
@@ -245,10 +311,27 @@ struct PCPHandler: NATProtocolHandler {
                                UInt32(response[6]) << 8 | UInt32(response[7])
 
         // Protocol from MAP response (offset 36)
-        let responseProtocol: NATTransportProtocol = response[36] == PCPHandler.protocolUDP ? .udp : .tcp
+        guard response[36] == expectedProtocol else {
+            throw NATPortMapperError.invalidResponse
+        }
+        let responseProtocol: NATTransportProtocol
+        switch response[36] {
+        case PCPHandler.protocolUDP:
+            responseProtocol = .udp
+        case PCPHandler.protocolTCP:
+            responseProtocol = .tcp
+        default:
+            throw NATPortMapperError.invalidResponse
+        }
+
+        let responseInternalPort = UInt16(response[40]) << 8 | UInt16(response[41])
+        guard responseInternalPort == expectedInternalPort else {
+            throw NATPortMapperError.invalidResponse
+        }
 
         // Assigned external port (offset 42-43)
         let assignedPort = UInt16(response[42]) << 8 | UInt16(response[43])
+        let assignedExternalAddress = try externalAddress(from: response)
 
         // Clamp the gateway-assigned lifetime for real mappings. A release
         // (duration == 0) keeps a zero expiration.
@@ -260,12 +343,36 @@ struct PCPHandler: NATProtocolHandler {
         }
 
         return PortMapping(
-            internalPort: internalPort,
+            internalPort: expectedInternalPort,
             externalPort: assignedPort,
-            externalAddress: externalAddress,
+            externalAddress: assignedExternalAddress,
             protocol: responseProtocol,
             expiration: ContinuousClock.now + effectiveLifetime,
             gatewayType: gateway
         )
+    }
+
+    private func externalAddress(from response: [UInt8]) throws -> String {
+        // Assigned external address at offset 44, 16 bytes (IPv6 or IPv4-mapped)
+        // Check if IPv4-mapped (::ffff:x.x.x.x)
+        let isIPv4Mapped = response[44..<54].allSatisfy { $0 == 0 } &&
+                           response[54] == 0xFF && response[55] == 0xFF
+
+        let externalAddress: String
+        if isIPv4Mapped {
+            externalAddress = "\(response[56]).\(response[57]).\(response[58]).\(response[59])"
+        } else {
+            var parts: [String] = []
+            for i in stride(from: 44, to: 60, by: 2) {
+                let value = UInt16(response[i]) << 8 | UInt16(response[i + 1])
+                parts.append(String(value, radix: 16))
+            }
+            externalAddress = parts.joined(separator: ":")
+        }
+
+        guard IPAddressValidator.isRoutableExternalAddress(externalAddress) else {
+            throw NATPortMapperError.invalidExternalAddress(externalAddress)
+        }
+        return externalAddress
     }
 }

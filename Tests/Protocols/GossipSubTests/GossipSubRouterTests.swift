@@ -734,6 +734,40 @@ struct GossipSubRouterTests {
         #expect(count == 0)
     }
 
+    @Test("Events are delivered to multiple subscribers", .timeLimit(.minutes(1)))
+    func eventsAreDeliveredToMultipleSubscribers() async throws {
+        let router = makeRouter()
+        let events1 = router.events
+        let events2 = router.events
+
+        let topic = Topic("multi-consumer-topic")
+        _ = try router.subscribe(to: topic)
+        try await router.shutdown()
+
+        var received1: [GossipSubEvent] = []
+        for await event in events1 {
+            received1.append(event)
+        }
+
+        var received2: [GossipSubEvent] = []
+        for await event in events2 {
+            received2.append(event)
+        }
+
+        #expect(received1.contains { event in
+            if case .subscribed(let receivedTopic) = event {
+                return receivedTopic == topic
+            }
+            return false
+        })
+        #expect(received2.contains { event in
+            if case .subscribed(let receivedTopic) = event {
+                return receivedTopic == topic
+            }
+            return false
+        })
+    }
+
     @Test("Shutdown is idempotent", .timeLimit(.minutes(1)))
     func shutdownIsIdempotent() async throws {
         let router = makeRouter()

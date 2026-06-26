@@ -6,12 +6,23 @@ import Foundation
 import P2PCore
 import Synchronization
 
+struct NATMappingKey: Hashable, Sendable {
+    let internalPort: UInt16
+    let `protocol`: NATTransportProtocol
+}
+
+private extension PortMapping {
+    var mappingKey: NATMappingKey {
+        NATMappingKey(internalPort: internalPort, protocol: `protocol`)
+    }
+}
+
 /// Internal state for NATPortMapper.
 private struct NATPortMapperState: Sendable {
     var discoveredGateway: NATGatewayType?
     var externalAddress: String?
-    var activeMappings: [UInt16: PortMapping] = [:]
-    var renewalTasks: [UInt16: Task<Void, Never>] = [:]
+    var activeMappings: [NATMappingKey: PortMapping] = [:]
+    var renewalTasks: [NATMappingKey: Task<Void, Never>] = [:]
     var isShutdown = false
 }
 
@@ -40,6 +51,15 @@ public final class NATPortMapper: EventEmitting, Sendable {
         self.handlers = handlers
     }
 
+    init(
+        configuration: NATPortMapperConfiguration = .default,
+        handlers: [any NATProtocolHandler]
+    ) {
+        self.configuration = configuration
+        self.state = Mutex(NATPortMapperState())
+        self.handlers = handlers
+    }
+
     /// Stream of events from this mapper.
     public var events: AsyncStream<NATPortMapperEvent> { channel.stream }
 
@@ -49,8 +69,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
     ///
     /// Tries handlers in order (UPnP first, then NAT-PMP by default).
     public func discoverGateway() async throws -> NATGatewayType {
-        let isShutdown = state.withLock { $0.isShutdown }
-        if isShutdown { throw NATPortMapperError.shutdown }
+        try throwIfShutdown()
 
         // Check cache
         if let existing = state.withLock({ $0.discoveredGateway }) {
@@ -62,9 +81,15 @@ public final class NATPortMapper: EventEmitting, Sendable {
         for handler in handlers {
             do {
                 let gateway = try await handler.discoverGateway(configuration: configuration)
-                state.withLock { $0.discoveredGateway = gateway }
+                try throwIfShutdown()
+                state.withLock { state in
+                    guard !state.isShutdown else { return }
+                    state.discoveredGateway = gateway
+                }
                 emit(.gatewayDiscovered(type: gateway))
                 return gateway
+            } catch NATPortMapperError.shutdown {
+                throw NATPortMapperError.shutdown
             } catch {
                 lastError = error
             }
@@ -75,8 +100,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
 
     /// Gets the external IP address.
     public func discoverExternalAddress() async throws -> String {
-        let isShutdown = state.withLock { $0.isShutdown }
-        if isShutdown { throw NATPortMapperError.shutdown }
+        try throwIfShutdown()
 
         // Check cache
         if let cached = state.withLock({ $0.externalAddress }) {
@@ -86,8 +110,12 @@ public final class NATPortMapper: EventEmitting, Sendable {
         let gateway = try await discoverGateway()
         let handler = try handlerForGateway(gateway)
         let address = try await handler.getExternalAddress(gateway: gateway, configuration: configuration)
+        try throwIfShutdown()
 
-        state.withLock { $0.externalAddress = address }
+        state.withLock { state in
+            guard !state.isShutdown else { return }
+            state.externalAddress = address
+        }
         emit(.externalAddressDiscovered(address: address))
         return address
     }
@@ -99,8 +127,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
         protocol: NATTransportProtocol,
         duration: Duration? = nil
     ) async throws -> PortMapping {
-        let isShutdown = state.withLock { $0.isShutdown }
-        if isShutdown { throw NATPortMapperError.shutdown }
+        try throwIfShutdown()
 
         let extPort = externalPort ?? internalPort
         let leaseDuration = duration ?? configuration.defaultLeaseDuration
@@ -112,6 +139,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
             duration: leaseDuration
         )
 
+        try throwIfShutdown()
         emit(.portMappingCreated(mapping: mapping))
         return mapping
     }
@@ -123,8 +151,9 @@ public final class NATPortMapper: EventEmitting, Sendable {
 
         // Cancel renewal task
         let task = state.withLock { state -> Task<Void, Never>? in
-            let t = state.renewalTasks.removeValue(forKey: mapping.internalPort)
-            _ = state.activeMappings.removeValue(forKey: mapping.internalPort)
+            let key = mapping.mappingKey
+            let t = state.renewalTasks.removeValue(forKey: key)
+            _ = state.activeMappings.removeValue(forKey: key)
             return t
         }
         task?.cancel()
@@ -181,9 +210,11 @@ public final class NATPortMapper: EventEmitting, Sendable {
         protocol: NATTransportProtocol,
         duration: Duration
     ) async throws -> PortMapping {
+        try throwIfShutdown()
         let gateway = try await discoverGateway()
         let handler = try handlerForGateway(gateway)
         let externalAddress = try await discoverExternalAddress()
+        try throwIfShutdown()
 
         let mapping = try await handler.requestMapping(
             gateway: gateway,
@@ -195,7 +226,23 @@ public final class NATPortMapper: EventEmitting, Sendable {
             configuration: configuration
         )
 
-        state.withLock { $0.activeMappings[internalPort] = mapping }
+        let shouldKeep = state.withLock { state -> Bool in
+            guard !state.isShutdown else { return false }
+            state.activeMappings[mapping.mappingKey] = mapping
+            return true
+        }
+
+        guard shouldKeep else {
+            do {
+                try await handler.releaseMapping(mapping, configuration: configuration)
+            } catch {
+                emit(.portMappingFailed(
+                    internalPort: mapping.internalPort,
+                    error: .mappingFailed("Release after shutdown race failed: \(error)")
+                ))
+            }
+            throw NATPortMapperError.shutdown
+        }
 
         if configuration.autoRenew {
             scheduleRenewal(for: mapping)
@@ -208,28 +255,26 @@ public final class NATPortMapper: EventEmitting, Sendable {
         channel.yield(event)
     }
 
-    private func handlerForGateway(_ gateway: NATGatewayType) throws -> any NATProtocolHandler {
-        switch gateway {
-        case .upnp:
-            guard let handler = handlers.first(where: { $0 is UPnPHandler }) else {
-                throw NATPortMapperError.noGatewayFound
-            }
-            return handler
-        case .natpmp:
-            guard let handler = handlers.first(where: { $0 is NATPMPHandler }) else {
-                throw NATPortMapperError.noGatewayFound
-            }
-            return handler
-        case .pcp:
-            guard let handler = handlers.first(where: { $0 is PCPHandler }) else {
-                throw NATPortMapperError.noGatewayFound
-            }
-            return handler
+    private func throwIfShutdown() throws {
+        if state.withLock({ $0.isShutdown }) {
+            throw NATPortMapperError.shutdown
         }
     }
 
+    private func handlerForGateway(_ gateway: NATGatewayType) throws -> any NATProtocolHandler {
+        guard let handler = handlers.first(where: { $0.canHandle(gateway) }) else {
+            throw NATPortMapperError.noGatewayFound
+        }
+        return handler
+    }
+
     private func scheduleRenewal(for mapping: PortMapping) {
-        let port = mapping.internalPort
+        let key = mapping.mappingKey
+
+        let canSchedule = state.withLock { state -> Bool in
+            !state.isShutdown && state.activeMappings[key] != nil
+        }
+        guard canSchedule else { return }
 
         // Compute the renewal time but floor the delay so a short/zero-lifetime
         // lease cannot drive an immediate renewal hot-loop. If the lease is
@@ -240,8 +285,8 @@ public final class NATPortMapper: EventEmitting, Sendable {
         let floorRenewalTime = now + configuration.minRenewalDelay
         let renewalTime = max(bufferedRenewalTime, floorRenewalTime)
 
-        // Cancel any existing renewal for this port before creating a new one
-        let existing = state.withLock { $0.renewalTasks.removeValue(forKey: port) }
+        // Cancel any existing renewal for this exact protocol/port mapping before creating a new one.
+        let existing = state.withLock { $0.renewalTasks.removeValue(forKey: key) }
         existing?.cancel()
 
         let task = Task { [weak self] in
@@ -258,7 +303,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
             // Verify this port is still actively mapped before renewing
             let isActive = self.state.withLock { state -> Bool in
                 guard !state.isShutdown else { return false }
-                return state.activeMappings[port] != nil
+                return state.activeMappings[key] != nil
             }
             guard isActive else { return }
 
@@ -278,7 +323,7 @@ public final class NATPortMapper: EventEmitting, Sendable {
                     }
                     let stillActive = self.state.withLock { state -> Bool in
                         guard !state.isShutdown else { return false }
-                        return state.activeMappings[port] != nil
+                        return state.activeMappings[key] != nil
                     }
                     guard stillActive else { return }
                 }
@@ -305,6 +350,15 @@ public final class NATPortMapper: EventEmitting, Sendable {
             self.emit(.portMappingExpired(mapping: mapping))
         }
 
-        state.withLock { $0.renewalTasks[port] = task }
+        let retained = state.withLock { state -> Bool in
+            guard !state.isShutdown, state.activeMappings[key] != nil else {
+                return false
+            }
+            state.renewalTasks[key] = task
+            return true
+        }
+        if !retained {
+            task.cancel()
+        }
     }
 }

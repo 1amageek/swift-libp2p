@@ -3,6 +3,7 @@ import Synchronization
 import P2PCore
 import P2PSecurity
 import P2PTransport
+import P2PTransportSecured
 import P2PMux
 
 private let connectionProviderLogger = Logger(label: "p2p.runtime.connection-provider")

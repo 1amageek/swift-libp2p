@@ -6,8 +6,10 @@
 import Testing
 import Foundation
 import NIOCore
+import P2PTestSupport
 @testable import P2PTransportQUIC
 @testable import P2PTransport
+@testable import P2PTransportSecured
 @testable import P2PCore
 @testable import P2PMux
 import QUIC
@@ -15,48 +17,14 @@ import QUIC
 /// Ping payload size per libp2p spec
 private let pingPayloadSize = 32
 
-private func isLocalBindPermissionDenied(_ error: Error) -> Bool {
-    if let transportError = error as? TransportError {
-        if case let .connectionFailed(underlying) = transportError {
-            return isLocalBindPermissionDenied(underlying)
-        }
-        return false
-    }
-
-    let nsError = error as NSError
-    if nsError.domain == NSPOSIXErrorDomain, nsError.code == 1 {
-        return true
-    }
-
-    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error,
-       isLocalBindPermissionDenied(underlyingError) {
-        return true
-    }
-
-    let message = String(describing: error).lowercased()
-    if message.contains("failed to bind"),
-       (message.contains("operation not permitted") || message.contains("errno: 1")) {
-        return true
-    }
-
-    return false
-}
-
 private func makeLocalQUICListener(
     transport: QUICTransport,
     keyPair: KeyPair
-) async throws -> (any SecuredListener)? {
-    do {
-        return try await transport.listenSecured(
-            try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
-            localKeyPair: keyPair
-        )
-    } catch {
-        if isLocalBindPermissionDenied(error) {
-            return nil
-        }
-        throw error
-    }
+) async throws -> any SecuredListener {
+    try await transport.listenSecured(
+        try Multiaddr("/ip4/127.0.0.1/udp/0/quic-v1"),
+        localKeyPair: keyPair
+    )
 }
 
 private func optionalAsync<T>(_ operation: () async throws -> T) async -> T? {
@@ -67,7 +35,7 @@ private func optionalAsync<T>(_ operation: () async throws -> T) async -> T? {
     }
 }
 
-@Suite("Ping E2E Tests")
+@Suite("Ping E2E Tests", .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct PingE2ETests {
 
     // MARK: - Basic Ping Tests
@@ -79,10 +47,10 @@ struct PingE2ETests {
         let transport = QUICTransport()
 
         // Start server
-        guard let listener = try await makeLocalQUICListener(
+        let listener = try await makeLocalQUICListener(
             transport: transport,
             keyPair: serverKeyPair
-        ) else { return }
+        )
 
         // Server task: accept stream and echo back data
         let serverTask = Task { () -> (any MuxedConnection)? in
@@ -147,10 +115,10 @@ struct PingE2ETests {
         let clientKeyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        guard let listener = try await makeLocalQUICListener(
+        let listener = try await makeLocalQUICListener(
             transport: transport,
             keyPair: serverKeyPair
-        ) else { return }
+        )
 
         // Server: echo with artificial delay
         let serverTask = Task { () -> (any MuxedConnection)? in
@@ -210,10 +178,10 @@ struct PingE2ETests {
         let clientKeyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        guard let listener = try await makeLocalQUICListener(
+        let listener = try await makeLocalQUICListener(
             transport: transport,
             keyPair: serverKeyPair
-        ) else { return }
+        )
 
         let pingCount = 5
 
@@ -284,10 +252,10 @@ struct PingE2ETests {
         let clientKeyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        guard let listener = try await makeLocalQUICListener(
+        let listener = try await makeLocalQUICListener(
             transport: transport,
             keyPair: serverKeyPair
-        ) else { return }
+        )
 
         // Server: only echo exactly 32-byte payloads
         let serverTask = Task { () -> (any MuxedConnection)? in
@@ -340,10 +308,10 @@ struct PingE2ETests {
         let clientKeyPair = KeyPair.generateEd25519()
         let transport = QUICTransport()
 
-        guard let listener = try await makeLocalQUICListener(
+        let listener = try await makeLocalQUICListener(
             transport: transport,
             keyPair: serverKeyPair
-        ) else { return }
+        )
 
         // Server: return corrupted data (simulates bad echo)
         let serverTask = Task { () -> (any MuxedConnection)? in

@@ -254,12 +254,30 @@ struct PCPValidationTests {
     /// external address at offset 44.
     private func mapResponse(
         version: UInt8 = 2,
+        opcode: UInt8 = 0x81,
         resultCode: UInt8 = 0,
+        nonce: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        ianaProtocol: UInt8 = 17,
+        internalPort: UInt16 = 4_001,
+        externalPort: UInt16 = 5_001,
         externalIPv4: (UInt8, UInt8, UInt8, UInt8)
     ) -> [UInt8] {
         var r = [UInt8](repeating: 0, count: 60)
         r[0] = version
+        r[1] = opcode
         r[3] = resultCode
+        r[4] = 0
+        r[5] = 0
+        r[6] = 0
+        r[7] = 120
+        for (index, byte) in nonce.prefix(12).enumerated() {
+            r[24 + index] = byte
+        }
+        r[36] = ianaProtocol
+        r[40] = UInt8(internalPort >> 8)
+        r[41] = UInt8(internalPort & 0xFF)
+        r[42] = UInt8(externalPort >> 8)
+        r[43] = UInt8(externalPort & 0xFF)
         // IPv4-mapped IPv6 at offset 44: 0...0, ff, ff, a, b, c, d
         r[54] = 0xFF
         r[55] = 0xFF
@@ -302,6 +320,128 @@ struct PCPValidationTests {
         let response = mapResponse(resultCode: 3, externalIPv4: (203, 0, 113, 5))
         #expect(throws: NATPortMapperError.self) {
             _ = try handler.parseExternalAddress(from: response)
+        }
+    }
+
+    @Test("external address: wrong opcode is rejected")
+    func externalOpcodeMismatchRejected() {
+        let handler = PCPHandler()
+        let response = mapResponse(opcode: 0x82, externalIPv4: (203, 0, 113, 5))
+        #expect(throws: NATPortMapperError.self) {
+            _ = try handler.parseExternalAddress(from: response)
+        }
+    }
+
+    @Test("external address: mismatched nonce is rejected when correlated")
+    func externalNonceMismatchRejected() {
+        let handler = PCPHandler()
+        let response = mapResponse(externalIPv4: (203, 0, 113, 5))
+        #expect(throws: NATPortMapperError.self) {
+            _ = try handler.parseExternalAddress(
+                from: response,
+                expectedNonce: [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+                expectedProtocol: 17,
+                expectedInternalPort: 4_001
+            )
+        }
+    }
+
+    @Test("MAP response matching request metadata is accepted")
+    func mapResponseCorrelationAccepted() throws {
+        let handler = PCPHandler()
+        let nonce: [UInt8] = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+        let response = mapResponse(
+            nonce: nonce,
+            ianaProtocol: 17,
+            internalPort: 4_001,
+            externalPort: 5_001,
+            externalIPv4: (203, 0, 113, 5)
+        )
+
+        let mapping = try handler.parseMAPResponse(
+            response,
+            gateway: .pcp(gatewayIP: "192.168.1.1"),
+            expectedNonce: nonce,
+            expectedInternalPort: 4_001,
+            expectedProtocol: 17,
+            requestedDuration: .seconds(120),
+            configuration: .default
+        )
+
+        #expect(mapping.internalPort == 4_001)
+        #expect(mapping.externalPort == 5_001)
+        #expect(mapping.externalAddress == "203.0.113.5")
+        #expect(mapping.protocol == .udp)
+    }
+
+    @Test("MAP response with mismatched nonce is rejected")
+    func mapResponseNonceMismatchRejected() {
+        let handler = PCPHandler()
+        let response = mapResponse(externalIPv4: (203, 0, 113, 5))
+        #expect(throws: NATPortMapperError.self) {
+            _ = try handler.parseMAPResponse(
+                response,
+                gateway: .pcp(gatewayIP: "192.168.1.1"),
+                expectedNonce: [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+                expectedInternalPort: 4_001,
+                expectedProtocol: 17,
+                requestedDuration: .seconds(120),
+                configuration: .default
+            )
+        }
+    }
+
+    @Test("MAP response with wrong opcode is rejected")
+    func mapResponseOpcodeMismatchRejected() {
+        let handler = PCPHandler()
+        let nonce: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        let response = mapResponse(opcode: 0x82, nonce: nonce, externalIPv4: (203, 0, 113, 5))
+        #expect(throws: NATPortMapperError.self) {
+            _ = try handler.parseMAPResponse(
+                response,
+                gateway: .pcp(gatewayIP: "192.168.1.1"),
+                expectedNonce: nonce,
+                expectedInternalPort: 4_001,
+                expectedProtocol: 17,
+                requestedDuration: .seconds(120),
+                configuration: .default
+            )
+        }
+    }
+
+    @Test("MAP response with wrong protocol is rejected")
+    func mapResponseProtocolMismatchRejected() {
+        let handler = PCPHandler()
+        let nonce: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        let response = mapResponse(nonce: nonce, ianaProtocol: 6, externalIPv4: (203, 0, 113, 5))
+        #expect(throws: NATPortMapperError.self) {
+            _ = try handler.parseMAPResponse(
+                response,
+                gateway: .pcp(gatewayIP: "192.168.1.1"),
+                expectedNonce: nonce,
+                expectedInternalPort: 4_001,
+                expectedProtocol: 17,
+                requestedDuration: .seconds(120),
+                configuration: .default
+            )
+        }
+    }
+
+    @Test("MAP response with wrong internal port is rejected")
+    func mapResponseInternalPortMismatchRejected() {
+        let handler = PCPHandler()
+        let nonce: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        let response = mapResponse(nonce: nonce, internalPort: 4_002, externalIPv4: (203, 0, 113, 5))
+        #expect(throws: NATPortMapperError.self) {
+            _ = try handler.parseMAPResponse(
+                response,
+                gateway: .pcp(gatewayIP: "192.168.1.1"),
+                expectedNonce: nonce,
+                expectedInternalPort: 4_001,
+                expectedProtocol: 17,
+                requestedDuration: .seconds(120),
+                configuration: .default
+            )
         }
     }
 }

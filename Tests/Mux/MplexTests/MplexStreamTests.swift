@@ -11,14 +11,16 @@ struct MplexStreamTests {
     // MARK: - Test Helpers
 
     func createTestConnection(
-        isInitiator: Bool = true
+        isInitiator: Bool = true,
+        configuration: MplexConfiguration = .default
     ) -> (MplexConnection, MockSecuredConnection) {
         let mock = MockSecuredConnection()
         let connection = MplexConnection(
             underlying: mock,
             localPeer: mock.localPeer,
             remotePeer: mock.remotePeer,
-            isInitiator: isInitiator
+            isInitiator: isInitiator,
+            configuration: configuration
         )
         return (connection, mock)
     }
@@ -69,6 +71,27 @@ struct MplexStreamTests {
 
         let data = try await readTask.value
         #expect(String(buffer: data) == "delayed")
+
+        try await connection.close()
+    }
+
+    @Test("Oversized frame resets stream even when read is waiting", .timeLimit(.minutes(1)))
+    func oversizedFrameResetsWaitingReader() async throws {
+        let configuration = MplexConfiguration(maxReadBufferSizePerStream: 4)
+        let (connection, mock) = createTestConnection(isInitiator: true, configuration: configuration)
+        connection.start()
+
+        let stream = try await connection.newStream()
+        let readTask = Task {
+            try await stream.read()
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        injectFrame(mock, MplexFrame.message(id: 0, isInitiator: false, data: Data("12345".utf8)))
+
+        await #expect(throws: MplexError.self) {
+            _ = try await readTask.value
+        }
 
         try await connection.close()
     }

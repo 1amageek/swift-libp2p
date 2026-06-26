@@ -80,6 +80,7 @@ timeout_runner="$script_dir/swift-test-timeout.sh"
 module_cache_dir="${SWIFTPM_MODULECACHE_OVERRIDE:-$PWD/.cache/clang}"
 mkdir -p "$module_cache_dir"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache_dir"
+export SWIFT_LIBP2P_ENABLE_BENCHMARKS=1
 
 base_args=(--disable-sandbox)
 if [[ "$configuration" == "release" ]]; then

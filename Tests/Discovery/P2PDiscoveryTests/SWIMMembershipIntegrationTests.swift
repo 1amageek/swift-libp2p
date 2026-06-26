@@ -1,11 +1,12 @@
 /// SWIMMembershipIntegrationTests - End-to-end tests for SWIM membership protocol
 import Testing
 import Foundation
+import P2PTestSupport
 @testable import P2PDiscoverySWIM
 @testable import P2PDiscovery
 @testable import P2PCore
 
-@Suite("SWIMMembership Integration Tests", .serialized)
+@Suite("SWIMMembership Integration Tests", .serialized, .enabled(if: liveNetworkTestsEnabled, "Set SWIFT_LIBP2P_ENABLE_LIVE_NETWORK_TESTS=1"))
 struct SWIMMembershipIntegrationTests {
 
     // MARK: - Basic Membership

@@ -2,7 +2,11 @@
 
 import PackageDescription
 
-let includesBenchmarks = Context.environment["SWIFT_LIBP2P_DISABLE_BENCHMARKS"] != "1"
+// Keep the default `swift test` contract deterministic and bounded:
+// correctness tests run by default, while Docker-backed interop and CPU-heavy
+// benchmarks are opt-in release lanes.
+let includesInteropTests = Context.environment["SWIFT_LIBP2P_ENABLE_INTEROP_TESTS"] == "1"
+let includesBenchmarks = Context.environment["SWIFT_LIBP2P_ENABLE_BENCHMARKS"] == "1"
 
 // Embedded toggle controls the experimental Embedded feature + WMO for the
 // Embedded-clean cores. Lifetimes is enabled in BOTH modes because Span-returning
@@ -36,6 +40,7 @@ let package = Package(
 
         // MARK: - Transport
         .library(name: "P2PTransport", targets: ["P2PTransport"]),
+        .library(name: "P2PTransportSecured", targets: ["P2PTransportSecured"]),
         .library(name: "P2PTransportTCP", targets: ["P2PTransportTCP"]),
         .library(name: "P2PTransportQUIC", targets: ["P2PTransportQUIC"]),
         .library(name: "P2PTransportWebRTC", targets: ["P2PTransportWebRTC"]),
@@ -96,24 +101,24 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.29.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        // Sibling P2P packages are referenced by LOCAL PATH on the `embedded`
-        // branch so the Embedded-clean cores under development resolve against the
-        // working trees. This manifest must NOT be released with local-path refs.
-        .package(path: "../swift-mDNS"),
-        .package(path: "../swift-SWIM"),
-        .package(path: "../swift-nio-udp"),
-        .package(path: "../swift-quic"),
-        .package(path: "../swift-tls"),
-        .package(path: "../swift-webrtc"),
-        .package(path: "../swift-p2p-core"),
+        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.2.1"),
+        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.2.1"),
+        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.2"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.3.1"),
+        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.1"),
+        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.5.1"),
+        .package(url: "https://github.com/1amageek/swift-p2p-core.git", from: "0.1.0"),
         // The unified crypto provider (`DefaultCryptoProvider`: host swift-crypto /
         // Embedded BoringSSL). Required by the Embedded node target to specialise
         // the Embedded-clean Noise / QUIC facade at a concrete crypto seam.
-        .package(path: "../swift-p2p-crypto"),
-        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
-        .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
+        .package(url: "https://github.com/1amageek/swift-p2p-crypto.git", from: "0.1.0"),
     ],
     targets: [
+        .target(
+            name: "P2PTestSupport",
+            path: "Tests/Support/P2PTestSupport"
+        ),
+
         // MARK: - Core
         // Embedded-clean codec core (dual-build: host + Embedded). No Foundation,
         // no NIO, no Crypto, no `any`. The first decomposition slice: unsigned
@@ -221,8 +226,13 @@ let package = Package(
         // MARK: - Transport (protocol definitions only, no NIO dependency)
         .target(
             name: "P2PTransport",
-            dependencies: ["P2PCore", "P2PMux"],
+            dependencies: ["P2PCore"],
             path: "Sources/Transport/P2PTransport"
+        ),
+        .target(
+            name: "P2PTransportSecured",
+            dependencies: ["P2PCore", "P2PTransport", "P2PMux"],
+            path: "Sources/Transport/SecuredTransport"
         ),
         .target(
             name: "P2PTransportTCP",
@@ -239,6 +249,7 @@ let package = Package(
             name: "P2PTransportQUIC",
             dependencies: [
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PCore",
                 "P2PMux",
                 .product(name: "Logging", package: "swift-log"),
@@ -258,6 +269,7 @@ let package = Package(
             name: "P2PTransportWebRTC",
             dependencies: [
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PCore",
                 "P2PMux",
                 "P2PCertificate",
@@ -268,6 +280,10 @@ let package = Package(
                 // `DTLSCore` product was demoted to a package target in the tls
                 // facade redesign and is no longer importable here.
                 .product(name: "WebRTC", package: "swift-webrtc"),
+                // WebRTCMuxedConnection/WebRTCMuxedStream name the public
+                // DataChannel type directly; keep that import explicit rather
+                // than relying on transitive products from WebRTC.
+                .product(name: "DataChannel", package: "swift-webrtc"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
@@ -297,6 +313,7 @@ let package = Package(
         .testTarget(
             name: "P2PTransportTests",
             dependencies: [
+                "P2PTestSupport",
                 "P2PTransport",
                 "P2PTransportMemory",
                 "P2PTransportTCP",
@@ -310,6 +327,7 @@ let package = Package(
         .testTarget(
             name: "P2PTransportQUICTests",
             dependencies: [
+                "P2PTestSupport",
                 "P2PTransportQUIC",
                 "P2PCore",
                 .product(name: "QUIC", package: "swift-quic"),
@@ -323,8 +341,10 @@ let package = Package(
         .testTarget(
             name: "P2PTransportWebRTCTests",
             dependencies: [
+                "P2PTestSupport",
                 "P2PTransportWebRTC",
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PMux",
                 "P2PCore",
                 .product(name: "WebRTC", package: "swift-webrtc"),
@@ -336,6 +356,7 @@ let package = Package(
         .testTarget(
             name: "P2PTransportWebSocketTests",
             dependencies: [
+                "P2PTestSupport",
                 "P2PTransportWebSocket",
                 "P2PTransport",
                 "P2PCore",
@@ -359,8 +380,7 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 // M6b: the libp2p Raw-Public-Key (RPK) certificate build/parse/
                 // verify goes through the Embedded-clean minimal-DER codec rather
-                // than swift-certificates/SwiftASN1. swift-certificates remains a
-                // package dependency for any full-X.509 path that needs it.
+                // than swift-certificates/SwiftASN1.
                 .product(name: "P2PCoreDER", package: "swift-p2p-core"),
             ],
             path: "Sources/Security/Certificate"
@@ -555,7 +575,7 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PDiscoveryTests",
-            dependencies: ["P2PDiscovery", "P2PDiscoverySWIM", "P2PDiscoveryMDNS"],
+            dependencies: ["P2PTestSupport", "P2PDiscovery", "P2PDiscoverySWIM", "P2PDiscoveryMDNS"],
             path: "Tests/Discovery/P2PDiscoveryTests"
         ),
         .testTarget(
@@ -590,7 +610,7 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PDiscoveryWiFiBeaconTests",
-            dependencies: ["P2PDiscoveryWiFiBeacon", "P2PDiscoveryBeacon", "P2PCore"],
+            dependencies: ["P2PTestSupport", "P2PDiscoveryWiFiBeacon", "P2PDiscoveryBeacon", "P2PCore"],
             path: "Tests/Discovery/WiFiBeaconTests"
         ),
         .testTarget(
@@ -608,7 +628,7 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PNATTests",
-            dependencies: ["P2PNAT"],
+            dependencies: ["P2PTestSupport", "P2PNAT"],
             path: "Tests/NAT/P2PNATTests"
         ),
 
@@ -638,12 +658,14 @@ let package = Package(
         .testTarget(
             name: "P2PIdentifyTests",
             dependencies: [
+                "P2PTestSupport",
                 "P2PIdentify",
                 "P2PCore",
                 "P2PMux",
                 "P2PProtocols",
                 "P2PTransportQUIC",
                 "P2PTransport",
+                "P2PTransportSecured",
                 .product(name: "QUIC", package: "swift-quic"),
             ],
             path: "Tests/Protocols/IdentifyTests"
@@ -651,11 +673,13 @@ let package = Package(
         .testTarget(
             name: "P2PPingTests",
             dependencies: [
+                "P2PTestSupport",
                 "P2PPing",
                 "P2PCore",
                 "P2PProtocols",
                 "P2PTransportQUIC",
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PMux",
                 .product(name: "QUIC", package: "swift-quic"),
             ],
@@ -755,6 +779,7 @@ let package = Package(
             dependencies: [
                 "P2PCore",
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PMux",
                 "P2PTransportQUIC",
                 .product(name: "QUIC", package: "swift-quic"),
@@ -766,7 +791,7 @@ let package = Package(
         ),
         .testTarget(
             name: "P2PTransportWebTransportTests",
-            dependencies: ["P2PTransportWebTransport", "P2PCore"],
+            dependencies: ["P2PTestSupport", "P2PTransportWebTransport", "P2PCore"],
             path: "Tests/Transport/WebTransportTests"
         ),
 
@@ -776,6 +801,7 @@ let package = Package(
             dependencies: [
                 "P2PCore",
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PSecurity",
                 "P2PMux",
                 "P2PNegotiation",
@@ -792,6 +818,7 @@ let package = Package(
                 // Protocol abstractions (@_exported)
                 "P2PCore",
                 "P2PTransport",
+                "P2PTransportSecured",
                 "P2PSecurity",
                 "P2PMux",
                 "P2PNegotiation",
@@ -828,6 +855,7 @@ let package = Package(
             dependencies: [
                 "P2P",
                 "P2PTransportMemory",
+                "P2PTransportSecured",
                 "P2PSecurityPlaintext",
                 "P2PMuxYamux",
                 "P2PPing",
@@ -837,6 +865,7 @@ let package = Package(
             path: "Tests/Integration/P2PTests"
         ),
 
+    ] + (includesInteropTests ? [
         // MARK: - Interop Tests
         .testTarget(
             name: "GoInteropTests",
@@ -867,8 +896,8 @@ let package = Package(
             ]
         ),
 
+    ] : []) + (includesBenchmarks ? [
         // MARK: - Benchmarks
-    ] + (includesBenchmarks ? [
         .testTarget(
             name: "P2PBenchmarks",
             dependencies: [

@@ -1,0 +1,3 @@
+import P2PTestSupport
+
+let webRTCLiveNetworkTestsEnabled = liveNetworkTestsEnabled

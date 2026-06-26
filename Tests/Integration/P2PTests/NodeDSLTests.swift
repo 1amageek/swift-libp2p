@@ -301,7 +301,7 @@ struct NodeDSLTests {
 
     @Test("Production profile applies production-oriented defaults", .timeLimit(.minutes(1)))
     func productionProfileAppliesProductionDefaults() async throws {
-        let configuration = NodeConfiguration(
+        let configuration = try NodeConfiguration(
             profile: .production,
             connectionProviders: [],
             transports: [],
@@ -311,12 +311,12 @@ struct NodeDSLTests {
 
         #expect(configuration.runtime.pool == .production)
         #expect(configuration.healthCheck == .production)
-        #expect(configuration.resourceManager != nil)
+        #expect(configuration.resourceManager is DefaultResourceManager)
     }
 
     @Test("Development profile applies development-oriented defaults", .timeLimit(.minutes(1)))
     func developmentProfileAppliesDevelopmentDefaults() async throws {
-        let configuration = NodeConfiguration(
+        let configuration = try NodeConfiguration(
             profile: .development,
             connectionProviders: [],
             transports: [],
@@ -329,6 +329,22 @@ struct NodeDSLTests {
         // Development still enforces resource limits (no silent "unlimited") —
         // a real DefaultResourceManager, not nil/NullResourceManager.
         #expect(configuration.resourceManager is DefaultResourceManager)
+    }
+
+    @Test("Production profile construction reports invalid security without trapping", .timeLimit(.minutes(1)))
+    func productionProfileConstructionReportsInvalidSecurityWithoutTrapping() throws {
+        let hub = MemoryHub()
+
+        #expect(throws: NodeStartValidationError.self) {
+            _ = try NodeConfiguration(
+                profile: .production,
+                transports: [MemoryTransport(hub: hub)],
+                security: [PlaintextUpgrader()],
+                muxers: [YamuxMuxer()]
+            )
+        }
+
+        hub.reset()
     }
 
     @Test("Production validation reports disabled operational safeguards", .timeLimit(.minutes(1)))

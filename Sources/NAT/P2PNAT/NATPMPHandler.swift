@@ -9,6 +9,11 @@ import Foundation
 /// 3. Port mapping request (opcode 1=UDP, 2=TCP)
 struct NATPMPHandler: NATProtocolHandler {
 
+    func canHandle(_ gateway: NATGatewayType) -> Bool {
+        if case .natpmp = gateway { return true }
+        return false
+    }
+
     func discoverGateway(configuration: NATPortMapperConfiguration) async throws -> NATGatewayType {
         let gatewayIP = try await getDefaultGateway()
         return .natpmp(gatewayIP: gatewayIP)
