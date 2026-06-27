@@ -210,7 +210,7 @@ let package = Package(
                 .product(name: "P2PCoreDER", package: "swift-p2p-core"),
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
                 // `SystemWallClock` (host wall-clock seam) for the node cert timestamps.
-                .product(name: "P2PCryptoFoundation", package: "swift-p2p-crypto"),
+                .product(name: "P2PCryptoFoundationEssentials", package: "swift-p2p-crypto"),
                 // `QUICTLSSignatureProvider` (the node identity's DER-ECDSA provider).
                 .product(name: "QUICTLSSignature", package: "swift-quic"),
                 // The QUIC engine facade + cores the live loopback handshake test

@@ -22,7 +22,7 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
-import P2PCryptoFoundation
+import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import LibP2PCore
 import QUICWire

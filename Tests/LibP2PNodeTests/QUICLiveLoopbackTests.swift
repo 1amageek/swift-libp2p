@@ -15,7 +15,7 @@ import Synchronization
 import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCrypto
-import P2PCryptoFoundation
+import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import QUICWire
 import QUICConnectionCore

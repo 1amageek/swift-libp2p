@@ -7,7 +7,7 @@
 
 import Testing
 import P2PCrypto
-import P2PCryptoFoundation
+import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import LibP2PCore
 @testable import LibP2PNode
