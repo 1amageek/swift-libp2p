@@ -29,7 +29,6 @@ import QUIC                // QUICEngineClient / QUICPeerValidator
 import QUICTLSSignature    // QUICTLSSignatureProvider (DER ECDSA for the TLS path)
 import QUICConnectionEngineCore  // QUICConnectionEngineConfiguration / QUICEngineError
 import QUICConnectionCore        // TransportParametersCore
-import Synchronization           // Mutex (pending inbound-stream buffer)
 
 /// The libp2p node's QUIC transport, wrapping ``QUICEngineClient``.
 ///
@@ -266,7 +265,7 @@ public final class QUICConnection<
     /// the engine's queue, so when several streams open within one poll we must keep
     /// the surplus here and hand them out one per call — otherwise every stream past
     /// the first is lost.
-    private let pendingStreams = Mutex<[UInt64]>([])
+    private let pendingStreams = PendingStreamBuffer()
 
     /// The remote peer's verified PeerID multihash (from its RPK certificate). On
     /// BOTH the dial and the accept (mTLS) path this is the cryptographically-
@@ -341,16 +340,13 @@ public final class QUICConnection<
     /// buffers ALL drained IDs before handing out the first.
     private func nextPendingStream() -> UInt64? {
         // Fast path: a previously-buffered stream.
-        if let buffered = pendingStreams.withLock({ $0.isEmpty ? nil : $0.removeFirst() }) {
+        if let buffered = pendingStreams.popBuffered() {
             return buffered
         }
         // Drain the engine outside our lock (it takes its own), then buffer all.
         let drained = client.takeNewStreams()
         guard !drained.isEmpty else { return nil }
-        return pendingStreams.withLock { buffer in
-            buffer.append(contentsOf: drained)
-            return buffer.isEmpty ? nil : buffer.removeFirst()
-        }
+        return pendingStreams.appendAndPop(drained)
     }
 
     /// Closes the connection gracefully and tears down the engine run loop.

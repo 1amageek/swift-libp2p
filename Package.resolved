@@ -1,5 +1,5 @@
 {
-  "originHash" : "c35e9024cb27cc75cfa6bdbb537212b8600b5f38612a5835682bd0dc275ccaaf",
+  "originHash" : "351b25a67ee8b2915577660a8e6dea8c05da4a2009689f2f65f11e870e4a52ec",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -123,8 +123,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-SWIM.git",
       "state" : {
-        "revision" : "c835ce74cffae0767c602185527db1b536e0f34b",
-        "version" : "1.2.2"
+        "revision" : "b01ec36f89bc10c6209a869fba68389ebe4c71c3",
+        "version" : "1.2.3"
       }
     },
     {
@@ -150,8 +150,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-webrtc.git",
       "state" : {
-        "revision" : "181e979c234f33a249b2e3eeb1867235588b56ad",
-        "version" : "1.5.1"
+        "revision" : "109d466b6e4bad4bc5413282f85bd833f49b12e1",
+        "version" : "1.5.2"
       }
     }
   ],
