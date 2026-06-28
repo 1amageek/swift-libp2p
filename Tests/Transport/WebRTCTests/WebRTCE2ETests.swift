@@ -37,6 +37,40 @@ private actor WebRTCTestTimeoutGate<T: Sendable> {
     }
 }
 
+private func withWebRTCStepTimeout<T: Sendable>(
+    _ step: String,
+    timeout: Duration = .seconds(10),
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        let gate = WebRTCTestTimeoutGate<T>(continuation)
+        let task = Task {
+            try await operation()
+        }
+        let timer = Task {
+            do {
+                try await Task.sleep(for: timeout)
+                task.cancel()
+                await gate.resume(throwing: WebRTCTestTimeout.step(step))
+            } catch is CancellationError {
+                // The operation completed before the timeout.
+            } catch {
+                await gate.resume(throwing: error)
+            }
+        }
+        Task {
+            do {
+                let result = try await task.value
+                timer.cancel()
+                await gate.resume(returning: result)
+            } catch {
+                timer.cancel()
+                await gate.resume(throwing: error)
+            }
+        }
+    }
+}
+
 @Suite(
     "WebRTC E2E Tests",
     .serialized,
@@ -167,18 +201,27 @@ struct WebRTCE2ETests {
         let serverTask = Task { () -> (any MuxedConnection)? in
             for await serverConnection in listener.connections {
                 // Accept stream from client
-                let stream = try await serverConnection.acceptStream()
+                let stream = try await withWebRTCStepTimeout("bidirectional server accept stream") {
+                    try await serverConnection.acceptStream()
+                }
 
                 // Read data
-                let received = try await stream.read()
+                let received = try await withWebRTCStepTimeout("bidirectional server read") {
+                    try await stream.read()
+                }
 
                 // Echo back with modification
                 var echoBuffer = received
                 echoBuffer.writeBytes(Data(" - echoed".utf8))
-                try await stream.write(echoBuffer)
+                let echoToSend = echoBuffer
+                try await withWebRTCStepTimeout("bidirectional server write") {
+                    try await stream.write(echoToSend)
+                }
 
                 // Close write side
-                try await stream.closeWrite()
+                try await withWebRTCStepTimeout("bidirectional server close write") {
+                    try await stream.closeWrite()
+                }
 
                 return serverConnection
             }
@@ -192,19 +235,29 @@ struct WebRTCE2ETests {
         )
 
         // Open stream
-        let clientStream = try await clientConnection.newStream()
+        let clientStream = try await withWebRTCStepTimeout("bidirectional client new stream") {
+            try await clientConnection.newStream()
+        }
 
         // Send data
         let testData = Data("Hello WebRTC".utf8)
-        try await clientStream.write(ByteBuffer(bytes: testData))
-        try await clientStream.closeWrite()
+        try await withWebRTCStepTimeout("bidirectional client write") {
+            try await clientStream.write(ByteBuffer(bytes: testData))
+        }
+        try await withWebRTCStepTimeout("bidirectional client close write") {
+            try await clientStream.closeWrite()
+        }
 
         // Read response
-        let response = try await clientStream.read()
+        let response = try await withWebRTCStepTimeout("bidirectional client read") {
+            try await clientStream.read()
+        }
         #expect(Data(buffer: response) == Data("Hello WebRTC - echoed".utf8))
 
         // Cleanup
-        let serverConnection = try await serverTask.value
+        let serverConnection = try await withWebRTCStepTimeout("bidirectional server task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
         try await clientStream.close()
         try await clientConnection.close()
         if let unwrappedServerConnection = serverConnection {
@@ -229,10 +282,16 @@ struct WebRTCE2ETests {
         let serverTask = Task { () -> (any MuxedConnection)? in
             for await serverConnection in listener.connections {
                 // Accept and echo 3 streams
-                for _ in 0..<3 {
-                    let stream = try await serverConnection.acceptStream()
-                    let data = try await stream.read()
-                    try await stream.write(data)
+                for index in 0..<3 {
+                    let stream = try await withWebRTCStepTimeout("multiple server accept \(index)") {
+                        try await serverConnection.acceptStream()
+                    }
+                    let data = try await withWebRTCStepTimeout("multiple server read \(index)") {
+                        try await stream.read()
+                    }
+                    try await withWebRTCStepTimeout("multiple server write \(index)") {
+                        try await stream.write(data)
+                    }
                     try await stream.close()
                 }
                 return serverConnection
@@ -248,21 +307,251 @@ struct WebRTCE2ETests {
 
         // Open 3 streams
         for i in 0..<3 {
-            let stream = try await clientConnection.newStream()
+            let stream = try await withWebRTCStepTimeout("multiple client new stream \(i)") {
+                try await clientConnection.newStream()
+            }
             let testData = Data("Stream \(i)".utf8)
-            try await stream.write(ByteBuffer(bytes: testData))
-            try await stream.closeWrite()
+            try await withWebRTCStepTimeout("multiple client write \(i)") {
+                try await stream.write(ByteBuffer(bytes: testData))
+            }
+            try await withWebRTCStepTimeout("multiple client close write \(i)") {
+                try await stream.closeWrite()
+            }
 
-            let response = try await stream.read()
+            let response = try await withWebRTCStepTimeout("multiple client read \(i)") {
+                try await stream.read()
+            }
             #expect(Data(buffer: response) == testData)
             try await stream.close()
         }
 
         // Cleanup
-        let serverConnection = try await serverTask.value
+        let serverConnection = try await withWebRTCStepTimeout("multiple server task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
         try await clientConnection.close()
         if let unwrappedServerConnection = serverConnection {
             do { try await unwrappedServerConnection.close() } catch { }
+        }
+        try await listener.close()
+    }
+
+    @Test("Many sequential bidirectional streams keep payload ordering", .timeLimit(.minutes(1)))
+    func manySequentialBidirectionalStreams() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+        let streamCount = 12
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        let serverTask = Task { () -> (any MuxedConnection)? in
+            for await serverConnection in listener.connections {
+                for index in 0..<streamCount {
+                    let stream = try await withWebRTCStepTimeout("server accept stream \(index)") {
+                        try await serverConnection.acceptStream()
+                    }
+                    let received = try await withWebRTCStepTimeout("server read stream \(index)") {
+                        try await stream.read()
+                    }
+                    var response = ByteBuffer()
+                    response.writeBytes(Data("echo-\(index):".utf8))
+                    response.writeBytes(Data(buffer: received))
+                    let responseToSend = response
+                    try await withWebRTCStepTimeout("server write stream \(index)") {
+                        try await stream.write(responseToSend)
+                    }
+                    try await withWebRTCStepTimeout("server close write stream \(index)") {
+                        try await stream.closeWrite()
+                    }
+                    try await stream.close()
+                }
+                return serverConnection
+            }
+            return nil
+        }
+
+        let clientConnection = try await transport.dialSecured(
+            listener.localAddress,
+            localKeyPair: clientKeyPair
+        )
+
+        for index in 0..<streamCount {
+            let stream = try await withWebRTCStepTimeout("client new stream \(index)") {
+                try await clientConnection.newStream()
+            }
+            let payload = Data(repeating: UInt8((index % 251) + 1), count: 64 + (index * 137))
+            try await withWebRTCStepTimeout("client write stream \(index)") {
+                try await stream.write(ByteBuffer(bytes: payload))
+            }
+            try await withWebRTCStepTimeout("client close write stream \(index)") {
+                try await stream.closeWrite()
+            }
+            let response = try await withWebRTCStepTimeout("client read stream \(index)") {
+                try await stream.read()
+            }
+            #expect(Data(buffer: response) == Data("echo-\(index):".utf8) + payload)
+            try await stream.close()
+        }
+
+        let serverConnection = try await withWebRTCStepTimeout("server sequential task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
+        try await clientConnection.close()
+        if let serverConnection {
+            do { try await serverConnection.close() } catch { }
+        }
+        try await listener.close()
+    }
+
+    @Test("Concurrent bidirectional streams do not cross-talk", .timeLimit(.minutes(1)))
+    func concurrentBidirectionalStreamsDoNotCrossTalk() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+        let streamCount = 6
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        let serverTask = Task { () -> (any MuxedConnection)? in
+            for await serverConnection in listener.connections {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for index in 0..<streamCount {
+                        let stream = try await withWebRTCStepTimeout("server concurrent accept \(index)") {
+                            try await serverConnection.acceptStream()
+                        }
+                        group.addTask {
+                            let received = try await withWebRTCStepTimeout("server concurrent read \(index)") {
+                                try await stream.read()
+                            }
+                            var response = ByteBuffer()
+                            response.writeBytes(Data("ack:".utf8))
+                            response.writeBytes(Data(buffer: received))
+                            let responseToSend = response
+                            try await withWebRTCStepTimeout("server concurrent write \(index)") {
+                                try await stream.write(responseToSend)
+                            }
+                            try await withWebRTCStepTimeout("server concurrent close write \(index)") {
+                                try await stream.closeWrite()
+                            }
+                            try await stream.close()
+                        }
+                    }
+                    try await group.waitForAll()
+                }
+                return serverConnection
+            }
+            return nil
+        }
+
+        let clientConnection = try await transport.dialSecured(
+            listener.localAddress,
+            localKeyPair: clientKeyPair
+        )
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<streamCount {
+                group.addTask {
+                    let stream = try await withWebRTCStepTimeout("client concurrent new stream \(index)") {
+                        try await clientConnection.newStream()
+                    }
+                    let payload = Data("payload-\(index)".utf8)
+                    try await withWebRTCStepTimeout("client concurrent write \(index)") {
+                        try await stream.write(ByteBuffer(bytes: payload))
+                    }
+                    try await withWebRTCStepTimeout("client concurrent close write \(index)") {
+                        try await stream.closeWrite()
+                    }
+                    let response = try await withWebRTCStepTimeout("client concurrent read \(index)") {
+                        try await stream.read()
+                    }
+                    #expect(Data(buffer: response) == Data("ack:".utf8) + payload)
+                    try await stream.close()
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let serverConnection = try await withWebRTCStepTimeout("server concurrent task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
+        try await clientConnection.close()
+        if let serverConnection {
+            do { try await serverConnection.close() } catch { }
+        }
+        try await listener.close()
+    }
+
+    @Test("Server initiated streams are full duplex", .timeLimit(.minutes(1)))
+    func serverInitiatedStreamsAreFullDuplex() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let clientKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+        let streamCount = 4
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        let serverTask = Task { () -> (any MuxedConnection)? in
+            for await serverConnection in listener.connections {
+                for index in 0..<streamCount {
+                    let stream = try await withWebRTCStepTimeout("server initiated new stream \(index)") {
+                        try await serverConnection.newStream()
+                    }
+                    let greeting = Data("server-\(index)".utf8)
+                    try await withWebRTCStepTimeout("server initiated write \(index)") {
+                        try await stream.write(ByteBuffer(bytes: greeting))
+                    }
+                    let reply = try await withWebRTCStepTimeout("server initiated read reply \(index)") {
+                        try await stream.read()
+                    }
+                    #expect(Data(buffer: reply) == Data("client-\(index)".utf8))
+                    try await withWebRTCStepTimeout("server initiated close write \(index)") {
+                        try await stream.closeWrite()
+                    }
+                    try await stream.close()
+                }
+                return serverConnection
+            }
+            return nil
+        }
+
+        let clientConnection = try await transport.dialSecured(
+            listener.localAddress,
+            localKeyPair: clientKeyPair
+        )
+
+        for index in 0..<streamCount {
+            let stream = try await withWebRTCStepTimeout("client inbound stream \(index)") {
+                try await clientConnection.acceptStream()
+            }
+            let greeting = try await withWebRTCStepTimeout("client inbound read \(index)") {
+                try await stream.read()
+            }
+            #expect(Data(buffer: greeting) == Data("server-\(index)".utf8))
+            try await withWebRTCStepTimeout("client inbound reply \(index)") {
+                try await stream.write(ByteBuffer(bytes: Data("client-\(index)".utf8)))
+            }
+            try await withWebRTCStepTimeout("client inbound close write \(index)") {
+                try await stream.closeWrite()
+            }
+            try await stream.close()
+        }
+
+        let serverConnection = try await withWebRTCStepTimeout("server initiated task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
+        try await clientConnection.close()
+        if let serverConnection {
+            do { try await serverConnection.close() } catch { }
         }
         try await listener.close()
     }
@@ -320,6 +609,71 @@ struct WebRTCE2ETests {
         try await listener.close()
     }
 
+    @Test("Sequential reconnects release listener routes", .timeLimit(.minutes(1)))
+    func sequentialReconnectsReleaseListenerRoutes() async throws {
+        let serverKeyPair = KeyPair.generateEd25519()
+        let transport = WebRTCTransport()
+        let clientCount = 5
+
+        let listener = try await transport.listenSecured(
+            try Multiaddr("/ip4/127.0.0.1/udp/0/webrtc-direct"),
+            localKeyPair: serverKeyPair
+        )
+
+        let serverTask = Task { () -> [PeerID] in
+            var peers: [PeerID] = []
+            for await serverConnection in listener.connections {
+                let stream = try await withWebRTCStepTimeout("server reconnect accept \(peers.count)") {
+                    try await serverConnection.acceptStream()
+                }
+                let data = try await withWebRTCStepTimeout("server reconnect read \(peers.count)") {
+                    try await stream.read()
+                }
+                try await withWebRTCStepTimeout("server reconnect write \(peers.count)") {
+                    try await stream.write(data)
+                }
+                try await stream.close()
+                peers.append(serverConnection.remotePeer)
+                try await serverConnection.close()
+                if peers.count == clientCount {
+                    break
+                }
+            }
+            return peers
+        }
+
+        var expectedPeers: [PeerID] = []
+        for index in 0..<clientCount {
+            let clientKeyPair = KeyPair.generateEd25519()
+            expectedPeers.append(clientKeyPair.peerID)
+            let clientConnection = try await withWebRTCStepTimeout("client reconnect dial \(index)") {
+                try await transport.dialSecured(listener.localAddress, localKeyPair: clientKeyPair)
+            }
+            let stream = try await withWebRTCStepTimeout("client reconnect stream \(index)") {
+                try await clientConnection.newStream()
+            }
+            let payload = Data("reconnect-\(index)".utf8)
+            try await withWebRTCStepTimeout("client reconnect write \(index)") {
+                try await stream.write(ByteBuffer(bytes: payload))
+            }
+            try await withWebRTCStepTimeout("client reconnect close write \(index)") {
+                try await stream.closeWrite()
+            }
+            let response = try await withWebRTCStepTimeout("client reconnect read \(index)") {
+                try await stream.read()
+            }
+            #expect(Data(buffer: response) == payload)
+            try await stream.close()
+            try await clientConnection.close()
+        }
+
+        let observedPeers = try await withWebRTCStepTimeout("server reconnect task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
+        #expect(observedPeers == expectedPeers)
+        try await listener.close()
+    }
+
     @Test("Client can iterate over inbound streams", .timeLimit(.minutes(1)))
     func inboundStreamIteration() async throws {
         let serverKeyPair = KeyPair.generateEd25519()
@@ -337,9 +691,15 @@ struct WebRTCE2ETests {
             for await serverConnection in listener.connections {
                 // Open 3 streams to client
                 for i in 0..<3 {
-                    let stream = try await serverConnection.newStream()
-                    try await stream.write(ByteBuffer(bytes: Data("Server stream \(i)".utf8)))
-                    try await stream.closeWrite()
+                    let stream = try await withWebRTCStepTimeout("inbound server new stream \(i)") {
+                        try await serverConnection.newStream()
+                    }
+                    try await withWebRTCStepTimeout("inbound server write \(i)") {
+                        try await stream.write(ByteBuffer(bytes: Data("Server stream \(i)".utf8)))
+                    }
+                    try await withWebRTCStepTimeout("inbound server close write \(i)") {
+                        try await stream.closeWrite()
+                    }
                 }
                 return serverConnection
             }
@@ -357,7 +717,9 @@ struct WebRTCE2ETests {
             var messages: [Data] = []
             var count = 0
             for await stream in clientConnection.inboundStreams {
-                let data = try await stream.read()
+                let data = try await withWebRTCStepTimeout("inbound client read \(count)") {
+                    try await stream.read()
+                }
                 messages.append(Data(buffer: data))
                 try await stream.close()
                 count += 1
@@ -369,8 +731,12 @@ struct WebRTCE2ETests {
         }
 
         // Wait for all streams
-        let serverConnection = try await serverTask.value
-        let messages = try await collectTask.value
+        let serverConnection = try await withWebRTCStepTimeout("inbound server task completion", timeout: .seconds(10)) {
+            try await serverTask.value
+        }
+        let messages = try await withWebRTCStepTimeout("inbound collect task completion", timeout: .seconds(10)) {
+            try await collectTask.value
+        }
 
         // Verify
         #expect(messages.count == 3)
@@ -532,20 +898,34 @@ struct WebRTCE2ETests {
             for await serverConnection in listener.connections {
                 // First stream: read once, then close locally. Closing is
                 // local-only, so the client can keep sending afterwards.
-                let first = try await serverConnection.acceptStream()
-                _ = try await first.read()
+                let first = try await withWebRTCStepTimeout("late-data server accept first") {
+                    try await serverConnection.acceptStream()
+                }
+                _ = try await withWebRTCStepTimeout("late-data server read first") {
+                    try await first.read()
+                }
+                try await withWebRTCStepTimeout("late-data server write first ack") {
+                    try await first.write(ByteBuffer(bytes: Data([0x01])))
+                }
+                try await withWebRTCStepTimeout("late-data server close first write") {
+                    try await first.closeWrite()
+                }
                 try await first.close()
-
-                // Barrier: tell the client the first stream is closed
-                let barrier = try await serverConnection.newStream()
-                try await barrier.write(ByteBuffer(bytes: Data([0x01])))
 
                 // Second stream: must work even after late data arrived
                 // for the closed first stream
-                let second = try await serverConnection.acceptStream()
-                let data = try await second.read()
-                try await second.write(data)
-                try await second.closeWrite()
+                let second = try await withWebRTCStepTimeout("late-data server accept second") {
+                    try await serverConnection.acceptStream()
+                }
+                let data = try await withWebRTCStepTimeout("late-data server read second") {
+                    try await second.read()
+                }
+                try await withWebRTCStepTimeout("late-data server write second") {
+                    try await second.write(data)
+                }
+                try await withWebRTCStepTimeout("late-data server close second write") {
+                    try await second.closeWrite()
+                }
                 return serverConnection
             }
             return nil
@@ -559,12 +939,10 @@ struct WebRTCE2ETests {
         let firstStream = try await clientConnection.newStream()
         try await firstStream.write(ByteBuffer(bytes: Data("first".utf8)))
 
-        // Wait until the server has closed its side of the first stream
-        let barrier = try await withWebRTCStepTimeout("barrier accept") {
-            try await clientConnection.acceptStream()
-        }
-        _ = try await withWebRTCStepTimeout("barrier read") {
-            try await barrier.read()
+        // Wait until the server has consumed the first payload and closed
+        // its local side of the first stream.
+        _ = try await withWebRTCStepTimeout("late-data first ack") {
+            try await firstStream.read()
         }
 
         // Late data for the closed channel — must be dropped server-side
@@ -600,40 +978,6 @@ struct WebRTCE2ETests {
             do { try await serverConnection.close() } catch { }
         }
         try await listener.close()
-    }
-
-    private func withWebRTCStepTimeout<T: Sendable>(
-        _ step: String,
-        timeout: Duration = .seconds(5),
-        operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            let gate = WebRTCTestTimeoutGate<T>(continuation)
-            let task = Task {
-                try await operation()
-            }
-            let timer = Task {
-                do {
-                    try await Task.sleep(for: timeout)
-                    task.cancel()
-                    await gate.resume(throwing: WebRTCTestTimeout.step(step))
-                } catch is CancellationError {
-                    // The operation completed before the timeout.
-                } catch {
-                    await gate.resume(throwing: error)
-                }
-            }
-            Task {
-                do {
-                    let result = try await task.value
-                    timer.cancel()
-                    await gate.resume(returning: result)
-                } catch {
-                    timer.cancel()
-                    await gate.resume(throwing: error)
-                }
-            }
-        }
     }
 
     @Test("Invalid multiaddr throws unsupportedAddress", .timeLimit(.minutes(1)))
