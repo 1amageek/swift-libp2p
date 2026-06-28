@@ -101,17 +101,17 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.29.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.8.0"),
-        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.2.2"),
-        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.2.3"),
-        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.3"),
-        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.3.2"),
-        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.1"),
-        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.5.2"),
-        .package(url: "https://github.com/1amageek/swift-p2p-core.git", from: "0.1.0"),
+        .package(url: "https://github.com/1amageek/swift-mDNS.git", from: "1.3.1"),
+        .package(url: "https://github.com/1amageek/swift-SWIM.git", from: "1.2.4"),
+        .package(url: "https://github.com/1amageek/swift-nio-udp.git", from: "1.1.4"),
+        .package(url: "https://github.com/1amageek/swift-quic.git", from: "1.3.3"),
+        .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.2"),
+        .package(url: "https://github.com/1amageek/swift-webrtc.git", from: "1.5.3"),
+        .package(url: "https://github.com/1amageek/swift-p2p-core.git", from: "0.2.1"),
         // The unified crypto provider (`DefaultCryptoProvider`: host swift-crypto /
         // Embedded BoringSSL). Required by the Embedded node target to specialise
         // the Embedded-clean Noise / QUIC facade at a concrete crypto seam.
-        .package(url: "https://github.com/1amageek/swift-p2p-crypto.git", from: "0.1.0"),
+        .package(url: "https://github.com/1amageek/swift-p2p-crypto.git", from: "0.1.1"),
     ],
     targets: [
         .target(

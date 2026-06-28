@@ -1,8 +1,8 @@
 # swift-libp2p
 
-A modern Swift implementation of the [libp2p](https://libp2p.io/) networking stack with wire-protocol compatibility with Go and Rust implementations. Built on Swift Concurrency (async/await, actors) for safe, high-performance peer-to-peer networking. The data plane is moving toward an Embedded-first, `[UInt8]`/`ByteBuffer`-currency stance on the `embedded` branch.
+A modern Swift implementation of the [libp2p](https://libp2p.io/) networking stack with wire-protocol compatibility with Go and Rust implementations. Built on Swift Concurrency (async/await, actors) for safe, high-performance peer-to-peer networking. The release line includes the Embedded-first `LibP2PNode` data path and the host `P2P` / `Swarm` stack.
 
-> **Release status.** The released `0.2.0` ships the prior API. The Embedded-first API documented here (LibP2PCore, `[UInt8]`/`ByteBuffer` payload paths, `DiscoveryPipeline`, `ConnectionProvider`) lives on the unreleased `embedded` branch (M8 pending) and is not tagged — pin to the branch to use it.
+> **Release status.** Current release: `0.2.5`.
 
 ## Features
 
@@ -40,20 +40,11 @@ Traversal Coordinator (local direct -> direct IP -> hole punch -> relay fallback
 
 ## Installation
 
-To use the Embedded-first API documented here, pin to the `embedded` branch
-(see the release status caveat above):
+Add swift-libp2p to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-libp2p.git", branch: "embedded")
-]
-```
-
-The released tag ships the prior API:
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/1amageek/swift-libp2p.git", from: "0.2.0")
+    .package(url: "https://github.com/1amageek/swift-libp2p.git", from: "0.2.5")
 ]
 ```
 
