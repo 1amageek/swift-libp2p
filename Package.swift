@@ -208,9 +208,8 @@ let package = Package(
                 // `LibP2PIdentity` PeerID derivation, for the Identify binding
                 // cross-check in the Ping + Identify live test.
                 .product(name: "P2PCoreDER", package: "swift-p2p-core"),
+                // `DefaultCryptoProvider` for node identity and cert timestamp signing.
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
-                // `SystemWallClock` (host wall-clock seam) for the node cert timestamps.
-                .product(name: "P2PCryptoFoundationEssentials", package: "swift-p2p-crypto"),
                 // `QUICTLSSignatureProvider` (the node identity's DER-ECDSA provider).
                 .product(name: "QUICTLSSignature", package: "swift-quic"),
                 // The QUIC engine facade + cores the live loopback handshake test

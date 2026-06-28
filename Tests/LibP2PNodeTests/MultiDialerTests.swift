@@ -16,7 +16,6 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
-import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import LibP2PCore
 import QUICWire
@@ -194,7 +193,7 @@ struct MultiDialerTests {
             identity: identityB,
             datagramTransport: placeholder,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: ServePlan(),
             agentVersion: "swift-libp2p-node/demux-B"
@@ -215,7 +214,7 @@ struct MultiDialerTests {
             identity: identityA,
             datagramTransport: transportA,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: try #require(RandomDialPlan()),
             agentVersion: "swift-libp2p-node/demux-A"
@@ -224,7 +223,7 @@ struct MultiDialerTests {
             identity: identityC,
             datagramTransport: transportC,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: try #require(RandomDialPlan()),
             agentVersion: "swift-libp2p-node/demux-C"

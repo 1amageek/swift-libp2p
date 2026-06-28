@@ -20,7 +20,6 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
-import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import LibP2PCore
 import QUICWire
@@ -155,7 +154,7 @@ struct NodeFacadeCapstoneTests {
             identity: identityA,
             datagramTransport: transportA,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: DialPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/capstone-A"
@@ -164,7 +163,7 @@ struct NodeFacadeCapstoneTests {
             identity: identityB,
             datagramTransport: transportB,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: AcceptPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/capstone-B"

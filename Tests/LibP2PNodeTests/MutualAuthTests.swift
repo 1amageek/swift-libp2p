@@ -22,7 +22,6 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
-import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import LibP2PCore
 import QUICWire
@@ -131,7 +130,7 @@ struct MutualAuthTests {
             identity: identityA,
             datagramTransport: transportA,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: MACPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/mtls-A"
@@ -140,7 +139,7 @@ struct MutualAuthTests {
             identity: identityB,
             datagramTransport: transportB,
             timer: timer,
-            wallClock: SystemWallClock(),
+            wallClock: TestWallClock(),
             parameters: .defaultParameters(),
             connectionIDPlan: MACPlan(coordinator: coordinator),
             agentVersion: "swift-libp2p-node/mtls-B"

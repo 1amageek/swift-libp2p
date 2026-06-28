@@ -34,3 +34,10 @@ struct TestClock: AsyncTimer {
         }
     }
 }
+
+/// A host wall-clock for tests.
+struct TestWallClock: WallClock {
+    func nowUnixSeconds() -> Int64 {
+        Int64(Date().timeIntervalSince1970.rounded(.down))
+    }
+}

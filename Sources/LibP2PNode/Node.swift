@@ -114,8 +114,8 @@ public actor Node<
     ///   - timer: the monotonic-clock + sleep seam (no `ContinuousClock`).
     ///   - wallClock: the wall-clock (calendar) seam used to timestamp the libp2p
     ///     RPK certificate's notBefore/notAfter as real Unix-epoch seconds. REQUIRED
-    ///     (no silent fallback to the monotonic clock): on host pass
-    ///     `SystemWallClock()`; on Embedded supply a device-RTC-backed clock.
+    ///     (no silent fallback to the monotonic clock): on host pass a system
+    ///     clock-backed implementation; on Embedded supply a device-RTC-backed clock.
     ///   - parameters: the QUIC transport-parameter / timeout template.
     ///   - connectionIDPlan: the per-connection CID source (see
     ///     ``QUICConnectionParameters``).

@@ -15,7 +15,6 @@ import Synchronization
 import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCrypto
-import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import QUICWire
 import QUICConnectionCore
@@ -118,8 +117,8 @@ struct QUICLiveLoopbackTests {
 
         let timer = TestClock()
 
-        let clientTransport = QUICTransport(transport: clientT, timer: timer, wallClock: SystemWallClock())
-        let serverTransport = QUICTransport(transport: serverT, timer: timer, wallClock: SystemWallClock())
+        let clientTransport = QUICTransport(transport: clientT, timer: timer, wallClock: TestWallClock())
+        let serverTransport = QUICTransport(transport: serverT, timer: timer, wallClock: TestWallClock())
 
         let clientConfig = makeConfig(
             role: .client, localCID: clientSCID, peerCID: clientDCID, originalDCID: clientDCID)
@@ -214,8 +213,8 @@ struct QUICLiveLoopbackTests {
         serverT.connect(to: clientT)
 
         let timer = TestClock()
-        let clientTransport = QUICTransport(transport: clientT, timer: timer, wallClock: SystemWallClock())
-        let serverTransport = QUICTransport(transport: serverT, timer: timer, wallClock: SystemWallClock())
+        let clientTransport = QUICTransport(transport: clientT, timer: timer, wallClock: TestWallClock())
+        let serverTransport = QUICTransport(transport: serverT, timer: timer, wallClock: TestWallClock())
 
         let clientConfig = makeConfig(
             role: .client, localCID: clientSCID, peerCID: clientDCID, originalDCID: clientDCID)

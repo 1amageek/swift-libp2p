@@ -21,7 +21,6 @@ import P2PCoreCrypto
 import P2PCoreTransport
 import P2PCoreDER
 import P2PCrypto
-import P2PCryptoFoundationEssentials
 import QUICTLSSignature
 import LibP2PCore
 import QUICWire
@@ -125,8 +124,8 @@ struct PingIdentifyLiveTests {
 
         let timer = TestClock()
 
-        let nodeATransport = QUICTransport(transport: transportA, timer: timer, wallClock: SystemWallClock())
-        let nodeBTransport = QUICTransport(transport: transportB, timer: timer, wallClock: SystemWallClock())
+        let nodeATransport = QUICTransport(transport: transportA, timer: timer, wallClock: TestWallClock())
+        let nodeBTransport = QUICTransport(transport: transportB, timer: timer, wallClock: TestWallClock())
 
         let configA = makeConfig(role: .client, localCID: scidA, peerCID: dcidA, originalDCID: dcidA)
         let configB = makeConfig(role: .server, localCID: scidB, peerCID: scidA, originalDCID: dcidA)
